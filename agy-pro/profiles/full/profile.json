@@ -1,0 +1,29 @@
+{
+  "name": "full",
+  "displayName": "Full-Stack Orchestrator Profile",
+  "description": "Full-stack VP of Engineering profile with 9 specialized agents, 4-model double-blind fanout swarm, and Arbiter reconciliation rules",
+  "version": "1.0.0",
+  "managed": [
+    "rules/AGENTS.md",
+    "rules/GEMINI.md",
+    "rules/agents-index.md",
+    "agents/architect/AGENT.md",
+    "agents/blind-qa/AGENT.md",
+    "agents/code-reviewer/AGENT.md",
+    "agents/debug-specialist/AGENT.md",
+    "agents/designer/AGENT.md",
+    "agents/readiness-auditor/AGENT.md",
+    "agents/release-inspector/AGENT.md",
+    "agents/research/AGENT.md",
+    "agents/security-reviewer/AGENT.md",
+    "skills/mode/SKILL.md",
+    "skills/design-3d-web/templates/shader-canvas-template.html",
+    "skills/design-core-harness/scripts/visual_qa.js",
+    "skills/design-core-harness/scripts/visual_qa.py",
+    "skills/design-data-viz/templates/cyberpunk-topology.html",
+    "skills/design-interactive-sandbox/templates/single-file-widget.html",
+    "skills/design-vector-svg/templates/svg-diagram-template.svg",
+    "references/visual-qa-rubric.md",
+    "profile.json"
+  ]
+}
