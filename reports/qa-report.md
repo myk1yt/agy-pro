@@ -109,6 +109,12 @@ During initial test execution, `TestInteractiveSetupWizard` encountered an infin
 - **`agy-pro/scripts/install.ps1`**: Upgraded with `-NoPause` argument, non-interactive/redirected execution detection, executable locking fallback (`agy.old.<guid>.exe`), and clear troubleshooting instructions.
 - **Execution Matrix**: Validated in `cmd.exe /c "install.cmd"`, PowerShell `.\install.cmd`, PowerShell `.\install.ps1`, and automated `-NoPause` flags with 100% exit code 0.
 
+### G. Installer English Localization Verification
+- **Localization Audit**: Audited `agy-pro\scripts\install.ps1` for non-ASCII / Korean characters; 0 Hangul characters remain.
+- **Encoding**: Preserved UTF-8 with BOM format for maximum compatibility with Windows PowerShell 5.1 and PS Core.
+- **Execution Validation**: Tested with `cmd.exe /c "install.cmd -NoPause"` and `powershell.exe -File .\install.ps1 -NoPause`; all logs and completion cards rendered in fluent English.
+- **Detailed Report**: Recorded in `reports/installer-english-qa-report.md`.
+
 ---
 
 ## 4. Verification Checklist
