@@ -33,10 +33,10 @@ func GetModelPresets(providerName string) []ModelPreset {
 			{
 				ID:              "deepseek-chat",
 				Family:          "deepseek",
-				Description:     "DeepSeek-V3 (128k context, tools enabled)",
+				Description:     "DeepSeek-V3 (128k context, server max output, tools enabled)",
 				Recommended:     true,
 				ContextLength:   128000,
-				MaxOutputTokens: 8192,
+				MaxOutputTokens: -1,
 				Tags:            []string{"flagship", "tools", "coding"},
 				Capabilities: Capabilities{
 					SupportsTools: true,
@@ -46,10 +46,10 @@ func GetModelPresets(providerName string) []ModelPreset {
 			{
 				ID:              "deepseek-reasoner",
 				Family:          "deepseek",
-				Description:     "DeepSeek-R1 (128k context, reasoning/thinking)",
+				Description:     "DeepSeek-R1 (128k context, server max output, reasoning/thinking)",
 				Recommended:     false,
 				ContextLength:   128000,
-				MaxOutputTokens: 8192,
+				MaxOutputTokens: -1,
 				Tags:            []string{"reasoning", "coding", "math"},
 				Capabilities: Capabilities{
 					SupportsThinking: true,
@@ -62,10 +62,10 @@ func GetModelPresets(providerName string) []ModelPreset {
 			{
 				ID:              "anthropic/claude-3.7-sonnet",
 				Family:          "claude",
-				Description:     "Claude 3.7 Sonnet (200k context, hybrid thinking & tools)",
+				Description:     "Claude 3.7 Sonnet (200k context, server max output, hybrid thinking & tools)",
 				Recommended:     true,
 				ContextLength:   200000,
-				MaxOutputTokens: 8192,
+				MaxOutputTokens: -1,
 				Tags:            []string{"flagship", "tools", "coding"},
 				Capabilities: Capabilities{
 					SupportsTools:    true,
@@ -76,10 +76,10 @@ func GetModelPresets(providerName string) []ModelPreset {
 			{
 				ID:              "deepseek/deepseek-r1",
 				Family:          "deepseek",
-				Description:     "DeepSeek R1 (128k context, reasoning/thinking)",
+				Description:     "DeepSeek R1 (128k context, server max output, reasoning/thinking)",
 				Recommended:     false,
 				ContextLength:   128000,
-				MaxOutputTokens: 8192,
+				MaxOutputTokens: -1,
 				Tags:            []string{"reasoning", "coding"},
 				Capabilities: Capabilities{
 					SupportsThinking: true,
@@ -88,10 +88,10 @@ func GetModelPresets(providerName string) []ModelPreset {
 			{
 				ID:              "meta-llama/llama-3.3-70b-instruct",
 				Family:          "llama",
-				Description:     "Llama 3.3 70B Instruct (128k context, tools enabled)",
+				Description:     "Llama 3.3 70B Instruct (128k context, server max output, tools enabled)",
 				Recommended:     false,
 				ContextLength:   128000,
-				MaxOutputTokens: 4096,
+				MaxOutputTokens: -1,
 				Tags:            []string{"tools", "open-weights"},
 				Capabilities: Capabilities{
 					SupportsTools: true,
@@ -101,10 +101,10 @@ func GetModelPresets(providerName string) []ModelPreset {
 			{
 				ID:              "openai/gpt-4o",
 				Family:          "gpt",
-				Description:     "GPT-4o (128k context, multimodal & tools)",
+				Description:     "GPT-4o (128k context, server max output, multimodal & tools)",
 				Recommended:     false,
 				ContextLength:   128000,
-				MaxOutputTokens: 4096,
+				MaxOutputTokens: -1,
 				Tags:            []string{"flagship", "vision", "tools"},
 				Capabilities: Capabilities{
 					SupportsTools:  true,
@@ -119,10 +119,10 @@ func GetModelPresets(providerName string) []ModelPreset {
 			{
 				ID:              "llama-3.3-70b-versatile",
 				Family:          "llama",
-				Description:     "Llama 3.3 70B Versatile (Ultra-fast, 128k context, tools)",
+				Description:     "Llama 3.3 70B Versatile (Ultra-fast, 128k context, server max output, tools)",
 				Recommended:     true,
 				ContextLength:   128000,
-				MaxOutputTokens: 32768,
+				MaxOutputTokens: -1,
 				Tags:            []string{"fast", "tools"},
 				Capabilities: Capabilities{
 					SupportsTools: true,
@@ -132,10 +132,10 @@ func GetModelPresets(providerName string) []ModelPreset {
 			{
 				ID:              "deepseek-r1-distill-llama-70b",
 				Family:          "deepseek",
-				Description:     "DeepSeek R1 Distill Llama 70B (Fast reasoning, 128k context)",
+				Description:     "DeepSeek R1 Distill Llama 70B (Fast reasoning, 128k context, server max output)",
 				Recommended:     false,
 				ContextLength:   128000,
-				MaxOutputTokens: 8192,
+				MaxOutputTokens: -1,
 				Tags:            []string{"fast", "reasoning"},
 				Capabilities: Capabilities{
 					SupportsThinking: true,
@@ -148,10 +148,10 @@ func GetModelPresets(providerName string) []ModelPreset {
 			{
 				ID:              "gpt-4o",
 				Family:          "gpt",
-				Description:     "GPT-4o (128k context, flagship multimodal & tools)",
+				Description:     "GPT-4o (128k context, server max output, flagship multimodal & tools)",
 				Recommended:     true,
 				ContextLength:   128000,
-				MaxOutputTokens: 4096,
+				MaxOutputTokens: -1,
 				Tags:            []string{"flagship", "vision", "tools"},
 				Capabilities: Capabilities{
 					SupportsTools:  true,
@@ -162,10 +162,10 @@ func GetModelPresets(providerName string) []ModelPreset {
 			{
 				ID:              "gpt-4o-mini",
 				Family:          "gpt",
-				Description:     "GPT-4o Mini (128k context, lightweight, tools enabled)",
+				Description:     "GPT-4o Mini (128k context, server max output, lightweight, tools enabled)",
 				Recommended:     false,
 				ContextLength:   128000,
-				MaxOutputTokens: 4096,
+				MaxOutputTokens: -1,
 				Tags:            []string{"fast", "tools"},
 				Capabilities: Capabilities{
 					SupportsTools: true,
@@ -175,10 +175,10 @@ func GetModelPresets(providerName string) []ModelPreset {
 			{
 				ID:              "o3-mini",
 				Family:          "o-series",
-				Description:     "o3-mini (200k context, reasoning/STEM)",
+				Description:     "o3-mini (200k context, server max output, reasoning/STEM)",
 				Recommended:     false,
 				ContextLength:   200000,
-				MaxOutputTokens: 100000,
+				MaxOutputTokens: -1,
 				Tags:            []string{"reasoning", "coding"},
 				Capabilities: Capabilities{
 					SupportsThinking: true,
@@ -191,10 +191,10 @@ func GetModelPresets(providerName string) []ModelPreset {
 			{
 				ID:              "nw-flash",
 				Family:          "nw",
-				Description:     "NW Flash (High-throughput, 128k context, tools enabled)",
+				Description:     "NW Flash (High-throughput, 1M context, server max output, tools enabled)",
 				Recommended:     true,
-				ContextLength:   128000,
-				MaxOutputTokens: 4096,
+				ContextLength:   1048576,
+				MaxOutputTokens: -1,
 				Tags:            []string{"fast", "tools"},
 				Capabilities: Capabilities{
 					SupportsTools: true,
@@ -204,10 +204,10 @@ func GetModelPresets(providerName string) []ModelPreset {
 			{
 				ID:              "deepseek-v4-flash",
 				Family:          "deepseek",
-				Description:     "DeepSeek V4 Flash (128k context, fast inference)",
+				Description:     "DeepSeek V4 Flash (1M context, server max output, fast inference)",
 				Recommended:     false,
-				ContextLength:   128000,
-				MaxOutputTokens: 4096,
+				ContextLength:   1048576,
+				MaxOutputTokens: -1,
 				Tags:            []string{"fast", "tools", "coding"},
 				Capabilities: Capabilities{
 					SupportsTools: true,
@@ -217,10 +217,10 @@ func GetModelPresets(providerName string) []ModelPreset {
 			{
 				ID:              "glm-5.3-flash",
 				Family:          "glm",
-				Description:     "GLM 5.3 Flash (128k context, tools enabled)",
+				Description:     "GLM 5.3 Flash (1M context, server max output, tools enabled)",
 				Recommended:     false,
-				ContextLength:   128000,
-				MaxOutputTokens: 4096,
+				ContextLength:   1048576,
+				MaxOutputTokens: -1,
 				Tags:            []string{"tools"},
 				Capabilities: Capabilities{
 					SupportsTools: true,
@@ -230,10 +230,10 @@ func GetModelPresets(providerName string) []ModelPreset {
 			{
 				ID:              "qwen-3.8-27b",
 				Family:          "qwen",
-				Description:     "Qwen 3.8 27B (128k context, tools enabled)",
+				Description:     "Qwen 3.8 27B (1M context, server max output, tools enabled)",
 				Recommended:     false,
-				ContextLength:   128000,
-				MaxOutputTokens: 4096,
+				ContextLength:   1048576,
+				MaxOutputTokens: -1,
 				Tags:            []string{"tools", "coding"},
 				Capabilities: Capabilities{
 					SupportsTools: true,
@@ -247,10 +247,10 @@ func GetModelPresets(providerName string) []ModelPreset {
 			{
 				ID:              "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
 				Family:          "llama",
-				Description:     "Llama 3.1 70B Turbo (128k context, tools enabled)",
+				Description:     "Llama 3.1 70B Turbo (128k context, server max output, tools enabled)",
 				Recommended:     true,
 				ContextLength:   128000,
-				MaxOutputTokens: 4096,
+				MaxOutputTokens: -1,
 				Tags:            []string{"fast", "tools"},
 				Capabilities: Capabilities{
 					SupportsTools: true,
@@ -260,10 +260,10 @@ func GetModelPresets(providerName string) []ModelPreset {
 			{
 				ID:              "deepseek-ai/DeepSeek-R1",
 				Family:          "deepseek",
-				Description:     "DeepSeek R1 (128k context, reasoning enabled)",
+				Description:     "DeepSeek R1 (128k context, server max output, reasoning enabled)",
 				Recommended:     false,
 				ContextLength:   128000,
-				MaxOutputTokens: 8192,
+				MaxOutputTokens: -1,
 				Tags:            []string{"reasoning"},
 				Capabilities: Capabilities{
 					SupportsThinking: true,
@@ -276,10 +276,10 @@ func GetModelPresets(providerName string) []ModelPreset {
 			{
 				ID:              "mistral-large-latest",
 				Family:          "mistral",
-				Description:     "Mistral Large Latest (128k context, tools enabled)",
+				Description:     "Mistral Large Latest (128k context, server max output, tools enabled)",
 				Recommended:     true,
 				ContextLength:   128000,
-				MaxOutputTokens: 4096,
+				MaxOutputTokens: -1,
 				Tags:            []string{"flagship", "tools"},
 				Capabilities: Capabilities{
 					SupportsTools: true,
@@ -289,10 +289,10 @@ func GetModelPresets(providerName string) []ModelPreset {
 			{
 				ID:              "codestral-latest",
 				Family:          "mistral",
-				Description:     "Codestral Latest (256k context, specialized coding)",
+				Description:     "Codestral Latest (256k context, server max output, specialized coding)",
 				Recommended:     false,
 				ContextLength:   256000,
-				MaxOutputTokens: 4096,
+				MaxOutputTokens: -1,
 				Tags:            []string{"coding", "tools"},
 				Capabilities: Capabilities{
 					SupportsTools: true,

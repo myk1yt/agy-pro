@@ -90,7 +90,11 @@ func (c *Client) Complete(ctx context.Context, target providers.Target, messages
 		Messages: messages,
 	}
 
-	// Apply MaxOutputTokens if specified on model
+	// Apply MaxOutputTokens if explicitly positive (> 0).
+	// When MaxOutputTokens is -1 or <= 0, max_tokens is omitted from the JSON
+	// payload so the provider server utilizes its own maximum output capacity.
+	// When ContextLength is -1 or <= 0, prompt/history messages are forwarded
+	// completely without artificial client-side truncation.
 	if target.Model.MaxOutputTokens > 0 {
 		reqBody.MaxTokens = target.Model.MaxOutputTokens
 	}

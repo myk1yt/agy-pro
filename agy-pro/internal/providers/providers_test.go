@@ -228,15 +228,13 @@ func TestInteractiveSetupWizard(t *testing.T) {
 	// 4. API key value: (leave blank)
 	// 5. Model ID: mock-model-1
 	// 6. Model Family: (accept inferred)
-	// 7. Context Length: (accept default)
-	// 8. Max Output: (accept default)
-	// 9. Tags: (accept default)
-	// 10. Supports Tools: Y
-	// 11. Allowed tools: (accept default)
+	// 7. Context Length: (accept default 1048576)
+	// 8. Max Output: (accept default 131072)
+	// 9. Supports Tools: Y (tags automatically derived)
+	// 10. Allowed tools: (accept default)
+	// 11. Supports Thinking: N
 	// 12. Supports Vision: N
-	// 13. Supports Video: N
-	// 14. Supports Thinking: N
-	// 15. More models: N
+	// 13. More models: N
 	input := strings.Join([]string{
 		"mockprov",
 		server.URL + "/v1",
@@ -246,10 +244,8 @@ func TestInteractiveSetupWizard(t *testing.T) {
 		"",
 		"",
 		"",
-		"",
 		"Y",
 		"",
-		"N",
 		"N",
 		"N",
 		"N",
@@ -273,6 +269,15 @@ func TestInteractiveSetupWizard(t *testing.T) {
 	p := reg.Providers[0]
 	if p.Name != "mockprov" || len(p.Models) != 1 || p.Models[0].ID != "mock-model-1" {
 		t.Fatalf("unexpected provider saved: %+v", p)
+	}
+	if p.Models[0].ContextLength != 1048576 {
+		t.Errorf("contextLength = %d; want 1048576", p.Models[0].ContextLength)
+	}
+	if p.Models[0].MaxOutputTokens != 131072 {
+		t.Errorf("maxOutputTokens = %d; want 131072", p.Models[0].MaxOutputTokens)
+	}
+	if !p.Models[0].HasTag("general") || !p.Models[0].HasTag("tools") {
+		t.Errorf("expected tags [general, tools], got %v", p.Models[0].Tags)
 	}
 }
 
@@ -459,8 +464,11 @@ func TestInteractiveSetupWizard_NWPreset(t *testing.T) {
 	if len(p.Models) != 1 || p.Models[0].ID != "nw-flash" {
 		t.Fatalf("unexpected models: %+v", p.Models)
 	}
-	if p.Models[0].ContextLength != 128000 {
-		t.Errorf("contextLength = %d; want 128000", p.Models[0].ContextLength)
+	if p.Models[0].ContextLength != 1048576 {
+		t.Errorf("contextLength = %d; want 1048576", p.Models[0].ContextLength)
+	}
+	if p.Models[0].MaxOutputTokens != -1 {
+		t.Errorf("maxOutputTokens = %d; want -1", p.Models[0].MaxOutputTokens)
 	}
 }
 
@@ -508,6 +516,109 @@ func TestInteractiveSetupWizard_PastedRawKeyAbsorption(t *testing.T) {
 	}
 	if len(p.Models) != 1 || p.Models[0].ID != "deepseek-v4-flash" {
 		t.Fatalf("unexpected models: %+v", p.Models)
+	}
+}
+
+func TestDeriveTags(t *testing.T) {
+	// Base capability: only "general"
+	t1 := DeriveTags(Capabilities{})
+	if len(t1) != 1 || t1[0] != "general" {
+		t.Errorf("expected [general], got %v", t1)
+	}
+
+	// Tools only
+	t2 := DeriveTags(Capabilities{SupportsTools: true})
+	if len(t2) != 2 || t2[0] != "general" || t2[1] != "tools" {
+		t.Errorf("expected [general, tools], got %v", t2)
+	}
+
+	// Reasoning only
+	t3 := DeriveTags(Capabilities{SupportsThinking: true})
+	if len(t3) != 2 || t3[0] != "general" || t3[1] != "reasoning" {
+		t.Errorf("expected [general, reasoning], got %v", t3)
+	}
+
+	// Vision only
+	t4 := DeriveTags(Capabilities{SupportsVision: true})
+	if len(t4) != 2 || t4[0] != "general" || t4[1] != "vision" {
+		t.Errorf("expected [general, vision], got %v", t4)
+	}
+
+	// All capabilities
+	t5 := DeriveTags(Capabilities{
+		SupportsTools:    true,
+		SupportsThinking: true,
+		SupportsVision:   true,
+	})
+	expected := []string{"general", "tools", "reasoning", "vision"}
+	if len(t5) != len(expected) {
+		t.Fatalf("expected %v, got %v", expected, t5)
+	}
+	for i, exp := range expected {
+		if t5[i] != exp {
+			t.Errorf("tag[%d] = %q; want %q", i, t5[i], exp)
+		}
+	}
+}
+
+func TestInteractiveSetupWizard_ServerMaximumTokens(t *testing.T) {
+	tmpDir := t.TempDir()
+	provPath := filepath.Join(tmpDir, "providers.json")
+	t.Setenv(EnvProviders, provPath)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"choices":[{"message":{"content":"pong"}}]}`))
+	}))
+	defer server.Close()
+
+	// Simulate user entering -1 for context length and -1 for max output tokens
+	input := strings.Join([]string{
+		"servermaxprov",
+		server.URL + "/v1",
+		"SERVER_MAX_KEY",
+		"",
+		"custom-server-max-model",
+		"openai", // family
+		"-1",     // context length: -1 for server maximum
+		"-1",     // max output tokens: -1 for server maximum
+		"Y",      // supports tools: Y
+		"",       // allowed tools default
+		"y",      // reasoning: y
+		"y",      // vision: y
+		"N",      // add another: N
+	}, "\n") + "\n"
+
+	in := strings.NewReader(input)
+	out := &bytes.Buffer{}
+
+	if err := InteractiveSetupWizard(in, out); err != nil {
+		t.Fatalf("InteractiveSetupWizard returned error: %v\nOutput: %s", err, out.String())
+	}
+
+	reg, err := LoadFrom(provPath)
+	if err != nil {
+		t.Fatalf("failed to load saved providers: %v", err)
+	}
+	if len(reg.Providers) != 1 {
+		t.Fatalf("expected 1 provider, got %d", len(reg.Providers))
+	}
+	p := reg.Providers[0]
+	if len(p.Models) != 1 {
+		t.Fatalf("expected 1 model, got %d", len(p.Models))
+	}
+	m := p.Models[0]
+	if m.ContextLength != -1 {
+		t.Errorf("contextLength = %d; want -1", m.ContextLength)
+	}
+	if m.MaxOutputTokens != -1 {
+		t.Errorf("maxOutputTokens = %d; want -1", m.MaxOutputTokens)
+	}
+	for _, tag := range []string{"general", "tools", "reasoning", "vision"} {
+		if !m.HasTag(tag) {
+			t.Errorf("missing expected tag %q in %v", tag, m.Tags)
+		}
 	}
 }
 

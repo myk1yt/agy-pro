@@ -118,9 +118,9 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 				Family:          InferFamily(rm),
 				Description:     fmt.Sprintf("%s (auto-discovered)", rm),
 				Recommended:     i == 0,
-				ContextLength:   128000,
-				MaxOutputTokens: 4096,
-				Tags:            []string{"tools"},
+				ContextLength:   1048576,
+				MaxOutputTokens: -1,
+				Tags:            []string{"general", "tools"},
 				Capabilities: Capabilities{
 					SupportsTools: true,
 					AllowedTools:  []string{"read_file", "list_dir", "grep", "glob"},
@@ -325,7 +325,13 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 		if m.Capabilities.SupportsTools {
 			toolsStr = "yes"
 		}
-		fmt.Fprintf(out, "  %d. %-24s [family: %s, context: %dk, tools: %s]\n", i+1, m.ID, m.FamilyName(), m.ContextLength/1000, toolsStr)
+		ctxDisplay := fmt.Sprintf("%dk", m.ContextLength/1000)
+		if m.ContextLength <= 0 {
+			ctxDisplay = "server-max"
+		} else if m.ContextLength >= 1048576 {
+			ctxDisplay = fmt.Sprintf("%dM", m.ContextLength/1048576)
+		}
+		fmt.Fprintf(out, "  %d. %-24s [family: %s, context: %s, tools: %s]\n", i+1, m.ID, m.FamilyName(), ctxDisplay, toolsStr)
 	}
 	fmt.Fprintln(out, "===========================================================")
 	fmt.Fprintf(out, "Ready to use! Example:\n  agy pro fanout -m %s/%s \"your prompt\"\n", provName, models[0].ID)
@@ -340,25 +346,16 @@ func promptCustomModel(r *bufio.Reader, w io.Writer, modelID string) Model {
 		family = inferredFam
 	}
 
-	ctxStr, _ := promptLine(r, w, "Context Length in tokens", "128000")
+	ctxStr, _ := promptLine(r, w, "Context Length in tokens [1048576, or -1 for server maximum]", "1048576")
 	ctxLen, _ := strconv.Atoi(ctxStr)
-	if ctxLen <= 0 {
-		ctxLen = 128000
+	if ctxLen <= 0 && ctxLen != -1 {
+		ctxLen = 1048576
 	}
 
-	maxOutStr, _ := promptLine(r, w, "Max Output Tokens", "4096")
+	maxOutStr, _ := promptLine(r, w, "Max Output Tokens [131072, or -1 for server maximum]", "131072")
 	maxOut, _ := strconv.Atoi(maxOutStr)
-	if maxOut <= 0 {
-		maxOut = 4096
-	}
-
-	tagsStr, _ := promptLine(r, w, "Tags (comma-separated)", "general,tools")
-	var tags []string
-	for _, t := range strings.Split(tagsStr, ",") {
-		t = strings.TrimSpace(t)
-		if t != "" {
-			tags = append(tags, t)
-		}
+	if maxOut <= 0 && maxOut != -1 {
+		maxOut = 131072
 	}
 
 	toolsAns, _ := promptLine(r, w, "Supports Tools / Function Calling? (Y/n)", "Y")
@@ -381,19 +378,40 @@ func promptCustomModel(r *bufio.Reader, w io.Writer, modelID string) Model {
 	visionAns, _ := promptLine(r, w, "Supports Vision / Images? (y/N)", "N")
 	supportsVision := strings.EqualFold(visionAns, "y") || strings.EqualFold(visionAns, "yes")
 
+	caps := Capabilities{
+		SupportsTools:    supportsTools,
+		AllowedTools:     allowedTools,
+		SupportsThinking: supportsThinking,
+		SupportsVision:   supportsVision,
+	}
+
+	tags := DeriveTags(caps)
+
 	return Model{
 		ID:              modelID,
 		Family:          family,
 		Tags:            tags,
 		ContextLength:   ctxLen,
 		MaxOutputTokens: maxOut,
-		Capabilities: Capabilities{
-			SupportsTools:    supportsTools,
-			AllowedTools:     allowedTools,
-			SupportsThinking: supportsThinking,
-			SupportsVision:   supportsVision,
-		},
+		Capabilities:    caps,
 	}
+}
+
+// DeriveTags automatically assigns tags based on model capabilities:
+// "general" is default, "tools" for tool support, "reasoning" for thinking/reasoning,
+// and "vision" for image/multimodal support.
+func DeriveTags(cap Capabilities) []string {
+	tags := []string{"general"}
+	if cap.SupportsTools {
+		tags = append(tags, "tools")
+	}
+	if cap.SupportsThinking {
+		tags = append(tags, "reasoning")
+	}
+	if cap.SupportsVision {
+		tags = append(tags, "vision")
+	}
+	return tags
 }
 
 // ProbeEndpoint sends a minimal ping completion request to verify connection & authentication.
@@ -449,7 +467,7 @@ func ProbeEndpoint(baseURL, apiKey, modelID string) (latencyMs int64, err error)
 }
 
 func promptLine(r *bufio.Reader, w io.Writer, prompt, defaultValue string) (string, bool) {
-	if defaultValue != "" {
+	if defaultValue != "" && !strings.Contains(prompt, "[") {
 		fmt.Fprintf(w, "%s [%s]: ", prompt, defaultValue)
 	} else {
 		fmt.Fprintf(w, "%s: ", prompt)

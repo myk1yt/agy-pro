@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -523,5 +524,102 @@ func TestFanout_CLI_FlagParsing(t *testing.T) {
 	}
 	if !strings.Contains(errw.String(), "Usage: agy pro fanout") {
 		t.Fatalf("expected usage output, got: %s", errw.String())
+	}
+}
+
+func TestClient_TokenHandling(t *testing.T) {
+	var receivedBody map[string]any
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &receivedBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`))
+	}))
+	defer server.Close()
+
+	client := NewClient()
+
+	// 1. MaxOutputTokens == -1: max_tokens must be omitted from JSON
+	targetMinusOne := providers.Target{
+		Provider: providers.Provider{Name: "test-prov", BaseURL: server.URL},
+		Model: providers.Model{
+			ID:              "test-model",
+			MaxOutputTokens: -1,
+			ContextLength:   -1,
+		},
+	}
+	receivedBody = nil
+	_, err := client.Complete(context.Background(), targetMinusOne, []ChatMessage{
+		{Role: "user", Content: "hello server maximum"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("client.Complete failed: %v", err)
+	}
+	if _, ok := receivedBody["max_tokens"]; ok {
+		t.Errorf("expected max_tokens to be omitted for MaxOutputTokens=-1, got: %v", receivedBody["max_tokens"])
+	}
+
+	// 2. MaxOutputTokens == 0: max_tokens must be omitted from JSON
+	targetZero := providers.Target{
+		Provider: providers.Provider{Name: "test-prov", BaseURL: server.URL},
+		Model: providers.Model{
+			ID:              "test-model",
+			MaxOutputTokens: 0,
+			ContextLength:   1048576,
+		},
+	}
+	receivedBody = nil
+	_, err = client.Complete(context.Background(), targetZero, []ChatMessage{
+		{Role: "user", Content: "hello zero"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("client.Complete failed: %v", err)
+	}
+	if _, ok := receivedBody["max_tokens"]; ok {
+		t.Errorf("expected max_tokens to be omitted for MaxOutputTokens=0, got: %v", receivedBody["max_tokens"])
+	}
+
+	// 3. MaxOutputTokens == 131072: max_tokens must be present in JSON
+	targetExplicit := providers.Target{
+		Provider: providers.Provider{Name: "test-prov", BaseURL: server.URL},
+		Model: providers.Model{
+			ID:              "test-model",
+			MaxOutputTokens: 131072,
+			ContextLength:   1048576,
+		},
+	}
+	receivedBody = nil
+	_, err = client.Complete(context.Background(), targetExplicit, []ChatMessage{
+		{Role: "user", Content: "hello 128k output"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("client.Complete failed: %v", err)
+	}
+	maxTokensVal, ok := receivedBody["max_tokens"]
+	if !ok {
+		t.Fatalf("expected max_tokens to be present for MaxOutputTokens=131072")
+	}
+	if floatVal, ok := maxTokensVal.(float64); !ok || int(floatVal) != 131072 {
+		t.Errorf("max_tokens = %v; want 131072", maxTokensVal)
+	}
+
+	// 4. Large message content with ContextLength == -1: no client truncation
+	largeContent := strings.Repeat("A", 50000)
+	receivedBody = nil
+	_, err = client.Complete(context.Background(), targetMinusOne, []ChatMessage{
+		{Role: "user", Content: largeContent},
+	}, nil)
+	if err != nil {
+		t.Fatalf("client.Complete failed: %v", err)
+	}
+	msgs, ok := receivedBody["messages"].([]any)
+	if !ok || len(msgs) == 0 {
+		t.Fatalf("expected messages array in request body")
+	}
+	firstMsg := msgs[0].(map[string]any)
+	if firstMsg["content"] != largeContent {
+		t.Errorf("expected untruncated content of length %d, got length %d", len(largeContent), len(firstMsg["content"].(string)))
 	}
 }
