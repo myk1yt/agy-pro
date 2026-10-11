@@ -173,7 +173,7 @@ func runStatus() {
 		fmt.Printf("Providers    : %d configured\n", len(reg.Providers))
 		for _, p := range reg.Providers {
 			status := "configured"
-			if p.APIKeyEnv != "" && os.Getenv(p.APIKeyEnv) == "" {
+			if p.APIKeyEnv != "" && p.KeyValue() == "" {
 				status = "API key missing (" + p.APIKeyEnv + ")"
 			}
 			fmt.Printf("  - %-12s : %d models [%s]\n", p.Name, len(p.Models), status)

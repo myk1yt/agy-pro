@@ -275,3 +275,239 @@ func TestInteractiveSetupWizard(t *testing.T) {
 		t.Fatalf("unexpected provider saved: %+v", p)
 	}
 }
+
+func TestGetModelPresets(t *testing.T) {
+	cases := []string{"deepseek", "openrouter", "groq", "openai", "nw", "neuralwatt", "together", "mistral"}
+	for _, name := range cases {
+		presets := GetModelPresets(name)
+		if len(presets) == 0 {
+			t.Errorf("expected presets for provider %q, got none", name)
+		}
+		foundRec := false
+		for _, p := range presets {
+			if p.ID == "" {
+				t.Errorf("preset in %q has empty ID", name)
+			}
+			if p.Recommended {
+				foundRec = true
+			}
+			if p.ContextLength <= 0 {
+				t.Errorf("preset %q in %q has invalid ContextLength: %d", p.ID, name, p.ContextLength)
+			}
+		}
+		if !foundRec {
+			t.Errorf("expected at least one recommended preset for %q", name)
+		}
+	}
+
+	// Unknown provider should return nil
+	if presets := GetModelPresets("unknown-custom-prov"); presets != nil {
+		t.Errorf("expected nil presets for unknown provider, got %+v", presets)
+	}
+}
+
+func TestIsLikelyAPIKey(t *testing.T) {
+	keys := []string{
+		"sk-dummy-mock-token-1234567890abcdef",
+		"sk-proj-mock-key-1234567890",
+		"gsk_mock_secret_key_12345678",
+		"nvapi-mock-token-abc-xyz-12345",
+		"a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+		"this-is-a-long-token-with-hyphens-and-lowercase",
+	}
+	for _, k := range keys {
+		if !isLikelyAPIKey(k) {
+			t.Errorf("isLikelyAPIKey(%q) = false; want true", k)
+		}
+	}
+
+	envVars := []string{
+		"OPENAI_API_KEY",
+		"DEEPSEEK_API_KEY",
+		"NW_API_KEY",
+		"MY_CUSTOM_VAR",
+	}
+	for _, v := range envVars {
+		if isLikelyAPIKey(v) {
+			t.Errorf("isLikelyAPIKey(%q) = true; want false", v)
+		}
+	}
+}
+
+func TestFetchRemoteModels(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"data":[{"id":"remote-model-1"},{"id":"remote-model-2"}]}`))
+	}))
+	defer server.Close()
+
+	models := FetchRemoteModels(server.URL, "mock-test-key-123")
+	if len(models) != 2 || models[0] != "remote-model-1" || models[1] != "remote-model-2" {
+		t.Fatalf("unexpected fetched models: %+v", models)
+	}
+
+	// Unreachable server should return nil
+	empty := FetchRemoteModels("http://127.0.0.1:59999", "key")
+	if len(empty) != 0 {
+		t.Fatalf("expected empty slice for unreachable server, got %+v", empty)
+	}
+}
+
+func TestInteractiveSetupWizard_DeepSeekPreset(t *testing.T) {
+	tmpDir := t.TempDir()
+	provPath := filepath.Join(tmpDir, "providers.json")
+	t.Setenv(EnvProviders, provPath)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"choices":[{"message":{"content":"pong"}}]}`))
+	}))
+	defer server.Close()
+
+	// Simulate selecting DeepSeek:
+	// 1. Provider name: deepseek
+	// 2. Base URL: server.URL + "/v1"
+	// 3. API Key: mock-test-key-123
+	// 4. Select preset 1: deepseek-chat
+	// 5. Add another model: N
+	input := strings.Join([]string{
+		"deepseek",
+		server.URL + "/v1",
+		"mock-test-key-123",
+		"1",
+		"N",
+	}, "\n") + "\n"
+
+	in := strings.NewReader(input)
+	out := &bytes.Buffer{}
+
+	if err := InteractiveSetupWizard(in, out); err != nil {
+		t.Fatalf("wizard returned error: %v\nOutput: %s", err, out.String())
+	}
+
+	reg, err := LoadFrom(provPath)
+	if err != nil {
+		t.Fatalf("failed to load registry: %v", err)
+	}
+	if len(reg.Providers) != 1 {
+		t.Fatalf("expected 1 provider, got %d", len(reg.Providers))
+	}
+	p := reg.Providers[0]
+	if p.Name != "deepseek" {
+		t.Errorf("provider name = %q; want deepseek", p.Name)
+	}
+	if p.APIKeyEnv != "DEEPSEEK_API_KEY" {
+		t.Errorf("apiKeyEnv = %q; want DEEPSEEK_API_KEY", p.APIKeyEnv)
+	}
+	if len(p.Models) != 1 || p.Models[0].ID != "deepseek-chat" {
+		t.Fatalf("unexpected models: %+v", p.Models)
+	}
+	if !p.Models[0].Capabilities.SupportsTools {
+		t.Errorf("expected deepseek-chat to have tools enabled")
+	}
+}
+
+func TestInteractiveSetupWizard_NWPreset(t *testing.T) {
+	tmpDir := t.TempDir()
+	provPath := filepath.Join(tmpDir, "providers.json")
+	t.Setenv(EnvProviders, provPath)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"choices":[{"message":{"content":"pong"}}]}`))
+	}))
+	defer server.Close()
+
+	// Simulate NW setup:
+	// 1. Provider name: NW
+	// 2. Base URL: server.URL + "/v1"
+	// 3. API Key: mock-dummy-key-456
+	// 4. Select preset 1: nw-flash
+	// 5. Add another model: N
+	input := strings.Join([]string{
+		"NW",
+		server.URL + "/v1",
+		"mock-dummy-key-456",
+		"1",
+		"N",
+	}, "\n") + "\n"
+
+	in := strings.NewReader(input)
+	out := &bytes.Buffer{}
+
+	if err := InteractiveSetupWizard(in, out); err != nil {
+		t.Fatalf("wizard returned error: %v\nOutput: %s", err, out.String())
+	}
+
+	reg, err := LoadFrom(provPath)
+	if err != nil {
+		t.Fatalf("failed to load registry: %v", err)
+	}
+	p := reg.Providers[0]
+	if p.Name != "NW" {
+		t.Errorf("provider name = %q; want NW", p.Name)
+	}
+	if p.APIKeyEnv != "NW_API_KEY" {
+		t.Errorf("apiKeyEnv = %q; want NW_API_KEY", p.APIKeyEnv)
+	}
+	if len(p.Models) != 1 || p.Models[0].ID != "nw-flash" {
+		t.Fatalf("unexpected models: %+v", p.Models)
+	}
+	if p.Models[0].ContextLength != 128000 {
+		t.Errorf("contextLength = %d; want 128000", p.Models[0].ContextLength)
+	}
+}
+
+func TestInteractiveSetupWizard_PastedRawKeyAbsorption(t *testing.T) {
+	tmpDir := t.TempDir()
+	provPath := filepath.Join(tmpDir, "providers.json")
+	t.Setenv(EnvProviders, provPath)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"choices":[{"message":{"content":"pong"}}]}`))
+	}))
+	defer server.Close()
+
+	// Simulate pasting a raw API key directly
+	rawKey := "sk-mock-raw-key-with-dashes-and-digits-1234567890"
+	input := strings.Join([]string{
+		"NW",
+		server.URL + "/v1",
+		rawKey,
+		"2", // select deepseek-v4-flash
+		"N",
+	}, "\n") + "\n"
+
+	in := strings.NewReader(input)
+	out := &bytes.Buffer{}
+
+	if err := InteractiveSetupWizard(in, out); err != nil {
+		t.Fatalf("wizard returned error with pasted raw key: %v\nOutput: %s", err, out.String())
+	}
+
+	reg, err := LoadFrom(provPath)
+	if err != nil {
+		t.Fatalf("failed to load registry: %v", err)
+	}
+	p := reg.Providers[0]
+	// Invariant: Registry MUST NOT contain raw key, must store env var name
+	if p.APIKeyEnv != "NW_API_KEY" {
+		t.Errorf("apiKeyEnv = %q; want NW_API_KEY", p.APIKeyEnv)
+	}
+	// Invariant: Process env must have the key set
+	if os.Getenv("NW_API_KEY") != rawKey {
+		t.Errorf("os.Getenv(NW_API_KEY) was not set to raw key")
+	}
+	if len(p.Models) != 1 || p.Models[0].ID != "deepseek-v4-flash" {
+		t.Fatalf("unexpected models: %+v", p.Models)
+	}
+}
+

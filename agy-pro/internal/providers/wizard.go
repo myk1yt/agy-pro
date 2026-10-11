@@ -10,7 +10,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -19,26 +18,34 @@ import (
 )
 
 // InteractiveSetupWizard guides the user through setting up or updating a provider
-// in ~/.agy-pro/providers.json in a conversational, step-by-step manner.
+// in ~/.agy-pro/providers.json in a friendly, conversational manner.
 func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 	reader := bufio.NewReader(in)
 
 	fmt.Fprintln(out, "===========================================================")
 	fmt.Fprintln(out, "  agy-pro Multi-Model Provider Setup Wizard")
 	fmt.Fprintln(out, "===========================================================")
-	fmt.Fprintln(out, "Configure external OpenAI-compatible LLM endpoints for fanout.")
-	fmt.Fprintln(out, "Secrets are NEVER stored in providers.json (only env variable names).")
+	fmt.Fprintln(out, "Configure OpenAI-compatible LLM endpoints for multi-model fanout.")
+	fmt.Fprintln(out, "API keys are stored securely in your environment, never in providers.json.")
 	fmt.Fprintln(out)
 
 	// Step 1: Provider Name
-	provName := promptString(reader, out, "Provider name (e.g., openai, deepseek, groq, openrouter)", "")
+	provName, isEOF := promptLine(reader, out, "Provider name (e.g., deepseek, openrouter, groq, openai, NW)", "")
+	provName = strings.TrimPrefix(strings.TrimSpace(provName), "\ufeff")
+	if isEOF && provName == "" {
+		return errors.New("input closed (EOF); setup aborted")
+	}
 	if provName == "" {
 		return errors.New("provider name cannot be empty")
 	}
 
 	// Step 2: Base URL
 	defaultURL := defaultBaseURLFor(provName)
-	baseURL := promptString(reader, out, "OpenAI-compatible Base URL", defaultURL)
+	baseURL, isEOF := promptLine(reader, out, "OpenAI-compatible Base URL", defaultURL)
+	baseURL = strings.TrimPrefix(strings.TrimSpace(baseURL), "\ufeff")
+	if isEOF && baseURL == "" {
+		return errors.New("input closed (EOF); setup aborted")
+	}
 	if baseURL == "" {
 		return errors.New("base URL cannot be empty")
 	}
@@ -46,169 +53,196 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 		return fmt.Errorf("baseURL must start with http:// or https://: %s", baseURL)
 	}
 
-	// Step 3: API Key Environment Variable Name
+	// Step 3: API Key & Environment Variable Name
 	defaultEnv := defaultEnvFor(provName)
-	apiKeyEnv := promptString(reader, out, "API Key environment variable name", defaultEnv)
-	if apiKeyEnv != "" && !envNameRe.MatchString(apiKeyEnv) {
-		return fmt.Errorf("invalid environment variable name: %s", apiKeyEnv)
+	existingVal := os.Getenv(defaultEnv)
+
+	fmt.Fprintln(out)
+	var keyValue string
+	var apiKeyEnv string = defaultEnv
+
+	if existingVal != "" {
+		fmt.Fprintf(out, "Detected existing environment variable %s.\n", defaultEnv)
+		keyInput, _ := promptLine(reader, out, fmt.Sprintf("API Key (press Enter to keep %s, or paste new key)", defaultEnv), "")
+		if keyInput == "" {
+			keyValue = existingVal
+			fmt.Fprintf(out, "Using existing value from %s.\n", defaultEnv)
+		} else {
+			keyValue = keyInput
+		}
+	} else {
+		fmt.Fprintf(out, "Enter API Key for %s (will be stored in environment variable %s):\n", provName, defaultEnv)
+		keyInput, _ := promptLine(reader, out, "API Key (sk-... or leave blank to skip)", "")
+		keyValue = keyInput
 	}
 
-	// Step 4: API Key Value (optional entry)
-	fmt.Fprintln(out)
-	fmt.Fprintln(out, "Optional: Enter the API Key now to store it in your User environment.")
-	fmt.Fprintln(out, "(Leave blank if you prefer setting it manually in your shell profile)")
-	keyValue := promptString(reader, out, fmt.Sprintf("Value for %s (leave blank to skip)", apiKeyEnv), "")
+	// Smart check: Did user paste a custom environment variable name instead of a key?
+	if keyValue != "" && !isLikelyAPIKey(keyValue) && envNameRe.MatchString(keyValue) {
+		if envVal := os.Getenv(keyValue); envVal != "" {
+			apiKeyEnv = keyValue
+			keyValue = envVal
+			fmt.Fprintf(out, "Using environment variable %s (loaded from current session).\n", apiKeyEnv)
+		}
+	}
+	apiKeyEnv = strings.TrimPrefix(strings.TrimSpace(apiKeyEnv), "\ufeff")
+
+	// Persist API key if provided
 	if keyValue != "" && apiKeyEnv != "" {
 		_ = os.Setenv(apiKeyEnv, keyValue)
 		if runtime.GOOS == "windows" {
-			psScript := fmt.Sprintf(`[Environment]::SetEnvironmentVariable('%s', '%s', 'User')`, apiKeyEnv, keyValue)
-			cmd := exec.Command("powershell.exe", "-NoProfile", "-Command", psScript)
-			if err := cmd.Run(); err != nil {
+			if err := persistWindowsUserEnv(apiKeyEnv, keyValue); err != nil {
 				fmt.Fprintf(out, "Warning: could not persist %s to Windows user environment: %v\n", apiKeyEnv, err)
 			} else {
-				fmt.Fprintf(out, "Saved %s to Windows User Environment.\n", apiKeyEnv)
+				fmt.Fprintf(out, "✅ Saved %s to Windows User Environment.\n", apiKeyEnv)
 			}
 		} else {
-			fmt.Fprintf(out, "Set in current session. To persist across shells, add to ~/.bashrc or ~/.zshrc:\n")
+			fmt.Fprintf(out, "Set %s in current session. To persist across shells, add to ~/.bashrc or ~/.zshrc:\n", apiKeyEnv)
 			fmt.Fprintf(out, "  export %s=\"...\"\n", apiKeyEnv)
 		}
 	} else if apiKeyEnv != "" {
 		keyValue = os.Getenv(apiKeyEnv)
 	}
 
-	// Step 5: Models configuration
-	var models []Model
-	for {
-		fmt.Fprintln(out)
-		fmt.Fprintln(out, "--- Model Configuration ---")
-		modelID := promptString(reader, out, "Model ID (e.g. gpt-4o, deepseek-chat)", "")
-		if modelID == "" {
-			if len(models) == 0 {
-				fmt.Fprintln(out, "At least one model is required.")
-				continue
-			}
-			break
-		}
+	// Step 4: Model Configuration
+	presets := GetModelPresets(provName)
+	remoteModels := FetchRemoteModels(baseURL, keyValue)
 
-		inferredFam := InferFamily(modelID)
-		family := promptString(reader, out, fmt.Sprintf("Model Family [%s]", inferredFam), inferredFam)
-		if family == "" {
-			family = inferredFam
-		}
-
-		ctxStr := promptString(reader, out, "Context Length in tokens (e.g. 128000)", "128000")
-		ctxLen, _ := strconv.Atoi(ctxStr)
-		if ctxLen <= 0 {
-			ctxLen = 128000
-		}
-
-		maxOutStr := promptString(reader, out, "Max Output Tokens (e.g. 4096)", "4096")
-		maxOut, _ := strconv.Atoi(maxOutStr)
-		if maxOut <= 0 {
-			maxOut = 4096
-		}
-
-		tagsStr := promptString(reader, out, "Tags (comma-separated, e.g. flagship,tools,coding)", "general,tools")
-		var tags []string
-		for _, t := range strings.Split(tagsStr, ",") {
-			t = strings.TrimSpace(t)
-			if t != "" {
-				tags = append(tags, t)
-			}
-		}
-
-		// Model Capabilities configuration
-		fmt.Fprintln(out)
-		fmt.Fprintln(out, "Configure Capabilities for "+modelID+":")
-		toolsAns := promptString(reader, out, "Supports Function Calling / Agent Tools? (Y/n)", "Y")
-		supportsTools := !strings.EqualFold(toolsAns, "n") && !strings.EqualFold(toolsAns, "no")
-
-		var allowedTools []string
-		if supportsTools {
-			toolsListStr := promptString(reader, out, "Allowed tools (comma-separated)", "read_file,list_dir,grep,glob")
-			for _, t := range strings.Split(toolsListStr, ",") {
-				t = strings.TrimSpace(t)
-				if t != "" {
-					allowedTools = append(allowedTools, t)
-				}
-			}
-		}
-
-		visionAns := promptString(reader, out, "Supports Vision / Images? (y/N)", "N")
-		supportsVision := strings.EqualFold(visionAns, "y") || strings.EqualFold(visionAns, "yes")
-
-		videoAns := promptString(reader, out, "Supports Video? (y/N)", "N")
-		supportsVideo := strings.EqualFold(videoAns, "y") || strings.EqualFold(videoAns, "yes")
-
-		thinkingAns := promptString(reader, out, "Supports Reasoning / Thinking mode? (y/N)", "N")
-		supportsThinking := strings.EqualFold(thinkingAns, "y") || strings.EqualFold(thinkingAns, "yes")
-
-		// ⚡ Live Connection & Capability Test Loop
-		testModel := modelID
-		testBaseURL := baseURL
-		testKey := keyValue
-
-		fmt.Fprintln(out)
-		fmt.Fprintln(out, "Testing connection to endpoint...")
-		for {
-			latency, err := ProbeEndpoint(testBaseURL, testKey, testModel)
-			if err == nil {
-				fmt.Fprintf(out, "✅ Connection and basic call test succeeded (latency: %dms)\n", latency)
+	// If no predefined presets exist, synthesize presets from discovered remote models
+	if len(presets) == 0 && len(remoteModels) > 0 {
+		for i, rm := range remoteModels {
+			if i >= 6 {
 				break
 			}
-
-			fmt.Fprintf(out, "❌ Connection test failed: %v\n", err)
-			retryAns, isEOF := promptLine(reader, out, "Would you like to edit settings and retry now? (Y/n)", "Y")
-			if isEOF || strings.EqualFold(retryAns, "n") || strings.EqualFold(retryAns, "no") {
-				skipSave := promptString(reader, out, "Save model configuration anyway? (y/N)", "y")
-				if !strings.EqualFold(skipSave, "y") && !strings.EqualFold(skipSave, "yes") {
-					fmt.Fprintln(out, "Discarded model.")
-					testModel = ""
-				}
-				break
-			}
-
-			fmt.Fprintln(out, "Select field to edit:")
-			fmt.Fprintln(out, "  1) Base URL")
-			fmt.Fprintln(out, "  2) API Key")
-			fmt.Fprintln(out, "  3) Model ID")
-			fmt.Fprintln(out, "  4) Retry with current values")
-			choice := promptString(reader, out, "Choice (1-4)", "4")
-			switch choice {
-			case "1":
-				testBaseURL = promptString(reader, out, "New Base URL", testBaseURL)
-				baseURL = testBaseURL
-			case "2":
-				testKey = promptString(reader, out, "New API Key", "")
-				if apiKeyEnv != "" && testKey != "" {
-					_ = os.Setenv(apiKeyEnv, testKey)
-					keyValue = testKey
-				}
-			case "3":
-				testModel = promptString(reader, out, "New Model ID", testModel)
-				modelID = testModel
-			}
-		}
-
-		if testModel != "" {
-			models = append(models, Model{
-				ID:              modelID,
-				Family:          family,
-				Tags:            tags,
-				ContextLength:   ctxLen,
-				MaxOutputTokens: maxOut,
+			presets = append(presets, ModelPreset{
+				ID:              rm,
+				Family:          InferFamily(rm),
+				Description:     fmt.Sprintf("%s (auto-discovered)", rm),
+				Recommended:     i == 0,
+				ContextLength:   128000,
+				MaxOutputTokens: 4096,
+				Tags:            []string{"tools"},
 				Capabilities: Capabilities{
-					SupportsVision:   supportsVision,
-					SupportsVideo:    supportsVideo,
-					SupportsThinking: supportsThinking,
-					SupportsTools:    supportsTools,
-					AllowedTools:     allowedTools,
+					SupportsTools: true,
+					AllowedTools:  []string{"read_file", "list_dir", "grep", "glob"},
 				},
 			})
 		}
+	}
 
-		more := promptString(reader, out, "Add another model for this provider? (y/N)", "N")
-		if !strings.EqualFold(more, "y") && !strings.EqualFold(more, "yes") {
+	var models []Model
+	configuredSet := make(map[string]bool)
+
+	for {
+		fmt.Fprintln(out)
+		fmt.Fprintf(out, "--- Model Configuration (%s) ---\n", provName)
+
+		var selectedModel Model
+		hasSelection := false
+
+		if len(presets) > 0 {
+			fmt.Fprintln(out, "Available Model Presets:")
+			for i, p := range presets {
+				tag := ""
+				if configuredSet[p.ID] {
+					tag = " [Configured]"
+				} else if p.Recommended {
+					tag = " [Recommended]"
+				}
+				fmt.Fprintf(out, "  %d) %s (%s)%s\n", i+1, p.ID, p.Description, tag)
+			}
+			customOpt := len(presets) + 1
+			fmt.Fprintf(out, "  %d) Custom Model ID (enter manually)\n", customOpt)
+
+			choiceStr, isEOF := promptLine(reader, out, fmt.Sprintf("Select model (1-%d)", customOpt), "1")
+			if isEOF && len(models) == 0 {
+				return errors.New("input closed (EOF); setup aborted")
+			}
+			choiceNum, _ := strconv.Atoi(choiceStr)
+			if choiceNum >= 1 && choiceNum <= len(presets) {
+				p := presets[choiceNum-1]
+				selectedModel = Model{
+					ID:              p.ID,
+					Family:          p.Family,
+					Tags:            p.Tags,
+					ContextLength:   p.ContextLength,
+					MaxOutputTokens: p.MaxOutputTokens,
+					Capabilities:    p.Capabilities,
+				}
+				hasSelection = true
+			} else if choiceNum == customOpt || strings.EqualFold(choiceStr, "c") || strings.EqualFold(choiceStr, "custom") {
+				// Proceed to custom prompt
+			} else {
+				// User might have typed custom model ID directly
+				if choiceStr != "" && choiceStr != "1" {
+					selectedModel = promptCustomModel(reader, out, choiceStr)
+					hasSelection = true
+				}
+			}
+		}
+
+		if !hasSelection {
+			customID, isEOF := promptLine(reader, out, "Model ID (e.g. gpt-4o, deepseek-chat)", "")
+			if (isEOF || customID == "") && len(models) > 0 {
+				break
+			}
+			if customID == "" {
+				fmt.Fprintln(out, "Model ID cannot be empty.")
+				continue
+			}
+			selectedModel = promptCustomModel(reader, out, customID)
+			hasSelection = true
+		}
+
+		// Prevent duplicate models
+		if configuredSet[selectedModel.ID] {
+			fmt.Fprintf(out, "Model %q is already configured for %s.\n", selectedModel.ID, provName)
+			continue
+		}
+
+		// Live Connection Probe
+		fmt.Fprintf(out, "\n[Live Probe] Testing endpoint connection with model %q...\n", selectedModel.ID)
+		latency, probeErr := ProbeEndpoint(baseURL, keyValue, selectedModel.ID)
+		if probeErr == nil {
+			fmt.Fprintf(out, "✅ Connection succeeded! Latency: %dms\n", latency)
+			models = append(models, selectedModel)
+			configuredSet[selectedModel.ID] = true
+		} else {
+			fmt.Fprintf(out, "❌ Connection test failed: %v\n", probeErr)
+			fmt.Fprintln(out, "Options:")
+			fmt.Fprintln(out, "  1) Save model configuration anyway")
+			fmt.Fprintln(out, "  2) Edit Base URL or API Key and retry")
+			fmt.Fprintln(out, "  3) Discard model and choose another")
+			choice, _ := promptLine(reader, out, "Choice (1-3)", "1")
+			switch choice {
+			case "1":
+				models = append(models, selectedModel)
+				configuredSet[selectedModel.ID] = true
+				fmt.Fprintf(out, "Saved model %q anyway.\n", selectedModel.ID)
+			case "2":
+				newURL, _ := promptLine(reader, out, "Base URL", baseURL)
+				if newURL != "" {
+					baseURL = newURL
+				}
+				newKey, _ := promptLine(reader, out, "API Key", "")
+				if newKey != "" {
+					keyValue = newKey
+					_ = os.Setenv(apiKeyEnv, keyValue)
+				}
+				l2, err2 := ProbeEndpoint(baseURL, keyValue, selectedModel.ID)
+				if err2 == nil {
+					fmt.Fprintf(out, "✅ Connection succeeded! Latency: %dms\n", l2)
+					models = append(models, selectedModel)
+					configuredSet[selectedModel.ID] = true
+				} else {
+					fmt.Fprintf(out, "❌ Retry failed: %v. Model discarded.\n", err2)
+				}
+			default:
+				fmt.Fprintln(out, "Discarded model.")
+			}
+		}
+
+		more, isEOF := promptLine(reader, out, fmt.Sprintf("Add another model for %s? (y/N)", provName), "N")
+		if isEOF || (!strings.EqualFold(more, "y") && !strings.EqualFold(more, "yes")) {
 			break
 		}
 	}
@@ -217,7 +251,7 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 		return errors.New("no models configured; setup aborted")
 	}
 
-	// Step 6: Save into registry
+	// Step 5: Save to registry
 	prov := Provider{
 		Name:      provName,
 		BaseURL:   baseURL,
@@ -278,8 +312,88 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 	}
 
 	fmt.Fprintln(out)
-	fmt.Fprintf(out, "Successfully saved provider %q (%d model(s)) to %s\n", provName, len(models), targetPath)
+	fmt.Fprintln(out, "===========================================================")
+	fmt.Fprintln(out, "  ✅ Provider Setup Complete!")
+	fmt.Fprintln(out, "===========================================================")
+	fmt.Fprintf(out, "Provider        : %s\n", provName)
+	fmt.Fprintf(out, "Base URL        : %s\n", baseURL)
+	fmt.Fprintf(out, "API Key Env     : %s (saved in environment)\n", apiKeyEnv)
+	fmt.Fprintf(out, "Config File     : %s\n", targetPath)
+	fmt.Fprintf(out, "Configured Models (%d):\n", len(models))
+	for i, m := range models {
+		toolsStr := "no"
+		if m.Capabilities.SupportsTools {
+			toolsStr = "yes"
+		}
+		fmt.Fprintf(out, "  %d. %-24s [family: %s, context: %dk, tools: %s]\n", i+1, m.ID, m.FamilyName(), m.ContextLength/1000, toolsStr)
+	}
+	fmt.Fprintln(out, "===========================================================")
+	fmt.Fprintf(out, "Ready to use! Example:\n  agy pro fanout -m %s/%s \"your prompt\"\n", provName, models[0].ID)
+	fmt.Fprintln(out, "===========================================================")
 	return nil
+}
+
+func promptCustomModel(r *bufio.Reader, w io.Writer, modelID string) Model {
+	inferredFam := InferFamily(modelID)
+	family, _ := promptLine(r, w, fmt.Sprintf("Model Family [%s]", inferredFam), inferredFam)
+	if family == "" {
+		family = inferredFam
+	}
+
+	ctxStr, _ := promptLine(r, w, "Context Length in tokens", "128000")
+	ctxLen, _ := strconv.Atoi(ctxStr)
+	if ctxLen <= 0 {
+		ctxLen = 128000
+	}
+
+	maxOutStr, _ := promptLine(r, w, "Max Output Tokens", "4096")
+	maxOut, _ := strconv.Atoi(maxOutStr)
+	if maxOut <= 0 {
+		maxOut = 4096
+	}
+
+	tagsStr, _ := promptLine(r, w, "Tags (comma-separated)", "general,tools")
+	var tags []string
+	for _, t := range strings.Split(tagsStr, ",") {
+		t = strings.TrimSpace(t)
+		if t != "" {
+			tags = append(tags, t)
+		}
+	}
+
+	toolsAns, _ := promptLine(r, w, "Supports Tools / Function Calling? (Y/n)", "Y")
+	supportsTools := !strings.EqualFold(toolsAns, "n") && !strings.EqualFold(toolsAns, "no")
+
+	var allowedTools []string
+	if supportsTools {
+		toolsListStr, _ := promptLine(r, w, "Allowed tools", "read_file,list_dir,grep,glob")
+		for _, t := range strings.Split(toolsListStr, ",") {
+			t = strings.TrimSpace(t)
+			if t != "" {
+				allowedTools = append(allowedTools, t)
+			}
+		}
+	}
+
+	thinkingAns, _ := promptLine(r, w, "Supports Reasoning / Thinking? (y/N)", "N")
+	supportsThinking := strings.EqualFold(thinkingAns, "y") || strings.EqualFold(thinkingAns, "yes")
+
+	visionAns, _ := promptLine(r, w, "Supports Vision / Images? (y/N)", "N")
+	supportsVision := strings.EqualFold(visionAns, "y") || strings.EqualFold(visionAns, "yes")
+
+	return Model{
+		ID:              modelID,
+		Family:          family,
+		Tags:            tags,
+		ContextLength:   ctxLen,
+		MaxOutputTokens: maxOut,
+		Capabilities: Capabilities{
+			SupportsTools:    supportsTools,
+			AllowedTools:     allowedTools,
+			SupportsThinking: supportsThinking,
+			SupportsVision:   supportsVision,
+		},
+	}
 }
 
 // ProbeEndpoint sends a minimal ping completion request to verify connection & authentication.
@@ -305,7 +419,7 @@ func ProbeEndpoint(baseURL, apiKey, modelID string) (latencyMs int64, err error)
 		return 0, err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
@@ -317,7 +431,7 @@ func ProbeEndpoint(baseURL, apiKey, modelID string) (latencyMs int64, err error)
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := &http.Client{Timeout: 10 * time.Second}
 	start := time.Now()
 	resp, err := client.Do(req)
 	latency := time.Since(start).Milliseconds()
@@ -343,9 +457,7 @@ func promptLine(r *bufio.Reader, w io.Writer, prompt, defaultValue string) (stri
 
 	line, err := r.ReadString('\n')
 	isEOF := errors.Is(err, io.EOF) || (err != nil && len(line) == 0)
-	if err != nil && len(line) == 0 {
-		return defaultValue, isEOF
-	}
+	line = strings.TrimPrefix(line, "\ufeff")
 	line = strings.TrimSpace(line)
 	if line == "" {
 		return defaultValue, isEOF
@@ -359,7 +471,8 @@ func promptString(r *bufio.Reader, w io.Writer, prompt, defaultValue string) str
 }
 
 func defaultBaseURLFor(name string) string {
-	switch strings.ToLower(name) {
+	norm := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(name)), "\ufeff")
+	switch norm {
 	case "openai":
 		return "https://api.openai.com/v1"
 	case "deepseek":
@@ -368,6 +481,8 @@ func defaultBaseURLFor(name string) string {
 		return "https://openrouter.ai/api/v1"
 	case "groq":
 		return "https://api.groq.com/openai/v1"
+	case "nw", "neuralwatt":
+		return "https://api.neuralwatt.com/v1"
 	case "together":
 		return "https://api.together.xyz/v1"
 	case "mistral":
@@ -378,7 +493,8 @@ func defaultBaseURLFor(name string) string {
 }
 
 func defaultEnvFor(name string) string {
-	switch strings.ToLower(name) {
+	norm := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(name)), "\ufeff")
+	switch norm {
 	case "openai":
 		return "OPENAI_API_KEY"
 	case "deepseek":
@@ -387,12 +503,14 @@ func defaultEnvFor(name string) string {
 		return "OPENROUTER_API_KEY"
 	case "groq":
 		return "GROQ_API_KEY"
+	case "nw", "neuralwatt":
+		return "NW_API_KEY"
 	case "together":
 		return "TOGETHER_API_KEY"
 	case "mistral":
 		return "MISTRAL_API_KEY"
 	default:
-		upper := strings.ToUpper(strings.ReplaceAll(name, "-", "_"))
+		upper := strings.ToUpper(strings.ReplaceAll(norm, "-", "_"))
 		return upper + "_API_KEY"
 	}
 }

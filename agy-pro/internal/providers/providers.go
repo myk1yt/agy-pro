@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 )
@@ -102,13 +103,23 @@ func (p Provider) KeyValue() string {
 	if p.APIKeyEnv == "" {
 		return ""
 	}
-	return os.Getenv(p.APIKeyEnv)
+	val := os.Getenv(p.APIKeyEnv)
+	if val != "" {
+		return val
+	}
+	if runtime.GOOS == "windows" {
+		if uVal := getWindowsUserEnv(p.APIKeyEnv); uVal != "" {
+			_ = os.Setenv(p.APIKeyEnv, uVal)
+			return uVal
+		}
+	}
+	return ""
 }
 
 // KeyAvailable reports whether the provider can authenticate: either it
 // declares no key variable, or the variable is set and non-empty.
 func (p Provider) KeyAvailable() bool {
-	return p.APIKeyEnv == "" || os.Getenv(p.APIKeyEnv) != ""
+	return p.APIKeyEnv == "" || p.KeyValue() != ""
 }
 
 // Defaults are registry-level default settings for fanout runs.
@@ -243,7 +254,7 @@ func (r *Registry) Provider(name string) (*Provider, bool) {
 func (r *Registry) UnsetEnvVars() []UnsetVar {
 	var out []UnsetVar
 	for _, p := range r.Providers {
-		if p.APIKeyEnv == "" || os.Getenv(p.APIKeyEnv) != "" {
+		if p.APIKeyEnv == "" || p.KeyValue() != "" {
 			continue
 		}
 		out = append(out, UnsetVar{Provider: p.Name, Env: p.APIKeyEnv})
