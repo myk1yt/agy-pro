@@ -60,6 +60,11 @@ func resolveRealAgy(selfPath, envReal, pathEnv, fallback string) (string, error)
 		selfDir = filepath.Clean(filepath.Dir(selfPath))
 	}
 
+	agyProBinDir, _ := paths.AgyProBin()
+	if agyProBinDir != "" {
+		agyProBinDir = filepath.Clean(agyProBinDir)
+	}
+
 	// Candidates to check in each PATH entry
 	binaryNames := []string{"agy"}
 	if runtime.GOOS == "windows" {
@@ -76,6 +81,11 @@ func resolveRealAgy(selfPath, envReal, pathEnv, fallback string) (string, error)
 
 		// Exclude directory containing the current running shim
 		if selfDir != "" && isSameDir(selfDir, cleanDir) {
+			continue
+		}
+
+		// Exclude ~/.agy-pro/bin (where installed shim agy.exe resides)
+		if agyProBinDir != "" && isSameDir(agyProBinDir, cleanDir) {
 			continue
 		}
 
@@ -122,13 +132,18 @@ func resolveRealAgy(selfPath, envReal, pathEnv, fallback string) (string, error)
 
 // ExecutePassthrough runs the real agy binary with the given arguments,
 // connecting standard I/O streams directly to preserve full TUI and interactive CLI behavior.
+// It activates the local HTTP bridge only when an external model is targeted or explicit
+// bridge mode is requested, ensuring native Gemini models are 100% preserved during normal use.
 func ExecutePassthrough(realAgyPath string, args []string) (int, error) {
 	// Guard against recursive execution loop
 	if os.Getenv(paths.EnvAgyProActive) == "1" {
 		return 1, fmt.Errorf("%w: active guard triggered for %s", ErrRecursionDetected, realAgyPath)
 	}
 
-	cmd := exec.Command(realAgyPath, args...)
+	reg, _ := providers.Load()
+	activateBridge, cleanArgs := ShouldActivateBridge(args, reg)
+
+	cmd := exec.Command(realAgyPath, cleanArgs...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -137,8 +152,17 @@ func ExecutePassthrough(realAgyPath string, args []string) (int, error) {
 	childEnv := os.Environ()
 	childEnv = append(childEnv, paths.EnvAgyProActive+"=1")
 
-	// Inject LLM Gateway bridge if providers and models are configured
-	if reg, err := providers.Load(); err == nil && reg != nil {
+	// Inject LLM Gateway bridge if conditions are met
+	if activateBridge && reg != nil {
+		// Sync any environment keys from registry to childEnv
+		for _, p := range reg.Providers {
+			if p.APIKeyEnv != "" {
+				if kVal := p.KeyValue(); kVal != "" {
+					childEnv = setEnvKV(childEnv, p.APIKeyEnv+"="+kVal)
+				}
+			}
+		}
+
 		modelIDs := CollectModelIDs(reg)
 		if len(modelIDs) > 0 {
 			bridgeURL, stopFunc, err := bridge.StartBridge(reg)
@@ -164,6 +188,89 @@ func ExecutePassthrough(realAgyPath string, args []string) (int, error) {
 	return 0, nil
 }
 
+// ShouldActivateBridge determines whether the local HTTP bridge and AGY_LLM_GATEWAY_*
+// environment variables should be activated for this invocation.
+// It returns (activate bool, cleanedArgs []string).
+//
+// Rules:
+// 1. Explicit bridge mode: enabled if AGY_PRO_BRIDGE=1 or AGY_BRIDGE=1 in environment,
+//    or if CLI arguments include --bridge or -b. The --bridge and -b flags are stripped
+//    before forwarding to real agy.
+// 2. Targeted external model: if the CLI specifies a model via --model or -m that matches
+//    an enabled model in the external providers registry, bridge is activated.
+//    If -m is used, it is normalized to --model because upstream agy only supports --model.
+// 3. Otherwise: returns false (100% native mode, preserving native Gemini 3.8 Flash,
+//    Antigravity subscription quotas, and all 18 authentic models).
+func ShouldActivateBridge(args []string, reg *providers.Registry) (bool, []string) {
+	var normalizedArgs []string
+	explicitBridge := false
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--bridge" || arg == "-b" {
+			explicitBridge = true
+			continue
+		}
+		if arg == "-m" {
+			if i+1 < len(args) {
+				normalizedArgs = append(normalizedArgs, "--model", args[i+1])
+				i++
+				continue
+			}
+		} else if strings.HasPrefix(arg, "-m=") {
+			normalizedArgs = append(normalizedArgs, "--model="+strings.TrimPrefix(arg, "-m="))
+			continue
+		}
+		normalizedArgs = append(normalizedArgs, arg)
+	}
+
+	if explicitBridge || os.Getenv("AGY_PRO_BRIDGE") == "1" || os.Getenv("AGY_BRIDGE") == "1" {
+		if reg != nil && len(CollectModelIDs(reg)) > 0 {
+			return true, normalizedArgs
+		}
+		return false, normalizedArgs
+	}
+
+	if reg == nil || len(reg.Providers) == 0 {
+		return false, normalizedArgs
+	}
+
+	var requestedModel string
+	for i := 0; i < len(normalizedArgs); i++ {
+		arg := normalizedArgs[i]
+		if arg == "--model" {
+			if i+1 < len(normalizedArgs) {
+				requestedModel = normalizedArgs[i+1]
+				i++
+			}
+		} else if strings.HasPrefix(arg, "--model=") {
+			requestedModel = strings.TrimPrefix(arg, "--model=")
+		}
+	}
+
+	if requestedModel == "" {
+		return false, normalizedArgs
+	}
+
+	baseModel, provFilter := providers.ParseModelSpec(requestedModel)
+	for _, p := range reg.Providers {
+		if provFilter != "" && !strings.EqualFold(p.Name, provFilter) {
+			continue
+		}
+		for _, m := range p.Models {
+			if !m.IsEnabled() {
+				continue
+			}
+			displayName := fmt.Sprintf("%s (%s)", m.ID, p.Name)
+			if strings.EqualFold(m.ID, baseModel) || strings.EqualFold(displayName, requestedModel) || strings.EqualFold(m.ID, requestedModel) {
+				return true, normalizedArgs
+			}
+		}
+	}
+
+	return false, normalizedArgs
+}
+
 // BuildGatewayEnv constructs the AGY_LLM_GATEWAY_* environment variables from the registry,
 // enabling the native agy CLI to surface external models in the /model picker.
 func BuildGatewayEnv(reg *providers.Registry, bridgeURL string) []string {
@@ -185,6 +292,8 @@ func BuildGatewayEnv(reg *providers.Registry, bridgeURL string) []string {
 }
 
 // CollectModelIDs extracts all unique enabled model IDs across all providers in the registry.
+// It includes "model (provider)" and bare "model" ID so both the interactive TUI picker
+// and CLI flag specifications (e.g. --model glm-5.3-flash-flex) are recognized by real agy.
 func CollectModelIDs(reg *providers.Registry) []string {
 	if reg == nil {
 		return nil
@@ -193,9 +302,16 @@ func CollectModelIDs(reg *providers.Registry) []string {
 	seen := make(map[string]bool)
 	for _, p := range reg.Providers {
 		for _, m := range p.Models {
-			if m.IsEnabled() && !seen[m.ID] {
-				seen[m.ID] = true
-				modelIDs = append(modelIDs, m.ID)
+			if m.IsEnabled() {
+				displayName := fmt.Sprintf("%s (%s)", m.ID, p.Name)
+				if !seen[displayName] {
+					seen[displayName] = true
+					modelIDs = append(modelIDs, displayName)
+				}
+				if !seen[m.ID] {
+					seen[m.ID] = true
+					modelIDs = append(modelIDs, m.ID)
+				}
 			}
 		}
 	}

@@ -306,6 +306,37 @@ func GetModelPresets(providerName string) []ModelPreset {
 				},
 			},
 		}
+	case "google", "gemini":
+		return []ModelPreset{
+			{
+				ID:              "gemini-2.5-flash",
+				Family:          "gemini",
+				Description:     "Gemini 2.5 Flash (1M context, Google AI Studio OpenAI endpoint)",
+				Recommended:     true,
+				ContextLength:   1048576,
+				MaxOutputTokens: -1,
+				Tags:            []string{"fast", "tools"},
+				Capabilities: Capabilities{
+					SupportsTools: true,
+					AllowedTools:  []string{"read_file", "list_dir", "grep", "glob"},
+				},
+			},
+			{
+				ID:              "gemini-2.5-pro",
+				Family:          "gemini",
+				Description:     "Gemini 2.5 Pro (1M context, Google AI Studio OpenAI endpoint)",
+				Recommended:     false,
+				ContextLength:   1048576,
+				MaxOutputTokens: -1,
+				Tags:            []string{"flagship", "reasoning"},
+				Capabilities: Capabilities{
+					SupportsTools:    true,
+					SupportsThinking: true,
+					ReasoningEffort:  "high",
+					AllowedTools:     []string{"read_file", "list_dir", "grep", "glob"},
+				},
+			},
+		}
 
 	default:
 		return nil
@@ -402,28 +433,45 @@ func persistWindowsUserEnv(key, value string) error {
 	return cmd.Run()
 }
 
-// getWindowsUserEnv queries HKCU\Environment for key via reg.exe as a fallback
-// when an environment variable was saved to User env but current process hasn't inherited it.
-func getWindowsUserEnv(key string) string {
+// GetWindowsUserEnv queries HKCU\Environment (and HKLM as fallback) for key via reg.exe.
+// It retrieves user environment variables that were saved in the Windows registry
+// even if the current process has not yet inherited them.
+func GetWindowsUserEnv(key string) string {
 	if runtime.GOOS != "windows" || strings.TrimSpace(key) == "" {
 		return ""
 	}
-	cmd := exec.Command("reg", "query", `HKCU\Environment`, "/v", key)
-	out, err := cmd.Output()
-	if err != nil {
-		return ""
+	key = strings.TrimSpace(key)
+	roots := []string{
+		`HKCU\Environment`,
+		`HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`,
 	}
-	lines := strings.Split(string(out), "\n")
-	for _, l := range lines {
-		l = strings.TrimSpace(l)
-		if strings.HasPrefix(l, key) {
-			for _, typ := range []string{"REG_SZ", "REG_EXPAND_SZ"} {
-				if idx := strings.Index(l, typ); idx >= 0 {
-					return strings.TrimSpace(l[idx+len(typ):])
+	for _, root := range roots {
+		cmd := exec.Command("reg", "query", root, "/v", key)
+		out, err := cmd.Output()
+		if err != nil {
+			continue
+		}
+		lines := strings.Split(string(out), "\n")
+		for _, l := range lines {
+			l = strings.TrimSpace(l)
+			fields := strings.Fields(l)
+			if len(fields) >= 3 && strings.EqualFold(fields[0], key) {
+				for _, typ := range []string{"REG_SZ", "REG_EXPAND_SZ"} {
+					if idx := strings.Index(l, typ); idx >= 0 {
+						val := strings.TrimSpace(l[idx+len(typ):])
+						if val != "" {
+							return val
+						}
+					}
 				}
 			}
 		}
 	}
 	return ""
+}
+
+// getWindowsUserEnv is a backward-compatible wrapper for GetWindowsUserEnv.
+func getWindowsUserEnv(key string) string {
+	return GetWindowsUserEnv(key)
 }
 

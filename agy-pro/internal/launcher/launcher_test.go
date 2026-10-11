@@ -153,8 +153,9 @@ func TestBuildGatewayEnv(t *testing.T) {
 		}
 	}
 
-	if envMap["AGY_LLM_GATEWAY_MODELS"] != "deepseek-v4.1-flash-flex,glm-5.3-flash-flex" {
-		t.Errorf("AGY_LLM_GATEWAY_MODELS = %q; want 'deepseek-v4.1-flash-flex,glm-5.3-flash-flex'", envMap["AGY_LLM_GATEWAY_MODELS"])
+	expectedModels := "deepseek-v4.1-flash-flex (NW),deepseek-v4.1-flash-flex,glm-5.3-flash-flex (NW),glm-5.3-flash-flex"
+	if envMap["AGY_LLM_GATEWAY_MODELS"] != expectedModels {
+		t.Errorf("AGY_LLM_GATEWAY_MODELS = %q; want %q", envMap["AGY_LLM_GATEWAY_MODELS"], expectedModels)
 	}
 	if envMap["AGY_LLM_GATEWAY_URL"] != "http://127.0.0.1:54321" {
 		t.Errorf("AGY_LLM_GATEWAY_URL = %q; want 'http://127.0.0.1:54321'", envMap["AGY_LLM_GATEWAY_URL"])
@@ -182,7 +183,7 @@ func TestCollectModelIDs(t *testing.T) {
 			{
 				Name: "p2",
 				Models: []providers.Model{
-					{ID: "model-a", Enabled: &trueVal}, // duplicate
+					{ID: "model-a", Enabled: &trueVal}, // duplicate ID across different providers
 					{ID: "model-c"},
 				},
 			},
@@ -190,8 +191,110 @@ func TestCollectModelIDs(t *testing.T) {
 	}
 
 	ids := CollectModelIDs(reg)
-	if len(ids) != 2 || ids[0] != "model-a" || ids[1] != "model-c" {
-		t.Fatalf("unexpected model IDs: %v, want [model-a, model-c]", ids)
+	// Should include both display names and bare IDs
+	foundDisplayP1 := false
+	foundDisplayP2 := false
+	foundBareA := false
+	foundBareC := false
+	for _, id := range ids {
+		if id == "model-a (p1)" {
+			foundDisplayP1 = true
+		}
+		if id == "model-a (p2)" {
+			foundDisplayP2 = true
+		}
+		if id == "model-a" {
+			foundBareA = true
+		}
+		if id == "model-c" {
+			foundBareC = true
+		}
+	}
+	if !foundDisplayP1 || !foundDisplayP2 || !foundBareA || !foundBareC {
+		t.Fatalf("unexpected model IDs: %v", ids)
+	}
+}
+
+func TestShouldActivateBridge(t *testing.T) {
+	reg := &providers.Registry{
+		Providers: []providers.Provider{
+			{
+				Name: "NW",
+				Models: []providers.Model{
+					{ID: "glm-5.3-flash-flex"},
+				},
+			},
+		},
+	}
+
+	// 1. Default invocation with no arguments -> native mode (Gemini preserved)
+	act, clean := ShouldActivateBridge([]string{}, reg)
+	if act {
+		t.Errorf("expected activate=false for empty args, got true")
+	}
+	if len(clean) != 0 {
+		t.Errorf("expected empty clean args, got %v", clean)
+	}
+
+	// 2. Regular passthrough arguments -> native mode
+	act, _ = ShouldActivateBridge([]string{"-p", "hello", "--dangerously-skip-permissions"}, reg)
+	if act {
+		t.Errorf("expected activate=false for standard flags, got true")
+	}
+
+	// 3. Native Gemini model explicitly requested -> native mode
+	act, _ = ShouldActivateBridge([]string{"--model", "gemini-3.8-flash-high", "-p", "hello"}, reg)
+	if act {
+		t.Errorf("expected activate=false for native gemini model, got true")
+	}
+
+	// 4. External model requested via --model -> bridge activated
+	act, clean = ShouldActivateBridge([]string{"--model", "glm-5.3-flash-flex", "-p", "hello"}, reg)
+	if !act {
+		t.Errorf("expected activate=true for external model, got false")
+	}
+	if len(clean) != 4 || clean[0] != "--model" || clean[1] != "glm-5.3-flash-flex" {
+		t.Errorf("unexpected clean args: %v", clean)
+	}
+
+	// 5. External model requested via display format "model (provider)" -> bridge activated
+	act, _ = ShouldActivateBridge([]string{"--model", "glm-5.3-flash-flex (NW)"}, reg)
+	if !act {
+		t.Errorf("expected activate=true for display format model, got false")
+	}
+
+	// 6. External model requested via -m short flag -> normalized to --model and bridge activated
+	act, clean = ShouldActivateBridge([]string{"-m", "glm-5.3-flash-flex", "-p", "test"}, reg)
+	if !act {
+		t.Errorf("expected activate=true for -m external model, got false")
+	}
+	if len(clean) != 4 || clean[0] != "--model" || clean[1] != "glm-5.3-flash-flex" {
+		t.Errorf("expected clean args with normalized --model, got %v", clean)
+	}
+
+	// 7. Explicit --bridge flag -> stripped and bridge activated
+	act, clean = ShouldActivateBridge([]string{"--bridge", "models"}, reg)
+	if !act {
+		t.Errorf("expected activate=true for --bridge flag, got false")
+	}
+	if len(clean) != 1 || clean[0] != "models" {
+		t.Errorf("expected clean args ['models'], got %v", clean)
+	}
+
+	// 8. Explicit -b short flag -> stripped and bridge activated
+	act, clean = ShouldActivateBridge([]string{"-b"}, reg)
+	if !act {
+		t.Errorf("expected activate=true for -b flag, got false")
+	}
+	if len(clean) != 0 {
+		t.Errorf("expected empty clean args, got %v", clean)
+	}
+
+	// 9. Environment variable AGY_PRO_BRIDGE=1 -> bridge activated
+	t.Setenv("AGY_PRO_BRIDGE", "1")
+	act, _ = ShouldActivateBridge([]string{}, reg)
+	if !act {
+		t.Errorf("expected activate=true when AGY_PRO_BRIDGE=1, got false")
 	}
 }
 
@@ -229,7 +332,7 @@ func TestExecutePassthrough_StartsBridgeAndInjectsEnv(t *testing.T) {
 			os.Exit(4)
 		}
 		models := os.Getenv("AGY_LLM_GATEWAY_MODELS")
-		if models != "mock-e2e-model" {
+		if !strings.Contains(models, "mock-e2e-model (test-prov)") {
 			fmt.Fprintf(os.Stderr, "invalid AGY_LLM_GATEWAY_MODELS: %s\n", models)
 			os.Exit(5)
 		}
@@ -254,6 +357,7 @@ func TestExecutePassthrough_StartsBridgeAndInjectsEnv(t *testing.T) {
 	}
 	t.Setenv(providers.EnvProviders, provFile)
 	t.Setenv(paths.EnvAgyProActive, "")
+	t.Setenv("AGY_PRO_BRIDGE", "1")
 	t.Setenv("GO_WANT_HELPER_PROCESS", "1")
 
 	selfExe, err := os.Executable()

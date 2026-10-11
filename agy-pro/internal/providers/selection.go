@@ -2,8 +2,45 @@ package providers
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
+
+var modelDisplayRe = regexp.MustCompile(`^(.+?)\s*\(([^)]+)\)$`)
+
+// ParseModelSpec parses a model specification string into its base model ID
+// and provider name (if specified).
+// Supported formats:
+//   - "model (provider)" -> ("model", "provider")
+//   - "provider/model"   -> ("model", "provider")
+//   - "model"            -> ("model", "")
+func ParseModelSpec(spec string) (baseModel, providerName string) {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return "", ""
+	}
+
+	// 1. Check for "model (provider)" format
+	if m := modelDisplayRe.FindStringSubmatch(spec); len(m) == 3 {
+		base := strings.TrimSpace(m[1])
+		prov := strings.TrimSpace(m[2])
+		if base != "" && prov != "" {
+			return base, prov
+		}
+	}
+
+	// 2. Check for "provider/model" format
+	if parts := strings.SplitN(spec, "/", 2); len(parts) == 2 {
+		prov := strings.TrimSpace(parts[0])
+		base := strings.TrimSpace(parts[1])
+		if prov != "" && base != "" {
+			return base, prov
+		}
+	}
+
+	// 3. Fallback: raw model name
+	return spec, ""
+}
 
 // Target pairs a Provider with one of its Models.
 type Target struct {
@@ -39,31 +76,52 @@ func (r *Registry) AllCandidates(onlyKeyAvailable bool) []Target {
 	return out
 }
 
-// FindTarget looks for a target matching spec ("provider/model" or "model").
+// FindTarget looks for a target matching spec ("model (provider)", "provider/model", or "model").
 func (r *Registry) FindTarget(spec string) (Target, error) {
 	spec = strings.TrimSpace(spec)
 	if spec == "" {
 		return Target{}, fmt.Errorf("empty model specification")
 	}
 
-	var provFilter, modelFilter string
-	if parts := strings.SplitN(spec, "/", 2); len(parts) == 2 {
-		provFilter = parts[0]
-		modelFilter = parts[1]
-	} else {
-		modelFilter = spec
-	}
+	baseModel, provFilter := ParseModelSpec(spec)
 
+	// First pass: match provider and model, preferring enabled models
 	for _, p := range r.Providers {
 		if provFilter != "" && !strings.EqualFold(p.Name, provFilter) {
 			continue
 		}
 		for _, m := range p.Models {
-			if strings.EqualFold(m.ID, modelFilter) && m.IsEnabled() {
+			if strings.EqualFold(m.ID, baseModel) && m.IsEnabled() {
 				return Target{Provider: p, Model: m}, nil
 			}
 		}
 	}
+
+	// Second pass: if provFilter was given, check disabled models under that provider
+	if provFilter != "" {
+		for _, p := range r.Providers {
+			if strings.EqualFold(p.Name, provFilter) {
+				for _, m := range p.Models {
+					if strings.EqualFold(m.ID, baseModel) {
+						return Target{Provider: p, Model: m}, nil
+					}
+				}
+			}
+		}
+	}
+
+	// Third pass: if provFilter was given but not found under that provider,
+	// fallback to any provider matching baseModel
+	if provFilter != "" {
+		for _, p := range r.Providers {
+			for _, m := range p.Models {
+				if strings.EqualFold(m.ID, baseModel) && m.IsEnabled() {
+					return Target{Provider: p, Model: m}, nil
+				}
+			}
+		}
+	}
+
 	return Target{}, fmt.Errorf("model %q not found in registry", spec)
 }
 

@@ -161,14 +161,17 @@ func handleModels(w http.ResponseWriter, r *http.Request, reg *providers.Registr
 	if reg != nil {
 		for _, p := range reg.Providers {
 			for _, m := range p.Models {
-				if m.IsEnabled() && !seen[m.ID] {
-					seen[m.ID] = true
-					entries = append(entries, ModelEntry{
-						ID:      m.ID,
-						Object:  "model",
-						Created: time.Now().Unix(),
-						OwnedBy: p.Name,
-					})
+				if m.IsEnabled() {
+					displayName := fmt.Sprintf("%s (%s)", m.ID, p.Name)
+					if !seen[displayName] {
+						seen[displayName] = true
+						entries = append(entries, ModelEntry{
+							ID:      displayName,
+							Object:  "model",
+							Created: time.Now().Unix(),
+							OwnedBy: p.Name,
+						})
+					}
 				}
 			}
 		}
@@ -221,6 +224,14 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request, reg *provider
 		return
 	}
 
+	apiKey := strings.TrimSpace(target.Provider.KeyValue())
+	if target.Provider.APIKeyEnv != "" && apiKey == "" {
+		writeJSONError(w, http.StatusUnauthorized,
+			fmt.Sprintf("API key for provider %s (%s) is not configured or empty in environment", target.Provider.Name, target.Provider.APIKeyEnv),
+			"authentication_error")
+		return
+	}
+
 	// 1. Process and normalize reasoning effort
 	// Options: default, none, low, medium, high, xhigh, max. Default is "default".
 	var effort string
@@ -253,7 +264,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request, reg *provider
 		rawReq["reasoning_effort"] = effort
 	}
 
-	// Upstream expects the exact model ID declared by the provider
+	// Upstream expects the exact model ID declared by the provider (without "(provider)" suffix)
 	rawReq["model"] = target.Model.ID
 
 	forwardBody, err := json.Marshal(rawReq)
@@ -268,8 +279,6 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request, reg *provider
 		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("invalid provider baseURL: %v", err), "internal_error")
 		return
 	}
-
-	apiKey := target.Provider.KeyValue()
 
 	proxy := &httputil.ReverseProxy{
 		Director: func(outReq *http.Request) {
@@ -308,18 +317,54 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request, reg *provider
 	proxy.ServeHTTP(w, r)
 }
 
-// findBestTarget looks up a model target in the registry, preferring providers with valid API keys.
+// findBestTarget looks up a model target in the registry, resolving
+// "model (provider)", "provider/model", or raw "model" specifications.
+// It prefers providers with valid API keys.
 func findBestTarget(reg *providers.Registry, modelSpec string) (providers.Target, error) {
 	if reg == nil {
 		return providers.Target{}, errors.New("registry is empty or not configured")
 	}
 
-	target, err := reg.FindTarget(modelSpec)
-	if err == nil {
+	spec := strings.TrimSpace(modelSpec)
+	if spec == "" {
+		return providers.Target{}, errors.New("empty model requested")
+	}
+
+	baseModel, provFilter := providers.ParseModelSpec(spec)
+
+	// 1. If provider was specified ("model (provider)" or "provider/model"),
+	// look for an exact provider match first.
+	if provFilter != "" {
+		for _, p := range reg.Providers {
+			if strings.EqualFold(p.Name, provFilter) {
+				for _, m := range p.Models {
+					if strings.EqualFold(m.ID, baseModel) {
+						return providers.Target{Provider: p, Model: m}, nil
+					}
+				}
+			}
+		}
+	}
+
+	// 2. Search for baseModel with KeyAvailable() == true (respecting provFilter if specified)
+	for _, p := range reg.Providers {
+		if provFilter != "" && !strings.EqualFold(p.Name, provFilter) {
+			continue
+		}
+		for _, m := range p.Models {
+			if strings.EqualFold(m.ID, baseModel) && m.IsEnabled() {
+				if p.KeyAvailable() {
+					return providers.Target{Provider: p, Model: m}, nil
+				}
+			}
+		}
+	}
+
+	// 3. Fallback: try reg.FindTarget
+	if target, err := reg.FindTarget(spec); err == nil {
 		if target.Provider.KeyAvailable() {
 			return target, nil
 		}
-		// Try alternate providers offering the same model with active API keys
 		alts := reg.FindAlternatesForModel(target.Model.ID, target.Provider.Name)
 		for _, alt := range alts {
 			if alt.Provider.KeyAvailable() {
@@ -329,28 +374,35 @@ func findBestTarget(reg *providers.Registry, modelSpec string) (providers.Target
 		return target, nil
 	}
 
-	// Fallback case-insensitive search across all providers
-	spec := strings.TrimSpace(modelSpec)
-	var provFilter, modelFilter string
-	if parts := strings.SplitN(spec, "/", 2); len(parts) == 2 {
-		provFilter = parts[0]
-		modelFilter = parts[1]
-	} else {
-		modelFilter = spec
-	}
-
+	// 4. Fallback search across all providers for baseModel regardless of provFilter,
+	// preferring providers with active keys
 	for _, p := range reg.Providers {
-		if provFilter != "" && !strings.EqualFold(p.Name, provFilter) {
-			continue
-		}
 		for _, m := range p.Models {
-			if strings.EqualFold(m.ID, modelFilter) {
+			if strings.EqualFold(m.ID, baseModel) && m.IsEnabled() && p.KeyAvailable() {
 				return providers.Target{Provider: p, Model: m}, nil
 			}
 		}
 	}
 
-	return providers.Target{}, fmt.Errorf("model %q not found in registry", modelSpec)
+	// 5. Last resort: any matching model
+	for _, p := range reg.Providers {
+		if provFilter != "" && strings.EqualFold(p.Name, provFilter) {
+			for _, m := range p.Models {
+				if strings.EqualFold(m.ID, baseModel) {
+					return providers.Target{Provider: p, Model: m}, nil
+				}
+			}
+		}
+	}
+	for _, p := range reg.Providers {
+		for _, m := range p.Models {
+			if strings.EqualFold(m.ID, baseModel) {
+				return providers.Target{Provider: p, Model: m}, nil
+			}
+		}
+	}
+
+	return providers.Target{}, fmt.Errorf("model %q not found in configured providers", modelSpec)
 }
 
 func setCorsHeaders(w http.ResponseWriter) {

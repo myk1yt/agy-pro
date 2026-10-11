@@ -62,7 +62,7 @@ func TestStartBridge_Lifecycle(t *testing.T) {
 	if err := json.NewDecoder(mResp.Body).Decode(&modelsResult); err != nil {
 		t.Fatalf("failed to decode /models JSON: %v", err)
 	}
-	if len(modelsResult.Data) != 1 || modelsResult.Data[0].ID != "test-model-1" {
+	if len(modelsResult.Data) != 1 || modelsResult.Data[0].ID != "test-model-1 (test-prov)" {
 		t.Fatalf("unexpected models list: %+v", modelsResult)
 	}
 
@@ -128,8 +128,8 @@ func TestModelsEndpoint(t *testing.T) {
 			t.Errorf("expected object: 'list', got %q", mResp.Object)
 		}
 
-		if len(mResp.Data) != 2 {
-			t.Fatalf("expected 2 active models (deepseek-chat, glm-5.3-flash-flex), got %d: %+v", len(mResp.Data), mResp.Data)
+		if len(mResp.Data) != 3 {
+			t.Fatalf("expected 3 active models, got %d: %+v", len(mResp.Data), mResp.Data)
 		}
 
 		modelIDs := map[string]bool{}
@@ -139,10 +139,10 @@ func TestModelsEndpoint(t *testing.T) {
 				t.Errorf("expected object 'model' for item %s, got %q", m.ID, m.Object)
 			}
 		}
-		if !modelIDs["deepseek-chat"] || !modelIDs["glm-5.3-flash-flex"] {
+		if !modelIDs["deepseek-chat (deepseek)"] || !modelIDs["deepseek-chat (openrouter)"] || !modelIDs["glm-5.3-flash-flex (openrouter)"] {
 			t.Errorf("missing expected models: %v", modelIDs)
 		}
-		if modelIDs["deepseek-reasoner"] {
+		if modelIDs["deepseek-reasoner (deepseek)"] {
 			t.Errorf("disabled model 'deepseek-reasoner' should not appear in /models")
 		}
 	}
@@ -468,3 +468,206 @@ func TestChatCompletions_ErrorHandling(t *testing.T) {
 		t.Errorf("expected 502 Bad Gateway for offline provider, got %d", resp.StatusCode)
 	}
 }
+
+func TestChatCompletions_ModelWithProviderSuffix(t *testing.T) {
+	t.Setenv("TEST_NW_KEY", "real-nw-secret-token-789")
+
+	var receivedModel string
+	var receivedAuth string
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedAuth = r.Header.Get("Authorization")
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if m, ok := body["model"].(string); ok {
+			receivedModel = m
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"success from NW"}}]}`))
+	}))
+	defer upstream.Close()
+
+	reg := &providers.Registry{
+		Providers: []providers.Provider{
+			{
+				Name:      "NW",
+				BaseURL:   upstream.URL + "/v1",
+				APIKeyEnv: "TEST_NW_KEY",
+				Models: []providers.Model{
+					{ID: "glm-5.3-flash-flex"},
+				},
+			},
+			{
+				Name:      "Charm",
+				BaseURL:   "http://127.0.0.1:59998",
+				APIKeyEnv: "TEST_CHARM_KEY",
+				Models: []providers.Model{
+					{ID: "glm-5.3-flash-flex"},
+				},
+			},
+		},
+	}
+
+	handler := NewHandler(reg)
+	bridgeServer := httptest.NewServer(handler)
+	defer bridgeServer.Close()
+
+	// 1. Client calls with "model": "glm-5.3-flash-flex (NW)"
+	client := &http.Client{}
+	reqBody := `{"model":"glm-5.3-flash-flex (NW)","messages":[{"role":"user","content":"hello"}]}`
+	resp, err := client.Post(bridgeServer.URL+"/chat/completions", "application/json", strings.NewReader(reqBody))
+	if err != nil {
+		t.Fatalf("POST failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200 OK, got %d: %s", resp.StatusCode, string(b))
+	}
+
+	// Verify upstream received the original model ID without " (NW)"
+	if receivedModel != "glm-5.3-flash-flex" {
+		t.Errorf("upstream received model %q; want 'glm-5.3-flash-flex' (suffix stripped)", receivedModel)
+	}
+
+	// Verify upstream received the correct authorization header
+	if receivedAuth != "Bearer real-nw-secret-token-789" {
+		t.Errorf("upstream received auth %q; want 'Bearer real-nw-secret-token-789'", receivedAuth)
+	}
+
+	// 2. Client calls with legacy raw model "glm-5.3-flash-flex" (fallback matching)
+	receivedModel = ""
+	legacyReqBody := `{"model":"glm-5.3-flash-flex","messages":[{"role":"user","content":"hello"}]}`
+	respLegacy, err := client.Post(bridgeServer.URL+"/chat/completions", "application/json", strings.NewReader(legacyReqBody))
+	if err != nil {
+		t.Fatalf("legacy POST failed: %v", err)
+	}
+	defer respLegacy.Body.Close()
+
+	if respLegacy.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(respLegacy.Body)
+		t.Fatalf("expected 200 OK for legacy model, got %d: %s", respLegacy.StatusCode, string(b))
+	}
+
+	if receivedModel != "glm-5.3-flash-flex" {
+		t.Errorf("legacy upstream received model %q; want 'glm-5.3-flash-flex'", receivedModel)
+	}
+}
+
+func TestChatCompletions_MissingAPIKeyError(t *testing.T) {
+	// Ensure the key env is unset
+	t.Setenv("UNSET_NW_KEY_FOR_TEST", "")
+
+	upstreamCalled := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalled = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	reg := &providers.Registry{
+		Providers: []providers.Provider{
+			{
+				Name:      "NW",
+				BaseURL:   upstream.URL,
+				APIKeyEnv: "UNSET_NW_KEY_FOR_TEST",
+				Models: []providers.Model{
+					{ID: "glm-5.3-flash-flex"},
+				},
+			},
+		},
+	}
+
+	handler := NewHandler(reg)
+	bridgeServer := httptest.NewServer(handler)
+	defer bridgeServer.Close()
+
+	client := &http.Client{}
+	reqBody := `{"model":"glm-5.3-flash-flex (NW)","messages":[{"role":"user","content":"test"}]}`
+	resp, err := client.Post(bridgeServer.URL+"/chat/completions", "application/json", strings.NewReader(reqBody))
+	if err != nil {
+		t.Fatalf("POST failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Must return HTTP 401 Unauthorized
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected status 401 Unauthorized, got %d", resp.StatusCode)
+	}
+
+	// Upstream server must NEVER be contacted
+	if upstreamCalled {
+		t.Errorf("upstream server was contacted even though API key was unset")
+	}
+
+	var errResp map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&errResp); err != nil {
+		t.Fatalf("failed to decode error JSON: %v", err)
+	}
+
+	errObj, ok := errResp["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected 'error' object in response, got %+v", errResp)
+	}
+
+	expectedMsg := "API key for provider NW (UNSET_NW_KEY_FOR_TEST) is not configured or empty in environment"
+	if errObj["message"] != expectedMsg {
+		t.Errorf("error.message = %q; want %q", errObj["message"], expectedMsg)
+	}
+	if errObj["type"] != "authentication_error" {
+		t.Errorf("error.type = %q; want 'authentication_error'", errObj["type"])
+	}
+	if errObj["code"] != float64(http.StatusUnauthorized) {
+		t.Errorf("error.code = %v; want 401", errObj["code"])
+	}
+}
+
+func TestParseModelSpec(t *testing.T) {
+	tests := []struct {
+		input    string
+		wantBase string
+		wantProv string
+	}{
+		{
+			input:    "glm-5.3-flash-flex (NW)",
+			wantBase: "glm-5.3-flash-flex",
+			wantProv: "NW",
+		},
+		{
+			input:    "deepseek-ai/DeepSeek-V3 (SiliconFlow)",
+			wantBase: "deepseek-ai/DeepSeek-V3",
+			wantProv: "SiliconFlow",
+		},
+		{
+			input:    "NW/glm-5.3-flash-flex",
+			wantBase: "glm-5.3-flash-flex",
+			wantProv: "NW",
+		},
+		{
+			input:    "glm-5.3-flash-flex",
+			wantBase: "glm-5.3-flash-flex",
+			wantProv: "",
+		},
+		{
+			input:    "  model-name   ( My Provider )  ",
+			wantBase: "model-name",
+			wantProv: "My Provider",
+		},
+		{
+			input:    "",
+			wantBase: "",
+			wantProv: "",
+		},
+	}
+
+	for _, tt := range tests {
+		base, prov := providers.ParseModelSpec(tt.input)
+		if base != tt.wantBase || prov != tt.wantProv {
+			t.Errorf("ParseModelSpec(%q) = (%q, %q); want (%q, %q)",
+				tt.input, base, prov, tt.wantBase, tt.wantProv)
+		}
+	}
+}
+

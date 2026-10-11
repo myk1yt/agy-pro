@@ -116,12 +116,12 @@ func (p Provider) KeyValue() string {
 	if p.APIKeyEnv == "" {
 		return ""
 	}
-	val := os.Getenv(p.APIKeyEnv)
+	val := strings.TrimSpace(os.Getenv(p.APIKeyEnv))
 	if val != "" {
 		return val
 	}
 	if runtime.GOOS == "windows" {
-		if uVal := getWindowsUserEnv(p.APIKeyEnv); uVal != "" {
+		if uVal := strings.TrimSpace(GetWindowsUserEnv(p.APIKeyEnv)); uVal != "" {
 			_ = os.Setenv(p.APIKeyEnv, uVal)
 			return uVal
 		}

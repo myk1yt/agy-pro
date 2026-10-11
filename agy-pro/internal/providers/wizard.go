@@ -90,12 +90,14 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 	// Persist API key if provided
 	if keyValue != "" && apiKeyEnv != "" {
 		_ = os.Setenv(apiKeyEnv, keyValue)
-		if runtime.GOOS == "windows" {
+		if runtime.GOOS == "windows" && !isRunningTests() {
 			if err := persistWindowsUserEnv(apiKeyEnv, keyValue); err != nil {
 				fmt.Fprintf(out, "Warning: could not persist %s to Windows user environment: %v\n", apiKeyEnv, err)
 			} else {
 				fmt.Fprintf(out, "✅ Saved %s to Windows User Environment.\n", apiKeyEnv)
 			}
+		} else if runtime.GOOS == "windows" {
+			// In test environment, skip persisting to system registry
 		} else {
 			fmt.Fprintf(out, "Set %s in current session. To persist across shells, add to ~/.bashrc or ~/.zshrc:\n", apiKeyEnv)
 			fmt.Fprintf(out, "  export %s=\"...\"\n", apiKeyEnv)
@@ -258,14 +260,14 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 						} else {
 							keyValue = newKey
 							_ = os.Setenv(apiKeyEnv, keyValue)
-							if runtime.GOOS == "windows" {
+							if runtime.GOOS == "windows" && !isRunningTests() {
 								_ = persistWindowsUserEnv(apiKeyEnv, keyValue)
 							}
 						}
 					} else {
 						keyValue = newKey
 						_ = os.Setenv(apiKeyEnv, keyValue)
-						if runtime.GOOS == "windows" {
+						if runtime.GOOS == "windows" && !isRunningTests() {
 							_ = persistWindowsUserEnv(apiKeyEnv, keyValue)
 						}
 					}
@@ -608,4 +610,8 @@ func defaultEnvFor(name string) string {
 		upper := strings.ToUpper(strings.ReplaceAll(norm, "-", "_"))
 		return upper + "_API_KEY"
 	}
+}
+
+func isRunningTests() bool {
+	return strings.HasSuffix(os.Args[0], ".test.exe") || strings.HasSuffix(os.Args[0], ".test")
 }
