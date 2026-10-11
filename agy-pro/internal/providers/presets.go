@@ -53,6 +53,7 @@ func GetModelPresets(providerName string) []ModelPreset {
 				Tags:            []string{"reasoning", "coding", "math"},
 				Capabilities: Capabilities{
 					SupportsThinking: true,
+					ReasoningEffort:  "high",
 				},
 			},
 		}
@@ -70,6 +71,7 @@ func GetModelPresets(providerName string) []ModelPreset {
 				Capabilities: Capabilities{
 					SupportsTools:    true,
 					SupportsThinking: true,
+					ReasoningEffort:  "high",
 					AllowedTools:     []string{"read_file", "list_dir", "grep", "glob"},
 				},
 			},
@@ -83,6 +85,7 @@ func GetModelPresets(providerName string) []ModelPreset {
 				Tags:            []string{"reasoning", "coding"},
 				Capabilities: Capabilities{
 					SupportsThinking: true,
+					ReasoningEffort:  "high",
 				},
 			},
 			{
@@ -139,6 +142,7 @@ func GetModelPresets(providerName string) []ModelPreset {
 				Tags:            []string{"fast", "reasoning"},
 				Capabilities: Capabilities{
 					SupportsThinking: true,
+					ReasoningEffort:  "high",
 				},
 			},
 		}
@@ -182,6 +186,7 @@ func GetModelPresets(providerName string) []ModelPreset {
 				Tags:            []string{"reasoning", "coding"},
 				Capabilities: Capabilities{
 					SupportsThinking: true,
+					ReasoningEffort:  "high",
 				},
 			},
 		}
@@ -267,6 +272,7 @@ func GetModelPresets(providerName string) []ModelPreset {
 				Tags:            []string{"reasoning"},
 				Capabilities: Capabilities{
 					SupportsThinking: true,
+					ReasoningEffort:  "high",
 				},
 			},
 		}

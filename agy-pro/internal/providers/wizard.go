@@ -161,13 +161,17 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 			choiceNum, _ := strconv.Atoi(choiceStr)
 			if choiceNum >= 1 && choiceNum <= len(presets) {
 				p := presets[choiceNum-1]
+				caps := p.Capabilities
+				if caps.SupportsThinking && caps.ReasoningEffort == "" {
+					caps.ReasoningEffort = "default"
+				}
 				selectedModel = Model{
 					ID:              p.ID,
 					Family:          p.Family,
 					Tags:            p.Tags,
 					ContextLength:   p.ContextLength,
 					MaxOutputTokens: p.MaxOutputTokens,
-					Capabilities:    p.Capabilities,
+					Capabilities:    caps,
 				}
 				hasSelection = true
 			} else if choiceNum == customOpt || strings.EqualFold(choiceStr, "c") || strings.EqualFold(choiceStr, "custom") {
@@ -366,7 +370,15 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 		} else if m.ContextLength >= 1048576 {
 			ctxDisplay = fmt.Sprintf("%dM", m.ContextLength/1048576)
 		}
-		fmt.Fprintf(out, "  %d. %-24s [family: %s, context: %s, tools: %s]\n", i+1, m.ID, m.FamilyName(), ctxDisplay, toolsStr)
+		thinkingStr := "no"
+		if m.Capabilities.SupportsThinking {
+			effort := m.Capabilities.ReasoningEffort
+			if effort == "" {
+				effort = "default"
+			}
+			thinkingStr = fmt.Sprintf("yes (%s)", effort)
+		}
+		fmt.Fprintf(out, "  %d. %-24s [family: %s, context: %s, tools: %s, thinking: %s]\n", i+1, m.ID, m.FamilyName(), ctxDisplay, toolsStr, thinkingStr)
 	}
 	fmt.Fprintln(out, "===========================================================")
 	fmt.Fprintf(out, "Ready to use! Example:\n  agy pro fanout -m %s/%s \"your prompt\"\n", provName, models[0].ID)
@@ -407,8 +419,20 @@ func promptCustomModel(r *bufio.Reader, w io.Writer, modelID string) Model {
 		}
 	}
 
-	thinkingAns, _ := promptLine(r, w, "Supports Reasoning / Thinking? (y/N)", "N")
-	supportsThinking := strings.EqualFold(thinkingAns, "y") || strings.EqualFold(thinkingAns, "yes")
+	thinkingAns, _ := promptLine(r, w, "Supports Reasoning / Thinking? (Y/n)", "Y")
+	supportsThinking := !strings.EqualFold(thinkingAns, "n") && !strings.EqualFold(thinkingAns, "no")
+
+	var reasoningEffort string
+	if supportsThinking {
+		effortInput, _ := promptLine(r, w, "Reasoning Effort [default, none, low, medium, high, xhigh, max] [default]", "default")
+		effortInput = strings.ToLower(strings.TrimSpace(effortInput))
+		switch effortInput {
+		case "default", "none", "low", "medium", "high", "xhigh", "max":
+			reasoningEffort = effortInput
+		default:
+			reasoningEffort = "default"
+		}
+	}
 
 	visionAns, _ := promptLine(r, w, "Supports Vision / Images? (y/N)", "N")
 	supportsVision := strings.EqualFold(visionAns, "y") || strings.EqualFold(visionAns, "yes")
@@ -417,6 +441,7 @@ func promptCustomModel(r *bufio.Reader, w io.Writer, modelID string) Model {
 		SupportsTools:    supportsTools,
 		AllowedTools:     allowedTools,
 		SupportsThinking: supportsThinking,
+		ReasoningEffort:  reasoningEffort,
 		SupportsVision:   supportsVision,
 	}
 

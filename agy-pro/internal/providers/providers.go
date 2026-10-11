@@ -27,8 +27,21 @@ type Capabilities struct {
 	SupportsVision   bool     `json:"supportsVision,omitempty"`
 	SupportsVideo    bool     `json:"supportsVideo,omitempty"`
 	SupportsThinking bool     `json:"supportsThinking,omitempty"`
+	ReasoningEffort  string   `json:"reasoningEffort,omitempty"`
 	SupportsTools    bool     `json:"supportsTools,omitempty"`
 	AllowedTools     []string `json:"allowedTools,omitempty"`
+}
+
+// EffectiveReasoningEffort returns the configured reasoning effort, defaulting to "default"
+// if thinking is enabled and no explicit effort is set.
+func (c Capabilities) EffectiveReasoningEffort() string {
+	if !c.SupportsThinking {
+		return ""
+	}
+	if c.ReasoningEffort != "" {
+		return c.ReasoningEffort
+	}
+	return "default"
 }
 
 // CanUseTools reports whether function calling / tools are enabled for this model.

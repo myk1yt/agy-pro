@@ -83,8 +83,6 @@ func NewClient() *Client {
 
 // Complete calls /chat/completions on the target provider.
 func (c *Client) Complete(ctx context.Context, target providers.Target, messages []ChatMessage, tools []agenttools.ToolDef) (*ChatResponse, error) {
-	endpoint := target.Provider.Endpoint()
-
 	reqBody := ChatRequest{
 		Model:    target.Model.ID,
 		Messages: messages,
@@ -99,9 +97,12 @@ func (c *Client) Complete(ctx context.Context, target providers.Target, messages
 		reqBody.MaxTokens = target.Model.MaxOutputTokens
 	}
 
-	// If model supports thinking, we can set reasoning_effort
+	// If model supports thinking, inject reasoning_effort according to configuration
 	if target.Model.Capabilities.SupportsThinking {
-		reqBody.ReasoningEffort = "medium"
+		effort := mapReasoningEffort(target.Model.Capabilities.ReasoningEffort)
+		if effort != "" {
+			reqBody.ReasoningEffort = effort
+		}
 	}
 
 	// Only attach tools if model supports tools and tools are provided
@@ -110,14 +111,35 @@ func (c *Client) Complete(ctx context.Context, target providers.Target, messages
 		reqBody.ToolChoice = "auto"
 	}
 
+	resp, statusCode, err := c.send(ctx, target, reqBody)
+	if err != nil && reqBody.ReasoningEffort != "" {
+		// If server failed with 400 (Bad Request) or 422, or mentions reasoning_effort,
+		// gracefully fallback by stripping reasoning_effort and retrying immediately.
+		isReasoningError := statusCode == http.StatusBadRequest || statusCode == 422 ||
+			strings.Contains(strings.ToLower(err.Error()), "reasoning_effort")
+		if isReasoningError {
+			reqBody.ReasoningEffort = ""
+			fallbackResp, _, fallbackErr := c.send(ctx, target, reqBody)
+			if fallbackErr == nil {
+				return fallbackResp, nil
+			}
+		}
+	}
+
+	return resp, err
+}
+
+func (c *Client) send(ctx context.Context, target providers.Target, reqBody ChatRequest) (*ChatResponse, int, error) {
+	endpoint := target.Provider.Endpoint()
+
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+		return nil, 0, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return nil, 0, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -127,13 +149,13 @@ func (c *Client) Complete(ctx context.Context, target providers.Target, messages
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("network error calling %s (%s): %w", target.Provider.Name, endpoint, err)
+		return nil, 0, fmt.Errorf("network error calling %s (%s): %w", target.Provider.Name, endpoint, err)
 	}
 	defer resp.Body.Close()
 
 	bodyData, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024)) // 10MB limit
 	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
+		return nil, resp.StatusCode, fmt.Errorf("failed to read response body: %w", err)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -141,23 +163,47 @@ func (c *Client) Complete(ctx context.Context, target providers.Target, messages
 		if len(snippet) > 500 {
 			snippet = snippet[:500] + "... (truncated)"
 		}
-		return nil, fmt.Errorf("HTTP %d (%s) from provider %q: %s", resp.StatusCode, resp.Status, target.Provider.Name, snippet)
+		return nil, resp.StatusCode, fmt.Errorf("HTTP %d (%s) from provider %q: %s", resp.StatusCode, resp.Status, target.Provider.Name, snippet)
 	}
 
 	var chatResp ChatResponse
 	if err := json.Unmarshal(bodyData, &chatResp); err != nil {
-		return nil, fmt.Errorf("failed to parse response JSON: %w (body snippet: %s)", err, string(bodyData[:minInt(len(bodyData), 200)]))
+		return nil, resp.StatusCode, fmt.Errorf("failed to parse response JSON: %w (body snippet: %s)", err, string(bodyData[:minInt(len(bodyData), 200)]))
 	}
 
 	if chatResp.Error != nil && chatResp.Error.Message != "" {
-		return nil, fmt.Errorf("API error from %q: %s", target.Provider.Name, chatResp.Error.Message)
+		return nil, resp.StatusCode, fmt.Errorf("API error from %q: %s", target.Provider.Name, chatResp.Error.Message)
 	}
 
 	if len(chatResp.Choices) == 0 {
-		return nil, fmt.Errorf("empty choices returned by provider %q", target.Provider.Name)
+		return nil, resp.StatusCode, fmt.Errorf("empty choices returned by provider %q", target.Provider.Name)
 	}
 
-	return &chatResp, nil
+	return &chatResp, resp.StatusCode, nil
+}
+
+// mapReasoningEffort standardizes the reasoning effort value for OpenAI-compatible APIs:
+// "default" or empty: omitted (uses server default)
+// "none": explicitly set to "none"
+// "low", "medium", "high": forwarded directly
+// "xhigh", "max": mapped to "high"
+func mapReasoningEffort(effort string) string {
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "none":
+		return "none"
+	case "low":
+		return "low"
+	case "medium":
+		return "medium"
+	case "high":
+		return "high"
+	case "xhigh", "max":
+		return "high"
+	case "default", "":
+		return ""
+	default:
+		return ""
+	}
 }
 
 func minInt(a, b int) int {

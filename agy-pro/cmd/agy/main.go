@@ -59,6 +59,8 @@ func handleProCommand(args []string) {
 		runMode(subArgs)
 	case "status":
 		runStatus()
+	case "models":
+		runModels()
 	case "doctor":
 		runDoctor()
 	case "fanout":
@@ -84,6 +86,7 @@ func printProHelp() {
 	fmt.Println("  setup           Interactive conversational setup wizard for LLM providers & keys")
 	fmt.Println("  mode            Switch profile between full-stack and clean (or restore)")
 	fmt.Println("  status          Display current mode, providers, and real agy status")
+	fmt.Println("  models          Display configured providers and detailed model specifications")
 	fmt.Println("  doctor          Diagnose toolchain, paths, permissions, and connectivity")
 	fmt.Println("  fanout          Run multi-model parallel audit, review, or research swarm")
 	fmt.Println("  version         Display agy-pro and underlying agy version information")
@@ -170,15 +173,116 @@ func runStatus() {
 	if err != nil {
 		fmt.Printf("Providers    : %v\n", err)
 	} else {
-		fmt.Printf("Providers    : %d configured\n", len(reg.Providers))
-		for _, p := range reg.Providers {
-			status := "configured"
-			if p.APIKeyEnv != "" && p.KeyValue() == "" {
-				status = "API key missing (" + p.APIKeyEnv + ")"
+		fmt.Printf("Providers    : %d configured\n\n", len(reg.Providers))
+		printConfiguredProvidersAndModels(reg)
+	}
+}
+
+func runModels() {
+	fmt.Println("===========================================================")
+	fmt.Printf("  agy-pro Configured Models (v%s)\n", Version)
+	fmt.Println("===========================================================")
+
+	reg, err := providers.Load()
+	if err != nil {
+		fmt.Printf("Providers registry error: %v\n", err)
+		fmt.Println("Run `agy pro setup` to configure providers and models.")
+		return
+	}
+
+	if len(reg.Providers) == 0 {
+		fmt.Println("No providers configured.")
+		fmt.Println("Run `agy pro setup` to configure providers and models.")
+		return
+	}
+
+	printConfiguredProvidersAndModels(reg)
+}
+
+func printConfiguredProvidersAndModels(reg *providers.Registry) {
+	if reg == nil || len(reg.Providers) == 0 {
+		fmt.Println("Configured Providers & Models: None")
+		return
+	}
+
+	fmt.Println("Configured Providers & Models:")
+
+	maxIDLen := 24
+	maxFamilyLen := 8
+	for _, p := range reg.Providers {
+		for _, m := range p.Models {
+			if len(m.ID) > maxIDLen {
+				maxIDLen = len(m.ID)
 			}
-			fmt.Printf("  - %-12s : %d models [%s]\n", p.Name, len(p.Models), status)
+			fam := m.FamilyName()
+			if len(fam) > maxFamilyLen {
+				maxFamilyLen = len(fam)
+			}
 		}
 	}
+
+	for i, p := range reg.Providers {
+		keyStatus := "Configured"
+		if p.APIKeyEnv == "" {
+			keyStatus = "Not Required"
+		} else if p.KeyValue() == "" {
+			keyStatus = fmt.Sprintf("Missing (%s)", p.APIKeyEnv)
+		}
+
+		fmt.Printf("[%d] %s (%s) [API Key: %s]\n", i+1, p.Name, p.BaseURL, keyStatus)
+
+		if len(p.Models) == 0 {
+			fmt.Println("    (No models configured)")
+			continue
+		}
+
+		for _, m := range p.Models {
+			ctxDisplay := formatTokenCount(m.ContextLength)
+			maxOutDisplay := formatTokenCount(m.MaxOutputTokens)
+
+			toolsDisplay := "NO"
+			if m.Capabilities.SupportsTools {
+				toolsDisplay = "YES"
+			}
+
+			thinkingDisplay := "NO"
+			if m.Capabilities.SupportsThinking {
+				effort := m.Capabilities.ReasoningEffort
+				if effort == "" {
+					effort = "default"
+				}
+				thinkingDisplay = fmt.Sprintf("YES (%s)", effort)
+			}
+
+			fmt.Printf("    - %-*s  [Family: %-*s | Context: %s | MaxOutput: %s | Tools: %s | Thinking: %s]\n",
+				maxIDLen, m.ID,
+				maxFamilyLen, m.FamilyName(),
+				ctxDisplay,
+				maxOutDisplay,
+				toolsDisplay,
+				thinkingDisplay,
+			)
+		}
+	}
+}
+
+func formatTokenCount(tokens int) string {
+	if tokens <= 0 {
+		return "max"
+	}
+	if tokens >= 1048576 {
+		return fmt.Sprintf("%dM", tokens/1048576)
+	}
+	if tokens >= 1000 {
+		if tokens%1000 == 0 {
+			return fmt.Sprintf("%dk", tokens/1000)
+		}
+		if tokens%1024 == 0 {
+			return fmt.Sprintf("%dk", tokens/1024)
+		}
+		return fmt.Sprintf("%dk", tokens/1000)
+	}
+	return fmt.Sprintf("%d", tokens)
 }
 
 func runDoctor() {

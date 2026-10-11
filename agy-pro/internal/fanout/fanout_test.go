@@ -623,3 +623,128 @@ func TestClient_TokenHandling(t *testing.T) {
 		t.Errorf("expected untruncated content of length %d, got length %d", len(largeContent), len(firstMsg["content"].(string)))
 	}
 }
+
+func TestMapReasoningEffort(t *testing.T) {
+	cases := []struct {
+		input    string
+		expected string
+	}{
+		{"default", ""},
+		{"", ""},
+		{"none", "none"},
+		{"low", "low"},
+		{"medium", "medium"},
+		{"high", "high"},
+		{"xhigh", "high"},
+		{"max", "high"},
+		{"UNKNOWN", ""},
+	}
+	for _, c := range cases {
+		got := mapReasoningEffort(c.input)
+		if got != c.expected {
+			t.Errorf("mapReasoningEffort(%q) = %q; want %q", c.input, got, c.expected)
+		}
+	}
+}
+
+func TestClient_ReasoningEffort_MappingAndFallback(t *testing.T) {
+	var requestBodies []map[string]any
+	var return400OnReasoningEffort bool
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var parsed map[string]any
+		_ = json.Unmarshal(body, &parsed)
+		requestBodies = append(requestBodies, parsed)
+
+		if return400OnReasoningEffort {
+			if _, hasEffort := parsed["reasoning_effort"]; hasEffort {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				w.Write([]byte(`{"error":{"message":"Unrecognized request argument: reasoning_effort"}}`))
+				return
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"pong"}}]}`))
+	}))
+	defer server.Close()
+
+	client := NewClient()
+
+	// Case 1: SupportsThinking = true, ReasoningEffort = "default" -> reasoning_effort omitted
+	targetDefault := providers.Target{
+		Provider: providers.Provider{Name: "test-prov", BaseURL: server.URL},
+		Model: providers.Model{
+			ID: "model-default",
+			Capabilities: providers.Capabilities{
+				SupportsThinking: true,
+				ReasoningEffort:  "default",
+			},
+		},
+	}
+	requestBodies = nil
+	return400OnReasoningEffort = false
+	resp, err := client.Complete(context.Background(), targetDefault, []ChatMessage{{Role: "user", Content: "ping"}}, nil)
+	if err != nil {
+		t.Fatalf("Complete failed for default effort: %v", err)
+	}
+	if resp.Choices[0].Message.Content != "pong" {
+		t.Errorf("expected pong, got %s", resp.Choices[0].Message.Content)
+	}
+	if len(requestBodies) != 1 {
+		t.Fatalf("expected 1 request, got %d", len(requestBodies))
+	}
+	if _, ok := requestBodies[0]["reasoning_effort"]; ok {
+		t.Errorf("expected reasoning_effort to be omitted for 'default', but got: %v", requestBodies[0]["reasoning_effort"])
+	}
+
+	// Case 2: SupportsThinking = true, ReasoningEffort = "high" -> sends "high"
+	targetHigh := providers.Target{
+		Provider: providers.Provider{Name: "test-prov", BaseURL: server.URL},
+		Model: providers.Model{
+			ID: "model-high",
+			Capabilities: providers.Capabilities{
+				SupportsThinking: true,
+				ReasoningEffort:  "high",
+			},
+		},
+	}
+	requestBodies = nil
+	resp, err = client.Complete(context.Background(), targetHigh, []ChatMessage{{Role: "user", Content: "ping"}}, nil)
+	if err != nil {
+		t.Fatalf("Complete failed for high effort: %v", err)
+	}
+	if len(requestBodies) != 1 {
+		t.Fatalf("expected 1 request, got %d", len(requestBodies))
+	}
+	if val, ok := requestBodies[0]["reasoning_effort"]; !ok || val != "high" {
+		t.Errorf("expected reasoning_effort='high', got: %v", val)
+	}
+
+	// Case 3: SupportsThinking = true, ReasoningEffort = "high", server returns 400
+	// Graceful fallback triggers: retries immediately without reasoning_effort and succeeds!
+	requestBodies = nil
+	return400OnReasoningEffort = true
+	resp, err = client.Complete(context.Background(), targetHigh, []ChatMessage{{Role: "user", Content: "ping"}}, nil)
+	if err != nil {
+		t.Fatalf("Complete failed during graceful fallback: %v", err)
+	}
+	if resp.Choices[0].Message.Content != "pong" {
+		t.Errorf("expected pong after fallback, got %s", resp.Choices[0].Message.Content)
+	}
+	if len(requestBodies) != 2 {
+		t.Fatalf("expected exactly 2 requests (initial + fallback retry), got %d", len(requestBodies))
+	}
+	// First request had reasoning_effort
+	if _, ok := requestBodies[0]["reasoning_effort"]; !ok {
+		t.Errorf("expected first request to have reasoning_effort")
+	}
+	// Second request stripped reasoning_effort
+	if _, ok := requestBodies[1]["reasoning_effort"]; ok {
+		t.Errorf("expected retry request to have reasoning_effort omitted, got: %v", requestBodies[1]["reasoning_effort"])
+	}
+}
+

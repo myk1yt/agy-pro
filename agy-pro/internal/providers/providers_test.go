@@ -588,9 +588,10 @@ func TestInteractiveSetupWizard_ServerMaximumTokens(t *testing.T) {
 		"-1",     // max output tokens: -1 for server maximum
 		"Y",      // supports tools: Y
 		"",       // allowed tools default
-		"y",      // reasoning: y
-		"y",      // vision: y
-		"N",      // add another: N
+		"y",       // reasoning: y
+		"default", // reasoning effort
+		"y",       // vision: y
+		"N",       // add another: N
 	}, "\n") + "\n"
 
 	in := strings.NewReader(input)
@@ -929,6 +930,109 @@ func TestInteractiveSetupWizard_MultipleModels_PreservesCredentials(t *testing.T
 		if h != "Bearer mock-nw-key-999" {
 			t.Errorf("probe request %d had header %q; want Bearer mock-nw-key-999", i, h)
 		}
+	}
+}
+
+func TestInteractiveSetupWizard_ReasoningEffortDefault(t *testing.T) {
+	tmpDir := t.TempDir()
+	provPath := filepath.Join(tmpDir, "providers.json")
+	t.Setenv(EnvProviders, provPath)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"choices":[{"message":{"content":"pong"}}]}`))
+	}))
+	defer server.Close()
+
+	// Simulate user pressing Enter on reasoning prompt (defaults to Y) and Enter on effort (defaults to default)
+	input := strings.Join([]string{
+		"thinkprov",
+		server.URL + "/v1",
+		"THINK_KEY",
+		"",
+		"custom-think-model",
+		"thinkfam",
+		"128000",
+		"4096",
+		"Y",  // tools: Y
+		"",   // allowed tools default
+		"",   // reasoning: Enter -> defaults to Y!
+		"",   // reasoning effort: Enter -> defaults to "default"!
+		"N",  // vision: N
+		"N",  // add another: N
+	}, "\n") + "\n"
+
+	in := strings.NewReader(input)
+	out := &bytes.Buffer{}
+
+	if err := InteractiveSetupWizard(in, out); err != nil {
+		t.Fatalf("wizard returned error: %v\nOutput: %s", err, out.String())
+	}
+
+	reg, err := LoadFrom(provPath)
+	if err != nil {
+		t.Fatalf("failed to load registry: %v", err)
+	}
+	m := reg.Providers[0].Models[0]
+	if !m.Capabilities.SupportsThinking {
+		t.Errorf("expected SupportsThinking to be true by default")
+	}
+	if m.Capabilities.ReasoningEffort != "default" {
+		t.Errorf("reasoningEffort = %q; want 'default'", m.Capabilities.ReasoningEffort)
+	}
+	if !m.HasTag("reasoning") {
+		t.Errorf("expected model to have tag 'reasoning', got %v", m.Tags)
+	}
+}
+
+func TestInteractiveSetupWizard_ReasoningEffortExplicitHigh(t *testing.T) {
+	tmpDir := t.TempDir()
+	provPath := filepath.Join(tmpDir, "providers.json")
+	t.Setenv(EnvProviders, provPath)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"choices":[{"message":{"content":"pong"}}]}`))
+	}))
+	defer server.Close()
+
+	// Explicitly choose "high" for reasoning effort
+	input := strings.Join([]string{
+		"highprov",
+		server.URL + "/v1",
+		"HIGH_KEY",
+		"",
+		"custom-high-model",
+		"highfam",
+		"128000",
+		"4096",
+		"Y",    // tools: Y
+		"",     // allowed tools default
+		"y",    // reasoning: y
+		"high", // reasoning effort: high
+		"N",    // vision: N
+		"N",    // add another: N
+	}, "\n") + "\n"
+
+	in := strings.NewReader(input)
+	out := &bytes.Buffer{}
+
+	if err := InteractiveSetupWizard(in, out); err != nil {
+		t.Fatalf("wizard returned error: %v\nOutput: %s", err, out.String())
+	}
+
+	reg, err := LoadFrom(provPath)
+	if err != nil {
+		t.Fatalf("failed to load registry: %v", err)
+	}
+	m := reg.Providers[0].Models[0]
+	if !m.Capabilities.SupportsThinking {
+		t.Errorf("expected SupportsThinking to be true")
+	}
+	if m.Capabilities.ReasoningEffort != "high" {
+		t.Errorf("reasoningEffort = %q; want 'high'", m.Capabilities.ReasoningEffort)
 	}
 }
 

@@ -11,7 +11,9 @@ import (
 	"runtime"
 	"strings"
 
+	"agypro/internal/bridge"
 	"agypro/internal/paths"
+	"agypro/internal/providers"
 )
 
 // ErrRecursionDetected is returned when agy-pro detects an infinite call loop.
@@ -132,7 +134,24 @@ func ExecutePassthrough(realAgyPath string, args []string) (int, error) {
 	cmd.Stderr = os.Stderr
 
 	// Propagate recursion guard to child process
-	cmd.Env = append(os.Environ(), paths.EnvAgyProActive+"=1")
+	childEnv := os.Environ()
+	childEnv = append(childEnv, paths.EnvAgyProActive+"=1")
+
+	// Inject LLM Gateway bridge if providers and models are configured
+	if reg, err := providers.Load(); err == nil && reg != nil {
+		modelIDs := CollectModelIDs(reg)
+		if len(modelIDs) > 0 {
+			bridgeURL, stopFunc, err := bridge.StartBridge(reg)
+			if err == nil && stopFunc != nil {
+				defer stopFunc()
+				for _, ge := range BuildGatewayEnv(reg, bridgeURL) {
+					childEnv = setEnvKV(childEnv, ge)
+				}
+			}
+		}
+	}
+
+	cmd.Env = childEnv
 
 	if err := cmd.Run(); err != nil {
 		var exitErr *exec.ExitError
@@ -143,6 +162,63 @@ func ExecutePassthrough(realAgyPath string, args []string) (int, error) {
 	}
 
 	return 0, nil
+}
+
+// BuildGatewayEnv constructs the AGY_LLM_GATEWAY_* environment variables from the registry,
+// enabling the native agy CLI to surface external models in the /model picker.
+func BuildGatewayEnv(reg *providers.Registry, bridgeURL string) []string {
+	if reg == nil || len(reg.Providers) == 0 || bridgeURL == "" {
+		return nil
+	}
+
+	modelIDs := CollectModelIDs(reg)
+	if len(modelIDs) == 0 {
+		return nil
+	}
+
+	return []string{
+		"AGY_LLM_GATEWAY_URL=" + bridgeURL,
+		"AGY_LLM_GATEWAY_WIRE_PROTOCOL=openai",
+		"AGY_LLM_GATEWAY_API_KEY=agy-pro-local-key",
+		"AGY_LLM_GATEWAY_MODELS=" + strings.Join(modelIDs, ","),
+	}
+}
+
+// CollectModelIDs extracts all unique enabled model IDs across all providers in the registry.
+func CollectModelIDs(reg *providers.Registry) []string {
+	if reg == nil {
+		return nil
+	}
+	var modelIDs []string
+	seen := make(map[string]bool)
+	for _, p := range reg.Providers {
+		for _, m := range p.Models {
+			if m.IsEnabled() && !seen[m.ID] {
+				seen[m.ID] = true
+				modelIDs = append(modelIDs, m.ID)
+			}
+		}
+	}
+	return modelIDs
+}
+
+func setEnvKV(env []string, entry string) []string {
+	parts := strings.SplitN(entry, "=", 2)
+	if len(parts) != 2 {
+		return append(env, entry)
+	}
+	key := parts[0]
+	out := make([]string, 0, len(env)+1)
+	for _, e := range env {
+		if idx := strings.Index(e, "="); idx >= 0 {
+			k := e[:idx]
+			if strings.EqualFold(k, key) {
+				continue
+			}
+		}
+		out = append(out, e)
+	}
+	return append(out, entry)
 }
 
 // isSameDir checks if two directories refer to the same location.
