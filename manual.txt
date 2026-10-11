@@ -1,0 +1,310 @@
+================================================================================
+                    agy-pro User Manual / 사용 설명서
+      High-Performance Antigravity Shim, Swarm Fanout & Mode Manager
+================================================================================
+
+[ 목차 / Table of Contents ]
+--------------------------------------------------------------------------------
+[ 한국어 (Korean) ]
+1. 초보자를 위한 1초 원클릭 초간편 설치 방법
+2. 모드 전환 방법 (풀스택 모드 vs 클린 모드)
+3. 대화형 터미널 설정 마법사 및 실시간 연결 테스트 (agy pro setup)
+4. 멀티모델 병렬 스웜 팬아웃 & VP Arbiter 블라인드 대조표 (agy pro fanout)
+5. 시스템 상태 진단 및 안전 복구 (agy pro doctor & restore)
+6. 주요 명령어 요약 가이드
+
+[ English ]
+1. One-Click Instant Installation for Beginners
+2. Mode Switching Guide (Full-Stack vs Clean)
+3. Interactive Setup Wizard & Live Connection Testing (agy pro setup)
+4. Multi-Model Swarm Fanout & VP Arbiter Blind Matrix (agy pro fanout)
+5. System Diagnostics & Safe Recovery (agy pro doctor & restore)
+6. Command Reference Summary
+
+================================================================================
+                              [ 한국어 가이드 ]
+================================================================================
+
+--------------------------------------------------------------------------------
+1. 초보자를 위한 1초 원클릭 초간편 설치 방법
+--------------------------------------------------------------------------------
+agy-pro는 코딩이나 시스템 설정을 잘 모르는 초보자도 마우스 클릭 한 번으로
+모든 환경을 자동으로 구축할 수 있도록 설계되었습니다.
+
+[설치 단계]
+  1) 탐색기에서 Antigravity-cli 프로젝트 폴더를 엽니다.
+  2) 폴더 안의 `install.cmd` 파일을 마우스로 '더블클릭'합니다.
+     (터미널을 이용할 경우: PowerShell 또는 CMD 창에서 `.\install.cmd` 입력)
+  3) 설치 스크립트가 다음 작업을 100% 전자동으로 수행합니다:
+     - Go 언어 툴체인이 없는 경우 최신 버전 자동 다운로드 및 무설치 구성
+     - agy-pro 고성능 네이티브 바이너리(agy.exe) 자동 컴파일 및 빌드
+     - 사용자 홈 디렉토리(`%USERPROFILE%\.agy-pro\bin`)에 바이너리 배치
+     - Windows 시스템 사용자 환경변수(PATH)의 최상단(우선순위 1위)에 자동 등록
+     - 시스템 진단(Doctor) 자동 실행 및 정상 작동 여부 검증
+  4) 설치가 끝나면 "설치가 성공적으로 완료되었습니다!" 메시지가 표시됩니다.
+     아무 키나 눌러 창을 닫고, 새로 터미널 창을 열면 즉시 `agy` 명령어를 사용할 수 있습니다!
+
+* 기존 설치되어 있던 원본 Antigravity는 손상되지 않으며, `agy.exe` 심(Shim)이
+  기존의 모든 명령어를 100% 투명하게 자동 위임(Pass-through)합니다.
+
+
+--------------------------------------------------------------------------------
+2. 모드 전환 방법 (/mode 명령 및 터미널 agy pro mode)
+--------------------------------------------------------------------------------
+agy-pro는 사용 환경에 따라 두 가지 프로필 모드를 자유롭게 전환할 수 있습니다:
+- 풀스택 모드 (FULL): 35개 이상의 확장 에이전트 규칙, 전문 스킬셋, 오케스트레이터 활성화
+- 클린 모드 (CLEAN): Antigravity 본연의 기본 경량 상태 유지
+
+[모드 전환 실행 방법]
+  방법 A. 터미널에서 직접 전환:
+    - 대화형 선택 메뉴 열기:
+        agy pro mode
+    - 풀스택 모드로 즉시 전환:
+        agy pro mode full
+    - 기본 클린 모드로 즉시 전환:
+        agy pro mode clean
+    - 백업된 이전 상태로 원상 복구:
+        agy pro mode restore
+
+  방법 B. Antigravity 채팅 세션 내에서 슬래시 명령어로 전환:
+    - 채팅창에 `/mode` 입력 후 원하는 프로필을 선택할 수 있습니다.
+
+[자동 백업 기능]
+모드를 변경할 때마다 기존 `~/.gemini` 설정은 타임스탬프가 찍힌 백업 폴더
+(`~/.agy-pro/backups/`)에 자동으로 안전하게 보관되므로 데이터 유실 걱정이 없습니다.
+
+
+--------------------------------------------------------------------------------
+3. 대화형 터미널 마법사 및 실시간 연결 테스트 (agy pro setup)
+--------------------------------------------------------------------------------
+OpenRouter, DeepSeek, Groq, Mistral 등 외부 최신 모델을 클릭과 엔터 몇 번으로
+손쉽게 연결하고, 실시간 API 핑/레이턴시 테스트까지 한 번에 완료할 수 있습니다.
+
+[실행 방법]
+  터미널에서 다음 명령어를 입력합니다:
+    agy pro setup
+
+[마법사 진행 단계]
+  1) Provider 이름 입력 (예: deepseek, openrouter, groq, openai)
+  2) API Base URL 확인 (기본 권장 URL이 자동으로 제시되며 Enter로 수락 가능)
+  3) API 키 환경변수 이름 지정 (예: DEEPSEEK_API_KEY)
+  4) API 키 값 입력 (입력 시 Windows 사용자 환경변수에 영구 저장 지원)
+  5) 모델 ID 및 패밀리 지정 (예: deepseek-chat, deepseek-reasoner 등)
+  6) 모델 지원 기능 선택 (함수 호출/에이전트 도구 지원, Vision, Video, Reasoning)
+  7) ⚡ [실시간 연결 테스트 (Live Probe)]:
+     - 마법사가 즉시 해당 API 엔드포인트로 핑 요청을 전송합니다.
+     - 응답 성공 시: 레이턴시(ms)와 함께 초록색 체크마크(✅)가 표시됩니다.
+     - 실패 시: 에러 원인이 출력되며, 즉시 URL이나 API 키를 수정하여 재시도할 수 있습니다.
+  8) 모든 정보는 암호화 안전 원칙에 따라 환경변수 참조 방식으로
+     `~/.agy-pro/providers.json`에 깔끔하게 저장됩니다. (API Secret 직접 하드코딩 금지)
+
+
+--------------------------------------------------------------------------------
+4. 멀티모델 스웜 팬아웃 & VP Arbiter 대조표 (agy pro fanout)
+--------------------------------------------------------------------------------
+단일 AI 모델의 환각(Hallucination)이나 편향을 방지하기 위해 여러 공급자(Provider)의
+이종 모델들에게 동시에 질문을 전송하고, VP Arbiter가 결과를 블라인드 대조 검증합니다.
+
+[실행 방법 예시]
+  - 기본 팬아웃 실행:
+      agy pro fanout "프로젝트 아키텍처 보안 취약점을 정밀 검토해줘"
+  - 블라인드 채점 및 대조 행렬 출력 (--arbiter):
+      agy pro fanout --arbiter "결제 트랜잭션 동시성 처리 방식 비교"
+  - 특정 모델 패밀리 지정 (--models):
+      agy pro fanout --models=deepseek-chat,gpt-4o "리팩토링 제안"
+  - 에이전트 도구(파일 읽기/검색 등) 활성화 (--tools):
+      agy pro fanout --tools "src/ 디렉토리 내의 버그를 조사해줘"
+
+[VP Arbiter 블라인드 대조표 예시]
+  팬아웃이 완료되면 터미널에 다음과 같은 종합 품질 비교 매트릭스가 출력됩니다:
+  +------------------+----------+----------+----------+----------+
+  | Model / Provider | Latency  | Accuracy | Completn | Score    |
+  +------------------+----------+----------+----------+----------+
+  | DeepSeek-V3      | 480ms    | 9.5/10   | 9.0/10   | 92.5/100 |
+  | GPT-4o           | 720ms    | 9.0/10   | 9.5/10   | 91.0/100 |
+  | Claude 3.5 Sonnet| 650ms    | 9.5/10   | 9.5/10   | 95.0/100 |
+  +------------------+----------+----------+----------+----------+
+  - 최고 점수를 획득한 모델의 핵심 답변과 교차 검증된 합의(Consensus) 내용이 요약 보고됩니다.
+
+
+--------------------------------------------------------------------------------
+5. 상태 진단 및 안전 복구 (agy pro doctor & restore)
+--------------------------------------------------------------------------------
+문제가 생기거나 환경 상태를 점검하고 싶을 때는 진단 도구를 실행하세요.
+
+[시스템 자가 진단 (Doctor)]
+  터미널에 다음 명령어를 입력합니다:
+    agy pro doctor
+
+  점검 항목:
+  - 원본 Antigravity 바이너리 존재 여부 및 버전
+  - agy-pro 심(Shim) 실행 경로 및 무결성
+  - Go 언어 툴체인 상태
+  - 등록된 외부 Provider 엔드포인트 및 API 키 환경변수 주입 상태
+  - 백업 디렉토리 용량 및 권한
+
+[긴급 복구 및 초기화]
+  - 이전 설정으로 되돌리기:
+      agy pro mode restore
+  - 전체 상태 한눈에 확인하기:
+      agy pro status
+
+
+--------------------------------------------------------------------------------
+6. 주요 명령어 요약 가이드
+--------------------------------------------------------------------------------
+  agy pro setup          : 외부 AI 모델 및 API 키 연동 대화형 마법사
+  agy pro mode           : 대화형 프로필 모드 선택 (Full-Stack / Clean)
+  agy pro mode full      : 풀스택(에이전트 35종+스킬셋) 모드로 전환
+  agy pro mode clean     : 기본(클린 Antigravity) 모드로 전환
+  agy pro mode restore   : 가장 최근 백업본으로 모드 복구
+  agy pro status         : 현재 활성화된 모드 및 설정 상태 출력
+  agy pro doctor         : 시스템 진단 및 도구체인 상태 검사
+  agy pro fanout "<질문>" : 멀티모델 병렬 스웜 질의 및 종합 결과 생성
+  agy pro help           : 사용 가능한 전체 도움말 확인
+  agy <일반명령어>       : 원본 Antigravity CLI로 100% 투명 실행
+
+
+================================================================================
+                            [ ENGLISH GUIDE ]
+================================================================================
+
+--------------------------------------------------------------------------------
+1. One-Click Instant Installation for Beginners
+--------------------------------------------------------------------------------
+agy-pro is engineered for effortless zero-friction setup, even for beginners
+with no prior programming or CLI experience.
+
+[Installation Steps]
+  1) Open the Antigravity-cli project directory in Windows File Explorer.
+  2) Double-click the `install.cmd` script.
+     (Or run `.\install.cmd` in PowerShell / Command Prompt).
+  3) The installer automatically and silently handles everything:
+     - Detects or downloads portable Go toolchain if not already present.
+     - Compiles the high-performance native agy-pro shim binary (`agy.exe`).
+     - Places `agy.exe` inside `%USERPROFILE%\.agy-pro\bin`.
+     - Prepends `~/.agy-pro/bin` to the top priority of Windows User PATH.
+     - Runs `agy pro doctor` to verify complete system operational readiness.
+  4) When finished, open any new terminal window and type `agy` right away!
+
+* Your existing Antigravity installation remains completely intact. The agy
+  shim seamlessly proxies all native flags and commands transparently.
+
+
+--------------------------------------------------------------------------------
+2. Mode Switching Guide (Full-Stack vs Clean)
+--------------------------------------------------------------------------------
+Switch between development environments with zero manual file copying:
+- FULL MODE: Enables 35+ specialized agent rules, curated skillsets, & orchestrators.
+- CLEAN MODE: Keeps vanilla, lightweight Antigravity default profile.
+
+[How to Switch Modes]
+  Option A. In the terminal:
+    - Open interactive mode switcher:
+        agy pro mode
+    - Instantly switch to Full-Stack mode:
+        agy pro mode full
+    - Instantly switch to Clean mode:
+        agy pro mode clean
+    - Restore from previous backup:
+        agy pro mode restore
+
+  Option B. Inside an Antigravity prompt session:
+    - Type `/mode` to trigger the profile selector.
+
+[Automatic Backups]
+Every switch creates an atomic, timestamped backup inside `~/.agy-pro/backups/`,
+guaranteeing you can revert at any time with complete peace of mind.
+
+
+--------------------------------------------------------------------------------
+3. Interactive Setup Wizard & Live Connection Testing (agy pro setup)
+--------------------------------------------------------------------------------
+Connect external OpenAI-compatible models (DeepSeek, OpenRouter, Groq, etc.)
+with guided interactive prompts and instant live health checking.
+
+[How to Run]
+  Execute in terminal:
+    agy pro setup
+
+[Wizard Workflow]
+  1) Enter Provider name (e.g., deepseek, openrouter, groq, openai).
+  2) Confirm or customize Base URL (smart defaults provided automatically).
+  3) Enter API key environment variable name (e.g., DEEPSEEK_API_KEY).
+  4) Enter API key value (optionally saved directly into Windows User Environment).
+  5) Configure Model ID and family (e.g., deepseek-chat, gpt-4o).
+  6) Toggle model capabilities (Tools/Function calling, Vision, Video, Reasoning).
+  7) ⚡ [Live Connection Probe]:
+     - The wizard sends an instant real-time test ping to the provider endpoint.
+     - Success: Displays latency in milliseconds with a green checkmark (✅).
+     - Failure: Displays error details and lets you reconfigure on the spot.
+  8) Saves configuration securely into `~/.agy-pro/providers.json`.
+
+
+--------------------------------------------------------------------------------
+4. Multi-Model Swarm Fanout & VP Arbiter Blind Matrix (agy pro fanout)
+--------------------------------------------------------------------------------
+Eliminate single-model blind spots and hallucination by broadcasting prompts
+simultaneously to heterogeneous models, synthesized by a VP Arbiter matrix.
+
+[Command Examples]
+  - Basic fanout query:
+      agy pro fanout "Analyze potential race conditions in Go channels"
+  - With VP Arbiter blind scoring matrix (--arbiter):
+      agy pro fanout --arbiter "Compare OAuth2 vs Passkey implementation"
+  - Target specific models (--models):
+      agy pro fanout --models=deepseek-chat,gpt-4o "Refactor SQL query"
+  - Enable local agentic tool execution loop (--tools):
+      agy pro fanout --tools "Investigate codebase for deprecated APIs"
+
+[VP Arbiter Blind Matrix Output Example]
+  +------------------+----------+----------+----------+----------+
+  | Model / Provider | Latency  | Accuracy | Completn | Score    |
+  +------------------+----------+----------+----------+----------+
+  | DeepSeek-V3      | 480ms    | 9.5/10   | 9.0/10   | 92.5/100 |
+  | GPT-4o           | 720ms    | 9.0/10   | 9.5/10   | 91.0/100 |
+  | Claude 3.5 Sonnet| 650ms    | 9.5/10   | 9.5/10   | 95.0/100 |
+  +------------------+----------+----------+----------+----------+
+  - Summarizes cross-model consensus and highlights validated insights.
+
+
+--------------------------------------------------------------------------------
+5. System Diagnostics & Safe Recovery (agy pro doctor & restore)
+--------------------------------------------------------------------------------
+Diagnose issues and restore previous states effortlessly.
+
+[System Doctor Diagnostics]
+  Run in terminal:
+    agy pro doctor
+
+  Checks:
+  - Real underlying agy binary presence and version
+  - agy-pro shim binary path and resolution order
+  - Go toolchain configuration
+  - External provider endpoint reachability & environment variables
+  - Backup directory integrity
+
+[Recovery Commands]
+  - Restore last working profile:
+      agy pro mode restore
+  - View current status summary:
+      agy pro status
+
+
+--------------------------------------------------------------------------------
+6. Command Reference Summary
+--------------------------------------------------------------------------------
+  agy pro setup          : Interactive provider and API key setup wizard
+  agy pro mode           : Interactive profile switcher
+  agy pro mode full      : Activate full-stack profile (35+ agents & skillsets)
+  agy pro mode clean     : Activate clean default profile
+  agy pro mode restore   : Restore previous profile from backup
+  agy pro status         : Display current profile mode and provider status
+  agy pro doctor         : Run diagnostic health check
+  agy pro fanout "<q>"   : Run multi-model swarm fanout with synthesis
+  agy pro help           : View full CLI help
+  agy <arguments>        : 100% transparent pass-through to underlying agy CLI
+
+================================================================================
+                    Enjoy supercharged Antigravity with agy-pro!
+================================================================================

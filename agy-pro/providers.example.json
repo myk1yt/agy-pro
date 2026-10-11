@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "defaults": {
+    "n": 3,
+    "timeoutSeconds": 120,
+    "maxTurns": 10,
+    "tools": "read,search"
+  },
+  "providers": [
+    {
+      "name": "openai",
+      "baseURL": "https://api.openai.com/v1",
+      "apiKeyEnv": "OPENAI_API_KEY",
+      "models": [
+        {
+          "id": "gpt-4o",
+          "family": "openai",
+          "tags": ["flagship", "general", "tools"],
+          "contextLength": 128000,
+          "maxOutputTokens": 4096
+        },
+        {
+          "id": "gpt-4o-mini",
+          "family": "openai",
+          "tags": ["fast", "cost-effective"],
+          "contextLength": 128000,
+          "maxOutputTokens": 4096
+        },
+        {
+          "id": "o3-mini",
+          "family": "openai",
+          "tags": ["reasoning", "coding"],
+          "contextLength": 200000,
+          "maxOutputTokens": 100000
+        }
+      ]
+    },
+    {
+      "name": "deepseek",
+      "baseURL": "https://api.deepseek.com/v1",
+      "apiKeyEnv": "DEEPSEEK_API_KEY",
+      "models": [
+        {
+          "id": "deepseek-chat",
+          "family": "deepseek",
+          "tags": ["general", "tools", "coding"],
+          "contextLength": 64000,
+          "maxOutputTokens": 8192
+        },
+        {
+          "id": "deepseek-reasoner",
+          "family": "deepseek",
+          "tags": ["reasoning", "math"],
+          "contextLength": 64000,
+          "maxOutputTokens": 8192
+        }
+      ]
+    },
+    {
+      "name": "openrouter",
+      "baseURL": "https://openrouter.ai/api/v1",
+      "apiKeyEnv": "OPENROUTER_API_KEY",
+      "models": [
+        {
+          "id": "anthropic/claude-3.5-sonnet",
+          "family": "anthropic",
+          "tags": ["flagship", "coding", "tools"],
+          "contextLength": 200000,
+          "maxOutputTokens": 8192
+        },
+        {
+          "id": "google/gemini-2.0-flash",
+          "family": "gemini",
+          "tags": ["fast", "multimodal", "tools"],
+          "contextLength": 1048576,
+          "maxOutputTokens": 8192
+        },
+        {
+          "id": "deepseek/deepseek-chat",
+          "family": "deepseek",
+          "tags": ["fallback"],
+          "contextLength": 64000,
+          "maxOutputTokens": 8192
+        },
+        {
+          "id": "meta-llama/llama-3.3-70b-instruct",
+          "family": "llama",
+          "tags": ["open-source", "general"],
+          "contextLength": 131072,
+          "maxOutputTokens": 8192
+        }
+      ]
+    },
+    {
+      "name": "groq",
+      "baseURL": "https://api.groq.com/openai/v1",
+      "apiKeyEnv": "GROQ_API_KEY",
+      "models": [
+        {
+          "id": "llama-3.3-70b-versatile",
+          "family": "llama",
+          "tags": ["ultra-fast", "open-source"],
+          "contextLength": 128000,
+          "maxOutputTokens": 8192
+        },
+        {
+          "id": "qwen-qwq-32b",
+          "family": "qwen",
+          "tags": ["reasoning", "open-source"],
+          "contextLength": 131072,
+          "maxOutputTokens": 8192
+        }
+      ]
+    },
+    {
+      "name": "together",
+      "baseURL": "https://api.together.xyz/v1",
+      "apiKeyEnv": "TOGETHER_API_KEY",
+      "models": [
+        {
+          "id": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+          "family": "llama",
+          "tags": ["fast"],
+          "contextLength": 131072,
+          "maxOutputTokens": 8192
+        },
+        {
+          "id": "Qwen/Qwen2.5-72B-Instruct-Turbo",
+          "family": "qwen",
+          "tags": ["coding", "general"],
+          "contextLength": 32768,
+          "maxOutputTokens": 4096
+        }
+      ]
+    },
+    {
+      "name": "mistral",
+      "baseURL": "https://api.mistral.ai/v1",
+      "apiKeyEnv": "MISTRAL_API_KEY",
+      "models": [
+        {
+          "id": "mistral-large-latest",
+          "family": "mistral",
+          "tags": ["flagship", "reasoning"],
+          "contextLength": 128000,
+          "maxOutputTokens": 8192
+        },
+        {
+          "id": "codestral-latest",
+          "family": "mistral",
+          "tags": ["coding"],
+          "contextLength": 32768,
+          "maxOutputTokens": 4096
+        }
+      ]
+    }
+  ]
+}
