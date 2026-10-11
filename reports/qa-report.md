@@ -103,6 +103,12 @@ During initial test execution, `TestInteractiveSetupWizard` encountered an infin
   5. 상태 진단 및 안전 복구 (agy pro doctor & restore) / Diagnostics & Recovery
   6. 주요 명령어 요약 가이드 / Command Reference Summary
 
+### F. Installer Multi-Shell & CRLF Reliability Verification
+- **`install.cmd` CRLF conversion**: Converted line endings from LF to CRLF, permanently eliminating cmd.exe parsing errors (`'cho'`, `'ecutionPolicy'`, `'IT_CODE'`).
+- **Root `install.ps1`**: Added convenient launcher script in root directory that passes arguments and forwards exit code.
+- **`agy-pro/scripts/install.ps1`**: Upgraded with `-NoPause` argument, non-interactive/redirected execution detection, executable locking fallback (`agy.old.<guid>.exe`), and clear troubleshooting instructions.
+- **Execution Matrix**: Validated in `cmd.exe /c "install.cmd"`, PowerShell `.\install.cmd`, PowerShell `.\install.ps1`, and automated `-NoPause` flags with 100% exit code 0.
+
 ---
 
 ## 4. Verification Checklist
@@ -111,7 +117,7 @@ During initial test execution, `TestInteractiveSetupWizard` encountered an infin
 - [x] Go build `./...` completes with 0 errors.
 - [x] Go vet `./...` passes with 0 warnings.
 - [x] Go test `-v -count=1 ./...` passes 100% across all packages.
-- [x] `install.cmd` and `agy-pro/scripts/install.ps1` validated syntactically and functionally.
+- [x] `install.cmd`, root `install.ps1`, and `agy-pro/scripts/install.ps1` validated across CMD and PowerShell.
 - [x] Native binary `agy.exe` doctor diagnostic verified.
 - [x] Bilingual `manual.txt` generated at workspace root.
 - [x] Git staging (`git add .`), atomic commit, and GitHub push executed on branch `feature/agy-pro`.

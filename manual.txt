@@ -33,8 +33,9 @@ agy-pro는 코딩이나 시스템 설정을 잘 모르는 초보자도 마우스
 
 [설치 단계]
   1) 탐색기에서 Antigravity-cli 프로젝트 폴더를 엽니다.
-  2) 폴더 안의 `install.cmd` 파일을 마우스로 '더블클릭'합니다.
-     (터미널을 이용할 경우: PowerShell 또는 CMD 창에서 `.\install.cmd` 입력)
+  2) 편한 방식으로 설치를 실행합니다 (아래 두 가지 방법 모두 지원):
+     - 방법 A (탐색기 마우스 더블클릭): 폴더 안의 `install.cmd` 파일을 마우스로 '더블클릭'합니다.
+     - 방법 B (터미널 명령어 실행): PowerShell 또는 CMD 창에서 `.\install.cmd` 또는 `.\install.ps1` 입력.
   3) 설치 스크립트가 다음 작업을 100% 전자동으로 수행합니다:
      - Go 언어 툴체인이 없는 경우 최신 버전 자동 다운로드 및 무설치 구성
      - agy-pro 고성능 네이티브 바이너리(agy.exe) 자동 컴파일 및 빌드
@@ -42,7 +43,8 @@ agy-pro는 코딩이나 시스템 설정을 잘 모르는 초보자도 마우스
      - Windows 시스템 사용자 환경변수(PATH)의 최상단(우선순위 1위)에 자동 등록
      - 시스템 진단(Doctor) 자동 실행 및 정상 작동 여부 검증
   4) 설치가 끝나면 "설치가 성공적으로 완료되었습니다!" 메시지가 표시됩니다.
-     아무 키나 눌러 창을 닫고, 새로 터미널 창을 열면 즉시 `agy` 명령어를 사용할 수 있습니다!
+     더블클릭으로 실행한 경우 창이 바로 꺼지지 않고 "계속하려면 아무 키나 누르십시오" 프롬프트가 대기합니다.
+     아무 키나 눌러 종료한 뒤, 새로 터미널 창을 열면 즉시 `agy` 명령어를 사용할 수 있습니다!
 
 * 기존 설치되어 있던 원본 Antigravity는 손상되지 않으며, `agy.exe` 심(Shim)이
   기존의 모든 명령어를 100% 투명하게 자동 위임(Pass-through)합니다.
@@ -177,15 +179,18 @@ with no prior programming or CLI experience.
 
 [Installation Steps]
   1) Open the Antigravity-cli project directory in Windows File Explorer.
-  2) Double-click the `install.cmd` script.
-     (Or run `.\install.cmd` in PowerShell / Command Prompt).
+  2) Run the installer using either convenient method:
+     - Method A (File Explorer Double-Click): Double-click `install.cmd`.
+     - Method B (Terminal Command): Run `.\install.cmd` or `.\install.ps1` in PowerShell / Command Prompt.
   3) The installer automatically and silently handles everything:
      - Detects or downloads portable Go toolchain if not already present.
      - Compiles the high-performance native agy-pro shim binary (`agy.exe`).
      - Places `agy.exe` inside `%USERPROFILE%\.agy-pro\bin`.
      - Prepends `~/.agy-pro/bin` to the top priority of Windows User PATH.
      - Runs `agy pro doctor` to verify complete system operational readiness.
-  4) When finished, open any new terminal window and type `agy` right away!
+  4) When finished, "설치가 성공적으로 완료되었습니다!" will be displayed.
+     When run via double-click, a "계속하려면 아무 키나 누르십시오" prompt keeps the window open so you can review results.
+     Press any key to finish, open any new terminal window, and type `agy` right away!
 
 * Your existing Antigravity installation remains completely intact. The agy
   shim seamlessly proxies all native flags and commands transparently.
