@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -199,45 +200,79 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 			continue
 		}
 
-		// Live Connection Probe
-		fmt.Fprintf(out, "\n[Live Probe] Testing endpoint connection with model %q...\n", selectedModel.ID)
-		latency, probeErr := ProbeEndpoint(baseURL, keyValue, selectedModel.ID)
-		if probeErr == nil {
-			fmt.Fprintf(out, "✅ Connection succeeded! Latency: %dms\n", latency)
-			models = append(models, selectedModel)
-			configuredSet[selectedModel.ID] = true
-		} else {
+		// Live Connection Probe Loop
+	probeLoop:
+		for {
+			fmt.Fprintf(out, "\n[Live Probe] Testing endpoint connection with model %q...\n", selectedModel.ID)
+			latency, probeErr := ProbeEndpoint(baseURL, keyValue, selectedModel.ID)
+			if probeErr == nil {
+				fmt.Fprintf(out, "✅ Connection succeeded! Latency: %dms\n", latency)
+				models = append(models, selectedModel)
+				configuredSet[selectedModel.ID] = true
+				break probeLoop
+			}
+
 			fmt.Fprintf(out, "❌ Connection test failed: %v\n", probeErr)
+			if isTimeoutErr(probeErr) {
+				fmt.Fprintln(out, "[Notice] Gateway response timed out. The model may be cold-starting or queueing. You can retry immediately or save anyway.")
+			}
+
 			fmt.Fprintln(out, "Options:")
-			fmt.Fprintln(out, "  1) Save model configuration anyway")
-			fmt.Fprintln(out, "  2) Edit Base URL or API Key and retry")
-			fmt.Fprintln(out, "  3) Discard model and choose another")
-			choice, _ := promptLine(reader, out, "Choice (1-3)", "1")
+			fmt.Fprintln(out, "  1) Save model configuration anyway [Recommended]")
+			fmt.Fprintln(out, "  2) Retry test immediately")
+			fmt.Fprintln(out, "  3) Edit Base URL or API Key")
+			fmt.Fprintln(out, "  4) Discard model")
+
+			choice, isEOF := promptLine(reader, out, "Choice (1-4)", "1")
+			choice = strings.ToLower(strings.TrimSpace(choice))
+			if isEOF && choice == "" {
+				choice = "1"
+			}
+
 			switch choice {
-			case "1":
+			case "1", "save":
 				models = append(models, selectedModel)
 				configuredSet[selectedModel.ID] = true
 				fmt.Fprintf(out, "Saved model %q anyway.\n", selectedModel.ID)
-			case "2":
+				break probeLoop
+			case "2", "retry", "r":
+				continue probeLoop
+			case "3", "edit", "e":
 				newURL, _ := promptLine(reader, out, "Base URL", baseURL)
+				newURL = strings.TrimSpace(newURL)
 				if newURL != "" {
 					baseURL = newURL
 				}
-				newKey, _ := promptLine(reader, out, "API Key", "")
-				if newKey != "" {
-					keyValue = newKey
-					_ = os.Setenv(apiKeyEnv, keyValue)
+				newKey, _ := promptLine(reader, out, "API Key", "keep current")
+				newKey = strings.TrimSpace(newKey)
+				if newKey != "" && !strings.EqualFold(newKey, "keep current") {
+					if !isLikelyAPIKey(newKey) && envNameRe.MatchString(newKey) {
+						if envVal := os.Getenv(newKey); envVal != "" {
+							apiKeyEnv = newKey
+							keyValue = envVal
+							fmt.Fprintf(out, "Using environment variable %s (loaded from current session).\n", apiKeyEnv)
+						} else {
+							keyValue = newKey
+							_ = os.Setenv(apiKeyEnv, keyValue)
+							if runtime.GOOS == "windows" {
+								_ = persistWindowsUserEnv(apiKeyEnv, keyValue)
+							}
+						}
+					} else {
+						keyValue = newKey
+						_ = os.Setenv(apiKeyEnv, keyValue)
+						if runtime.GOOS == "windows" {
+							_ = persistWindowsUserEnv(apiKeyEnv, keyValue)
+						}
+					}
 				}
-				l2, err2 := ProbeEndpoint(baseURL, keyValue, selectedModel.ID)
-				if err2 == nil {
-					fmt.Fprintf(out, "✅ Connection succeeded! Latency: %dms\n", l2)
-					models = append(models, selectedModel)
-					configuredSet[selectedModel.ID] = true
-				} else {
-					fmt.Fprintf(out, "❌ Retry failed: %v. Model discarded.\n", err2)
-				}
+				continue probeLoop
+			case "4", "discard", "d":
+				fmt.Fprintf(out, "Discarded model %q.\n", selectedModel.ID)
+				break probeLoop
 			default:
-				fmt.Fprintln(out, "Discarded model.")
+				fmt.Fprintf(out, "Discarded model %q.\n", selectedModel.ID)
+				break probeLoop
 			}
 		}
 
@@ -437,7 +472,7 @@ func ProbeEndpoint(baseURL, apiKey, modelID string) (latencyMs int64, err error)
 		return 0, err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
@@ -449,7 +484,7 @@ func ProbeEndpoint(baseURL, apiKey, modelID string) (latencyMs int64, err error)
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: 35 * time.Second}
 	start := time.Now()
 	resp, err := client.Do(req)
 	latency := time.Since(start).Milliseconds()
@@ -464,6 +499,23 @@ func ProbeEndpoint(baseURL, apiKey, modelID string) (latencyMs int64, err error)
 	}
 
 	return latency, nil
+}
+
+func isTimeoutErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "deadline exceeded") ||
+		strings.Contains(msg, "timed out")
 }
 
 func promptLine(r *bufio.Reader, w io.Writer, prompt, defaultValue string) (string, bool) {

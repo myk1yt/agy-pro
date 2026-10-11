@@ -2,12 +2,15 @@ package providers
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -621,4 +624,312 @@ func TestInteractiveSetupWizard_ServerMaximumTokens(t *testing.T) {
 		}
 	}
 }
+
+func TestIsTimeoutErr(t *testing.T) {
+	if isTimeoutErr(nil) {
+		t.Error("expected false for nil")
+	}
+	if !isTimeoutErr(context.DeadlineExceeded) {
+		t.Error("expected true for context.DeadlineExceeded")
+	}
+	if !isTimeoutErr(fmt.Errorf("network error: %w", context.DeadlineExceeded)) {
+		t.Error("expected true for wrapped context.DeadlineExceeded")
+	}
+	if !isTimeoutErr(errors.New("Client.Timeout exceeded while awaiting headers")) {
+		t.Error("expected true for timeout string")
+	}
+	if !isTimeoutErr(errors.New("connection timed out")) {
+		t.Error("expected true for timed out string")
+	}
+	if isTimeoutErr(errors.New("HTTP 401 unauthorized")) {
+		t.Error("expected false for 401 error")
+	}
+}
+
+func TestProbeEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer test-key" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"choices":[{"message":{"content":"pong"}}]}`))
+	}))
+	defer server.Close()
+
+	lat, err := ProbeEndpoint(server.URL, "test-key", "test-model")
+	if err != nil {
+		t.Fatalf("ProbeEndpoint failed: %v", err)
+	}
+	if lat < 0 {
+		t.Errorf("expected positive latency, got %d", lat)
+	}
+
+	_, err = ProbeEndpoint(server.URL, "wrong-key", "test-model")
+	if err == nil {
+		t.Fatal("expected error for wrong key, got nil")
+	}
+	if !strings.Contains(err.Error(), "401") {
+		t.Errorf("expected 401 in error, got %v", err)
+	}
+
+	if _, err := ProbeEndpoint("", "k", "m"); err == nil {
+		t.Error("expected error for empty baseURL")
+	}
+	if _, err := ProbeEndpoint("http://a", "k", ""); err == nil {
+		t.Error("expected error for empty modelID")
+	}
+}
+
+func TestInteractiveSetupWizard_ProbeFailure_SaveAnyway(t *testing.T) {
+	tmpDir := t.TempDir()
+	provPath := filepath.Join(tmpDir, "providers.json")
+	t.Setenv(EnvProviders, provPath)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "upstream gateway error", http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	input := strings.Join([]string{
+		"failed-save-prov",
+		server.URL + "/v1",
+		"MOCK_KEY",
+		"",
+		"custom-model",
+		"openai",
+		"1048576",
+		"131072",
+		"n",
+		"n",
+		"n",
+		"1", // choice 1: Save model configuration anyway [Recommended]
+		"N", // add another: N
+	}, "\n") + "\n"
+
+	in := strings.NewReader(input)
+	out := &bytes.Buffer{}
+
+	if err := InteractiveSetupWizard(in, out); err != nil {
+		t.Fatalf("wizard returned error: %v\nOutput: %s", err, out.String())
+	}
+
+	outStr := out.String()
+	if !strings.Contains(outStr, "Save model configuration anyway [Recommended]") {
+		t.Errorf("expected options list in output, got: %s", outStr)
+	}
+	if !strings.Contains(outStr, `Saved model "custom-model" anyway.`) {
+		t.Errorf("expected save confirmation in output, got: %s", outStr)
+	}
+
+	reg, err := LoadFrom(provPath)
+	if err != nil {
+		t.Fatalf("failed to load registry: %v", err)
+	}
+	if len(reg.Providers) != 1 || len(reg.Providers[0].Models) != 1 {
+		t.Fatalf("expected 1 provider with 1 model, got %+v", reg.Providers)
+	}
+	if reg.Providers[0].Models[0].ID != "custom-model" {
+		t.Errorf("model ID = %q; want custom-model", reg.Providers[0].Models[0].ID)
+	}
+}
+
+func TestInteractiveSetupWizard_ProbeFailure_RetryImmediately(t *testing.T) {
+	tmpDir := t.TempDir()
+	provPath := filepath.Join(tmpDir, "providers.json")
+	t.Setenv(EnvProviders, provPath)
+
+	var probeCount int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/models") {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"data":[]}`))
+			return
+		}
+		count := atomic.AddInt32(&probeCount, 1)
+		if count == 1 {
+			http.Error(w, "server cold start", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"choices":[{"message":{"content":"pong"}}]}`))
+	}))
+	defer server.Close()
+
+	input := strings.Join([]string{
+		"NW",
+		server.URL + "/v1",
+		"MOCK_KEY",
+		"1", // select preset 1
+		"2", // choice 2: Retry test immediately
+		"N", // add another: N
+	}, "\n") + "\n"
+
+	in := strings.NewReader(input)
+	out := &bytes.Buffer{}
+
+	if err := InteractiveSetupWizard(in, out); err != nil {
+		t.Fatalf("wizard returned error: %v\nOutput: %s", err, out.String())
+	}
+
+	outStr := out.String()
+	if !strings.Contains(outStr, "Retry test immediately") {
+		t.Errorf("expected Retry test immediately in output, got: %s", outStr)
+	}
+	if !strings.Contains(outStr, "Connection succeeded!") {
+		t.Errorf("expected Connection succeeded! in output, got: %s", outStr)
+	}
+
+	reg, err := LoadFrom(provPath)
+	if err != nil {
+		t.Fatalf("failed to load registry: %v", err)
+	}
+	if len(reg.Providers) != 1 || len(reg.Providers[0].Models) != 1 {
+		t.Fatalf("expected 1 provider with 1 model, got %+v", reg.Providers)
+	}
+}
+
+func TestInteractiveSetupWizard_ProbeFailure_EditAndRetry(t *testing.T) {
+	tmpDir := t.TempDir()
+	provPath := filepath.Join(tmpDir, "providers.json")
+	t.Setenv(EnvProviders, provPath)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/models") {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"data":[]}`))
+			return
+		}
+		if r.Header.Get("Authorization") == "Bearer corrected-key" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"choices":[{"message":{"content":"pong"}}]}`))
+			return
+		}
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	input := strings.Join([]string{
+		"NW",
+		server.URL + "/v1",
+		"wrong-key",
+		"1", // select preset 1
+		"3", // choice 3: Edit Base URL or API Key
+		"",  // Base URL: hit enter to keep current
+		"corrected-key", // API Key: updated key
+		"N", // add another: N
+	}, "\n") + "\n"
+
+	in := strings.NewReader(input)
+	out := &bytes.Buffer{}
+
+	if err := InteractiveSetupWizard(in, out); err != nil {
+		t.Fatalf("wizard returned error: %v\nOutput: %s", err, out.String())
+	}
+
+	outStr := out.String()
+	if !strings.Contains(outStr, "Connection succeeded!") {
+		t.Errorf("expected successful retry after key edit in output, got: %s", outStr)
+	}
+}
+
+func TestInteractiveSetupWizard_ProbeFailure_TimeoutNotice(t *testing.T) {
+	tmpDir := t.TempDir()
+	provPath := filepath.Join(tmpDir, "providers.json")
+	t.Setenv(EnvProviders, provPath)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/models") {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"data":[]}`))
+			return
+		}
+		http.Error(w, "gateway timeout while queuing", http.StatusGatewayTimeout)
+	}))
+	defer server.Close()
+
+	input := strings.Join([]string{
+		"NW",
+		server.URL + "/v1",
+		"mock-key",
+		"1", // select preset 1
+		"1", // choice 1: save anyway
+		"N", // add another: N
+	}, "\n") + "\n"
+
+	in := strings.NewReader(input)
+	out := &bytes.Buffer{}
+
+	if err := InteractiveSetupWizard(in, out); err != nil {
+		t.Fatalf("wizard returned error: %v\nOutput: %s", err, out.String())
+	}
+
+	outStr := out.String()
+	expectedNotice := "[Notice] Gateway response timed out. The model may be cold-starting or queueing. You can retry immediately or save anyway."
+	if !strings.Contains(outStr, expectedNotice) {
+		t.Errorf("expected timeout notice in output, got: %s", outStr)
+	}
+}
+
+func TestInteractiveSetupWizard_MultipleModels_PreservesCredentials(t *testing.T) {
+	tmpDir := t.TempDir()
+	provPath := filepath.Join(tmpDir, "providers.json")
+	t.Setenv(EnvProviders, provPath)
+
+	var probeHeaders []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/models") {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"data":[]}`))
+			return
+		}
+		probeHeaders = append(probeHeaders, r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"choices":[{"message":{"content":"pong"}}]}`))
+	}))
+	defer server.Close()
+
+	input := strings.Join([]string{
+		"NW",
+		server.URL + "/v1",
+		"mock-nw-key-999",
+		"1", // model 1: nw-flash
+		"y", // add another model: yes
+		"2", // model 2: deepseek-v4-flash (NO URL or Key prompted!)
+		"N", // add another model: no
+	}, "\n") + "\n"
+
+	in := strings.NewReader(input)
+	out := &bytes.Buffer{}
+
+	if err := InteractiveSetupWizard(in, out); err != nil {
+		t.Fatalf("wizard returned error: %v\nOutput: %s", err, out.String())
+	}
+
+	reg, err := LoadFrom(provPath)
+	if err != nil {
+		t.Fatalf("failed to load registry: %v", err)
+	}
+	p := reg.Providers[0]
+	if len(p.Models) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(p.Models))
+	}
+	if p.Models[0].ID != "nw-flash" || p.Models[1].ID != "deepseek-v4-flash" {
+		t.Errorf("unexpected models: %+v", p.Models)
+	}
+
+	if len(probeHeaders) != 2 {
+		t.Fatalf("expected 2 probe requests, got %d", len(probeHeaders))
+	}
+	for i, h := range probeHeaders {
+		if h != "Bearer mock-nw-key-999" {
+			t.Errorf("probe request %d had header %q; want Bearer mock-nw-key-999", i, h)
+		}
+	}
+}
+
 
