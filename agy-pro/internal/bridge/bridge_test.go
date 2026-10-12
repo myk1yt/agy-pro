@@ -15,6 +15,32 @@ import (
 	"agypro/internal/providers"
 )
 
+// testSessionKey authenticates every request the unit tests send to the
+// bridge handler. Wrong/missing-key cases assert explicitly below.
+const testSessionKey = "unit-test-session-key"
+
+// authDo issues a request carrying the bridge session bearer token.
+func authDo(t *testing.T, method, url, contentType, body string) *http.Response {
+	t.Helper()
+	var rd io.Reader
+	if body != "" {
+		rd = strings.NewReader(body)
+	}
+	req, err := http.NewRequest(method, url, rd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	req.Header.Set("Authorization", "Bearer "+testSessionKey)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
 func TestStartBridge_Lifecycle(t *testing.T) {
 	reg := &providers.Registry{
 		Providers: []providers.Provider{
@@ -28,7 +54,7 @@ func TestStartBridge_Lifecycle(t *testing.T) {
 		},
 	}
 
-	bridgeURL, stopFunc, err := StartBridge(reg)
+	bridgeURL, stopFunc, err := StartBridge(reg, testSessionKey, BridgeToolsConfig{})
 	if err != nil {
 		t.Fatalf("StartBridge failed: %v", err)
 	}
@@ -48,11 +74,8 @@ func TestStartBridge_Lifecycle(t *testing.T) {
 		t.Fatalf("expected 200 OK from /health, got %d", resp.StatusCode)
 	}
 
-	// Verify /models
-	mResp, err := http.Get(bridgeURL + "/models")
-	if err != nil {
-		t.Fatalf("failed to query /models: %v", err)
-	}
+	// Verify /models requires the session key
+	mResp := authDo(t, http.MethodGet, bridgeURL+"/models", "", "")
 	defer mResp.Body.Close()
 	if mResp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 OK from /models, got %d", mResp.StatusCode)
@@ -103,16 +126,13 @@ func TestModelsEndpoint(t *testing.T) {
 		},
 	}
 
-	handler := NewHandler(reg)
+	handler := NewHandler(reg, testSessionKey, BridgeToolsConfig{})
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
 	// Test both /models and /v1/models
 	for _, endpoint := range []string{"/models", "/v1/models"} {
-		resp, err := http.Get(server.URL + endpoint)
-		if err != nil {
-			t.Fatalf("GET %s failed: %v", endpoint, err)
-		}
+		resp := authDo(t, http.MethodGet, server.URL+endpoint, "", "")
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
@@ -190,7 +210,7 @@ func TestChatCompletions_StandardJSON(t *testing.T) {
 		},
 	}
 
-	handler := NewHandler(reg)
+	handler := NewHandler(reg, testSessionKey, BridgeToolsConfig{})
 	bridgeServer := httptest.NewServer(handler)
 	defer bridgeServer.Close()
 
@@ -206,7 +226,7 @@ func TestChatCompletions_StandardJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.Header.Set("Authorization", "Bearer agy-pro-local-key")
+	req.Header.Set("Authorization", "Bearer "+testSessionKey)
 	req.Header.Set("Content-Type", "application/json")
 
 	client := &http.Client{}
@@ -280,15 +300,12 @@ func TestChatCompletions_SSEStreaming(t *testing.T) {
 		},
 	}
 
-	handler := NewHandler(reg)
+	handler := NewHandler(reg, testSessionKey, BridgeToolsConfig{})
 	bridgeServer := httptest.NewServer(handler)
 	defer bridgeServer.Close()
 
 	reqPayload := `{"model":"stream-model","messages":[{"role":"user","content":"Stream"}]}`
-	resp, err := http.Post(bridgeServer.URL+"/v1/chat/completions", "application/json", strings.NewReader(reqPayload))
-	if err != nil {
-		t.Fatalf("POST failed: %v", err)
-	}
+	resp := authDo(t, http.MethodPost, bridgeServer.URL+"/v1/chat/completions", "application/json", reqPayload)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
@@ -361,11 +378,9 @@ func TestChatCompletions_ReasoningEffortHandling(t *testing.T) {
 		},
 	}
 
-	handler := NewHandler(reg)
+	handler := NewHandler(reg, testSessionKey, BridgeToolsConfig{})
 	bridgeServer := httptest.NewServer(handler)
 	defer bridgeServer.Close()
-
-	client := &http.Client{}
 
 	sendReq := func(model, effort string) map[string]any {
 		capturedBody = nil
@@ -377,10 +392,7 @@ func TestChatCompletions_ReasoningEffortHandling(t *testing.T) {
 			payload["reasoning_effort"] = effort
 		}
 		data, _ := json.Marshal(payload)
-		resp, err := client.Post(bridgeServer.URL+"/chat/completions", "application/json", bytes.NewReader(data))
-		if err != nil {
-			t.Fatalf("POST failed: %v", err)
-		}
+		resp := authDo(t, http.MethodPost, bridgeServer.URL+"/chat/completions", "application/json", string(data))
 		_ = resp.Body.Close()
 		return capturedBody
 	}
@@ -434,35 +446,26 @@ func TestChatCompletions_ErrorHandling(t *testing.T) {
 		},
 	}
 
-	handler := NewHandler(reg)
+	handler := NewHandler(reg, testSessionKey, BridgeToolsConfig{})
 	bridgeServer := httptest.NewServer(handler)
 	defer bridgeServer.Close()
 
 	// 1. Missing model field -> 400
-	resp, err := http.Post(bridgeServer.URL+"/chat/completions", "application/json", strings.NewReader(`{"messages":[]}`))
-	if err != nil {
-		t.Fatal(err)
-	}
+	resp := authDo(t, http.MethodPost, bridgeServer.URL+"/chat/completions", "application/json", `{"messages":[]}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("expected 400 for missing model, got %d", resp.StatusCode)
 	}
 
 	// 2. Unknown model -> 404
-	resp, err = http.Post(bridgeServer.URL+"/chat/completions", "application/json", strings.NewReader(`{"model":"unknown-model-xyz"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
+	resp = authDo(t, http.MethodPost, bridgeServer.URL+"/chat/completions", "application/json", `{"model":"unknown-model-xyz"}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("expected 404 for unknown model, got %d", resp.StatusCode)
 	}
 
 	// 3. Offline provider -> 502 Bad Gateway
-	resp, err = http.Post(bridgeServer.URL+"/chat/completions", "application/json", strings.NewReader(`{"model":"offline-model"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
+	resp = authDo(t, http.MethodPost, bridgeServer.URL+"/chat/completions", "application/json", `{"model":"offline-model"}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Errorf("expected 502 Bad Gateway for offline provider, got %d", resp.StatusCode)
@@ -509,17 +512,13 @@ func TestChatCompletions_ModelWithProviderSuffix(t *testing.T) {
 		},
 	}
 
-	handler := NewHandler(reg)
+	handler := NewHandler(reg, testSessionKey, BridgeToolsConfig{})
 	bridgeServer := httptest.NewServer(handler)
 	defer bridgeServer.Close()
 
 	// 1. Client calls with "model": "glm-5.3-flash-flex (NW)"
-	client := &http.Client{}
 	reqBody := `{"model":"glm-5.3-flash-flex (NW)","messages":[{"role":"user","content":"hello"}]}`
-	resp, err := client.Post(bridgeServer.URL+"/chat/completions", "application/json", strings.NewReader(reqBody))
-	if err != nil {
-		t.Fatalf("POST failed: %v", err)
-	}
+	resp := authDo(t, http.MethodPost, bridgeServer.URL+"/chat/completions", "application/json", reqBody)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
@@ -540,10 +539,7 @@ func TestChatCompletions_ModelWithProviderSuffix(t *testing.T) {
 	// 2. Client calls with legacy raw model "glm-5.3-flash-flex" (fallback matching)
 	receivedModel = ""
 	legacyReqBody := `{"model":"glm-5.3-flash-flex","messages":[{"role":"user","content":"hello"}]}`
-	respLegacy, err := client.Post(bridgeServer.URL+"/chat/completions", "application/json", strings.NewReader(legacyReqBody))
-	if err != nil {
-		t.Fatalf("legacy POST failed: %v", err)
-	}
+	respLegacy := authDo(t, http.MethodPost, bridgeServer.URL+"/chat/completions", "application/json", legacyReqBody)
 	defer respLegacy.Body.Close()
 
 	if respLegacy.StatusCode != http.StatusOK {
@@ -580,16 +576,12 @@ func TestChatCompletions_MissingAPIKeyError(t *testing.T) {
 		},
 	}
 
-	handler := NewHandler(reg)
+	handler := NewHandler(reg, testSessionKey, BridgeToolsConfig{})
 	bridgeServer := httptest.NewServer(handler)
 	defer bridgeServer.Close()
 
-	client := &http.Client{}
 	reqBody := `{"model":"glm-5.3-flash-flex (NW)","messages":[{"role":"user","content":"test"}]}`
-	resp, err := client.Post(bridgeServer.URL+"/chat/completions", "application/json", strings.NewReader(reqBody))
-	if err != nil {
-		t.Fatalf("POST failed: %v", err)
-	}
+	resp := authDo(t, http.MethodPost, bridgeServer.URL+"/chat/completions", "application/json", reqBody)
 	defer resp.Body.Close()
 
 	// Must return HTTP 401 Unauthorized
@@ -670,4 +662,3 @@ func TestParseModelSpec(t *testing.T) {
 		}
 	}
 }
-

@@ -8,10 +8,14 @@ package bridge
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -23,6 +27,45 @@ import (
 
 	"agypro/internal/providers"
 )
+
+// maxChatBodyBytes caps the /chat/completions request body (M6): an
+// unbounded io.ReadAll was a self-DoS surface for a runaway or hostile
+// client on the loopback listener.
+const maxChatBodyBytes = 32 << 20 // 32 MB
+
+// GenerateSessionKey returns a fresh local bridge session key: 32 random
+// bytes rendered as hex (64 chars). The same value is the server-side
+// expectation and the AGY_LLM_GATEWAY_API_KEY handed to the child agy, so
+// only this process's child can talk to the bridge.
+func GenerateSessionKey() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("failed to generate bridge session key: %w", err)
+	}
+	return hex.EncodeToString(buf), nil
+}
+
+// authorize validates the caller's bridge session key from the
+// Authorization header ("Bearer <key>"). A missing, malformed, or
+// mismatching key is rejected with 401. An empty expected key rejects
+// everything (fail closed).
+func authorize(w http.ResponseWriter, r *http.Request, sessionKey string) bool {
+	if sessionKey == "" {
+		writeJSONError(w, http.StatusUnauthorized, "bridge session key is not configured", "authentication_error")
+		return false
+	}
+	const prefix = "Bearer "
+	auth := r.Header.Get("Authorization")
+	if len(auth) > len(prefix) && strings.EqualFold(auth[:len(prefix)], prefix) {
+		got := []byte(strings.TrimSpace(auth[len(prefix):]))
+		want := []byte(sessionKey)
+		if subtle.ConstantTimeCompare(got, want) == 1 {
+			return true
+		}
+	}
+	writeJSONError(w, http.StatusUnauthorized, "invalid or missing bridge session key", "authentication_error")
+	return false
+}
 
 // ValidReasoningEfforts enumerates the supported reasoning effort levels.
 var ValidReasoningEfforts = map[string]bool{
@@ -61,9 +104,30 @@ type ModelsResponse struct {
 	Data   []ModelEntry `json:"data"`
 }
 
+// BridgeToolsConfig configures the bridge-side tool execution loop (plan R1).
+// Enabled is derived by the config layer as Tokens != "none"; Tools holds the
+// already-normalized bridge-tools tokens (read, search, write, exec). An empty
+// or unrecognized allow-list keeps the loop off (fail closed).
+type BridgeToolsConfig struct {
+	Enabled bool
+	Tools   []string
+}
+
 // StartBridge starts an in-memory HTTP bridge server listening on 127.0.0.1 on an OS-assigned port.
 // It returns the base URL (e.g. "http://127.0.0.1:54321"), a stopFunc to cleanly shut down, and any error.
-func StartBridge(reg *providers.Registry) (bridgeURL string, stopFunc func(), err error) {
+// sessionKey authenticates callers (see authorize); it must be the same
+// value injected as AGY_LLM_GATEWAY_API_KEY for the child process.
+// toolsCfg enables the bridge-side tool loop; invalid tokens fail closed with
+// an error instead of silently widening the allow-list.
+func StartBridge(reg *providers.Registry, sessionKey string, toolsCfg BridgeToolsConfig) (bridgeURL string, stopFunc func(), err error) {
+	if sessionKey == "" {
+		return "", nil, errors.New("bridge session key must not be empty")
+	}
+	if toolsCfg.Enabled {
+		if _, toolsErr := resolveBridgeTools(toolsCfg.Tools); toolsErr != nil {
+			return "", nil, fmt.Errorf("invalid bridge tools config: %w", toolsErr)
+		}
+	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to bind local bridge listener: %w", err)
@@ -77,9 +141,16 @@ func StartBridge(reg *providers.Registry) (bridgeURL string, stopFunc func(), er
 
 	bridgeURL = fmt.Sprintf("http://127.0.0.1:%d", tcpAddr.Port)
 
-	handler := NewHandler(reg)
+	handler := NewHandler(reg, sessionKey, toolsCfg)
+	// M6 hardening: slowloris and keep-alive hygiene. WriteTimeout is
+	// deliberately left unset - an SSE response stream must be free to outlive
+	// any fixed deadline. CORS and /health behavior is unchanged (agy client
+	// compatibility).
 	server := &http.Server{
-		Handler: handler,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	go func() {
@@ -102,14 +173,28 @@ func StartBridge(reg *providers.Registry) (bridgeURL string, stopFunc func(), er
 }
 
 // NewHandler constructs an http.Handler that routes /models and /chat/completions.
-func NewHandler(reg *providers.Registry) http.Handler {
+// Both data routes require the Authorization bearer sessionKey; /health stays
+// open for diagnostics. OPTIONS preflights are answered without auth.
+// toolsCfg configures the bridge-side tool loop (see BridgeToolsConfig); the
+// zero value keeps the byte-identical reverse-proxy behavior.
+func NewHandler(reg *providers.Registry, sessionKey string, toolsCfg BridgeToolsConfig) http.Handler {
 	mux := http.NewServeMux()
 
+	// Workspace root for tool execution: own-process AGY_PRO_WORKSPACE wins,
+	// else the shim cwd captured at handler construction (StartBridge time).
+	workspaceRoot := resolveBridgeWorkspaceRoot()
+
 	modelsHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodOptions && !authorize(w, r, sessionKey) {
+			return
+		}
 		handleModels(w, r, reg)
 	})
 	chatHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handleChatCompletions(w, r, reg)
+		if r.Method != http.MethodOptions && !authorize(w, r, sessionKey) {
+			return
+		}
+		handleChatCompletions(w, r, reg, toolsCfg, workspaceRoot)
 	})
 
 	// Handle standard OpenAI routes with and without /v1 prefix
@@ -132,6 +217,16 @@ func NewHandler(reg *providers.Registry) http.Handler {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"status":"ok","service":"agy-pro-bridge"}`))
+			return
+		}
+		// Gemini wire arrivals (only possible when the shim's openai wire
+		// injection is bypassed) get an explicit logged 404 instead of a silent
+		// catch-all (R1-10).
+		if isGeminiWirePath(r.URL.Path) {
+			log.Printf("[bridge] rejected gemini-wire request %s %s: bridge serves the OpenAI chat wire only (set AGY_LLM_GATEWAY_WIRE_PROTOCOL=openai)", r.Method, r.URL.Path)
+			writeJSONError(w, http.StatusNotFound,
+				fmt.Sprintf("gemini wire path %q is not supported by the agy-pro bridge (use /v1/chat/completions with AGY_LLM_GATEWAY_WIRE_PROTOCOL=openai)", r.URL.Path),
+				"not_found")
 			return
 		}
 		writeJSONError(w, http.StatusNotFound, fmt.Sprintf("path %q not found on bridge", r.URL.Path), "not_found")
@@ -162,7 +257,7 @@ func handleModels(w http.ResponseWriter, r *http.Request, reg *providers.Registr
 		for _, p := range reg.Providers {
 			for _, m := range p.Models {
 				if m.IsEnabled() {
-					displayName := fmt.Sprintf("%s (%s)", m.ID, p.Name)
+					displayName := providers.DisplayName(m.ID, p.Name)
 					if !seen[displayName] {
 						seen[displayName] = true
 						entries = append(entries, ModelEntry{
@@ -186,7 +281,11 @@ func handleModels(w http.ResponseWriter, r *http.Request, reg *providers.Registr
 }
 
 // handleChatCompletions routes the completion request to the corresponding provider.
-func handleChatCompletions(w http.ResponseWriter, r *http.Request, reg *providers.Registry) {
+// When the bridge-side tool loop engages (toolsCfg active, no `tools` key in the
+// request, tools-capable model, non-empty allow-list) the loop serves the
+// request itself; otherwise the request takes the byte-identical reverse-proxy
+// path below (plan 8b R1-7).
+func handleChatCompletions(w http.ResponseWriter, r *http.Request, reg *providers.Registry, toolsCfg BridgeToolsConfig, workspaceRoot string) {
 	if r.Method == http.MethodOptions {
 		setCorsHeaders(w)
 		w.WriteHeader(http.StatusNoContent)
@@ -199,6 +298,8 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request, reg *provider
 
 	setCorsHeaders(w)
 
+	// M6: cap the request body before reading it (see maxChatBodyBytes).
+	r.Body = http.MaxBytesReader(w, r.Body, maxChatBodyBytes)
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "failed to read request body", "invalid_request_error")
@@ -262,6 +363,26 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request, reg *provider
 		delete(rawReq, "reasoning_effort")
 	} else {
 		rawReq["reasoning_effort"] = effort
+	}
+
+	// Bridge-side tool execution loop seam (plan 8b R1): agy never sends
+	// `tools` and discards response `tool_calls`, so external providers only
+	// reach Gemini-parity tool actions when the bridge attaches tools, runs the
+	// calls, re-feeds results, and synthesizes a text-only reply. Conditions:
+	// loop config active + request has no `tools` key + model SupportsTools +
+	// non-empty bridge-tools allow-list. Any miss falls through to the
+	// byte-identical reverse-proxy path below.
+	if loopTools := maybeToolLoopTools(toolsCfg, rawReq, target); loopTools != nil {
+		serveToolLoop(w, r, loopEnv{
+			rawReq:   rawReq,
+			target:   target,
+			apiKey:   apiKey,
+			modelReq: modelReq,
+			tools:    loopTools,
+			root:     workspaceRoot,
+			redact:   reg.Redactor(),
+		})
+		return
 	}
 
 	// Upstream expects the exact model ID declared by the provider (without "(provider)" suffix)
