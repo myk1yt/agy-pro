@@ -5,13 +5,16 @@
 It provides:
 
 1. **Transparent Passthrough**: Intercepts `agy` calls without overhead, dynamically locating the authentic `agy` binary while preserving standard I/O handles, TUI compatibility, and exact process exit codes.
-2. **Interactive Launcher**: When external models are registered and you run a bare `agy` (no arguments) in a terminal, a 2-second picker offers Native Gemini, External Models, or the Swarm. Pressing `Enter` (or waiting) starts native Gemini with no delay.
+2. **Interactive Launcher**: When external models are registered and you run a bare `agy` (no arguments) in a terminal, a 2-second picker offers Native Gemini, External Models (a numbered native + external model list), or the Swarm. Pressing `Enter` (or waiting) starts native Gemini with no delay. The launcher also prints the community banner line once at startup.
 3. **Native Bridge**: A local OpenAI-compatible reverse proxy on `127.0.0.1` that exposes every registered external model inside the authentic `agy` `/model` picker, with a per-session random bearer key.
 4. **Profile / Mode Switcher (`agy pro mode`)**: Effortlessly switch between `full-stack` (VP of Engineering orchestration, specialized agent skills, and plugins) and `clean` (minimal baseline environment) profiles with atomic swaps and non-destructive backups.
 5. **Default Profile Config (`agy pro config`)**: Lock `agy` into `native`, `gateway`, or `prompt` startup behavior so power users never see the launcher.
 6. **Conversational Setup Wizard (`agy pro setup`)**: Step-by-step interactive CLI to configure external OpenAI-compatible LLM providers (OpenRouter, DeepSeek, Groq, Google AI Studio, etc.), model capabilities (Vision, Thinking, Function Calling), and live endpoint testing.
-7. **Multi-Model Swarm (`agy pro fanout`)**: Concurrent multi-model orchestration across diverse LLM families for double-blind security audits, code reviews, and architecture analysis.
-8. **One-Click Install & Uninstall**: Zero-prerequisite setup on Windows (`install.cmd`) with automated Go toolchain provisioning and user PATH registration, plus one-command removal (`uninstall.cmd`) that restores the User `PATH` and moves `~/.agy-pro` to the Recycle Bin.
+7. **Multi-Model Swarm (`agy pro fanout`)**: Concurrent multi-model orchestration across diverse LLM families for double-blind security audits, code reviews, and architecture analysis. `--seats` mixes real `agy` (native Gemini) subprocess seats with external provider seats in ONE swarm.
+8. **Numbered Swarm Builder (`agy pro swarm`)**: Presents the combined native + external inventory as a numbered list (presets `p1`..`p3`, `1,3,5`, ranges `2-4`), previews the exact `agy pro fanout` command, and runs it. Flags stay as the power-user/CI fallback.
+9. **One Combined Model List (`agy pro models --all`)**: The native `agy models` catalog plus every registered provider model, numbered and group-tagged, as the single source of truth for the launcher picker, the swarm builder, and the settings panel.
+10. **One Settings Surface (`agy pro settings` + `/setting_agypro`)**: A full-screen, keybinding-driven settings panel covering every agy-pro setting, plus the `agypro_settings` plugin whose `/setting_agypro` slash command drives the same settings through numbered menus inside an `agy` session.
+11. **One-Click Install & Uninstall**: Zero-prerequisite setup on Windows (`install.cmd`) with automated Go toolchain provisioning and user PATH registration, plus one-command removal (`uninstall.cmd`) that restores the User `PATH` and moves `~/.agy-pro` to the Recycle Bin.
 
 ---
 
@@ -77,10 +80,22 @@ agy                                      # 2-second picker: [1] Native [2] Exter
 agy pro config default-profile prompt    # restore the picker if you had locked a profile
 ```
 
-> Google AI Studio note: registering the `google` preset (public `gemini-2.5-flash` / `gemini-2.5-pro`
-> via `GEMINI_API_KEY`) is the only way to see Gemini **and** external models in one gateway list.
-> The native Antigravity preview model (`gemini-3.8-flash-high`) is **not** available on AI Studio and
-> therefore cannot be proxied through the bridge. See [`docs/bridge-architecture.md`](docs/bridge-architecture.md).
+> **Model visibility, in two layers (do not conflate them):**
+>
+> - **Inside an `agy` session, `/model` is an all-or-nothing switch.** Native Antigravity models and bridge
+>   (external) models cannot share one catalog: when the gateway is on, the binary replaces the whole list.
+>   The combined native + external view lives at the agy-pro layer instead: `agy pro models --all`, the
+>   launcher's model picker, and `agy pro swarm`.
+> - **Gateway mode CAN show Gemini and external models together.** Register the `google` preset (public
+>   `gemini-2.5-flash` / `gemini-2.5-pro` via `GEMINI_API_KEY`,
+>   `https://generativelanguage.googleapis.com/v1beta/openai/`), then run
+>   `agy pro config default-profile gateway`: `/model` lists those Gemini models next to your NeuralWatt,
+>   Charm, DeepSeek, and OpenRouter models. The native Antigravity preview model
+>   (`gemini-3.8-flash-high`) is **not** available on AI Studio and therefore cannot be proxied through
+>   the bridge; preserving it requires native mode.
+>
+> See [`docs/bridge-architecture.md`](docs/bridge-architecture.md) and
+> [`docs/swarm-hybrid.md`](docs/swarm-hybrid.md) §8.
 
 ---
 
@@ -92,9 +107,10 @@ agy pro config default-profile prompt    # restore the picker if you had locked 
 │   └── agy.exe             # High-performance Go shim binary (takes PATH precedence)
 ├── backups/
 │   └── <timestamp>/        # Non-destructive backups of replaced configurations
-├── state.json              # Profile mode, last backup, managed manifest, and `default_profile`
+├── state.json              # Profile mode, last backup, managed manifest, `default_profile`, `bridge_tools`, `native_seat_concurrency`
 ├── providers.json          # Provider & model registry (env variable names only)
-└── state-fanout.json       # Swarm execution history and family rotation state
+├── state-fanout.json       # Swarm execution history and family rotation state
+└── swarm-state.json        # Saved swarm seat presets (numbered selection text)
 ```
 
 ---
@@ -112,10 +128,18 @@ agy -m gemini-2.5-flash
 ### 2. Interactive Launcher
 A **bare** `agy` (no arguments) shows a 2-second picker when **at least one external model is registered** and stdin is an interactive terminal:
 ```
-[1] Native Gemini        (Enter or timeout)
-[2] External Models      (local bridge + registered models in /model)
-[3] Swarm                (agy pro fanout)
+===========================================================
+  agy Fast Launcher — default in 2s: [1] Native Gemini
+===========================================================
+Visit https://www.reddit.com/r/GoogleAntigravityCLI/! A space for antigravity-cli users. Remember r/GoogleAntigravityCLI
+  [1] Native Gemini (default)
+  [2] External Models (N models: <providers>)
+  [3] Swarm (multi-model fanout)
+Select [1/2/3] (Enter=default):
 ```
+- `[2]` opens the **combined model picker**: one numbered list of native and external models (the `agy pro models --all` order). A native number execs real `agy` natively with `--model <id>` and no bridge; an external number starts the bridge for that model. `Enter` cancels and keeps the legacy `[2]` bridge behavior.
+- The community banner line is printed here and only here. It never appears in print mode (`-p` / `--print` / `--prompt`), in piped/non-TTY runs, in any `agy pro ...` subcommand, or in machine output (`summary.json`, `models --json`), because the launcher only runs for a bare `agy` on a TTY with at least one registered model.
+
 The picker belongs to the bare invocation, so any argument skips it (straight to the real binary, zero delay). The documented bypasses:
 - any argument, e.g. `agy agents`, `agy --help`
 - `-m` / `--model` or `-b` / `--bridge`
@@ -126,7 +150,7 @@ The picker belongs to the bare invocation, so any argument skips it (straight to
 
 ### 3. Native Bridge (external models inside `agy /model`)
 The bridge is started only when needed and bound to loopback on an OS-assigned port. Each bridge session generates a fresh random 32-byte `crypto/rand` bearer key, injects it as `AGY_LLM_GATEWAY_API_KEY`, and requires it on every loopback request. That session key is local only and is never validated against a provider.
-Provider keys are a separate concern: `agy pro doctor` probes each configured provider key upstream with zero tokens (`GET <baseURL>/models`, 5s timeout) and prints a masked verdict per provider (`valid` / `invalid` / `indeterminate` / `SKIP`), plus any conflicting BOM-prefixed environment variable name. `agy pro doctor --fix-keys` restores a clean name from a probe-valid BOM variant (backup written first) and `agy pro doctor --rollback-keys <dir>` undoes a repair.
+Provider keys are a separate concern: `agy pro doctor` probes each configured provider key upstream with zero tokens (`GET <baseURL>/models`, 5s timeout) and prints a masked verdict per provider (`valid` / `invalid` / `indeterminate` / `SKIP`), plus any conflicting BOM-prefixed environment variable name. Key material is displayed as the first 5 characters followed by `****` (5 characters or fewer render as `****`; no trailing suffix is ever shown). `agy pro doctor --fix-keys` restores a clean name from a probe-valid BOM variant (backup written first) and `agy pro doctor --rollback-keys <dir>` undoes a repair.
 ```bash
 agy -m "glm-5.3-flash (charm)"      # targeted: bridge activates for this run only
 agy -b                              # explicit bridge mode: every registered model in /model
@@ -184,6 +208,7 @@ agy pro setup
 - Configures model capabilities: Vision, Thinking mode, and allowed Agent Tools (`read_file`, `list_dir`, `grep`, `glob`).
 - Performs an immediate live connectivity test and offers interactive retry loops.
 - API keys are persisted securely to Windows User Environment variables; **secrets are NEVER stored in config files**.
+- Key display is always masked: first 5 characters then `****` (5 characters or fewer render as `****`; a trailing suffix is never shown). While you type a key, characters after the 5th echo as `*`.
 
 ### 6. Profile Mode Switcher
 ```bash
@@ -204,13 +229,18 @@ agy pro mode restore
 agy pro mode list
 ```
 
-### 7. Status & Diagnostics
+### 7. Status, Diagnostics & Combined Model List
 ```bash
 # Display active mode, providers, and real agy location
 agy pro status
 
 # Display configured providers and detailed model capabilities (context, output, tools, thinking)
 agy pro models
+
+# Combined native + external model list, numbered and group-tagged
+# ([native] catalog first, then your providers in registry order)
+agy pro models --all
+agy pro models --json
 
 # Run system diagnostics (toolchain, real agy path, and a zero-token
 # upstream probe of every configured provider key, masked; also reports conflicting
@@ -234,12 +264,48 @@ agy pro doctor --rollback-keys <backup-dir>
 # Display shim and upstream versions
 agy pro version
 ```
+Key material is always displayed masked: first 5 characters followed by `****` (5 characters or fewer render as `****`; no trailing suffix is ever shown).
 
-### 8. Multi-Model Fanout Swarm
+### 8. Hybrid Multi-Model Swarm (`agy pro fanout`)
 ```bash
 agy pro fanout -task=security -n=3
 agy pro fanout -task=review -models="openai/gpt-4o,deepseek/deepseek-chat"
+
+# hybrid: real agy (native Gemini) seats + external provider seats in ONE swarm
+agy pro fanout --task review --seats "native:gemini-3.8-flash-high,nw/glm-5.3-flash,bigmodel/glm-4.6"
 ```
+- `native:<model-id>` runs the real `agy` binary as a subprocess seat (its own tool surface, Antigravity subscription quota, rate limits apply mid-swarm). Bare and `provider/model` tokens behave exactly like `--models`.
+- At most **2 native seats run concurrently** by default; `--max-native N` or `native_seat_concurrency` (1..8) in `~/.agy-pro/state.json` changes that. Extra native seats queue; provider seats stay parallel.
+- A failed native seat does **not** fail over: it is reported as a failed seat (`reason=quota`, `reason=timeout`, or the exit code plus a redacted stderr tail) and the swarm continues.
+- Reports record provenance per seat: `kind: native|provider`, a `Quota/Cost` row, and a `Native Seats: k / m` header in `reconciliation.md`.
+- `--seats` and `--models` cannot be combined (exit 2). Full reference: [`docs/swarm-hybrid.md`](docs/swarm-hybrid.md).
+
+### 9. Numbered Swarm Builder (`agy pro swarm`)
+```bash
+agy pro swarm            # interactive: numbered template + numbered seat selection, then run
+```
+Numbers are the happy path: pick a template (`[1]` Code Review, `[2]` Security Audit, `[3]` Custom), then seats from the numbered combined list — `1,3,5`, a range `2-4`, or a preset (`p1` = 2 native + 2 external, `p2` = 3 external family-rotated, `p3` = 4 mixed). The builder prints the exact `agy pro fanout ...` command before running it; `c` prints it only, `--dry-run` prints it and exits 0.
+
+CI and power users use flags instead (any flag means zero prompts; missing required input exits 2):
+```bash
+agy pro swarm --template code-review --seats "1,3,5" --root .
+agy pro swarm --template security-audit --seats "native:gemini-3.8-flash-high,nw/glm-5.3-flash" --dry-run
+```
+k3-family models are marked `excluded (pool policy)` and are never auto-seated.
+
+### 10. Settings (`agy pro settings` + `/setting_agypro`)
+```bash
+agy pro settings             # full-screen, keybinding-driven panel (TUI) - run it in your terminal
+agy pro settings --panel p4  # deep-link one panel
+agy pro settings show [--json]        # snapshot
+agy pro settings set <key> <value>    # default-profile | bridge-tools | native-seat-concurrency
+agy pro settings providers list | add-json <file|-> | add-interactive | test <name> | rename <old> <new> | delete <name>
+agy pro settings mode switch <full|clean> | restore | list | status
+agy pro settings doctor diagnose [--strict] | fix-keys [targets] | rollback-keys <dir>
+```
+Panels: Launch & Profile, Models & Providers, Bridge Tools & Budgets, Swarm & Fanout, Diagnostics & Keys, Install & Update, Environment Variables. Choices are numbered lists, destructive operations need a `y`/`n` confirmation, and the bridge-tool budgets are compile-time constants shown read-only.
+
+Inside an `agy` session, `/setting_agypro` is a **plugin slash command** (install with `agy plugin install plugins/agypro_settings`; the slash name comes from the file name, same class as `/agy_help`). It is an agent-mediated workflow that runs the non-interactive `agy pro settings ...` verbs behind numbered menus. It does **not** contain, embed, or launch the TUI: for the full-screen panel, run `agy pro settings` in your own terminal. Restart `agy` after installing the plugin so the slash command is discovered.
 
 ---
 
@@ -252,13 +318,14 @@ cd agy-pro
 go test ./... -count=1
 ```
 
-Test packages: `cmd/agy`, `internal/agenttools`, `internal/bridge`, `internal/fanout`, `internal/launcher`, `internal/mode`, `internal/paths`, `internal/providers`.
+Test packages: `cmd/agy`, `internal/agenttools`, `internal/bridge`, `internal/fanout`, `internal/inventory`, `internal/launcher`, `internal/mode`, `internal/paths`, `internal/providers`, `internal/realagy`, `internal/settings`, `internal/swarm`.
 
 ---
 
 ## Further Reading
 
 - [`docs/bridge-architecture.md`](docs/bridge-architecture.md) — why native and external models cannot share one `agy /model` catalog, how the launcher / profile / AI Studio preset work around it, and the bridge tool loop that gives external models workspace actions (§5).
+- [`docs/swarm-hybrid.md`](docs/swarm-hybrid.md) — hybrid native + external swarms (`--seats`), the numbered swarm builder, the combined model inventory, the settings panel + `/setting_agypro` plugin, key masking and the community banner.
 - [`docs/fanout.md`](docs/fanout.md) — multi-model swarm specification.
 - [`docs/rules-conflicts.md`](docs/rules-conflicts.md) — Kimi vs Antigravity rule resolution matrix.
 - [`docs/skills-port-matrix.md`](docs/skills-port-matrix.md) — 41-skill 1:1 porting matrix.

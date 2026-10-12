@@ -97,7 +97,7 @@ flowchart TD
 | [`Agent/security-reviewer`](https://github.com/myk1yt/agy-tools/tree/Agent/security-reviewer) | **엔터프라이즈 멀티 에이전트 보안 감사** | `@security-reviewer` 오케스트레이터 + 4개 도메인 인스펙터 (OWASP, IAM, 자격 증명, 공급망) | `git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-security-reviewer.ps1` | `cmd /c "git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-security-reviewer.ps1"` | `git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install-security-reviewer.sh` |
 | [`Agent/code-reviewer`](https://github.com/myk1yt/agy-tools/tree/Agent/code-reviewer) | **Pre-Merge 코드 리뷰 & 퀄리티 게이트** | `@code-reviewer` 에이전트, 4단계 파이프라인, 8개 텍사노미, P0-P3 무관용 판정 게이트 | `git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-code-reviewer.ps1` | `cmd /c "git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-code-reviewer.ps1"` | `git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install-code-reviewer.sh` |
 | [`gemini-config`](https://github.com/myk1yt/agy-tools/tree/gemini-config) | **자율 멀티 에이전트 거버넌스** | 7단계 라이프사이클 프로토콜, Master Zero-Source-Edit 불변성, 오케스트레이터 스킬 | `git clone -b gemini-config https://github.com/myk1yt/agy-tools.git && cd agy-tools && scripts\install.bat` | `cmd /c "git clone -b gemini-config https://github.com/myk1yt/agy-tools.git && cd agy-tools && scripts\install.bat"` | `git clone -b gemini-config https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install.sh` |
-| [`feature/agy-pro`](https://github.com/myk1yt/agy-tools/tree/feature/agy-pro) | **Go 셔틀 & 멀티모델 스웜 (`agy-pro`)** | 투명 `agy` 셔틀, 2초 모델 런처, 외부 모델 브릿지, `agy pro` 스위트 (setup / mode / fanout / doctor), 원큐 Windows 설치·설치 제거 (Windows 전용) | `git clone -b feature/agy-pro https://github.com/myk1yt/agy-tools.git && cd agy-tools && install.cmd` | `cmd /c "git clone -b feature/agy-pro https://github.com/myk1yt/agy-tools.git && cd agy-tools && install.cmd"` | — |
+| [`feature/agy-pro`](https://github.com/myk1yt/agy-tools/tree/feature/agy-pro) | **Go 셔틀 & 멀티모델 스웜 (`agy-pro`)** | 투명 `agy` 셔틀, 네이티브+외부 통합 모델 목록을 보여주는 2초 런처, 외부 모델 브릿지, 하이브리드 네이티브 좌석을 번호로 고르는 스웜 빌더, `agy pro` 스위트 (setup / mode / models / swarm / settings / fanout / doctor), 원큐 Windows 설치·설치 제거 (Windows 전용) | `git clone -b feature/agy-pro https://github.com/myk1yt/agy-tools.git && cd agy-tools && install.cmd` | `cmd /c "git clone -b feature/agy-pro https://github.com/myk1yt/agy-tools.git && cd agy-tools && install.cmd"` | — |
 | [`dashboard`](https://github.com/myk1yt/agy-tools/tree/dashboard) | **히스토리컬 프로토타입** | 최초 토큰 추적기 기반 (현재 `main`에 완전 병합됨) | — | — | — |
 
 > [!TIP]
@@ -308,7 +308,7 @@ agy-tokens --html --open
 
 ## 🚀 agy-pro: Go 셔틀, 모델 런처 & 스웜 오케스트레이터
 
-`agy-pro/`는 정품 `agy` 바이너리를 감싸는 Go 셔틀입니다. 네이티브 TUI와 표준 입출력 핸들, 종료 코드는 그대로 두고, 모델 런처, 외부 OpenAI 호환 모델용 로컬 브릿지, 프로필 전환, 멀티 모델 스웜을 더합니다. Go 표준 라이브러리만 사용합니다.
+`agy-pro/`는 정품 `agy` 바이너리를 감싸는 Go 셔틀입니다. 네이티브 TUI와 표준 입출력 핸들, 종료 코드는 그대로 두고, 네이티브+외부 통합 모델 목록을 보여주는 모델 런처, 외부 OpenAI 호환 모델용 로컬 브릿지, 프로필 전환, 하이브리드 네이티브 좌석을 번호로 고르는 스웜 빌더, 모든 설정을 한곳에서 다루는 설정 패널을 더합니다. Go 표준 라이브러리만 사용합니다.
 
 ### 📋 복사-붙여넣기 설치 (Windows)
 
@@ -346,7 +346,7 @@ agy pro setup          # 프로바이더 등록 (OpenRouter, DeepSeek, Groq, Goo
 agy                    # 2초 픽커: [1] 네이티브 Gemini  [2] 외부 모델  [3] 스웜
 ```
 
-픽커는 **인자 없는** `agy`에만 뜹니다. 인자를 하나라도 주면 픽커를 건너뛰고 실제 바이너리로 바로 실행됩니다. 프로바이더를 하나만 등록해도 런처가 뜹니다. 픽커를 건너뛰려면:
+픽커는 **인자 없는** `agy`에만 뜹니다. 인자를 하나라도 주면 픽커를 건너뛰고 실제 바이너리로 바로 실행됩니다. 프로바이더를 하나만 등록해도 런처가 뜹니다. 런처가 뜰 때는 커뮤니티 안내가 한 줄 함께 출력됩니다(`Visit https://www.reddit.com/r/GoogleAntigravityCLI/! A space for antigravity-cli users. Remember r/GoogleAntigravityCLI`). 이 줄은 대화형 런처에서만 나오고, `-p` 일회성 실행·파이프 입력·기계 판독 출력에는 나오지 않습니다. 픽커를 건너뛰려면:
 
 ```bash
 agy pro config default-profile gateway   # 모든 `agy` 실행이 등록된 외부 모델을 /model에 노출
@@ -358,22 +358,36 @@ agy pro mode full                        # full-stack 오케스트레이터 프�
 agy pro status                           # 현재 모드, 프로바이더, 실제 agy 경로
 ```
 
+일상적으로 쓰는 화면:
+
+```bash
+agy pro models --all                     # 네이티브+외부 통합 모델 목록 (번호 표시)
+agy pro swarm                            # 번호로 템플릿·좌석을 고르는 스웜 빌더
+agy pro fanout --seats "native:gemini-3.8-flash-high,nw/glm-5.3-flash"   # 하이브리드 스웜
+agy pro settings                         # 전체 화면 설정 패널 (TUI)
+```
+
 ### 추가되는 기능
 
 | 기능 | 명령 |
 |---|---|
 | 2초 인터랙티브 모델 런처 | 인자 없는 `agy` |
+| 네이티브+외부 통합 모델 목록 | `agy pro models --all`, 런처 `[2]` |
 | 네이티브 `/model` 픽커 안의 외부 모델 | `agy -b`, `agy -m "<모델> (<프로바이더>)"`, `AGY_PRO_BRIDGE=1` |
 | 시작 프로필 고정 (native / gateway / prompt) | `agy pro config default-profile <값>` |
 | 외부 모델용 게이트웨이 도구 루프 (기본 읽기 전용) | `agy pro config bridge-tools read,search`, `agy pro config show` |
 | 프로필 전환 (full-stack / clean) | `agy pro mode full`, `agy pro mode clean` |
 | 프로바이더 & 모델 설정 마법사 | `agy pro setup` |
+| 번호로 고르는 스웜 빌더 (네이티브+외부 하이브리드 좌석) | `agy pro swarm`, `agy pro fanout --seats "native:<모델>,<프로바이더>/<모델>"` |
 | 멀티 모델 팬아웃 스웜 | `agy pro fanout -task=security -n=3` |
+| 설정 패널 / 세션 내 설정 | `agy pro settings`(TUI), `/setting_agypro`(플러그인 명령) |
 | 진단 | `agy pro doctor`, `agy pro status`, `agy pro models` |
 
-`agy pro doctor`는 등록된 프로바이더 키를 토큰을 쓰지 않고 업스트림으로 probe(`GET <baseURL>/models`, 5초 타임아웃)하여 프로바이더별 결과를 마스킹해 표시합니다 (`valid` / `invalid` / `indeterminate` / `SKIP`). `agy pro doctor --fix-keys`는 probe를 `valid`로 통과한 BOM 변형 이름을 정상 이름으로 복원하고(실행 전 백업 생성), `agy pro doctor --rollback-keys <디렉터리>`는 그 복원을 되돌립니다.
+`agy pro doctor`는 등록된 프로바이더 키를 토큰을 쓰지 않고 업스트림으로 probe(`GET <baseURL>/models`, 5초 타임아웃)하여 프로바이더별 결과를 마스킹해 표시합니다 (`valid` / `invalid` / `indeterminate` / `SKIP`). 키 값은 항상 앞 5글자 + `****` 형태로만 표시됩니다(5글자 이하는 `****`, 뒤쪽 일부를 노출하는 일은 없습니다). `agy pro doctor --fix-keys`는 probe를 `valid`로 통과한 BOM 변형 이름을 정상 이름으로 복원하고(실행 전 백업 생성), `agy pro doctor --rollback-keys <디렉터리>`는 그 복원을 되돌립니다.
 
-자세한 내용: [`agy-pro/README.md`](agy-pro/README.md), [`agy-pro/docs/bridge-architecture.md`](agy-pro/docs/bridge-architecture.md).
+`agy` 세션 안의 `/model` 팝업은 여전히 전부 아니면 전무(네이티브 XOR 외부)입니다. 네이티브 모델과 브릿지 모델을 한 팝업에 함께 넣는 것은 바이너리 차원에서 불가능합니다. 세션 안에서 가장 가까운 방법은 `google`(AI Studio) 프리셋을 등록한 뒤 `default_profile = gateway`로 두는 것이고(Gemini 2.5 + 외부 모델 동시 표시), 네이티브까지 포함한 전체 목록은 agy-pro 계층(`agy pro models --all`, 런처 `[2]`, `agy pro swarm`)에서 확인합니다.
+
+자세한 내용: [`agy-pro/README.md`](agy-pro/README.md), [`agy-pro/docs/bridge-architecture.md`](agy-pro/docs/bridge-architecture.md), [`agy-pro/docs/swarm-hybrid.md`](agy-pro/docs/swarm-hybrid.md).
 
 ### 게이트웨이 도구 루프 (외부 모델이 파일을 읽고 검색하게 하기)
 

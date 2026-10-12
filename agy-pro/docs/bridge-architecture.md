@@ -51,13 +51,28 @@ A **bare** `agy` (no arguments) in an interactive terminal, with at least one ex
 registered, shows a 2-second picker:
 
 ```
-[1] Native Gemini        (Enter or timeout)
-[2] External Models      (start the local bridge, expose registered models in /model)
-[3] Swarm                (agy pro fanout)
+===========================================================
+  agy Fast Launcher — default in 2s: [1] Native Gemini
+===========================================================
+Visit https://www.reddit.com/r/GoogleAntigravityCLI/! A space for antigravity-cli users. Remember r/GoogleAntigravityCLI
+  [1] Native Gemini (default)
+  [2] External Models (N models: <providers>)
+  [3] Swarm (multi-model fanout)
+Select [1/2/3] (Enter=default):
 ```
 
 Pressing `Enter` or letting the timer expire starts native `agy` with zero gateway variables and no
-delay. The picker belongs to the bare invocation, so any argument skips it and goes straight to the
+delay. The community banner line is rendered here and only here: it cannot appear in print mode
+(`-p` / `--print` / `--prompt`), in piped/non-TTY runs, in any `agy pro ...` subcommand, or in machine
+output, because `ShowMenu` only runs for a bare `agy` on a TTY with at least one registered model.
+
+`[2]` opens the **combined model picker** — one numbered list of native and external models (the
+`agy pro models --all` order). A native number execs real `agy` natively with `--model <id>` and a
+scrubbed environment (no bridge, no gateway variables); an external number starts the bridge for that
+model. `Enter` cancels the picker and keeps the legacy `[2]` bridge behavior. See
+[`swarm-hybrid.md`](swarm-hybrid.md) §3.1.
+
+The picker belongs to the bare invocation, so any argument skips it and goes straight to the
 real binary. The documented bypasses:
 
 | Bypass | Example |
@@ -79,7 +94,7 @@ Users who do not want a prompt lock their startup behavior in `~/.agy-pro/state.
   `/model` immediately, which is the closest available equivalent to a multi-model pool.
 - `prompt` — the launcher (default).
 
-### 2.3 Google AI Studio preset (Option C)
+### 2.3 Google AI Studio preset — how to get Gemini and external models in ONE `/model` list
 
 Registering the `google` preset in `agy pro setup` adds public Gemini models
 (`gemini-2.5-flash`, `gemini-2.5-pro`) served through Google AI Studio's OpenAI-compatible endpoint
@@ -87,6 +102,19 @@ Registering the `google` preset in `agy pro setup` adds public Gemini models
 models are ordinary bridge models, they appear in the **same** gateway list as NeuralWatt, Charm,
 DeepSeek, and OpenRouter models. With `agy pro config default-profile gateway`, the user sees Gemini
 public models and external models side by side in one `/model` picker.
+
+Steps, in order:
+
+```bash
+agy pro setup                            # register the `google` preset (AI Studio key)
+agy pro config default-profile gateway   # plain `agy` now boots into the gateway
+agy                                      # /model lists Gemini 2.5 + every external model together
+```
+
+This is the closest in-session equivalent to a multi-model pool. The complete native + external list
+(including the Antigravity preview models) is available outside the session instead:
+`agy pro models --all`, the launcher picker (`[2]`), and `agy pro swarm`
+([`swarm-hybrid.md`](swarm-hybrid.md) §3).
 
 Trade-off: this path bills Google AI Studio API tokens instead of using the Antigravity subscription
 quota. The native Antigravity preview model `gemini-3.8-flash-high` is **not** published on Google AI
@@ -114,6 +142,10 @@ Studio, so it cannot be proxied. Preserving that model requires native mode (lau
     example a BOM-prefixed `\uFEFFNW_API_KEY` shadowing `NW_API_KEY`.
     The doctor does not change its exit code on verdicts (an `invalid` key still exits 0); judge the
     printed verdict, not the exit status.
+  - **Key display (masking rule)**: every place that shows key material - wizard echo, wizard
+    confirmations, provider listings, settings panels, doctor / fix-keys / rollback output - renders
+    the **first 5 characters followed by `****`** (5 characters or fewer render as `****`; a trailing
+    suffix is never shown). While typing a key in the wizard, characters after the 5th echo as `*`.
   - **Repair**: `agy pro doctor --fix-keys` restores the clean name from a probe-valid BOM variant,
     writing a DPAPI-encrypted v2 backup (`registry-keys.v2.json`) first (legacy v1 backups stay
     readable for rollback); it mutates only when the clean name is absent or probe-invalid
@@ -136,6 +168,7 @@ Studio, so it cannot be proxied. Preserving that model requires native mode (lau
 | External models inside `agy /model` | yes | `-b` / `-m <external>` / `default_profile = gateway` |
 | External + public Gemini in one `/model` list | yes | register the `google` preset, then `default_profile = gateway` |
 | External + native Gemini 3.8 preview in one `/model` list | no | binary-level XOR; requires patching `agy.exe` |
+| All native + external models in one agy-pro list (outside the session) | yes | `agy pro models --all`, launcher picker `[2]`, `agy pro swarm` ([`swarm-hybrid.md`](swarm-hybrid.md)) |
 
 ---
 
@@ -205,3 +238,15 @@ swarm's (`agy pro fanout`) concern; the loop gates on `SupportsTools` alone, whi
 
 Tool work is invisible in `agy`'s own history across turns (the TUI only stores the final text). This
 is an accepted v1 trade-off: the bridge keeps the audit log, `agy` keeps a clean conversation.
+
+---
+
+## 6. Related surfaces
+
+- **Combined model list (outside the session)**: `agy pro models --all`, the launcher picker `[2]`, and
+  the `agy pro swarm` builder — [`swarm-hybrid.md`](swarm-hybrid.md) §3.
+- **Settings**: `agy pro settings` is the full-screen, keybinding-driven panel you launch in your own
+  terminal; `/setting_agypro` is a **plugin slash command** that drives the non-interactive
+  `agy pro settings ...` verbs through numbered menus and never contains or launches the panel —
+  [`swarm-hybrid.md`](swarm-hybrid.md) §4.
+- **Key masking**: first 5 characters followed by `****` wherever a key is displayed (§3 above).

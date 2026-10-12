@@ -97,7 +97,7 @@ flowchart TD
 | [`Agent/security-reviewer`](https://github.com/myk1yt/agy-tools/tree/Agent/security-reviewer) | **Enterprise Multi-Agent Security Audit** | `@security-reviewer` orchestrator + 4 domain inspectors (OWASP, IAM, Credentials, Supply Chain) | `git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-security-reviewer.ps1` | `cmd /c "git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-security-reviewer.ps1"` | `git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install-security-reviewer.sh` |
 | [`Agent/code-reviewer`](https://github.com/myk1yt/agy-tools/tree/Agent/code-reviewer) | **Pre-Merge Code Review & Quality Gate** | `@code-reviewer` agent, 4-stage pipeline, 8-category taxonomy, zero-tolerance P0-P3 gate | `git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-code-reviewer.ps1` | `cmd /c "git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-code-reviewer.ps1"` | `git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install-code-reviewer.sh` |
 | [`gemini-config`](https://github.com/myk1yt/agy-tools/tree/gemini-config) | **Autonomous Multi-Agent Governance** | 7-Stage Lifecycle Protocol, Master Zero-Source-Edit Invariant, orchestrator governance | `git clone -b gemini-config https://github.com/myk1yt/agy-tools.git && cd agy-tools && scripts\install.bat` | `cmd /c "git clone -b gemini-config https://github.com/myk1yt/agy-tools.git && cd agy-tools && scripts\install.bat"` | `git clone -b gemini-config https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install.sh` |
-| [`feature/agy-pro`](https://github.com/myk1yt/agy-tools/tree/feature/agy-pro) | **Go Shim & Multi-Model Swarm (`agy-pro`)** | Transparent `agy` shim, 2-second model launcher, external-model bridge, `agy pro` suite (setup / mode / fanout / doctor), one-click Windows install & uninstall (Windows only) | `git clone -b feature/agy-pro https://github.com/myk1yt/agy-tools.git && cd agy-tools && install.cmd` | `cmd /c "git clone -b feature/agy-pro https://github.com/myk1yt/agy-tools.git && cd agy-tools && install.cmd"` | — |
+| [`feature/agy-pro`](https://github.com/myk1yt/agy-tools/tree/feature/agy-pro) | **Go Shim & Multi-Model Swarm (`agy-pro`)** | Transparent `agy` shim, 2-second model launcher with a combined native + external model list, external-model bridge, numbered swarm builder with hybrid native seats, `agy pro` suite (setup / mode / models / swarm / settings / fanout / doctor), one-click Windows install & uninstall (Windows only) | `git clone -b feature/agy-pro https://github.com/myk1yt/agy-tools.git && cd agy-tools && install.cmd` | `cmd /c "git clone -b feature/agy-pro https://github.com/myk1yt/agy-tools.git && cd agy-tools && install.cmd"` | — |
 | [`dashboard`](https://github.com/myk1yt/agy-tools/tree/dashboard) | **Historical Prototype** | Original token tracker foundation (fully merged into `main`) | — | — | — |
 
 > [!TIP]
@@ -386,7 +386,7 @@ If the `where` output does not point at `AppData\Roaming\npm`, the old copy is s
 
 ## 🚀 agy-pro: Go Shim, Model Launcher & Swarm Orchestrator
 
-`agy-pro/` is a Go shim that wraps the authentic `agy` binary. It keeps the native TUI, stdio handles, and exit codes intact, and adds a model launcher, a local bridge for external OpenAI-compatible models, profile switching, and a multi-model swarm. Go standard library only.
+`agy-pro/` is a Go shim that wraps the authentic `agy` binary. It keeps the native TUI, stdio handles, and exit codes intact, and adds a model launcher with a combined native + external model list, a local bridge for external OpenAI-compatible models, profile switching, a numbered swarm builder with hybrid native seats, and one settings panel for everything. Go standard library only.
 
 ### 📋 Copy & Paste Install (Windows)
 
@@ -424,7 +424,7 @@ agy pro setup          # register a provider (OpenRouter, DeepSeek, Groq, Google
 agy                    # 2-second picker: [1] Native Gemini  [2] External Models  [3] Swarm
 ```
 
-The picker belongs to a **bare** `agy` (no arguments): any argument skips it and goes straight to the real binary. Registering a provider is enough to get the launcher. To skip the prompt:
+The picker belongs to a **bare** `agy` (no arguments): any argument skips it and goes straight to the real binary. Registering a provider is enough to get the launcher. The launcher also prints one community line at startup (`Visit https://www.reddit.com/r/GoogleAntigravityCLI/! A space for antigravity-cli users. Remember r/GoogleAntigravityCLI`); it appears only in the interactive launcher, never in `-p`/piped/machine output. To skip the prompt:
 
 ```bash
 agy pro config default-profile gateway   # every `agy` run exposes all registered models in /model
@@ -434,22 +434,36 @@ agy pro mode full                        # switch to the full-stack orchestrator
 agy pro status                           # active mode, providers, real agy path
 ```
 
+Everyday surfaces:
+
+```bash
+agy pro models --all                     # combined native + external model list (numbered)
+agy pro swarm                            # numbered builder: template + seats by number, then run
+agy pro fanout --seats "native:gemini-3.8-flash-high,nw/glm-5.3-flash"   # hybrid swarm
+agy pro settings                         # full-screen settings panel (TUI)
+```
+
 ### What it adds
 
 | Capability | Command |
 |---|---|
 | Interactive 2-second model launcher | bare `agy` (no arguments) |
+| Combined native + external model list | `agy pro models --all`, launcher `[2]` |
 | External models inside the native `/model` picker | `agy -b`, `agy -m "<model> (<provider>)"`, `AGY_PRO_BRIDGE=1` |
 | Default startup profile (native / gateway / prompt) | `agy pro config default-profile <value>` |
 | Gateway tool loop for external models (default read-only) | `agy pro config bridge-tools read,search`, `agy pro config show` |
 | Profile switcher (full-stack / clean) | `agy pro mode full`, `agy pro mode clean` |
 | Provider & model setup wizard | `agy pro setup` |
+| Numbered swarm builder (hybrid native + external seats) | `agy pro swarm`, `agy pro fanout --seats "native:<model>,<provider>/<model>"` |
 | Multi-model fanout swarm | `agy pro fanout -task=security -n=3` |
+| Settings panel / in-session settings | `agy pro settings` (TUI), `/setting_agypro` (plugin command) |
 | Diagnostics | `agy pro doctor`, `agy pro status`, `agy pro models` |
 
-`agy pro doctor` probes every configured provider key upstream with zero tokens (`GET <baseURL>/models`, 5s timeout) and prints a masked verdict (`valid` / `invalid` / `indeterminate` / `SKIP`). `agy pro doctor --fix-keys` restores a BOM-prefixed environment variable name from a probe-valid variant (backup written first) and `agy pro doctor --rollback-keys <dir>` undoes that repair.
+`agy pro doctor` probes every configured provider key upstream with zero tokens (`GET <baseURL>/models`, 5s timeout) and prints a masked verdict (`valid` / `invalid` / `indeterminate` / `SKIP`). Key material is always displayed as the first 5 characters followed by `****` (5 characters or fewer render as `****`; no suffix is ever shown). `agy pro doctor --fix-keys` restores a BOM-prefixed environment variable name from a probe-valid variant (backup written first) and `agy pro doctor --rollback-keys <dir>` undoes that repair.
 
-Full details: [`agy-pro/README.md`](agy-pro/README.md) and [`agy-pro/docs/bridge-architecture.md`](agy-pro/docs/bridge-architecture.md).
+Inside an `agy` session, `/model` stays an all-or-nothing switch: native Antigravity models and bridge (external) models cannot share one catalog, so the single popover is XOR-limited by the binary. The closest in-session equivalent is gateway mode with the `google` (AI Studio) preset registered (`/model` then lists Gemini 2.5 next to your external models); the full native + external list lives at the agy-pro layer (`agy pro models --all`, launcher `[2]`, `agy pro swarm`).
+
+Full details: [`agy-pro/README.md`](agy-pro/README.md), [`agy-pro/docs/bridge-architecture.md`](agy-pro/docs/bridge-architecture.md) and [`agy-pro/docs/swarm-hybrid.md`](agy-pro/docs/swarm-hybrid.md).
 
 ---
 

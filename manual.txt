@@ -9,17 +9,19 @@
 1. 초보자를 위한 1초 원클릭 초간편 설치 방법
 2. 모드 전환 방법 (풀스택 모드 vs 클린 모드)
 3. 대화형 터미널 설정 마법사 및 실시간 연결 테스트 (agy pro setup)
-4. 멀티모델 병렬 스웜 팬아웃 (agy pro fanout)
-5. 시스템 상태 진단 및 안전 복구 (agy pro doctor & restore)
-6. 주요 명령어 요약 가이드
+4. 멀티모델 병렬 스웜 팬아웃 (agy pro fanout, 하이브리드 네이티브 좌석)
+5. 번호로 고르는 스웜 빌더 · 통합 모델 목록 · 설정 패널 (agy pro swarm / models --all / settings)
+6. 시스템 상태 진단 및 안전 복구 (agy pro doctor & restore)
+7. 주요 명령어 요약 가이드
 
 [ English ]
 1. One-Click Instant Installation for Beginners
 2. Mode Switching Guide (Full-Stack vs Clean)
 3. Interactive Setup Wizard & Live Connection Testing (agy pro setup)
-4. Multi-Model Swarm Fanout (agy pro fanout)
-5. System Diagnostics & Safe Recovery (agy pro doctor & restore)
-6. Command Reference Summary
+4. Multi-Model Swarm Fanout (agy pro fanout, hybrid native seats)
+5. Numbered Swarm Builder, Combined Model List & Settings Panel (agy pro swarm / models --all / settings)
+6. System Diagnostics & Safe Recovery (agy pro doctor & restore)
+7. Command Reference Summary
 
 ================================================================================
                               [ 한국어 가이드 ]
@@ -122,7 +124,9 @@ OpenRouter, DeepSeek, Groq, Mistral 등 외부 최신 모델을 클릭과 엔터
   1) Provider 이름 입력 (예: deepseek, openrouter, groq, openai)
   2) API Base URL 확인 (기본 권장 URL이 자동으로 제시되며 Enter로 수락 가능)
   3) API 키 환경변수 이름 지정 (예: DEEPSEEK_API_KEY)
-  4) API 키 값 입력 (입력 시 Windows 사용자 환경변수에 영구 저장 지원)
+  4) API 키 값 입력 (입력 시 Windows 사용자 환경변수에 영구 저장 지원).
+     입력 중에도 6번째 글자부터는 `*`로만 표시되고, 이후 확인 문구에도
+     앞 5글자 + `****` 형태로만 표시됩니다 (5글자 이하는 `****`).
   5) 모델 ID 및 패밀리 지정 (예: deepseek-chat, deepseek-reasoner 등)
   6) 모델 지원 기능 선택 (함수 호출/에이전트 도구 지원, Vision, Reasoning)
   7) ⚡ [실시간 연결 테스트 (Live Probe)]:
@@ -132,10 +136,12 @@ OpenRouter, DeepSeek, Groq, Mistral 등 외부 최신 모델을 클릭과 엔터
   8) 모든 정보는 환경변수 참조 방식으로 `~/.agy-pro/providers.json`에 저장됩니다.
      API 키 값 자체는 파일에 저장되지 않고 환경변수(Windows 사용자 환경변수)에만
      기록됩니다. (API Secret 직접 하드코딩 금지)
+     키가 표시되는 모든 곳(마법사 확인 문구, 프로바이더 목록, 설정 패널,
+     `agy pro doctor` 계열 출력)은 앞 5글자 + `****` 마스크만 사용합니다.
 
 
 --------------------------------------------------------------------------------
-4. 멀티모델 병렬 스웜 팬아웃 (agy pro fanout)
+4. 멀티모델 병렬 스웜 팬아웃 (agy pro fanout, 하이브리드 네이티브 좌석)
 --------------------------------------------------------------------------------
 단일 AI 모델의 환각(Hallucination)이나 편향을 방지하기 위해 여러 공급자(Provider)의
 이종 모델들에게 동시에 질문을 전송하고, 결과를 교차 검증(Reconciliation)합니다.
@@ -149,6 +155,14 @@ OpenRouter, DeepSeek, Groq, Mistral 등 외부 최신 모델을 클릭과 엔터
       agy pro fanout --prompt "src/ 디렉토리 내의 버그를 조사해줘" --tools read,search
   - 모델 수와 태스크 유형 지정 (--n, --task review|security|plan-audit|research|ideas|custom):
       agy pro fanout --prompt "설계 검토" --task review --n 3
+  - 하이브리드 좌석 (--seats: 실제 agy 서브프로세스 + 외부 프로바이더를 한 스웜에):
+      agy pro fanout --prompt "설계 검토" --seats "native:gemini-3.8-flash-high,nw/glm-5.3-flash,bigmodel/glm-4.6"
+      * `native:<모델ID>` 좌석은 실제 agy를 서브프로세스로 실행합니다. 안티그래비티 구독 쿼터를
+        쓰므로 중간에 레이트 리밋이 걸릴 수 있습니다. 동시 실행 수는 기본 2개이며 `--max-native`
+        또는 `agy pro settings set native-seat-concurrency <1..8>`로 바꿉니다. 실패한 네이티브
+        좌석은 다른 모델로 대체(failover)되지 않고 '실패 좌석'으로 집계되며, 스웜은 계속 진행됩니다
+        (사유 표시: `reason=quota`, `reason=timeout` 등).
+      * `--seats`와 `--models`는 함께 쓸 수 없습니다(오류, 종료 코드 2).
 
 [결과 출력 예시]
   팬아웃이 완료되면 터미널에 스웜 종합 요약이 출력됩니다:
@@ -157,8 +171,10 @@ OpenRouter, DeepSeek, Groq, Mistral 등 외부 최신 모델을 클릭과 엔터
     Confirmed Issues:      2
     Disputed Issues:       1
   - 산출물은 `reports/fanout/<타임스탬프>/` 아래 생성됩니다:
-      reconciliation.md : 모델 간 교차 검증 리포트 (불일치 항목은 VP Arbiter 검토 대상으로 표시)
+      reconciliation.md : 모델 간 교차 검증 리포트 (불일치 항목은 메인 에이전트 판정 대상으로 표시,
+                          각 항목에 `arbitration:` 한 줄로 판정 근거를 기록)
       summary.json      : 기계 판독용 요약 (JSON)
+      seat-N-*.md       : 좌석별 원문 리포트 (네이티브 좌석은 `Kind: native` + 쿼터 표기)
   - 전체 스웜이 합의에 도달하면 "All findings verified across swarm models." 메시지가 표시됩니다.
 
 [게이트웨이 도구 루프 (외부 모델이 파일을 읽고 검색하게 하기)]
@@ -178,7 +194,62 @@ OpenRouter, DeepSeek, Groq, Mistral 등 외부 최신 모델을 클릭과 엔터
 
 
 --------------------------------------------------------------------------------
-5. 상태 진단 및 안전 복구 (agy pro doctor & restore)
+5. 번호로 고르는 스웜 빌더 · 통합 모델 목록 · 설정 패널
+   (agy pro swarm / models --all / settings)
+--------------------------------------------------------------------------------
+[1] 통합 모델 목록 보기 (네이티브 + 외부)
+      agy pro models --all      # 번호가 붙은 전체 목록 (예: [ 1] gemini-3.8-flash-high ... [native])
+      agy pro models --json     # 같은 목록을 JSON으로 출력
+      agy pro models            # 기존 출력 (프로바이더/모델/기능) 그대로
+  - `[native]` 그룹은 실제 agy 모델 카탈로그(agy 1.3.3 기준 18개)이고, 그 뒤에 등록한
+    프로바이더가 providers.json 순서대로 이어집니다. API 키 환경변수가 비어 있으면
+    `(key missing)`으로 표시됩니다.
+  - 인자 없는 `agy`를 실행하면 뜨는 2초 런처에서 [2]를 누르면 같은 번호 목록이 열립니다.
+    네이티브 번호를 고르면 브릿지 없이 실제 agy가 실행되고, 외부 번호를 고르면 브릿지가 켜집니다.
+  - 런처가 뜰 때 커뮤니티 안내가 한 줄 출력됩니다:
+      Visit https://www.reddit.com/r/GoogleAntigravityCLI/! A space for antigravity-cli users. Remember r/GoogleAntigravityCLI
+    이 줄은 대화형 런처에서만 나옵니다. `-p` 일회성 실행, 파이프 입력, `agy pro` 하위 명령,
+    기계 판독 출력(summary.json, models --json)에는 나오지 않습니다.
+  - 안티그래비티 세션 안의 `/model` 팝업은 여전히 전부 아니면 전무(네이티브 XOR 외부)입니다.
+    네이티브 모델과 브릿지 모델을 한 팝업에 함께 넣는 것은 바이너리 차원에서 불가능합니다.
+    세션 안에서 가장 가까운 방법은 `google`(AI Studio) 프리셋을 등록한 뒤
+    `agy pro config default-profile gateway`로 두는 것이고(Gemini 2.5 + 외부 모델 동시 표시),
+    네이티브까지 포함한 전체 목록은 agy-pro 계층(`agy pro models --all`, 런처 [2], `agy pro swarm`)에서 봅니다.
+
+[2] 번호로 스웜 만들기 (권장 경로)
+      agy pro swarm
+  - 순서: [1] 템플릿 번호 (1 Code Review / 2 Security Audit / 3 Custom) → [2] 좌석 번호
+    (예: `1,3,5`, 범위 `2-4`, 프리셋 `p1`~`p3`) → [3] 도구·예산 확인 → [4] 실행 전 미리보기.
+  - 프리셋: p1 = 네이티브 2 + 외부 2, p2 = 외부 3 (패밀리 로테이션), p3 = 혼합 4
+    (네이티브 flash + pro + 외부 2). 입력 없이 Enter만 눌러도 기본 프리셋(p1)이 적용됩니다.
+  - 실행 전에 실제로 실행될 `agy pro fanout ...` 명령이 그대로 출력됩니다. Enter/y = 실행,
+    c = 명령만 출력, 1-4 = 해당 항목 수정, q = 취소.
+  - k3 패밀리 모델은 `excluded (pool policy)`로 표시되고 자동 배정에서 제외됩니다.
+  - CI/파워유저용 플래그 경로 (플래그를 하나라도 주면 질문 없이 실행, 필수 입력이 없으면 종료 코드 2):
+      agy pro swarm --template code-review --seats "1,3,5" --root .
+      agy pro swarm --template security-audit --seats "native:gemini-3.8-flash-high,nw/glm-5.3-flash" --dry-run
+
+[3] 설정 패널 (agy pro settings) 과 세션 내 플러그인 명령 (/setting_agypro)
+      agy pro settings             # 전체 화면 설정 패널 (TUI). 사용자 터미널에서 직접 실행
+      agy pro settings --panel p4  # 특정 패널로 바로 열기
+      agy pro settings show [--json] | set <키> <값> | providers ... | mode ... | doctor ...
+  - 패널: [1] Launch & Profile, [2] Models & Providers, [3] Bridge Tools & Budgets,
+    [4] Swarm & Fanout, [5] Diagnostics & Keys, [6] Install & Update, [7] Environment Variables.
+  - `agy pro settings set`으로 바꿀 수 있는 키는 default-profile, bridge-tools,
+    native-seat-concurrency(1~8)입니다. 브릿지 도구 예산(8턴/240초/60초/도구당 30초/턴당 16회)은
+    컴파일 상수라 읽기 전용으로 표시됩니다.
+  - `/setting_agypro`는 **플러그인 슬래시 명령**입니다 (`/agy_help`와 같은 종류).
+    설치: `agy plugin install plugins/agypro_settings` (슬래시 이름은 파일 이름에서 옵니다).
+    이 명령은 위의 비대화형 `agy pro settings ...` 명령들을 번호 메뉴로 실행해 주는
+    에이전트 워크플로이며, 전체 화면 TUI를 포함하거나 실행하지 않습니다. TUI는 사용자가
+    자기 터미널에서 `agy pro settings`를 직접 실행해 여는 별개 화면입니다.
+    플러그인을 새로 설치한 뒤에는 `agy` 세션을 다시 시작해야 슬래시 명령이 인식됩니다.
+  - API 키는 어디에서나 앞 5글자 + `****`로만 표시됩니다 (5글자 이하는 `****`). 마법사에서
+    키를 입력할 때도 6번째 글자부터는 `*`로만 표시됩니다.
+
+
+--------------------------------------------------------------------------------
+6. 상태 진단 및 안전 복구 (agy pro doctor & restore)
 --------------------------------------------------------------------------------
 문제가 생기거나 환경 상태를 점검하고 싶을 때는 진단 도구를 실행하세요.
 
@@ -190,7 +261,8 @@ OpenRouter, DeepSeek, Groq, Mistral 등 외부 최신 모델을 클릭과 엔터
   - 원본 Antigravity 바이너리 존재 여부 및 버전
   - agy-pro 심(Shim) 실행 경로 및 설치 위치(~/.agy-pro/bin) 일치 여부
   - agy-pro 홈/설정 디렉터리 및 기본 프로필 상태
-  - 등록된 외부 Provider API 키 실측 probe 결과 (valid/invalid/indeterminate/SKIP, 마스킹 표시)
+  - 등록된 외부 Provider API 키 실측 probe 결과 (valid/invalid/indeterminate/SKIP,
+    마스킹 표시: 앞 5글자 + `****`)
   - Go 언어 툴체인 상태
 
   참고: `agy pro doctor --strict`는 구조 문제(원본 agy 부재, 심이
@@ -206,7 +278,7 @@ OpenRouter, DeepSeek, Groq, Mistral 등 외부 최신 모델을 클릭과 엔터
 
 
 --------------------------------------------------------------------------------
-6. 주요 명령어 요약 가이드
+7. 주요 명령어 요약 가이드
 --------------------------------------------------------------------------------
   agy pro setup          : 외부 AI 모델 및 API 키 연동 대화형 마법사
   agy pro mode           : 대화형 프로필 모드 선택 (Full-Stack / Clean)
@@ -214,8 +286,12 @@ OpenRouter, DeepSeek, Groq, Mistral 등 외부 최신 모델을 클릭과 엔터
   agy pro mode clean     : 기본(클린 Antigravity) 모드로 전환
   agy pro mode restore   : 가장 최근 백업본으로 모드 복구
   agy pro status         : 현재 활성화된 모드 및 설정 상태 출력
-  agy pro doctor         : 시스템 진단 및 도구체인 상태 검사
+  agy pro models --all   : 네이티브+외부 통합 모델 목록 (번호 표시)
+  agy pro swarm          : 번호로 템플릿·좌석을 고르는 스웜 빌더 (미리보기 후 실행)
   agy pro fanout --prompt "<질문>" : 멀티모델 병렬 스웜 질의 및 종합 결과 생성
+  agy pro fanout --seats "native:<모델>,<프로바이더>/<모델>" : 하이브리드 스웜 (네이티브 좌석 포함)
+  agy pro settings       : 전체 화면 설정 패널 (TUI). 세션 안에서는 플러그인 명령 /setting_agypro
+  agy pro doctor         : 시스템 진단 및 도구체인 상태 검사
   agy pro config bridge-tools <read,search,write,exec|none> : 외부 모델 도구 루프 설정 (기본 read,search)
   agy pro config show    : 시작 프로필, 프로필 모드, 도구 루프 설정 확인
   agy pro help           : 사용 가능한 전체 도움말 확인
@@ -340,7 +416,7 @@ with guided interactive prompts and instant live health checking.
 
 
 --------------------------------------------------------------------------------
-4. Multi-Model Swarm Fanout (agy pro fanout)
+4. Multi-Model Swarm Fanout (agy pro fanout, hybrid native seats)
 --------------------------------------------------------------------------------
 Eliminate single-model blind spots and hallucination by broadcasting prompts
 simultaneously to heterogeneous models, then cross-verifying the results
@@ -355,6 +431,15 @@ simultaneously to heterogeneous models, then cross-verifying the results
       agy pro fanout --prompt "Investigate codebase for deprecated APIs" --tools read,search
   - Seat count and task type (--n, --task review|security|plan-audit|research|ideas|custom):
       agy pro fanout --prompt "Review this design" --task review --n 3
+  - Hybrid seats (--seats: real agy subprocess seats + external providers in ONE swarm):
+      agy pro fanout --prompt "Review this design" --seats "native:gemini-3.8-flash-high,nw/glm-5.3-flash,bigmodel/glm-4.6"
+      * `native:<model-id>` runs the real agy binary as a subprocess seat (Antigravity
+        subscription quota; rate limits can hit mid-swarm). Native seats run at most 2 at a
+        time by default; change that with `--max-native` or
+        `agy pro settings set native-seat-concurrency <1..8>`. A failed native seat does not
+        fail over: it is reported as a failed seat (reason shown: `reason=quota`,
+        `reason=timeout`, or the exit code with a redacted stderr tail) and the swarm continues.
+      * `--seats` and `--models` cannot be combined (error, exit code 2).
 
 [Result Output Example]
   When the swarm completes, the terminal prints a summary:
@@ -363,9 +448,11 @@ simultaneously to heterogeneous models, then cross-verifying the results
     Confirmed Issues:      2
     Disputed Issues:       1
   - Artifacts are written under `reports/fanout/<timestamp>/`:
-      reconciliation.md : cross-model verification report (disputed findings are
-                          flagged for VP Arbiter review)
-      summary.json      : machine-readable summary
+      reconciliation.md : cross-model verification report (disputed findings require
+                          main-agent arbitration; each item records its ruling on an
+                          `arbitration:` line)
+      summary.json      : machine-readable summary (each seat carries `kind`: native | provider)
+      seat-N-*.md       : per-seat raw report (native seats add a `Kind: native` and quota row)
   - When every seat agrees, "All findings verified across swarm models." is printed.
 
 [Gateway Tool Loop (let external models read and search your files)]
@@ -386,7 +473,62 @@ simultaneously to heterogeneous models, then cross-verifying the results
 
 
 --------------------------------------------------------------------------------
-5. System Diagnostics & Safe Recovery (agy pro doctor & restore)
+5. Numbered Swarm Builder, Combined Model List & Settings Panel
+   (agy pro swarm / models --all / settings)
+--------------------------------------------------------------------------------
+[1] Combined model list (native + external)
+      agy pro models --all      # numbered list (e.g. [ 1] gemini-3.8-flash-high ... [native])
+      agy pro models --json     # the same list as JSON
+      agy pro models            # unchanged legacy output (providers / models / capabilities)
+  - The `[native]` group is the real agy model catalog (18 models on agy 1.3.3), followed by your
+    providers in providers.json order. A provider whose API-key environment variable is unset is
+    marked `(key missing)`.
+  - In the 2-second launcher (bare `agy`), `[2]` opens the same numbered list: a native number
+    runs real agy with no bridge, an external number starts the bridge.
+  - The launcher also prints one community line at startup:
+      Visit https://www.reddit.com/r/GoogleAntigravityCLI/! A space for antigravity-cli users. Remember r/GoogleAntigravityCLI
+    That line appears in the interactive launcher only. It never appears in `-p` one-shot runs,
+    piped input, `agy pro` subcommands, or machine output (summary.json, models --json).
+  - Inside an agy session, `/model` stays an all-or-nothing switch (native XOR external): native and
+    bridge models cannot share one popover. The closest in-session equivalent is registering the
+    `google` (AI Studio) preset and setting `agy pro config default-profile gateway` (Gemini 2.5 +
+    external models together). The full native + external list lives at the agy-pro layer:
+    `agy pro models --all`, launcher [2], `agy pro swarm`.
+
+[2] Build a swarm by number (recommended path)
+      agy pro swarm
+  - Steps: [1] template number (1 Code Review / 2 Security Audit / 3 Custom) -> [2] seat numbers
+    (e.g. `1,3,5`, a range `2-4`, or a preset `p1`..`p3`) -> [3] tools & budget -> [4] preview.
+  - Presets: p1 = 2 native + 2 external, p2 = 3 external (family-rotated), p3 = 4 mixed
+    (native flash + native pro + 2 external). Pressing Enter alone accepts the default preset (p1).
+  - The exact `agy pro fanout ...` command is printed before anything runs. Enter/y = run,
+    c = print only, 1-4 = edit that field, q = cancel.
+  - k3-family models are marked `excluded (pool policy)` and are never auto-seated.
+  - Power-user / CI flag path (any flag means zero prompts; missing required input exits 2):
+      agy pro swarm --template code-review --seats "1,3,5" --root .
+      agy pro swarm --template security-audit --seats "native:gemini-3.8-flash-high,nw/glm-5.3-flash" --dry-run
+
+[3] Settings panel (agy pro settings) and the in-session plugin command (/setting_agypro)
+      agy pro settings             # full-screen settings panel (TUI); run it in your own terminal
+      agy pro settings --panel p4  # deep-link one panel
+      agy pro settings show [--json] | set <key> <value> | providers ... | mode ... | doctor ...
+  - Panels: [1] Launch & Profile, [2] Models & Providers, [3] Bridge Tools & Budgets,
+    [4] Swarm & Fanout, [5] Diagnostics & Keys, [6] Install & Update, [7] Environment Variables.
+  - Keys accepted by `agy pro settings set`: default-profile, bridge-tools,
+    native-seat-concurrency (1..8). The bridge tool budgets (8 turns / 240s wall / 60s turn /
+    30s per tool / 16 calls per turn) are compile-time constants shown read-only.
+  - `/setting_agypro` is a **plugin slash command** (the same class as `/agy_help`).
+    Install it with `agy plugin install plugins/agypro_settings` (the slash name comes from the
+    file name). It is an agent-mediated workflow that runs the non-interactive
+    `agy pro settings ...` verbs behind numbered menus; it does NOT contain or launch the
+    full-screen TUI. The TUI is a separate surface you open yourself with `agy pro settings`.
+    A newly installed plugin directory is discovered on the next `agy` session start.
+  - API keys are always displayed as the first 5 characters + `****` (5 characters or fewer render
+    as `****`). While typing a key in the wizard, characters after the 5th echo as `*`.
+
+
+--------------------------------------------------------------------------------
+6. System Diagnostics & Safe Recovery (agy pro doctor & restore)
 --------------------------------------------------------------------------------
 Diagnose issues and restore previous states effortlessly.
 
@@ -400,7 +542,7 @@ Diagnose issues and restore previous states effortlessly.
     location (~/.agy-pro/bin)
   - agy-pro home/config directories and default profile state
   - Registered external provider API keys, verified with a real upstream
-    probe (valid/invalid/indeterminate/SKIP, masked display)
+    probe (valid/invalid/indeterminate/SKIP, masked display: first 5 characters + `****`)
   - Go toolchain configuration
 
   Note: `agy pro doctor --strict` exits with code 1 only for structural
@@ -417,7 +559,7 @@ Diagnose issues and restore previous states effortlessly.
 
 
 --------------------------------------------------------------------------------
-6. Command Reference Summary
+7. Command Reference Summary
 --------------------------------------------------------------------------------
   agy pro setup          : Interactive provider and API key setup wizard
   agy pro mode           : Interactive profile switcher
@@ -425,8 +567,12 @@ Diagnose issues and restore previous states effortlessly.
   agy pro mode clean     : Activate clean default profile
   agy pro mode restore   : Restore previous profile from backup
   agy pro status         : Display current profile mode and provider status
-  agy pro doctor         : Run diagnostic health check
+  agy pro models --all   : Combined native + external model list (numbered)
+  agy pro swarm          : Numbered swarm builder (template + seats, preview, then run)
   agy pro fanout --prompt "<q>" : Run multi-model swarm fanout with synthesis
+  agy pro fanout --seats "native:<model>,<provider>/<model>" : Hybrid swarm (native seats included)
+  agy pro settings       : Full-screen settings panel (TUI). Inside a session use the plugin command /setting_agypro
+  agy pro doctor         : Run diagnostic health check
   agy pro config bridge-tools <read,search,write,exec|none> : Tool loop for external models (default read,search)
   agy pro config show    : Show startup profile, profile mode, and tool-loop setting
   agy pro help           : View full CLI help
