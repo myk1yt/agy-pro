@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"agypro/internal/agenttools"
+	"agypro/internal/mode"
 	"agypro/internal/providers"
 )
 
@@ -25,6 +26,8 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 		promptFileFlag = flags.String("prompt-file", "", "Path to prompt file, or '-' for stdin")
 		nFlag          = flags.Int("n", 3, "Number of models to fan out across")
 		modelsFlag     = flags.String("models", "", "Comma-separated model identifiers (e.g. 'openai/gpt-4o,deepseek/deepseek-chat')")
+		seatsFlag      = flags.String("seats", "", "Comma-separated seat specs mixing native and provider seats: 'native:<model-id>' for a real agy (Gemini) subprocess seat, 'provider/model' or 'model' for an external provider seat (e.g. 'native:gemini-3.8-flash-high,nw/glm-5.3-flash')")
+		maxNativeFlag  = flags.Int("max-native", 0, "Maximum concurrent native (real agy) seats; 0 uses state.json native_seat_concurrency or the default 2 (excess native seats queue)")
 		rootFlag       = flags.String("root", ".", "Workspace root directory for tool execution")
 		toolsFlag      = flags.String("tools", "read,search", "Allowed tools: read,search,write,exec (closed set; unknown tokens are rejected)")
 		maxTurnsFlag   = flags.Int("max-turns", 10, "Maximum turns for agentic tool loop")
@@ -84,6 +87,22 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 		}
 	}
 
+	// 3b. Resolve seat specs (--seats) — contract §2.1. --seats and --models
+	// are mutually exclusive (fail-closed, exit 2).
+	var seatSpecs []SeatSpec
+	if *seatsFlag != "" {
+		if *modelsFlag != "" {
+			fmt.Fprintln(errw, "Error: --seats and --models cannot be combined")
+			return 2
+		}
+		specs, err := ParseSeatSpecs(*seatsFlag)
+		if err != nil {
+			fmt.Fprintf(errw, "Error: %v\n", err)
+			return 2
+		}
+		seatSpecs = specs
+	}
+
 	// 4. Construct RunConfig
 	// --tools parsing is fail-closed (S-8): unknown tokens are rejected
 	// instead of being ignored or substring-matched ("nowrite" must never
@@ -94,16 +113,34 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 		return 2
 	}
 
+	// Native-seat concurrency precedence (contract §2.3):
+	// --max-native flag > state.json native_seat_concurrency > default 2.
+	maxNative := *maxNativeFlag
+	if maxNative <= 0 {
+		if st, serr := mode.LoadState(); serr == nil {
+			maxNative = st.EffectiveNativeSeatConcurrency()
+		} else {
+			maxNative = mode.DefaultNativeSeatConcurrency
+		}
+	}
+
+	nSeats := *nFlag
+	if len(seatSpecs) > 0 {
+		nSeats = len(seatSpecs)
+	}
+
 	cfg := RunConfig{
-		Task:       *taskFlag,
-		Prompt:     promptText,
-		N:          *nFlag,
-		Models:     explicitModels,
-		Root:       *rootFlag,
-		Tools:      normalizedTools,
-		MaxTurns:   *maxTurnsFlag,
-		TimeoutSec: *timeoutFlag,
-		OutDir:     *outFlag,
+		Task:                 *taskFlag,
+		Prompt:               promptText,
+		N:                    nSeats,
+		Models:               explicitModels,
+		Seats:                seatSpecs,
+		MaxNativeConcurrency: maxNative,
+		Root:                 *rootFlag,
+		Tools:                normalizedTools,
+		MaxTurns:             *maxTurnsFlag,
+		TimeoutSec:           *timeoutFlag,
+		OutDir:               *outFlag,
 	}
 
 	// 5. Execute Fanout Engine
@@ -151,7 +188,7 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 
 	fmt.Fprintln(out)
 	if summary.DisputedCount > 0 {
-		fmt.Fprintf(out, "⚠️ Notice: %d disputed high-severity finding(s) require VP Arbiter review in reconciliation.md\n", summary.DisputedCount)
+		fmt.Fprintf(out, "⚠️ Notice: %d disputed high-severity finding(s) require main-agent arbitration in reconciliation.md\n", summary.DisputedCount)
 	} else {
 		fmt.Fprintln(out, "✅ All findings verified across swarm models.")
 	}

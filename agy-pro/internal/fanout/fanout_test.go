@@ -1048,3 +1048,231 @@ func TestFanout_GrepMissingRootToolInput_DoesNotCrashSwarm(t *testing.T) {
 		t.Fatalf("expected tool error feedback in follow-up request, got: %s", captured)
 	}
 }
+
+// --- F-C pool-policy exclusion (contract §2.5b) -------------------------------
+// k3-family models must never be AUTO-seated via failover or rotation; explicit
+// user picks stay exempt.
+
+func TestFC_FailoverSkipsK3SameModelAlternate(t *testing.T) {
+	// Step-1 failover: the only same-model alternate is a k3 id -> skipped;
+	// the seat degrades on the original target (no auto-seat onto k3).
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		if strings.Contains(auth, "bad-key") {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error": {"message": "Rate limit exceeded"}}`))
+			return
+		}
+		// If the k3 backup were auto-seated it would answer; see assertions.
+		resp := ChatResponse{Choices: []ChatChoice{{
+			Index:        0,
+			Message:      ChatMessage{Role: "assistant", Content: "## Findings\n- **[LOW]** k3 answer"},
+			FinishReason: "stop",
+		}}}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	tmpDir := t.TempDir()
+	t.Setenv(providers.EnvHome, tmpDir)
+	t.Setenv("KEY_FC1_BAD", "bad-key")
+	t.Setenv("KEY_FC1_GOOD", "good-key")
+
+	trueVal := true
+	reg := &providers.Registry{Providers: []providers.Provider{
+		{
+			Name:      "prov-primary",
+			BaseURL:   server.URL,
+			APIKeyEnv: "KEY_FC1_BAD",
+			Models:    []providers.Model{{ID: "kimi-k3", Family: "kimi", Enabled: &trueVal}},
+		},
+		{
+			Name:      "prov-backup",
+			BaseURL:   server.URL,
+			APIKeyEnv: "KEY_FC1_GOOD",
+			Models:    []providers.Model{{ID: "kimi-k3", Family: "kimi", Enabled: &trueVal}},
+		},
+	}}
+	regPath := filepath.Join(tmpDir, "providers.json")
+	regData, _ := json.Marshal(reg)
+	_ = os.WriteFile(regPath, regData, 0o600)
+
+	cfg := RunConfig{
+		Task:         "review",
+		N:            1,
+		Models:       []string{"prov-primary/kimi-k3"}, // explicit pick: exempt
+		Root:         tmpDir,
+		OutDir:       filepath.Join(tmpDir, "reports"),
+		RegistryPath: regPath,
+		TimeoutSec:   10,
+	}
+	summary, err := Execute(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	seat := summary.Seats[0]
+	if seat.FinalTarget.Provider.Name != "prov-primary" {
+		t.Fatalf("k3 alternate must not be auto-seated, final provider = %s", seat.FinalTarget.Provider.Name)
+	}
+	if len(seat.Failovers) != 0 {
+		t.Fatalf("failover onto a k3 model must be skipped, got %+v", seat.Failovers)
+	}
+}
+
+func TestFC_FailoverSkipsK3DifferentFamilyAlternate(t *testing.T) {
+	// Step-2 failover: the only different-family alternate is a k3 id ->
+	// skipped; seat exhausts without auto-seating k3.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		if strings.Contains(auth, "dead-key") {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error": {"message": "Service Unavailable"}}`))
+			return
+		}
+		resp := ChatResponse{Choices: []ChatChoice{{
+			Index:        0,
+			Message:      ChatMessage{Role: "assistant", Content: "## Findings\n- **[LOW]** k3 answer"},
+			FinishReason: "stop",
+		}}}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	tmpDir := t.TempDir()
+	t.Setenv(providers.EnvHome, tmpDir)
+	t.Setenv("KEY_FC2_DEAD", "dead-key")
+	t.Setenv("KEY_FC2_K3", "k3-key")
+
+	trueVal := true
+	reg := &providers.Registry{Providers: []providers.Provider{
+		{
+			Name:      "prov-dead",
+			BaseURL:   server.URL,
+			APIKeyEnv: "KEY_FC2_DEAD",
+			Models:    []providers.Model{{ID: "dead-model", Family: "dead-fam", Enabled: &trueVal}},
+		},
+		{
+			Name:      "prov-k3",
+			BaseURL:   server.URL,
+			APIKeyEnv: "KEY_FC2_K3",
+			Models:    []providers.Model{{ID: "k3-agent-swarm", Family: "k", Enabled: &trueVal}},
+		},
+	}}
+	regPath := filepath.Join(tmpDir, "providers.json")
+	regData, _ := json.Marshal(reg)
+	_ = os.WriteFile(regPath, regData, 0o600)
+
+	cfg := RunConfig{
+		Task:         "review",
+		N:            1,
+		Models:       []string{"prov-dead/dead-model"},
+		Root:         tmpDir,
+		OutDir:       filepath.Join(tmpDir, "reports"),
+		RegistryPath: regPath,
+		TimeoutSec:   10,
+	}
+	summary, err := Execute(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	seat := summary.Seats[0]
+	if seat.FinalTarget.Model.ID != "dead-model" {
+		t.Fatalf("k3 alternate must not be auto-seated, final model = %s", seat.FinalTarget.Model.ID)
+	}
+	if len(seat.Failovers) != 0 {
+		t.Fatalf("failover onto a k3 model must be skipped, got %+v", seat.Failovers)
+	}
+}
+
+func TestFC_RotationNeverPicksK3(t *testing.T) {
+	// Family rotation (SelectTargets auto path) must never seat a k3 model.
+	trueVal := true
+	reg := &providers.Registry{Providers: []providers.Provider{
+		{
+			Name:      "prov-k3",
+			BaseURL:   "https://example.invalid/v1",
+			APIKeyEnv: "KEY_FC3_K3",
+			Models: []providers.Model{
+				{ID: "kimi-k3", Family: "kimi", Enabled: &trueVal},
+				{ID: "kimi-k3-flex", Family: "kimi", Enabled: &trueVal},
+			},
+		},
+		{
+			Name:      "prov-ok",
+			BaseURL:   "https://example.invalid/v1",
+			APIKeyEnv: "KEY_FC3_OK",
+			Models: []providers.Model{
+				{ID: "glm-4.6", Family: "glm", Enabled: &trueVal},
+			},
+		},
+	}}
+	t.Setenv("KEY_FC3_K3", "k3-key")
+	t.Setenv("KEY_FC3_OK", "ok-key")
+
+	// (a) k3 + one clean model -> only the clean model is auto-seated.
+	targets, err := SelectTargets(reg, nil, 3, nil, providers.IsK3Family)
+	if err != nil {
+		t.Fatalf("SelectTargets failed: %v", err)
+	}
+	for _, tg := range targets {
+		if providers.IsK3Family(tg.Model) {
+			t.Fatalf("rotation auto-seated a k3 model: %+v", tg)
+		}
+	}
+	if len(targets) != 1 || targets[0].Model.ID != "glm-4.6" {
+		t.Fatalf("targets = %+v; want only glm-4.6", targets)
+	}
+
+	// (b) k3-only pool -> actionable pool-policy error, never a k3 seat.
+	k3Only := &providers.Registry{Providers: []providers.Provider{reg.Providers[0]}}
+	if _, err := SelectTargets(k3Only, nil, 3, nil, providers.IsK3Family); err == nil ||
+		!strings.Contains(err.Error(), "pool policy") {
+		t.Fatalf("k3-only pool error = %v; want pool-policy message", err)
+	}
+}
+
+func TestFC_ExplicitPickExemptFromK3Exclusion(t *testing.T) {
+	// Explicit --models picks are honored as-is (pool policy governs
+	// AUTO-seating only).
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := ChatResponse{Choices: []ChatChoice{{
+			Index:        0,
+			Message:      ChatMessage{Role: "assistant", Content: "## Findings\n- **[LOW]** explicit k3 ok"},
+			FinishReason: "stop",
+		}}}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	tmpDir := t.TempDir()
+	t.Setenv(providers.EnvHome, tmpDir)
+	t.Setenv("KEY_FC4", "good-key")
+
+	trueVal := true
+	reg := &providers.Registry{Providers: []providers.Provider{{
+		Name:      "nw",
+		BaseURL:   server.URL,
+		APIKeyEnv: "KEY_FC4",
+		Models:    []providers.Model{{ID: "kimi-k3", Family: "kimi", Enabled: &trueVal}},
+	}}}
+	regPath := filepath.Join(tmpDir, "providers.json")
+	regData, _ := json.Marshal(reg)
+	_ = os.WriteFile(regPath, regData, 0o600)
+
+	cfg := RunConfig{
+		Task:         "review",
+		N:            1,
+		Models:       []string{"nw/kimi-k3"},
+		Root:         tmpDir,
+		OutDir:       filepath.Join(tmpDir, "reports"),
+		RegistryPath: regPath,
+		TimeoutSec:   10,
+	}
+	summary, err := Execute(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("explicit k3 pick must resolve, got %v", err)
+	}
+	if summary.NCompleted != 1 || summary.Seats[0].FinalTarget.Model.ID != "kimi-k3" {
+		t.Fatalf("explicit pick not honored: %+v", summary.Seats)
+	}
+}

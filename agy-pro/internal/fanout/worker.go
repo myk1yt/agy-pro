@@ -13,6 +13,7 @@ import (
 // SeatResult holds the outcome of an individual seat's execution.
 type SeatResult struct {
 	SeatID        int              `json:"seat_id"`
+	Kind          SeatKind         `json:"kind"` // "native" | "provider" (contract §2.4)
 	InitialTarget providers.Target `json:"initial_target"`
 	FinalTarget   providers.Target `json:"final_target"`
 	Status        string           `json:"status"` // "success", "failed", "degraded"
@@ -40,6 +41,7 @@ type SeatWorker struct {
 	InitialTarget        providers.Target
 	Registry             *providers.Registry
 	ExcludedFamilies     []string
+	Exclude              func(providers.Model) bool // F-C failover exclusion seam (contract §2.5b)
 	Preset               TaskPreset
 	UserPrompt           string
 	Runner               *agenttools.ToolRunner
@@ -57,6 +59,7 @@ func (w *SeatWorker) Run(ctx context.Context) (result *SeatResult) {
 	start := time.Now()
 	res := &SeatResult{
 		SeatID:        w.SeatID,
+		Kind:          SeatKindProvider,
 		InitialTarget: w.InitialTarget,
 		FinalTarget:   w.InitialTarget,
 		Status:        "success",
@@ -102,6 +105,9 @@ func (w *SeatWorker) Run(ctx context.Context) (result *SeatResult) {
 		alts := w.Registry.FindAlternatesForModel(currentTarget.Model.ID, currentTarget.Provider.Name)
 		var nextTarget *providers.Target
 		for _, alt := range alts {
+			if w.excluded(alt.Model) {
+				continue // F-C: pool policy governs AUTO-seating; skip k3 alternates
+			}
 			if !attemptedProviders[alt.Provider.Name] {
 				t := alt
 				nextTarget = &t
@@ -131,6 +137,9 @@ func (w *SeatWorker) Run(ctx context.Context) (result *SeatResult) {
 
 		diffAlts := w.Registry.FindAlternatesExcludingFamilies(avoidFamilies)
 		for _, alt := range diffAlts {
+			if w.excluded(alt.Model) {
+				continue // F-C: never auto-fail onto an excluded (k3) model
+			}
 			if !attemptedModels[alt.Model.ID] && !attemptedProviders[alt.Provider.Name] {
 				t := alt
 				nextTarget = &t
@@ -162,6 +171,13 @@ func (w *SeatWorker) Run(ctx context.Context) (result *SeatResult) {
 		res.DurationMs = time.Since(start).Milliseconds()
 		return res
 	}
+}
+
+// excluded reports whether a failover candidate model is barred from
+// AUTO-seating by the pool-policy seam (F-C, contract §2.5b). A nil seam
+// excludes nothing (the engine defaults it to providers.IsK3Family).
+func (w *SeatWorker) excluded(m providers.Model) bool {
+	return w.Exclude != nil && w.Exclude(m)
 }
 
 // runChatLoop conducts the conversational tool-calling loop until completion or max turns.

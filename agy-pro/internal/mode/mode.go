@@ -44,6 +44,11 @@ const DefaultBridgeTools = "read,search"
 // entirely (agy sees plain passthrough).
 const BridgeToolsNone = "none"
 
+// DefaultNativeSeatConcurrency is the default cap on simultaneously running
+// native (real-agy subprocess) fanout seats; excess native seats queue
+// (contract §2.3).
+const DefaultNativeSeatConcurrency = 2
+
 // ValidProfile reports whether s names a supported default launch profile.
 func ValidProfile(s string) bool {
 	switch strings.ToLower(strings.TrimSpace(s)) {
@@ -97,6 +102,11 @@ type State struct {
 	// forward-compatibility contract as DefaultProfile: absent means
 	// DefaultBridgeTools at run time.
 	BridgeTools string `json:"bridge_tools,omitempty"`
+	// NativeSeatConcurrency caps how many native (real-agy subprocess)
+	// fanout seats run at the same time; excess native seats queue
+	// (contract §2.3). Additive key with the same forward-compatibility
+	// contract as DefaultProfile: absent means DefaultNativeSeatConcurrency.
+	NativeSeatConcurrency int `json:"native_seat_concurrency,omitempty"`
 }
 
 // EffectiveDefaultProfile returns the stored launch profile, or ProfilePrompt
@@ -120,6 +130,23 @@ func (s *State) EffectiveBridgeTools() string {
 		return trimmed
 	}
 	return DefaultBridgeTools
+}
+
+// EffectiveNativeSeatConcurrency returns the stored native-seat concurrency
+// cap, or DefaultNativeSeatConcurrency when the key is missing/invalid, and
+// clamps the result to 1..8 (contract §2.3).
+func (s *State) EffectiveNativeSeatConcurrency() int {
+	if s == nil {
+		return DefaultNativeSeatConcurrency
+	}
+	v := s.NativeSeatConcurrency
+	if v <= 0 {
+		return DefaultNativeSeatConcurrency
+	}
+	if v > 8 {
+		return 8
+	}
+	return v
 }
 
 // LoadState reads the state file. If missing, returns a default state.

@@ -18,7 +18,7 @@ type ConsensusStatus string
 
 const (
 	StatusConfirmed   ConsensusStatus = "CONFIRMED"   // >= 2 models agreed
-	StatusDisputed    ConsensusStatus = "DISPUTED"    // 1 model reported Blocker/High (VP check required)
+	StatusDisputed    ConsensusStatus = "DISPUTED"    // 1 model reported Blocker/High (main-agent arbitration required, §4.4)
 	StatusObservation ConsensusStatus = "OBSERVATION" // 1 model reported Medium/Low/Info
 )
 
@@ -219,6 +219,8 @@ func formatSeatReport(ts, task string, seat *SeatResult, redact func(string) str
 	sb.WriteString("|---|---|\n")
 	sb.WriteString(fmt.Sprintf("| Task | `%s` |\n", task))
 	sb.WriteString(fmt.Sprintf("| Provider | `%s` |\n", seat.FinalTarget.Provider.Name))
+	sb.WriteString(fmt.Sprintf("| Kind | %s |\n", seatKindLabel(seat.Kind)))
+	sb.WriteString(fmt.Sprintf("| Quota/Cost | %s |\n", seatQuotaNote(seat.Kind)))
 	sb.WriteString(fmt.Sprintf("| Model | `%s` (family: `%s`) |\n", seat.FinalTarget.Model.ID, seat.FinalTarget.Model.FamilyName()))
 	sb.WriteString(fmt.Sprintf("| Status | `%s` |\n", seat.Status))
 	sb.WriteString(fmt.Sprintf("| Degraded | `%v` |\n", seat.Degraded))
@@ -465,13 +467,19 @@ func statusRank(st ConsensusStatus) int {
 func formatReconciliationMarkdown(s *SummaryReport) string {
 	var sb strings.Builder
 	sb.WriteString("# Multi-Model Swarm Reconciliation Report\n\n")
-	sb.WriteString(fmt.Sprintf("**Task:** `%s` | **Date:** `%s` | **Seats Evaluated:** `%d / %d` | **Degraded Mode:** `%v`\n\n",
-		s.Task, s.Timestamp, s.NCompleted, s.NRequested, s.Degraded))
+	nativeCount := 0
+	for i := range s.Seats {
+		if s.Seats[i].Kind == SeatKindNative {
+			nativeCount++
+		}
+	}
+	sb.WriteString(fmt.Sprintf("**Task:** `%s` | **Date:** `%s` | **Seats Evaluated:** `%d / %d` | **Native Seats:** `%d / %d` | **Degraded Mode:** `%v`\n\n",
+		s.Task, s.Timestamp, s.NCompleted, s.NRequested, nativeCount, len(s.Seats), s.Degraded))
 
 	sb.WriteString("## Executive Summary\n\n")
 	sb.WriteString(fmt.Sprintf("- **Total Consolidated Findings:** %d\n", len(s.Issues)))
 	sb.WriteString(fmt.Sprintf("- **Confirmed by Multiple Models (`[CONFIRMED]`):** %d\n", s.ConfirmedCount))
-	sb.WriteString(fmt.Sprintf("- **Single-Model Blocker/High (`[DISPUTED]`):** %d (VP verification recommended)\n\n", s.DisputedCount))
+	sb.WriteString(fmt.Sprintf("- **Single-Model Blocker/High (`[DISPUTED]`):** %d (main-agent arbitration required, §4.4)\n\n", s.DisputedCount))
 
 	sb.WriteString("## 1. Consensus & Reconciliation Matrix\n\n")
 	sb.WriteString("| ID | Status | Severity | Finding Title | Reporting Seats | Recommended Action |\n")
@@ -480,7 +488,7 @@ func formatReconciliationMarkdown(s *SummaryReport) string {
 	for _, iss := range s.Issues {
 		action := "Address immediately (High consensus)"
 		if iss.Status == StatusDisputed {
-			action = "VP Arbiter review recommended"
+			action = "Main-agent arbitration required (§4.4)"
 		} else if iss.Status == StatusObservation {
 			action = "Track in backlog"
 		}
@@ -502,16 +510,35 @@ func formatReconciliationMarkdown(s *SummaryReport) string {
 		}
 	}
 
-	sb.WriteString("\n## 3. VP Arbiter Decision Log\n\n")
-	sb.WriteString("As Vice President of Engineering, review all disputed or blocker findings and record disposition:\n\n")
+	sb.WriteString("\n## 3. Arbitration Log (main agent)\n\n")
+	sb.WriteString("The session main agent reviews all disputed or blocker findings on quoted evidence (file:line / repro) and records disposition:\n\n")
 	for _, iss := range s.Issues {
 		if iss.Status == StatusDisputed || iss.Severity == "BLOCKER" || iss.Severity == "HIGH" {
-			sb.WriteString(fmt.Sprintf("- [ ] **ACCEPT** / [ ] **DISMISS** : `%s` (%s) - %s\n", iss.ID, iss.Severity, iss.Title))
+			sb.WriteString(fmt.Sprintf("- [ ] **ACCEPT** / [ ] **DISMISS** : `%s` (%s) - %s :: arbitration: <ruling> - <one-line evidence-based rationale> (ruled-by: main-agent|user)\n", iss.ID, iss.Severity, iss.Title))
 		}
 	}
 	sb.WriteString("\n")
 
 	return sb.String()
+}
+
+// seatKindLabel renders the Kind provenance row value (§2.4). An empty Kind
+// (a SeatResult built by a legacy caller before the field existed) renders as
+// "provider" so no report ever shows a blank Kind.
+func seatKindLabel(k SeatKind) string {
+	if k == SeatKindNative {
+		return string(SeatKindNative)
+	}
+	return string(SeatKindProvider)
+}
+
+// seatQuotaNote renders the Quota/Cost row (§2.4): native seats draw on the
+// Antigravity subscription (rate limits apply); provider seats meter the API.
+func seatQuotaNote(k SeatKind) string {
+	if k == SeatKindNative {
+		return "antigravity subscription quota (rate limits apply)"
+	}
+	return "provider API (metered)"
 }
 
 func sanitizeFilename(s string) string {

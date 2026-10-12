@@ -10,7 +10,13 @@ import (
 
 // SelectTargets resolves N distinct targets (provider + model) from the registry,
 // enforcing family diversity and consulting state history for rotation.
-func SelectTargets(reg *providers.Registry, state *FanoutState, n int, explicitModels []string) ([]providers.Target, error) {
+//
+// exclude (F-C, contract §2.5b) is the pool-policy seam: candidates for which
+// it returns true never enter the family grouping nor the fill pass, so they
+// are never AUTO-seated. It is NOT applied to explicit user picks
+// (explicitModels) — those are honored as-is. A nil exclude excludes nothing;
+// the engine defaults it to providers.IsK3Family.
+func SelectTargets(reg *providers.Registry, state *FanoutState, n int, explicitModels []string, exclude func(providers.Model) bool) ([]providers.Target, error) {
 	if reg == nil {
 		return nil, fmt.Errorf("registry is nil")
 	}
@@ -18,7 +24,8 @@ func SelectTargets(reg *providers.Registry, state *FanoutState, n int, explicitM
 		n = 3
 	}
 
-	// 1. If user provided explicit models, resolve them directly
+	// 1. If user provided explicit models, resolve them directly. Explicit
+	// picks are EXEMPT from the pool-policy exclusion (contract §2.5b).
 	if len(explicitModels) > 0 {
 		var selected []providers.Target
 		for _, spec := range explicitModels {
@@ -47,6 +54,22 @@ func SelectTargets(reg *providers.Registry, state *FanoutState, n int, explicitM
 		}
 		unset := reg.UnsetEnvNames()
 		return nil, fmt.Errorf("no models available with valid API keys (unset env vars: %s)", strings.Join(unset, ", "))
+	}
+
+	// F-C: apply the pool-policy exclusion to AUTO-seating candidates before
+	// grouping/filling. Track whether exclusion emptied the pool so the error
+	// message is actionable rather than the generic "no enabled models".
+	if exclude != nil {
+		filtered := allCandidates[:0]
+		for _, cand := range allCandidates {
+			if !exclude(cand.Model) {
+				filtered = append(filtered, cand)
+			}
+		}
+		if len(filtered) == 0 && len(allCandidates) > 0 {
+			return nil, fmt.Errorf("no models available for auto-seating: every candidate is excluded by pool policy")
+		}
+		allCandidates = filtered
 	}
 
 	// 3. Group candidates by family

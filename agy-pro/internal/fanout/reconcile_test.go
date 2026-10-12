@@ -184,3 +184,70 @@ func TestReconcileWritesReportsOwnerOnly(t *testing.T) {
 		}
 	}
 }
+
+// TestNoVPPersonaInFanoutTemplates (F-A, contract §2.8): the D-3 regression
+// can never silently return. Scans every non-test .go source in this package
+// plus one generated reconciliation.md fixture for the banned persona phrases.
+func TestNoVPPersonaInFanoutTemplates(t *testing.T) {
+	banned := []string{"Vice President", "VP Arbiter"}
+
+	srcDir := "."
+	entries, err := os.ReadDir(srcDir)
+	if err != nil {
+		t.Fatalf("read package dir: %v", err)
+	}
+	scanned := 0
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(srcDir, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		scanned++
+		for _, phrase := range banned {
+			if strings.Contains(string(data), phrase) {
+				t.Errorf("%s still contains banned persona phrase %q", name, phrase)
+			}
+		}
+	}
+	if scanned == 0 {
+		t.Fatal("no non-test .go sources scanned; grep-assert is vacuous")
+	}
+
+	// Generated artifact: a reconciliation.md body (incl. the arbitration
+	// section) must also be persona-free.
+	summary := &SummaryReport{
+		Task:            "review",
+		Timestamp:       "2026-01-01T00:00:00Z",
+		NRequested:      1,
+		NCompleted:      1,
+		DisputedCount:   1,
+		ConfirmedCount:  0,
+		Issues: []ConsolidatedIssue{{
+			ID:             "ISSUE-001",
+			Title:          "Disputed finding",
+			Severity:       "HIGH",
+			Status:         StatusDisputed,
+			ReportingSeats: []int{1},
+		}},
+	}
+	md := formatReconciliationMarkdown(summary)
+	for _, phrase := range banned {
+		if strings.Contains(md, phrase) {
+			t.Errorf("generated reconciliation.md contains banned persona phrase %q:\n%s", phrase, md)
+		}
+	}
+	// The replacement wording must be present (§2.8 replacement table).
+	for _, want := range []string{
+		"Arbitration Log (main agent)",
+		"main-agent arbitration required",
+		"arbitration: <ruling>",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("generated reconciliation.md missing %q:\n%s", want, md)
+		}
+	}
+}
