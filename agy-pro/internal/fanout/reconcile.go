@@ -60,10 +60,46 @@ type SummaryReport struct {
 	DisputedCount  int                `json:"disputed_count"`
 }
 
+// reportFilePerm is the mode for every generated fanout report (S-4/F2).
+// Seat reports and summaries can quote provider error snippets and model
+// output that walked past the redactor, so they are written owner-only
+// instead of the old world-readable 0644.
+const reportFilePerm = 0o600
+
+// writeFile is the report writer seam; tests intercept it to assert the
+// requested modes (Windows does not round-trip mode bits through Stat).
+var writeFile = providers.WriteFileAtomic
+
+// seatRedactor builds a registry Redactor covering the providers that took
+// part in the run (their registered key values) plus the generic credential
+// shapes. The seats carry their providers, so Reconcile keeps its signature
+// for the engine and callers (R2-2).
+func seatRedactor(seats []*SeatResult) func(string) string {
+	reg := &providers.Registry{}
+	seen := map[string]bool{}
+	for _, s := range seats {
+		if s == nil {
+			continue
+		}
+		for _, p := range []providers.Provider{s.InitialTarget.Provider, s.FinalTarget.Provider} {
+			key := p.APIKeyEnv
+			if key == "" {
+				key = p.Name
+			}
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			reg.Providers = append(reg.Providers, p)
+		}
+	}
+	return reg.Redactor()
+}
+
 // Reconcile processes all seat outputs, generates individual seat reports,
 // synthesizes the consolidated issues, and writes summary.json and reconciliation.md.
 func Reconcile(task, root, outDir string, nRequested int, seats []*SeatResult) (*SummaryReport, error) {
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
+	if err := os.MkdirAll(outDir, 0o700); err != nil {
 		return nil, fmt.Errorf("failed to create output directory %s: %w", outDir, err)
 	}
 
@@ -71,10 +107,21 @@ func Reconcile(task, root, outDir string, nRequested int, seats []*SeatResult) (
 	nCompleted := 0
 	degraded := false
 
+	// S-7 / R2-2: upstream error snippets can echo a truncated bearer token
+	// and seat content can quote a raw key, so everything that leaves through
+	// a report goes through the registry Redactor - registered provider keys
+	// plus the generic credential shapes.
+	redact := seatRedactor(seats)
+
 	var allFindings []Finding
 
 	// 1. Write individual seat reports & extract findings
 	for _, seat := range seats {
+		if seat == nil {
+			// Defensive: a seat that never produced a result must not break
+			// reconciliation for the remaining seats.
+			continue
+		}
 		if seat.Status == "success" {
 			nCompleted++
 		}
@@ -88,12 +135,14 @@ func Reconcile(task, root, outDir string, nRequested int, seats []*SeatResult) (
 			sanitizeFilename(seat.FinalTarget.Model.ID),
 		))
 
-		seatMarkdown := formatSeatReport(ts, task, seat)
-		if err := providers.WriteFileAtomic(seatFile, []byte(seatMarkdown), 0o644); err != nil {
+		seatMarkdown := formatSeatReport(ts, task, seat, redact)
+		if err := writeFile(seatFile, []byte(seatMarkdown), reportFilePerm); err != nil {
 			return nil, fmt.Errorf("failed to write seat report %s: %w", seatFile, err)
 		}
 
-		findings := parseFindings(seat.SeatID, seat.FinalTarget.Provider.Name, seat.FinalTarget.Model.ID, seat.Content)
+		// R2-2: seat content can quote raw keys, so the extraction input is
+		// redacted too - findings land in the shareable summary.json.
+		findings := parseFindings(seat.SeatID, seat.FinalTarget.Provider.Name, seat.FinalTarget.Model.ID, redact(seat.Content))
 		allFindings = append(allFindings, findings...)
 	}
 
@@ -122,7 +171,18 @@ func Reconcile(task, root, outDir string, nRequested int, seats []*SeatResult) (
 		Issues:         issues,
 	}
 	for _, s := range seats {
-		summary.Seats = append(summary.Seats, *s)
+		if s == nil {
+			continue
+		}
+		// S-7: the summary is a shareable artifact; redact the error snippets
+		// on the way out.
+		copySeat := *s
+		copySeat.Error = redact(copySeat.Error)
+		copySeat.Content = redact(copySeat.Content)
+		for i := range copySeat.Failovers {
+			copySeat.Failovers[i].Reason = redact(copySeat.Failovers[i].Reason)
+		}
+		summary.Seats = append(summary.Seats, copySeat)
 	}
 
 	// 3. Write summary.json
@@ -132,21 +192,27 @@ func Reconcile(task, root, outDir string, nRequested int, seats []*SeatResult) (
 	}
 	summaryData = append(summaryData, '\n')
 	summaryPath := filepath.Join(outDir, "summary.json")
-	if err := providers.WriteFileAtomic(summaryPath, summaryData, 0o644); err != nil {
+	if err := writeFile(summaryPath, summaryData, reportFilePerm); err != nil {
 		return nil, fmt.Errorf("failed to write %s: %w", summaryPath, err)
 	}
 
 	// 4. Write reconciliation.md
 	reconciliationPath := filepath.Join(outDir, "reconciliation.md")
 	reconcileMD := formatReconciliationMarkdown(summary)
-	if err := providers.WriteFileAtomic(reconciliationPath, []byte(reconcileMD), 0o644); err != nil {
+	if err := writeFile(reconciliationPath, []byte(reconcileMD), reportFilePerm); err != nil {
 		return nil, fmt.Errorf("failed to write %s: %w", reconciliationPath, err)
 	}
 
 	return summary, nil
 }
 
-func formatSeatReport(ts, task string, seat *SeatResult) string {
+// formatSeatReport renders one seat markdown report. redact is applied to
+// every upstream-derived error text (S-7): 500-byte error snippets from the
+// provider can echo a truncated bearer token.
+func formatSeatReport(ts, task string, seat *SeatResult, redact func(string) string) string {
+	if redact == nil {
+		redact = func(s string) string { return s }
+	}
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("# Seat %d Audit Report\n\n", seat.SeatID))
 	sb.WriteString("| Field | Value |\n")
@@ -165,15 +231,15 @@ func formatSeatReport(ts, task string, seat *SeatResult) string {
 			if i > 0 {
 				sb.WriteString("; ")
 			}
-			sb.WriteString(fmt.Sprintf("Step %d (%s/%s -> %s/%s: %s)", f.Step, f.FromProv, f.FromMod, f.ToProv, f.ToMod, f.Reason))
+			sb.WriteString(fmt.Sprintf("Step %d (%s/%s -> %s/%s: %s)", f.Step, f.FromProv, f.FromMod, f.ToProv, f.ToMod, redact(f.Reason)))
 		}
 		sb.WriteString(" |\n")
 	}
 	if seat.Error != "" {
-		sb.WriteString(fmt.Sprintf("| Error | `%s` |\n", seat.Error))
+		sb.WriteString(fmt.Sprintf("| Error | `%s` |\n", redact(seat.Error)))
 	}
 	sb.WriteString("\n---\n\n")
-	sb.WriteString(seat.Content)
+	sb.WriteString(redact(seat.Content))
 	sb.WriteString("\n")
 	return sb.String()
 }

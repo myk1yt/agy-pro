@@ -118,6 +118,23 @@ func (r *ToolRunner) Execute(seatID int, model, provider, toolName, argsJSON str
 			}
 		}
 
+	case "replace_in_file":
+		if !r.AllowWrite {
+			execErr = fmt.Errorf("replace_in_file is prohibited (write flag not enabled)")
+		} else {
+			var args struct {
+				Path       string `json:"path"`
+				OldString  string `json:"old_string"`
+				NewString  string `json:"new_string"`
+				ReplaceAll bool   `json:"replace_all"`
+			}
+			if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+				execErr = fmt.Errorf("invalid arguments for replace_in_file: %w", err)
+			} else {
+				out, execErr = ReplaceInFile(r.Root, args.Path, args.OldString, args.NewString, args.ReplaceAll)
+			}
+		}
+
 	case "run_command":
 		if !r.AllowExec {
 			execErr = fmt.Errorf("run_command is prohibited (exec flag not enabled)")
@@ -131,6 +148,13 @@ func (r *ToolRunner) Execute(seatID int, model, provider, toolName, argsJSON str
 			if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 				execErr = fmt.Errorf("invalid arguments for run_command: %w", err)
 			} else {
+				// R1-5: the per-tool budget for loop-driven seats is 30s, so
+				// the model-supplied argument is clamped at the tool layer.
+				// RunCommand's own 120s hard cap stays as the absolute ceiling
+				// for direct callers.
+				args.TimeoutSeconds = clampToolTimeout(args.TimeoutSeconds)
+				// RunCommand applies the sanitized env allow-list itself
+				// (S-4/F4 root fix), so the dispatch needs no second copy.
 				out, execErr = RunCommand(r.Root, args.Command, args.Args, args.Cwd, args.TimeoutSeconds)
 			}
 		}

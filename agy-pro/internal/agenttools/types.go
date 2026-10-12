@@ -124,7 +124,7 @@ func BuildOpenAITools(allowWrite, allowExec bool) []ToolDef {
 			Type: "function",
 			Function: FunctionDef{
 				Name:        "write_file",
-				Description: "Write or overwrite content to a file within the workspace root. Requires explicit write permission.",
+				Description: "Write or overwrite content to a file within the workspace root. Protected VCS metadata paths (e.g. .git/, .gitignore) are refused. Requires explicit write permission.",
 				Parameters: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
@@ -138,10 +138,39 @@ func BuildOpenAITools(allowWrite, allowExec bool) []ToolDef {
 						},
 						"overwrite": map[string]any{
 							"type":        "boolean",
-							"description": "Whether to overwrite existing file (default true).",
+							"description": "Whether to overwrite an existing file (default false: the call fails if the file already exists unless this is true).",
 						},
 					},
 					"required": []string{"path", "content"},
+				},
+			},
+		})
+		tools = append(tools, ToolDef{
+			Type: "function",
+			Function: FunctionDef{
+				Name:        "replace_in_file",
+				Description: "Replace an exact string in an existing file within the workspace root. The old_string must match exactly once unless replace_all is true; zero matches and multiple matches fail without modifying the file. Protected VCS metadata paths (e.g. .git/) are refused. Requires explicit write permission.",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"path": map[string]any{
+							"type":        "string",
+							"description": "Relative path of the target file (must already exist).",
+						},
+						"old_string": map[string]any{
+							"type":        "string",
+							"description": "Exact string to replace. Must appear exactly once unless replace_all is true.",
+						},
+						"new_string": map[string]any{
+							"type":        "string",
+							"description": "Replacement string (may be empty to delete the matched text).",
+						},
+						"replace_all": map[string]any{
+							"type":        "boolean",
+							"description": "Replace every occurrence of old_string instead of failing on multiple matches (default false).",
+						},
+					},
+					"required": []string{"path", "old_string", "new_string"},
 				},
 			},
 		})
@@ -173,7 +202,7 @@ func BuildOpenAITools(allowWrite, allowExec bool) []ToolDef {
 						},
 						"timeout_seconds": map[string]any{
 							"type":        "integer",
-							"description": "Timeout in seconds (default 30).",
+							"description": "Timeout in seconds (default 30; values above 30 are clamped to 30).",
 						},
 					},
 					"required": []string{"command"},

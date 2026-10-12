@@ -10,9 +10,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
+	"agypro/internal/agenttools"
 	"agypro/internal/providers"
 )
 
@@ -748,3 +750,301 @@ func TestClient_ReasoningEffort_MappingAndFallback(t *testing.T) {
 	}
 }
 
+func TestSeatWorker_ToolPanicConvergesToFailedSeat(t *testing.T) {
+	// Regression: a tool-layer panic (historically agenttools.Grep's nil
+	// DirEntry dereference on a missing root) must not kill the swarm. The
+	// panicking seat converges to Status=failed with the panic excerpt, a
+	// sibling seat keeps running, and reconcile/state/log outputs stay intact.
+	tmpDir := t.TempDir()
+	t.Setenv(providers.EnvHome, tmpDir)
+	_ = os.WriteFile(filepath.Join(tmpDir, "target.txt"), []byte("hello\n"), 0o644)
+
+	var okStep int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			Model string `json:"model"`
+		}
+		_ = json.Unmarshal(body, &req)
+		w.Header().Set("Content-Type", "application/json")
+
+		if req.Model == "panic-model" {
+			// The historical panic-inducing tool input: grep on a missing path.
+			resp := ChatResponse{Choices: []ChatChoice{{
+				Message: ChatMessage{
+					Role: "assistant",
+					ToolCalls: []ChatToolCall{{
+						ID:   "call_panic",
+						Type: "function",
+						Function: ChatFunctionCall{
+							Name:      "grep",
+							Arguments: `{"pattern":"x","path":"does/not/exist"}`,
+						},
+					}},
+				},
+				FinishReason: "tool_calls",
+			}}}
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+
+		if atomic.AddInt32(&okStep, 1) == 1 {
+			resp := ChatResponse{Choices: []ChatChoice{{
+				Message: ChatMessage{
+					Role: "assistant",
+					ToolCalls: []ChatToolCall{{
+						ID:   "call_read",
+						Type: "function",
+						Function: ChatFunctionCall{
+							Name:      "read_file",
+							Arguments: `{"path":"target.txt"}`,
+						},
+					}},
+				},
+				FinishReason: "tool_calls",
+			}}}
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+		resp := ChatResponse{Choices: []ChatChoice{{
+			Message:      ChatMessage{Role: "assistant", Content: "## Findings\n- **[INFO]** Healthy seat finished"},
+			FinishReason: "stop",
+		}}}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	logPath := filepath.Join(tmpDir, "logs", "fanout-test.jsonl")
+	logger, err := agenttools.NewLogger(logPath, nil)
+	if err != nil {
+		t.Fatalf("NewLogger failed: %v", err)
+	}
+
+	trueVal := true
+	panicWorker := &SeatWorker{
+		SeatID: 1,
+		InitialTarget: providers.Target{
+			Provider: providers.Provider{Name: "prov-panic", BaseURL: server.URL, APIKeyEnv: "PANIC_KEY"},
+			Model:    providers.Model{ID: "panic-model", Family: "fam-panic", Enabled: &trueVal, Capabilities: providers.Capabilities{SupportsTools: true}},
+		},
+		Registry:             &providers.Registry{},
+		Preset:               GetTaskPreset("review"),
+		UserPrompt:           "audit this module",
+		Runner:               nil, // nil runner makes tool execution panic (stands in for any tool-layer panic)
+		Client:               NewClient(),
+		MaxTurns:             3,
+		Tools:                agenttools.BuildOpenAITools(false, false),
+		AllowToolsForSession: true,
+	}
+	okWorker := &SeatWorker{
+		SeatID: 2,
+		InitialTarget: providers.Target{
+			Provider: providers.Provider{Name: "prov-ok", BaseURL: server.URL, APIKeyEnv: "OK_KEY"},
+			Model:    providers.Model{ID: "ok-model", Family: "fam-ok", Enabled: &trueVal, Capabilities: providers.Capabilities{SupportsTools: true}},
+		},
+		Registry:             &providers.Registry{},
+		Preset:               GetTaskPreset("review"),
+		UserPrompt:           "audit this module",
+		Runner:               agenttools.NewRunner(tmpDir, false, false, logger),
+		Client:               NewClient(),
+		MaxTurns:             3,
+		Tools:                agenttools.BuildOpenAITools(false, false),
+		AllowToolsForSession: true,
+	}
+
+	results := make([]*SeatResult, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		results[0] = panicWorker.Run(context.Background())
+	}()
+	go func() {
+		defer wg.Done()
+		results[1] = okWorker.Run(context.Background())
+	}()
+	wg.Wait()
+
+	panicRes := results[0]
+	if panicRes == nil {
+		t.Fatal("panic seat returned nil result")
+	}
+	if panicRes.Status != "failed" {
+		t.Fatalf("panic seat: expected status failed, got %s", panicRes.Status)
+	}
+	if !panicRes.Degraded {
+		t.Fatal("panic seat: expected degraded=true")
+	}
+	if !strings.Contains(panicRes.Error, "panic") {
+		t.Fatalf("panic seat: expected error to contain panic excerpt, got %q", panicRes.Error)
+	}
+
+	okRes := results[1]
+	if okRes == nil || okRes.Status != "success" {
+		t.Fatalf("sibling seat must keep running and succeed, got %+v", okRes)
+	}
+	if okRes.ToolCallCount != 1 {
+		t.Fatalf("sibling seat: expected 1 tool call, got %d", okRes.ToolCallCount)
+	}
+
+	// Reconcile must survive the panic seat and still write every report.
+	outDir := filepath.Join(tmpDir, "reports")
+	summary, err := Reconcile("review", tmpDir, outDir, 2, results)
+	if err != nil {
+		t.Fatalf("Reconcile broke on a panic seat: %v", err)
+	}
+	if summary.NCompleted != 1 {
+		t.Fatalf("expected 1 completed seat, got %d", summary.NCompleted)
+	}
+	if !summary.Degraded {
+		t.Fatal("expected summary.Degraded=true for a panic seat")
+	}
+	if len(summary.Seats) != 2 {
+		t.Fatalf("expected 2 seat records in summary, got %d", len(summary.Seats))
+	}
+	for _, f := range []string{
+		filepath.Join(outDir, "summary.json"),
+		filepath.Join(outDir, "reconciliation.md"),
+		filepath.Join(outDir, "seat-1-prov-panic-panic-model.md"),
+		filepath.Join(outDir, "seat-2-prov-ok-ok-model.md"),
+	} {
+		if _, err := os.Stat(f); err != nil {
+			t.Fatalf("expected report %s: %v", f, err)
+		}
+	}
+
+	// Rotation state recording must survive the panic seat too.
+	state := &FanoutState{}
+	state.RecordRun("review", []SeatRecord{
+		{SeatID: panicRes.SeatID, Provider: "prov-panic", Model: "panic-model", Family: "fam-panic", Status: panicRes.Status},
+		{SeatID: okRes.SeatID, Provider: "prov-ok", Model: "ok-model", Family: "fam-ok", Status: okRes.Status},
+	})
+	if err := SaveState(state); err != nil {
+		t.Fatalf("SaveState broke on a panic seat: %v", err)
+	}
+	loaded, err := LoadState()
+	if err != nil {
+		t.Fatalf("LoadState failed: %v", err)
+	}
+	if len(loaded.History) != 1 || len(loaded.History[0].Seats) != 2 {
+		t.Fatalf("state history corrupted: %+v", loaded.History)
+	}
+	if loaded.History[0].Seats[0].Status != "failed" {
+		t.Fatalf("expected failed status persisted for panic seat, got %s", loaded.History[0].Seats[0].Status)
+	}
+
+	// The shared tool log must remain valid JSONL despite the panic seat.
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("tool log missing after panic seat: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(logData)), "\n")
+	if len(lines) == 0 || lines[0] == "" {
+		t.Fatal("tool log is empty; sibling seat's tool call was not recorded")
+	}
+	for i, line := range lines {
+		var entry agenttools.LogEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("tool log line %d corrupted: %v", i+1, err)
+		}
+	}
+	if !strings.Contains(string(logData), "read_file") {
+		t.Fatalf("tool log missing sibling seat entry: %s", string(logData))
+	}
+}
+
+func TestFanout_GrepMissingRootToolInput_DoesNotCrashSwarm(t *testing.T) {
+	// Integration regression for the historical panic input: a model tool call
+	// to grep with a nonexistent root used to nil-deref inside the walk
+	// callback and kill the whole swarm. It must now surface as a tool error
+	// message, and the seat must converge normally.
+	tmpDir := t.TempDir()
+	t.Setenv(providers.EnvHome, tmpDir)
+
+	var mu sync.Mutex
+	var requestBodies []string
+
+	var step int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		requestBodies = append(requestBodies, string(body))
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		if atomic.AddInt32(&step, 1) == 1 {
+			resp := ChatResponse{Choices: []ChatChoice{{
+				Message: ChatMessage{
+					Role: "assistant",
+					ToolCalls: []ChatToolCall{{
+						ID:   "call_grep_missing",
+						Type: "function",
+						Function: ChatFunctionCall{
+							Name:      "grep",
+							Arguments: `{"pattern":"x","path":"does/not/exist"}`,
+						},
+					}},
+				},
+				FinishReason: "tool_calls",
+			}}}
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+		resp := ChatResponse{Choices: []ChatChoice{{
+			Message:      ChatMessage{Role: "assistant", Content: "## Findings\n- **[INFO]** Finished despite tool error"},
+			FinishReason: "stop",
+		}}}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	t.Setenv("GREP_KEY", "grep-key")
+
+	trueVal := true
+	reg := &providers.Registry{
+		Providers: []providers.Provider{
+			{
+				Name:      "prov-grep",
+				BaseURL:   server.URL,
+				APIKeyEnv: "GREP_KEY",
+				Models: []providers.Model{
+					{ID: "grep-model", Family: "grep-fam", Enabled: &trueVal, Capabilities: providers.Capabilities{SupportsTools: true}},
+				},
+			},
+		},
+	}
+	regPath := filepath.Join(tmpDir, "providers.json")
+	regData, _ := json.Marshal(reg)
+	_ = os.WriteFile(regPath, regData, 0o600)
+
+	cfg := RunConfig{
+		Task:         "review",
+		Prompt:       "audit",
+		N:            1,
+		Root:         tmpDir,
+		OutDir:       filepath.Join(tmpDir, "reports"),
+		RegistryPath: regPath,
+		MaxTurns:     5,
+		TimeoutSec:   10,
+	}
+
+	summary, err := Execute(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Execute must not fail on missing-root tool input: %v", err)
+	}
+	if summary.NCompleted != 1 {
+		t.Fatalf("expected seat to converge to success after tool error, got %d completed", summary.NCompleted)
+	}
+	seat := summary.Seats[0]
+	if seat.ToolCallCount != 1 {
+		t.Fatalf("expected 1 tool call, got %d", seat.ToolCallCount)
+	}
+
+	// The tool error (not a panic) must be fed back to the model on the next turn.
+	mu.Lock()
+	captured := strings.Join(requestBodies, "\n")
+	mu.Unlock()
+	if !strings.Contains(captured, "does not exist") {
+		t.Fatalf("expected tool error feedback in follow-up request, got: %s", captured)
+	}
+}

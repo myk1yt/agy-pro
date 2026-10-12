@@ -114,6 +114,24 @@ func Execute(ctx context.Context, cfg RunConfig) (*SummaryReport, error) {
 
 		go func(idx, sID int, t providers.Target, r *agenttools.ToolRunner) {
 			defer wg.Done()
+			// Last-ditch guard: a panic must never leave results[idx] nil, or
+			// state recording and reconciliation would break for this seat.
+			defer func() {
+				if rec := recover(); rec != nil && results[idx] == nil {
+					msg := fmt.Sprintf("%v", rec)
+					if len(msg) > 200 {
+						msg = msg[:200] + "..."
+					}
+					results[idx] = &SeatResult{
+						SeatID:        sID,
+						InitialTarget: t,
+						FinalTarget:   t,
+						Status:        "failed",
+						Degraded:      true,
+						Error:         fmt.Sprintf("panic: %s", msg),
+					}
+				}
+			}()
 
 			worker := &SeatWorker{
 				SeatID:               sID,

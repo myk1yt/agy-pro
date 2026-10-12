@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"agypro/internal/agenttools"
 	"agypro/internal/providers"
 )
 
@@ -25,7 +26,7 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 		nFlag          = flags.Int("n", 3, "Number of models to fan out across")
 		modelsFlag     = flags.String("models", "", "Comma-separated model identifiers (e.g. 'openai/gpt-4o,deepseek/deepseek-chat')")
 		rootFlag       = flags.String("root", ".", "Workspace root directory for tool execution")
-		toolsFlag      = flags.String("tools", "read,search", "Allowed tools: read,search,write,exec")
+		toolsFlag      = flags.String("tools", "read,search", "Allowed tools: read,search,write,exec (closed set; unknown tokens are rejected)")
 		maxTurnsFlag   = flags.Int("max-turns", 10, "Maximum turns for agentic tool loop")
 		timeoutFlag    = flags.Int("timeout", 120, "Swarm execution timeout in seconds")
 		outFlag        = flags.String("out", "", "Output directory for generated reports (default ./reports/fanout/<ts>)")
@@ -84,13 +85,22 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 	}
 
 	// 4. Construct RunConfig
+	// --tools parsing is fail-closed (S-8): unknown tokens are rejected
+	// instead of being ignored or substring-matched ("nowrite" must never
+	// enable write_file).
+	normalizedTools, err := ParseToolTokens(*toolsFlag)
+	if err != nil {
+		fmt.Fprintf(errw, "Error: %v\n", err)
+		return 2
+	}
+
 	cfg := RunConfig{
 		Task:       *taskFlag,
 		Prompt:     promptText,
 		N:          *nFlag,
 		Models:     explicitModels,
 		Root:       *rootFlag,
-		Tools:      *toolsFlag,
+		Tools:      normalizedTools,
 		MaxTurns:   *maxTurnsFlag,
 		TimeoutSec: *timeoutFlag,
 		OutDir:     *outFlag,
@@ -100,7 +110,9 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 	ctx := context.Background()
 	summary, err := Execute(ctx, cfg)
 	if err != nil {
-		fmt.Fprintf(errw, "Fanout error: %v\n", err)
+		// S-7: provider error snippets may echo credential fragments; the
+		// console line uses the same Redactor path as the reports.
+		fmt.Fprintf(errw, "Fanout error: %v\n", providers.NewRedactor()(err.Error()))
 		return 1
 	}
 
@@ -145,4 +157,11 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 	}
 
 	return 0
+}
+
+// ParseToolTokens is a thin wrapper over agenttools.ParseToolTokens (R1-9):
+// the parser lives in agenttools so the bridge tool loop can share it without
+// importing fanout. Signature and error wording are unchanged.
+func ParseToolTokens(spec string) (string, error) {
+	return agenttools.ParseToolTokens(spec)
 }

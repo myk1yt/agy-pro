@@ -170,3 +170,43 @@ func TestToolRunnerPermissions(t *testing.T) {
 		t.Fatal("logger missing [REDACTED]")
 	}
 }
+
+func TestGrepGlobListDir_MissingRootReturnsErrorNotPanic(t *testing.T) {
+	// Regression: filepath.WalkDir invokes the callback with a nil DirEntry
+	// when the walk root cannot be lstat'ed. Grep/Glob used to dereference
+	// d.Name() in that case and panic; ListDir used to swallow the error and
+	// report "(directory is empty)". All three must return a tool error.
+
+	// Missing search path under an existing root: the historical panic path.
+	tmpDir := t.TempDir()
+	_, err := Grep(tmpDir, "x", "no/such/dir", false, 10)
+	if err == nil {
+		t.Fatal("Grep: expected error for missing search path, got nil")
+	}
+	if !strings.Contains(err.Error(), "does not exist") || !strings.Contains(err.Error(), "grep") {
+		t.Fatalf("Grep: unexpected error message: %v", err)
+	}
+	_, err = Glob(tmpDir, "*", "no/such/dir")
+	if err == nil {
+		t.Fatal("Glob: expected error for missing search path, got nil")
+	}
+	if !strings.Contains(err.Error(), "does not exist") || !strings.Contains(err.Error(), "glob") {
+		t.Fatalf("Glob: unexpected error message: %v", err)
+	}
+	if _, err := ListDir(tmpDir, "no/such/dir", true, 2); err == nil {
+		t.Fatal("ListDir: expected error for missing search path, got nil")
+	}
+
+	// Missing workspace root: the sandbox guard rejects it before any walk;
+	// the tools must still error instead of panicking.
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	if _, err := Grep(missing, "x", ".", false, 10); err == nil {
+		t.Fatal("Grep: expected error for missing workspace root, got nil")
+	}
+	if _, err := Glob(missing, "*", "."); err == nil {
+		t.Fatal("Glob: expected error for missing workspace root, got nil")
+	}
+	if _, err := ListDir(missing, ".", true, 2); err == nil {
+		t.Fatal("ListDir: expected error for missing workspace root, got nil")
+	}
+}

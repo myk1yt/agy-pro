@@ -50,7 +50,10 @@ type SeatWorker struct {
 }
 
 // Run executes the worker loop with multi-step failover.
-func (w *SeatWorker) Run(ctx context.Context) *SeatResult {
+// A panic inside one seat (e.g. a tool-layer nil dereference) is recovered here
+// and converted into a failed SeatResult so sibling seats keep running and the
+// swarm process survives.
+func (w *SeatWorker) Run(ctx context.Context) (result *SeatResult) {
 	start := time.Now()
 	res := &SeatResult{
 		SeatID:        w.SeatID,
@@ -58,8 +61,25 @@ func (w *SeatWorker) Run(ctx context.Context) *SeatResult {
 		FinalTarget:   w.InitialTarget,
 		Status:        "success",
 	}
+	result = res
 
 	currentTarget := w.InitialTarget
+
+	defer func() {
+		if r := recover(); r != nil {
+			msg := fmt.Sprintf("%v", r)
+			if len(msg) > 200 {
+				msg = msg[:200] + "..."
+			}
+			res.FinalTarget = currentTarget
+			res.Status = "failed"
+			res.Degraded = true
+			res.Error = fmt.Sprintf("panic: %s", msg)
+			res.DurationMs = time.Since(start).Milliseconds()
+			result = res
+		}
+	}()
+
 	attemptedProviders := map[string]bool{currentTarget.Provider.Name: true}
 	attemptedModels := map[string]bool{currentTarget.Model.ID: true}
 
