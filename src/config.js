@@ -86,8 +86,8 @@ const DASHBOARD_WRITE_THROTTLE_MS = 2000;
  * Regex patterns for smart fuzzy heuristic pricing tier detection.
  * Uses token-boundary matching to prevent false substring matches (e.g., 'mini' in 'gemini').
  */
-const FLASH_PATTERN = /(?:^|[^a-z0-9])(flash|lite|mini|haiku|fast|small|turbo|low)(?:[^a-z0-9]|$)/i;
-const PRO_PATTERN = /(?:^|[^a-z0-9])(pro|ultra|opus|sonnet|large|max|high)(?:[^a-z0-9]|$)/i;
+const FLASH_PATTERN = /(?:^|[^a-z0-9])(flash|lite|mini|fast|small|turbo|low)(?:[^a-z0-9]|$)/i;
+const PRO_PATTERN = /(?:^|[^a-z0-9])(pro|large|max|high)(?:[^a-z0-9]|$)/i;
 const FREE_PATTERN = /(?:^|[^a-z0-9])(free|flat|zero|local|ollama)(?:[^a-z0-9]|$)/i;
 
 const DEFAULT_QUOTA_5H = 20000000;
@@ -95,18 +95,38 @@ const DEFAULT_QUOTA_7D = 150000000;
 
 /**
  * Baseline model pricing catalog (prices in USD per 1,000,000 tokens).
- * Covering all Google Gemini, Anthropic Claude, and OpenAI models in Antigravity CLI (/model).
+ * Covering all Google Gemini, Anthropic Claude, OpenAI, and DeepSeek models in Antigravity CLI (/model).
  */
 const MODEL_PRICING = {
+  'gemini-3.8-flash': {
+    id: 'gemini-3.8-flash',
+    provider: 'google',
+    displayName: 'Gemini 3.8 Flash',
+    contextWindow: '1M',
+    inputPerMillion: 0.15,
+    cachedInputPerMillion: 0.0375,
+    outputPerMillion: 0.60,
+    aliases: ['gemini-3.8-flash', 'gemini 3.8 flash', 'gemini-3-8-flash']
+  },
+  'gemini-3.8-flash-thinking': {
+    id: 'gemini-3.8-flash-thinking',
+    provider: 'google',
+    displayName: 'Gemini 3.8 Flash Thinking',
+    contextWindow: '1M',
+    inputPerMillion: 0.15,
+    cachedInputPerMillion: 0.0375,
+    outputPerMillion: 0.60,
+    aliases: ['gemini-3.8-flash-thinking', 'gemini 3.8 flash thinking']
+  },
   'gemini-3.7-flash': {
     id: 'gemini-3.7-flash',
     provider: 'google',
     displayName: 'Gemini 3.7 Flash',
     contextWindow: '1M',
-    inputPerMillion: 0.05,
-    cachedInputPerMillion: 0.0125,
-    outputPerMillion: 0.20,
-    aliases: ['gemini-3.7-flash', 'gemini 3.7 flash', 'gemini-3-7-flash']
+    inputPerMillion: 0.15,
+    cachedInputPerMillion: 0.0375,
+    outputPerMillion: 0.60,
+    aliases: ['gemini-3.7-flash', 'gemini 3.7 flash', 'gemini 3.7 flash (high)', 'gemini 3.7 flash (low)', 'gemini-3.7-flash-high', 'gemini-3.7-flash-low']
   },
   'gemini-3.7-flash-thinking': {
     id: 'gemini-3.7-flash-thinking',
@@ -116,7 +136,27 @@ const MODEL_PRICING = {
     inputPerMillion: 0.15,
     cachedInputPerMillion: 0.0375,
     outputPerMillion: 0.60,
-    aliases: ['gemini-3.7-flash-thinking', 'gemini 3.7 flash thinking']
+    aliases: ['gemini-3.7-flash-thinking', 'gemini 3.7 flash thinking', 'gemini-3.7-flash-thinking-exp', 'gemini-3.7-thinking', 'gemini 3.7 thinking']
+  },
+  'gemini-3.0-flash': {
+    id: 'gemini-3.0-flash',
+    provider: 'google',
+    displayName: 'Gemini 3.0 Flash',
+    contextWindow: '1M',
+    inputPerMillion: 0.15,
+    cachedInputPerMillion: 0.0375,
+    outputPerMillion: 0.60,
+    aliases: ['gemini-3.0-flash', 'gemini 3.0 flash', 'gemini-3-flash', 'gemini 3 flash']
+  },
+  'gemini-3.0-pro': {
+    id: 'gemini-3.0-pro',
+    provider: 'google',
+    displayName: 'Gemini 3.0 Pro',
+    contextWindow: '2M',
+    inputPerMillion: 1.25,
+    cachedInputPerMillion: 0.3125,
+    outputPerMillion: 5.00,
+    aliases: ['gemini-3.0-pro', 'gemini 3.0 pro', 'gemini-3-pro', 'gemini 3 pro']
   },
   'gemini-2.5-pro': {
     id: 'gemini-2.5-pro',
@@ -133,9 +173,9 @@ const MODEL_PRICING = {
     provider: 'google',
     displayName: 'Gemini 2.5 Flash',
     contextWindow: '1M',
-    inputPerMillion: 0.075,
-    cachedInputPerMillion: 0.01875,
-    outputPerMillion: 0.30,
+    inputPerMillion: 0.15,
+    cachedInputPerMillion: 0.0375,
+    outputPerMillion: 0.60,
     aliases: ['gemini-2.5-flash', 'gemini 2.5 flash']
   },
   'gemini-2.0-flash': {
@@ -146,7 +186,87 @@ const MODEL_PRICING = {
     inputPerMillion: 0.10,
     cachedInputPerMillion: 0.025,
     outputPerMillion: 0.40,
-    aliases: ['gemini-2.0-flash', 'gemini 2.0 flash']
+    aliases: ['gemini-2.0-flash', 'gemini 2.0 flash', 'gemini-2-flash']
+  },
+  'gemini-2.0-flash-lite': {
+    id: 'gemini-2.0-flash-lite',
+    provider: 'google',
+    displayName: 'Gemini 2.0 Flash Lite',
+    contextWindow: '1M',
+    inputPerMillion: 0.075,
+    cachedInputPerMillion: 0.01875,
+    outputPerMillion: 0.30,
+    aliases: ['gemini-2.0-flash-lite', 'gemini 2.0 flash lite', 'gemini-2-flash-lite']
+  },
+  'gemini-1.5-flash': {
+    id: 'gemini-1.5-flash',
+    provider: 'google',
+    displayName: 'Gemini 1.5 Flash',
+    contextWindow: '1M',
+    inputPerMillion: 0.075,
+    cachedInputPerMillion: 0.01875,
+    outputPerMillion: 0.30,
+    aliases: ['gemini-1.5-flash', 'gemini 1.5 flash', 'gemini-1-5-flash']
+  },
+  'gemini-1.5-pro': {
+    id: 'gemini-1.5-pro',
+    provider: 'google',
+    displayName: 'Gemini 1.5 Pro',
+    contextWindow: '2M',
+    inputPerMillion: 1.25,
+    cachedInputPerMillion: 0.3125,
+    outputPerMillion: 5.00,
+    aliases: ['gemini-1.5-pro', 'gemini 1.5 pro', 'gemini-1-5-pro']
+  },
+  'claude-opus-5.5': {
+    id: 'claude-opus-5.5',
+    provider: 'anthropic',
+    displayName: 'Claude Opus 5.5',
+    contextWindow: '200k',
+    inputPerMillion: 15.00,
+    cachedInputPerMillion: 1.50,
+    outputPerMillion: 75.00,
+    aliases: ['claude-opus-5.5', 'claude opus 5.5', 'opus-5.5', 'opus 5.5']
+  },
+  'claude-opus-4.6': {
+    id: 'claude-opus-4.6',
+    provider: 'anthropic',
+    displayName: 'Claude Opus 4.6',
+    contextWindow: '200k',
+    inputPerMillion: 15.00,
+    cachedInputPerMillion: 1.50,
+    outputPerMillion: 75.00,
+    aliases: ['claude-opus-4.6', 'claude opus 4.6', 'opus-4.6', 'opus 4.6']
+  },
+  'claude-3-opus': {
+    id: 'claude-3-opus',
+    provider: 'anthropic',
+    displayName: 'Claude 3 Opus',
+    contextWindow: '200k',
+    inputPerMillion: 15.00,
+    cachedInputPerMillion: 1.50,
+    outputPerMillion: 75.00,
+    aliases: ['claude-3-opus', 'claude 3 opus', 'claude-3-opus-20240229']
+  },
+  'claude-sonnet-5.5': {
+    id: 'claude-sonnet-5.5',
+    provider: 'anthropic',
+    displayName: 'Claude Sonnet 5.5',
+    contextWindow: '200k',
+    inputPerMillion: 3.00,
+    cachedInputPerMillion: 0.30,
+    outputPerMillion: 15.00,
+    aliases: ['claude-sonnet-5.5', 'claude sonnet 5.5', 'sonnet-5.5', 'sonnet 5.5']
+  },
+  'claude-sonnet-4.6': {
+    id: 'claude-sonnet-4.6',
+    provider: 'anthropic',
+    displayName: 'Claude Sonnet 4.6',
+    contextWindow: '200k',
+    inputPerMillion: 3.00,
+    cachedInputPerMillion: 0.30,
+    outputPerMillion: 15.00,
+    aliases: ['claude-sonnet-4.6', 'claude sonnet 4.6', 'sonnet-4.6', 'sonnet 4.6']
   },
   'claude-3.7-sonnet': {
     id: 'claude-3.7-sonnet',
@@ -156,7 +276,7 @@ const MODEL_PRICING = {
     inputPerMillion: 3.00,
     cachedInputPerMillion: 0.30,
     outputPerMillion: 15.00,
-    aliases: ['claude-3.7-sonnet', 'claude 3.7 sonnet']
+    aliases: ['claude-3.7-sonnet', 'claude 3.7 sonnet', 'claude-3-7-sonnet', 'claude-3.7-sonnet-thinking', 'claude-3.7-sonnet (thinking)']
   },
   'claude-3.5-sonnet': {
     id: 'claude-3.5-sonnet',
@@ -166,7 +286,7 @@ const MODEL_PRICING = {
     inputPerMillion: 3.00,
     cachedInputPerMillion: 0.30,
     outputPerMillion: 15.00,
-    aliases: ['claude-3.5-sonnet', 'claude 3.5 sonnet', 'sonnet']
+    aliases: ['claude-3.5-sonnet', 'claude 3.5 sonnet', 'claude-3-5-sonnet']
   },
   'claude-3.5-haiku': {
     id: 'claude-3.5-haiku',
@@ -176,7 +296,7 @@ const MODEL_PRICING = {
     inputPerMillion: 0.80,
     cachedInputPerMillion: 0.08,
     outputPerMillion: 4.00,
-    aliases: ['claude-3.5-haiku', 'claude 3.5 haiku', 'haiku']
+    aliases: ['claude-3.5-haiku', 'claude 3.5 haiku', 'claude-3-5-haiku']
   },
   'gpt-4o': {
     id: 'gpt-4o',
@@ -186,7 +306,17 @@ const MODEL_PRICING = {
     inputPerMillion: 2.50,
     cachedInputPerMillion: 1.25,
     outputPerMillion: 10.00,
-    aliases: ['gpt-4o', 'gpt 4o']
+    aliases: ['gpt-4o', 'gpt 4o', 'gpt-4o-2024-11-20', 'gpt-4o-latest']
+  },
+  'gpt-4o-mini': {
+    id: 'gpt-4o-mini',
+    provider: 'openai',
+    displayName: 'GPT-4o mini',
+    contextWindow: '128k',
+    inputPerMillion: 0.15,
+    cachedInputPerMillion: 0.075,
+    outputPerMillion: 0.60,
+    aliases: ['gpt-4o-mini', 'gpt 4o mini', 'gpt-4o-mini-2024-07-18']
   },
   'o3-mini': {
     id: 'o3-mini',
@@ -196,7 +326,7 @@ const MODEL_PRICING = {
     inputPerMillion: 1.10,
     cachedInputPerMillion: 0.55,
     outputPerMillion: 4.40,
-    aliases: ['o3-mini', 'o3 mini']
+    aliases: ['o3-mini', 'o3 mini', 'o3-mini-high', 'o3-mini-medium', 'o3-mini-low']
   },
   'o1': {
     id: 'o1',
@@ -206,16 +336,36 @@ const MODEL_PRICING = {
     inputPerMillion: 15.00,
     cachedInputPerMillion: 7.50,
     outputPerMillion: 60.00,
-    aliases: ['o1', 'o1-preview']
+    aliases: ['o1', 'o1-preview', 'o1-full']
+  },
+  'deepseek-v3': {
+    id: 'deepseek-v3',
+    provider: 'deepseek',
+    displayName: 'DeepSeek V3',
+    contextWindow: '64k',
+    inputPerMillion: 0.14,
+    cachedInputPerMillion: 0.014,
+    outputPerMillion: 0.28,
+    aliases: ['deepseek-v3', 'deepseek v3']
+  },
+  'deepseek-r1': {
+    id: 'deepseek-r1',
+    provider: 'deepseek',
+    displayName: 'DeepSeek R1',
+    contextWindow: '64k',
+    inputPerMillion: 0.55,
+    cachedInputPerMillion: 0.14,
+    outputPerMillion: 2.19,
+    aliases: ['deepseek-r1', 'deepseek r1']
   },
   'default': {
     id: 'default',
     provider: 'google',
     displayName: 'Gemini 3.7 Flash (Default)',
     contextWindow: '1M',
-    inputPerMillion: 0.05,
-    cachedInputPerMillion: 0.0125,
-    outputPerMillion: 0.20,
+    inputPerMillion: 0.15,
+    cachedInputPerMillion: 0.0375,
+    outputPerMillion: 0.60,
     aliases: ['default']
   }
 };
@@ -259,7 +409,7 @@ const CURRENCIES = {
     symbol: '₩',
     rate: 1450.0,
     precision: 0,
-    displayDecimals: 1,
+    displayDecimals: 0,
     position: 'before',
     name: 'South Korean Won'
   },
@@ -311,9 +461,20 @@ function formatModelDisplayName(name) {
     .join(' ');
 }
 
+function escapeRegExp(string) {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function matchAliasWithBoundary(target, alias) {
+  if (target === alias) return true;
+  const pattern = new RegExp(`(?:^|[^a-z0-9])${escapeRegExp(alias)}(?:[^a-z0-9]|$)`, 'i');
+  return pattern.test(target);
+}
+
 /**
- * Dynamically resolves pricing tier using regex/fuzzy heuristic pattern matching
- * for models not explicitly registered in MODEL_PRICING.
+ * Dynamically resolves pricing tier using a multi-tier generational and provider-aware
+ * heuristic resolution engine for models not explicitly registered in MODEL_PRICING.
+ * Parses provider (Google, Anthropic, OpenAI, DeepSeek, Local), family, and generational version.
  * @param {string} modelName - Model identifier or display name.
  * @returns {object} Pricing configuration with tier information.
  */
@@ -325,54 +486,279 @@ function smartHeuristicPricing(modelName) {
   const normalized = modelName.toLowerCase().trim();
   const displayName = formatModelDisplayName(modelName);
 
-  // 1. Free Tier heuristic: contains free, flat, zero, local, or ollama
+  // 1. Free / Local / Ollama Tier heuristic
   if (FREE_PATTERN.test(normalized)) {
     return {
       id: normalized,
       displayName: displayName || 'Custom Free Model',
+      provider: 'local',
+      tier: 'free',
       inputPerMillion: 0.0,
       cachedInputPerMillion: 0.0,
       outputPerMillion: 0.0,
-      aliases: [normalized],
-      tier: 'free'
+      aliases: [normalized]
     };
   }
 
-  // 2. Flash Tier heuristic: contains flash, lite, mini, haiku, fast, small, turbo, or low
+  // 2. Anthropic Claude Family Heuristics (Opus: $15/$75, Sonnet: $3/$15, Haiku: $0.80/$4)
+  // NEVER collapse Opus to a generic $1.25/$5 Pro rate or Haiku to a $0.15 Flash rate!
+  const hasOpus = /(?:^|[^a-z0-9])opus(?:[^a-z0-9]|$)/i.test(normalized);
+  const hasSonnet = /(?:^|[^a-z0-9])sonnet(?:[^a-z0-9]|$)/i.test(normalized);
+  const hasHaiku = /(?:^|[^a-z0-9])haiku(?:[^a-z0-9]|$)/i.test(normalized);
+
+  if (hasOpus) {
+    return {
+      id: normalized,
+      displayName: displayName || 'Claude Opus',
+      provider: 'anthropic',
+      tier: 'opus',
+      inputPerMillion: 15.00,
+      cachedInputPerMillion: 1.50,
+      outputPerMillion: 75.00,
+      aliases: [normalized]
+    };
+  }
+
+  if (hasSonnet) {
+    return {
+      id: normalized,
+      displayName: displayName || 'Claude Sonnet',
+      provider: 'anthropic',
+      tier: 'sonnet',
+      inputPerMillion: 3.00,
+      cachedInputPerMillion: 0.30,
+      outputPerMillion: 15.00,
+      aliases: [normalized]
+    };
+  }
+
+  if (hasHaiku) {
+    return {
+      id: normalized,
+      displayName: displayName || 'Claude Haiku',
+      provider: 'anthropic',
+      tier: 'haiku',
+      inputPerMillion: 0.80,
+      cachedInputPerMillion: 0.08,
+      outputPerMillion: 4.00,
+      aliases: [normalized]
+    };
+  }
+
+  // 3. DeepSeek Family Heuristics (Reasoning r1: $0.55/$2.19 vs Chat v3: $0.14/$0.28)
+  const isDeepSeek = normalized.includes('deepseek');
+  const hasR1 = /(?:^|[^a-z0-9])r-?1(?:[^a-z0-9]|$)/i.test(normalized);
+  const hasV3 = /(?:^|[^a-z0-9])v-?3(?:\.\d+)?(?:[^a-z0-9]|$)/i.test(normalized);
+
+  if ((isDeepSeek || normalized.startsWith('r1') || normalized.includes('r-1')) && hasR1) {
+    return {
+      id: normalized,
+      displayName: displayName || 'DeepSeek R1',
+      provider: 'deepseek',
+      tier: 'reasoning',
+      inputPerMillion: 0.55,
+      cachedInputPerMillion: 0.14,
+      outputPerMillion: 2.19,
+      aliases: [normalized]
+    };
+  }
+
+  if ((isDeepSeek || normalized.startsWith('v3') || normalized.includes('v-3')) && hasV3) {
+    return {
+      id: normalized,
+      displayName: displayName || 'DeepSeek V3',
+      provider: 'deepseek',
+      tier: 'chat',
+      inputPerMillion: 0.14,
+      cachedInputPerMillion: 0.014,
+      outputPerMillion: 0.28,
+      aliases: [normalized]
+    };
+  }
+
+  // 4. OpenAI Family Heuristics
+  // O-series reasoning (o1, o3, o4) vs O-series mini (o1-mini, o3-mini) vs GPT chat flagship vs mini
+  const oSeriesMatch = normalized.match(/(?:^|[^a-z0-9])o([1-9]\d*)(?:-([a-z0-9]+))?(?:[^a-z0-9]|$)/i);
+  const isMini = /(?:^|[^a-z0-9])mini(?:[^a-z0-9]|$)/i.test(normalized);
+  const isOpenAI = normalized.includes('openai') || normalized.includes('gpt');
+
+  if (oSeriesMatch) {
+    if (isMini || (oSeriesMatch[2] && oSeriesMatch[2].toLowerCase() === 'mini')) {
+      return {
+        id: normalized,
+        displayName: displayName || 'OpenAI o-series Mini',
+        provider: 'openai',
+        tier: 'reasoning-mini',
+        inputPerMillion: 1.10,
+        cachedInputPerMillion: 0.55,
+        outputPerMillion: 4.40,
+        aliases: [normalized]
+      };
+    }
+    return {
+      id: normalized,
+      displayName: displayName || 'OpenAI o-series Reasoning',
+      provider: 'openai',
+      tier: 'reasoning',
+      inputPerMillion: 15.00,
+      cachedInputPerMillion: 7.50,
+      outputPerMillion: 60.00,
+      aliases: [normalized]
+    };
+  }
+
+  if (isOpenAI) {
+    if (isMini) {
+      return {
+        id: normalized,
+        displayName: displayName || 'OpenAI Mini',
+        provider: 'openai',
+        tier: 'mini',
+        inputPerMillion: 0.15,
+        cachedInputPerMillion: 0.075,
+        outputPerMillion: 0.60,
+        aliases: [normalized]
+      };
+    }
+    if (/(?:^|[^a-z0-9])gpt(?:-[3-9]|\.|\s|$)/i.test(normalized)) {
+      return {
+        id: normalized,
+        displayName: displayName || 'GPT Flagship',
+        provider: 'openai',
+        tier: 'flagship',
+        inputPerMillion: 2.50,
+        cachedInputPerMillion: 1.25,
+        outputPerMillion: 10.00,
+        aliases: [normalized]
+      };
+    }
+  }
+
+  // 5. Google Gemini Family & Generational Version Parsing
+  const isGoogle = normalized.includes('gemini') || normalized.includes('google');
+  const hasFlashLite = normalized.includes('flash-lite') || (isGoogle && /(?:^|[^a-z0-9])lite(?:[^a-z0-9]|$)/i.test(normalized));
+  const hasFlash = /(?:^|[^a-z0-9])flash(?:[^a-z0-9]|$)/i.test(normalized);
+  const hasUltra = /(?:^|[^a-z0-9])ultra(?:[^a-z0-9]|$)/i.test(normalized);
+  const hasPro = /(?:^|[^a-z0-9])pro(?:[^a-z0-9]|$)/i.test(normalized);
+
+  // Extract generational version number (e.g. 4.2, 3.8, 2.5, 2.1, 2.0, 1.5)
+  let version = null;
+  const vMatch = normalized.match(/(?:gemini|flash|pro|ultra)[^\d]*(\d+(?:\.\d+)?)/i)
+    || normalized.match(/(?:^|[^a-z0-9])(\d+\.\d+)(?:[^a-z0-9]|$)/i);
+  if (vMatch) {
+    version = parseFloat(vMatch[1]);
+  }
+
+  if (hasUltra) {
+    return {
+      id: normalized,
+      displayName: displayName || 'Google Gemini Ultra',
+      provider: isGoogle ? 'google' : 'custom',
+      tier: 'ultra',
+      inputPerMillion: 2.50,
+      cachedInputPerMillion: 0.625,
+      outputPerMillion: 10.00,
+      aliases: [normalized]
+    };
+  }
+
+  if (hasFlashLite) {
+    return {
+      id: normalized,
+      displayName: displayName || 'Google Gemini Flash Lite',
+      provider: 'google',
+      tier: 'flash-lite',
+      inputPerMillion: 0.075,
+      cachedInputPerMillion: 0.01875,
+      outputPerMillion: 0.30,
+      aliases: [normalized]
+    };
+  }
+
+  if (hasFlash) {
+    let inRate = 0.15;
+    let cachedRate = 0.0375;
+    let outRate = 0.60;
+
+    if (version !== null) {
+      if (version < 2.0) {
+        inRate = 0.075;
+        cachedRate = 0.01875;
+        outRate = 0.30;
+      } else if (version < 2.5) {
+        inRate = 0.10;
+        cachedRate = 0.025;
+        outRate = 0.40;
+      } else {
+        inRate = 0.15;
+        cachedRate = 0.0375;
+        outRate = 0.60;
+      }
+    }
+
+    return {
+      id: normalized,
+      displayName: displayName || 'Custom Flash Model',
+      provider: isGoogle ? 'google' : 'custom',
+      tier: 'flash',
+      inputPerMillion: inRate,
+      cachedInputPerMillion: cachedRate,
+      outputPerMillion: outRate,
+      aliases: [normalized]
+    };
+  }
+
+  if (hasPro) {
+    return {
+      id: normalized,
+      displayName: displayName || 'Custom Pro Model',
+      provider: isGoogle ? 'google' : 'custom',
+      tier: 'pro',
+      inputPerMillion: 1.25,
+      cachedInputPerMillion: 0.3125,
+      outputPerMillion: 5.00,
+      aliases: [normalized]
+    };
+  }
+
+  // 6. Generic Flash tier heuristic: contains fast, small, turbo, or low
   if (FLASH_PATTERN.test(normalized)) {
     return {
       id: normalized,
       displayName: displayName || 'Custom Flash Model',
+      provider: 'custom',
+      tier: 'flash',
       inputPerMillion: 0.15,
       cachedInputPerMillion: 0.0375,
       outputPerMillion: 0.60,
-      aliases: [normalized],
-      tier: 'flash'
+      aliases: [normalized]
     };
   }
 
-  // 3. Pro Tier heuristic: contains pro, ultra, opus, sonnet, large, max, or high
+  // 7. Generic Pro tier heuristic: contains large, max, or high
   if (PRO_PATTERN.test(normalized)) {
     return {
       id: normalized,
       displayName: displayName || 'Custom Pro Model',
+      provider: 'custom',
+      tier: 'pro',
       inputPerMillion: 1.25,
       cachedInputPerMillion: 0.3125,
       outputPerMillion: 5.00,
-      aliases: [normalized],
-      tier: 'pro'
+      aliases: [normalized]
     };
   }
 
-  // 4. Graceful fallback to Default Flash Tier
+  // 8. Graceful fallback to Default Flash Tier
   return {
     id: normalized,
     displayName: `${displayName} (Default)`,
+    provider: 'default',
+    tier: 'default',
     inputPerMillion: 0.15,
     cachedInputPerMillion: 0.0375,
     outputPerMillion: 0.60,
-    aliases: [normalized],
-    tier: 'default'
+    aliases: [normalized]
   };
 }
 
@@ -443,16 +829,16 @@ function getModelPricing(modelName) {
     }
   }
 
-  // 2. Exact or substring match against known model aliases (longest alias wins)
+  // 2. Exact or word-boundary match against known model aliases (longest alias wins)
   if (_sortedAliases) {
     for (const { alias, info } of _sortedAliases) {
-      if (alias === target || target.includes(alias)) {
+      if (matchAliasWithBoundary(target, alias)) {
         return info;
       }
     }
   }
 
-  // 3. Fallback to smart fuzzy heuristic pattern matching
+  // 3. Fallback to multi-tier generational & provider-aware smart heuristic resolution
   return smartHeuristicPricing(rawTarget || target);
 }
 
@@ -479,9 +865,10 @@ function mergePricingDict(pricingDict, destination = null) {
     const customAliases = Array.isArray(def.aliases)
       ? def.aliases.map(a => String(a).toLowerCase().trim())
       : [];
+    const BARE_COLLISION_ALIASES = new Set(['opus', 'sonnet', 'haiku', 'gemini-flash', 'gemini-pro']);
     const aliases = Array.from(
       new Set([normalizedKey, id.toLowerCase().trim(), ...customAliases])
-    );
+    ).filter(a => !BARE_COLLISION_ALIASES.has(a));
 
     const modelEntry = {
       id,
@@ -626,9 +1013,12 @@ _buildSortedAliases();
  */
 function calculateCostUsd(inputTokens, cachedTokens, outputTokens, modelName) {
   const pricing = getModelPricing(modelName);
-  const inputCost = (Math.max(0, inputTokens) / 1000000) * pricing.inputPerMillion;
-  const cachedCost = (Math.max(0, cachedTokens) / 1000000) * pricing.cachedInputPerMillion;
-  const outputCost = (Math.max(0, outputTokens) / 1000000) * pricing.outputPerMillion;
+  const safeInput = Math.max(0, Number(inputTokens) || 0);
+  const safeCached = Math.max(0, Number(cachedTokens) || 0);
+  const safeOutput = Math.max(0, Number(outputTokens) || 0);
+  const inputCost = (safeInput / 1000000) * pricing.inputPerMillion;
+  const cachedCost = (safeCached / 1000000) * pricing.cachedInputPerMillion;
+  const outputCost = (safeOutput / 1000000) * pricing.outputPerMillion;
   return inputCost + cachedCost + outputCost;
 }
 
@@ -639,10 +1029,11 @@ function calculateCostUsd(inputTokens, cachedTokens, outputTokens, modelName) {
  * @returns {number} Dollar amount saved in USD.
  */
 function calculateCacheSavingsUsd(cachedTokens, modelName) {
-  if (!cachedTokens || cachedTokens <= 0) return 0;
+  const safeCached = Math.max(0, Number(cachedTokens) || 0);
+  if (safeCached <= 0) return 0;
   const pricing = getModelPricing(modelName);
-  const regularInputCost = (cachedTokens / 1000000) * pricing.inputPerMillion;
-  const cachedInputCost = (cachedTokens / 1000000) * pricing.cachedInputPerMillion;
+  const regularInputCost = (safeCached / 1000000) * pricing.inputPerMillion;
+  const cachedInputCost = (safeCached / 1000000) * pricing.cachedInputPerMillion;
   return Math.max(0, regularInputCost - cachedInputCost);
 }
 

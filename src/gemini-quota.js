@@ -15,6 +15,7 @@ const config = require('./config');
 const { t } = require('./i18n');
 
 const GEMINI_QUOTA_CACHE_FILE = path.join(config.GEMINI_DIR, 'gemini_quota_cache.json');
+const LS_TOKEN_FILE = process.env.AGY_LS_TOKEN_PATH || path.join(config.GEMINI_DIR, '.gemini_quota_ls_token.json');
 const CACHE_TTL_MS = 30000; // 30 seconds
 const DISCOVERY_TIMEOUT_MS = 3000;
 const HTTP_TIMEOUT_MS = 2500;
@@ -284,6 +285,74 @@ function formatResetTime(resetTime, refDate = new Date()) {
 }
 
 /**
+ * Persists a validated Language Server CSRF token and connection details to disk.
+ * Uses atomic file write and validates the UUID shape.
+ * @param {object} info
+ * @param {string} info.csrfToken
+ * @param {number} [info.pid]
+ * @param {number} [info.port]
+ * @param {Array<number>} [info.ports]
+ * @param {string} [tokenFilePath]
+ * @returns {boolean} Whether the token was persisted.
+ */
+function savePersistedLsToken(info, tokenFilePath = LS_TOKEN_FILE) {
+  try {
+    if (!info || !isCsrfUuid(info.csrfToken)) return false;
+    const targetPath = tokenFilePath || LS_TOKEN_FILE;
+    const dir = path.dirname(targetPath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    const payload = {
+      version: 1,
+      pid: typeof info.pid === 'number' ? info.pid : null,
+      port: typeof info.port === 'number' ? info.port : null,
+      ports: Array.isArray(info.ports) ? info.ports.map(Number).filter(n => Number.isFinite(n) && n > 0) : (info.port ? [Number(info.port)] : []),
+      csrfToken: String(info.csrfToken).trim(),
+      updatedAt: Date.now()
+    };
+    const content = JSON.stringify(payload, null, 2);
+    const tmp = `${targetPath}.${Date.now()}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, content, 'utf8');
+    try {
+      fs.renameSync(tmp, targetPath);
+    } catch (_e) {
+      fs.writeFileSync(targetPath, content, 'utf8');
+      try { fs.unlinkSync(tmp); } catch (_ign) {}
+    }
+    return true;
+  } catch (_err) {
+    return false;
+  }
+}
+
+/**
+ * Reads persisted Language Server CSRF token from disk.
+ * Validates the token UUID shape.
+ * @param {string} [tokenFilePath]
+ * @returns {{ version: number, pid: number|null, port: number|null, ports: Array<number>, csrfToken: string, updatedAt: number }|null}
+ */
+function readPersistedLsToken(tokenFilePath = LS_TOKEN_FILE) {
+  try {
+    const targetPath = tokenFilePath || LS_TOKEN_FILE;
+    if (!fs.existsSync(targetPath)) return null;
+    const raw = fs.readFileSync(targetPath, 'utf8');
+    const data = JSON.parse(raw);
+    if (!data || !isCsrfUuid(data.csrfToken)) return null;
+    return {
+      version: data.version || 1,
+      pid: typeof data.pid === 'number' ? data.pid : null,
+      port: typeof data.port === 'number' ? data.port : null,
+      ports: Array.isArray(data.ports) ? data.ports.map(Number).filter(n => Number.isFinite(n) && n > 0) : (data.port ? [Number(data.port)] : []),
+      csrfToken: data.csrfToken,
+      updatedAt: typeof data.updatedAt === 'number' ? data.updatedAt : 0
+    };
+  } catch (_err) {
+    return null;
+  }
+}
+
+/**
  * Parses commandline string to extract --csrf_token, listening port, and protocol if embedded.
  * Supports both hyphenated (--csrf-token) and underscored (--csrf_token) flags.
  * @param {string} cmdLine
@@ -355,7 +424,15 @@ function getEnvLanguageServerTarget() {
     if (!isNaN(p)) envPort = p;
   }
   if (envPort) {
-    const csrfToken = (process.env.ANTIGRAVITY_CSRF_TOKEN || process.env.CSRF_TOKEN || '').trim();
+    let csrfToken = (process.env.ANTIGRAVITY_CSRF_TOKEN || process.env.CSRF_TOKEN || '').trim();
+    if (!csrfToken) {
+      const persisted = readPersistedLsToken();
+      if (persisted && persisted.csrfToken && (persisted.port === envPort || (Array.isArray(persisted.ports) && persisted.ports.includes(envPort)))) {
+        csrfToken = persisted.csrfToken;
+      }
+    } else if (isCsrfUuid(csrfToken)) {
+      savePersistedLsToken({ pid: process.pid, port: envPort, ports: [envPort], csrfToken });
+    }
     let protocol = null;
     if (process.env.ANTIGRAVITY_LS_PROTOCOL) {
       protocol = process.env.ANTIGRAVITY_LS_PROTOCOL.toLowerCase();
@@ -536,6 +613,14 @@ async function discoverLanguageServer(opts = {}) {
               if (!primary.csrfToken && envTarget.csrfToken) primary.csrfToken = envTarget.csrfToken;
               if (!primary.protocol && envTarget.protocol) primary.protocol = envTarget.protocol;
             }
+            if (!primary.csrfToken) {
+              const persisted = readPersistedLsToken();
+              if (persisted && validateTranscriptToken(primary, persisted)) {
+                primary.csrfToken = persisted.csrfToken;
+              }
+            } else if (isCsrfUuid(primary.csrfToken)) {
+              savePersistedLsToken(primary);
+            }
             primary.ports = allCandidatePorts.length > 0 ? allCandidatePorts : primary.ports;
             primary.pids = allCandidatePids.length > 0 ? allCandidatePids : [primary.pid];
             return finish(primary);
@@ -611,6 +696,14 @@ async function discoverLanguageServer(opts = {}) {
             primary.port = envPort;
             if (!primary.csrfToken && envTarget.csrfToken) primary.csrfToken = envTarget.csrfToken;
             if (!primary.protocol && envTarget.protocol) primary.protocol = envTarget.protocol;
+          }
+          if (!primary.csrfToken) {
+            const persisted = readPersistedLsToken();
+            if (persisted && validateTranscriptToken(primary, persisted)) {
+              primary.csrfToken = persisted.csrfToken;
+            }
+          } else if (isCsrfUuid(primary.csrfToken)) {
+            savePersistedLsToken(primary);
           }
           primary.ports = allCandidatePorts.length > 0 ? allCandidatePorts : primary.ports;
           primary.pids = allCandidatePids.length > 0 ? allCandidatePids : [primary.pid];
@@ -824,8 +917,24 @@ function resolveCsrfTokenFallback(discovery, opts = {}) {
     if (discovery.csrfToken) {
       return { csrfToken: discovery.csrfToken, tokenSource: 'command_line' };
     }
+    // Check persisted token cache first unless an explicit brainDir test hook is provided
+    if (!opts.brainDir) {
+      const persisted = readPersistedLsToken(opts.tokenFilePath);
+      if (persisted && persisted.csrfToken && validateTranscriptToken(discovery, persisted)) {
+        const pinnedPorts = [persisted.port, ...(persisted.ports || [])].filter(
+          (p, i, a) => typeof p === 'number' && p > 0 && a.indexOf(p) === i
+        );
+        return {
+          csrfToken: persisted.csrfToken,
+          tokenSource: 'persisted_cache',
+          pinnedPorts: pinnedPorts.length > 0 ? pinnedPorts : undefined,
+          pinnedProtocol: 'https'
+        };
+      }
+    }
     const hit = scanTranscriptForCsrf(discovery, opts);
     if (hit && hit.csrfToken) {
+      savePersistedLsToken(hit, opts.tokenFilePath);
       const pinnedPorts = [hit.port, ...(hit.ports || [])].filter(
         (p, i, a) => typeof p === 'number' && p > 0 && a.indexOf(p) === i
       );
@@ -838,6 +947,20 @@ function resolveCsrfTokenFallback(discovery, opts = {}) {
         // plain-HTTP knock that produces "TLS handshake error" console floods.
         pinnedProtocol: 'https'
       };
+    }
+    if (opts.brainDir) {
+      const persisted = readPersistedLsToken(opts.tokenFilePath);
+      if (persisted && persisted.csrfToken && validateTranscriptToken(discovery, persisted)) {
+        const pinnedPorts = [persisted.port, ...(persisted.ports || [])].filter(
+          (p, i, a) => typeof p === 'number' && p > 0 && a.indexOf(p) === i
+        );
+        return {
+          csrfToken: persisted.csrfToken,
+          tokenSource: 'persisted_cache',
+          pinnedPorts: pinnedPorts.length > 0 ? pinnedPorts : undefined,
+          pinnedProtocol: 'https'
+        };
+      }
     }
     return { csrfToken: '', tokenSource: 'none' };
   } catch (_err) {
@@ -1277,14 +1400,127 @@ function saveCachedGeminiQuota(quotaData, cachePath = GEMINI_QUOTA_CACHE_FILE) {
 }
 
 /**
+ * Dynamically adjusts cached quota percentages in real-time based on turns
+ * executed since the quota snapshot was captured and handles countdown bucket replenishment.
+ * @param {object} quotaData - Quota object (from getCachedGeminiQuota or fetchLiveGeminiQuota).
+ * @param {Array<object>} sessions - Synced sessions array containing turns.
+ * @param {object} [options]
+ * @param {Date|number} [options.now=Date.now()]
+ * @param {object} [options.quota] - Custom quota limit configuration (limit5h, limit7d).
+ * @returns {object} Adjusted quota object (non-mutating clone).
+ */
+function applyTurnUsageToQuota(quotaData, sessions, options = {}) {
+  if (!quotaData || typeof quotaData !== 'object') return quotaData;
+  const snapshotMs = quotaData.timestampMs || 0;
+  if (snapshotMs <= 0) return quotaData;
+
+  const nowMs = (options.now instanceof Date ? options.now.getTime() : (typeof options.now === 'number' ? options.now : Date.now()));
+  const quota = options.quota || null;
+  const limit5h = (quota && Number(quota.limit5h) > 0) ? Number(quota.limit5h) : 20000000;
+  const limit7d = (quota && Number(quota.limit7d) > 0) ? Number(quota.limit7d) : 150000000;
+
+  const threshold5h = nowMs - 5 * 3600 * 1000;
+  const threshold7d = nowMs - 7 * 86400 * 1000;
+
+  const result = {
+    ...quotaData,
+    quota5h: quotaData.quota5h ? { ...quotaData.quota5h } : null,
+    quota7d: quotaData.quota7d ? { ...quotaData.quota7d } : null
+  };
+
+  // 1. Reset check: If resetTime has passed, bucket replenishes to 100%
+  let resetTime5hMs = 0;
+  let resetTime7dMs = 0;
+  if (result.quota5h && result.quota5h.resetTime) {
+    resetTime5hMs = new Date(result.quota5h.resetTime).getTime();
+    if (!isNaN(resetTime5hMs) && nowMs >= resetTime5hMs) {
+      result.quota5h.remainPercent = 100;
+      result.quota5h.remainingFraction = 1.0;
+    }
+  }
+  if (result.quota7d && result.quota7d.resetTime) {
+    resetTime7dMs = new Date(result.quota7d.resetTime).getTime();
+    if (!isNaN(resetTime7dMs) && nowMs >= resetTime7dMs) {
+      result.quota7d.remainPercent = 100;
+      result.quota7d.remainingFraction = 1.0;
+    }
+  }
+
+  // 2. Calculate tokens consumed in turns created SINCE the snapshot
+  // (or since resetTime if resetTime > snapshotMs and nowMs >= resetTime)
+  const baseline5hMs = Math.max(snapshotMs, resetTime5hMs > snapshotMs && nowMs >= resetTime5hMs ? resetTime5hMs : snapshotMs);
+  const baseline7dMs = Math.max(snapshotMs, resetTime7dMs > snapshotMs && nowMs >= resetTime7dMs ? resetTime7dMs : snapshotMs);
+
+  let tokensSinceBaseline5h = 0;
+  let tokensSinceBaseline7d = 0;
+
+  for (const session of (Array.isArray(sessions) ? sessions : [])) {
+    if (!session) continue;
+    if (session.turns && session.turns.length > 0) {
+      for (const turn of session.turns) {
+        if (!turn) continue;
+        const turnTime = turn.createdAt ? new Date(turn.createdAt).getTime() : 0;
+        if (Number.isNaN(turnTime) || turnTime <= 0) continue;
+        const tokens = typeof turn.totalTokens === 'number'
+          ? turn.totalTokens
+          : ((turn.inputTokens || 0) + (turn.cachedTokens || 0) + (turn.outputTokens || 0));
+        if (turnTime > baseline5hMs && turnTime >= threshold5h) {
+          tokensSinceBaseline5h += tokens;
+        }
+        if (turnTime > baseline7dMs && turnTime >= threshold7d) {
+          tokensSinceBaseline7d += tokens;
+        }
+      }
+    } else if (session.startTime) {
+      const sessTime = new Date(session.startTime).getTime();
+      if (!Number.isNaN(sessTime) && sessTime > 0) {
+        const tokens = session.totalTokens || 0;
+        if (sessTime > baseline5hMs && sessTime >= threshold5h) {
+          tokensSinceBaseline5h += tokens;
+        }
+        if (sessTime > baseline7dMs && sessTime >= threshold7d) {
+          tokensSinceBaseline7d += tokens;
+        }
+      }
+    }
+  }
+
+  // 3. Deduct consumed tokens from the percentage
+  if (result.quota5h && typeof result.quota5h.remainPercent === 'number') {
+    const delta5hPct = (tokensSinceBaseline5h / limit5h) * 100;
+    const new5hPct = Math.max(0, Math.min(100, Math.round(result.quota5h.remainPercent - delta5hPct)));
+    result.quota5h.remainPercent = new5hPct;
+    result.quota5h.remainingFraction = new5hPct / 100;
+  }
+
+  if (result.quota7d && typeof result.quota7d.remainPercent === 'number') {
+    const delta7dPct = (tokensSinceBaseline7d / limit7d) * 100;
+    const new7dPct = Math.max(0, Math.min(100, Math.round(result.quota7d.remainPercent - delta7dPct)));
+    result.quota7d.remainPercent = new7dPct;
+    result.quota7d.remainingFraction = new7dPct / 100;
+  }
+
+  if (result.quota5h) {
+    result.remainPercent = result.quota5h.remainPercent;
+    result.remainingFraction = result.quota5h.remainingFraction;
+  } else if (result.quota7d) {
+    result.remainPercent = result.quota7d.remainPercent;
+    result.remainingFraction = result.quota7d.remainingFraction;
+  }
+
+  return result;
+}
+
+/**
  * Synchronously reads cached Gemini quota from ~/.gemini/gemini_quota_cache.json.
  * Recalculates countdown durations in real-time.
  * Designed for ultra-fast (<1ms) statusline and hook reading.
  * @param {string} [cachePath=GEMINI_QUOTA_CACHE_FILE]
  * @param {number} [ttlMs=CACHE_TTL_MS]
+ * @param {object} [opts] - Optional options containing sessions and quota limits.
  * @returns {object|null}
  */
-function getCachedGeminiQuota(cachePath = GEMINI_QUOTA_CACHE_FILE, ttlMs = CACHE_TTL_MS) {
+function getCachedGeminiQuota(cachePath = GEMINI_QUOTA_CACHE_FILE, ttlMs = CACHE_TTL_MS, opts = {}) {
   try {
     if (!fs.existsSync(cachePath)) {
       return null;
@@ -1318,7 +1554,7 @@ function getCachedGeminiQuota(cachePath = GEMINI_QUOTA_CACHE_FILE, ttlMs = CACHE
       data.quota7d.resetFormatted = formatCountdownDuration(remainingSec);
     }
 
-    return {
+    const quotaResult = {
       ...data,
       resetFormatted,
       resetInSeconds,
@@ -1326,6 +1562,12 @@ function getCachedGeminiQuota(cachePath = GEMINI_QUOTA_CACHE_FILE, ttlMs = CACHE
       isStale,
       ageMs: age
     };
+
+    if (opts && Array.isArray(opts.sessions) && opts.sessions.length > 0) {
+      return applyTurnUsageToQuota(quotaResult, opts.sessions, opts);
+    }
+
+    return quotaResult;
   } catch (_err) {
     return null;
   }
@@ -1345,11 +1587,27 @@ function triggerBackgroundQuotaRefresh(opts = {}) {
   _lastBackgroundTriggerAt = now;
 
   try {
-    const script = `require('${__filename.replace(/\\/g, '/')}').fetchLiveGeminiQuota({ forceRefresh: true }).catch(()=>{})`;
-    const child = spawn(process.execPath, ['-e', script], {
+    const script = 'require(process.argv[1]).fetchLiveGeminiQuota({ forceRefresh: true }).catch(()=>{})';
+    const childEnv = { ...process.env };
+    let token = opts.csrfToken || childEnv.ANTIGRAVITY_CSRF_TOKEN || childEnv.CSRF_TOKEN;
+    if (!token) {
+      const persisted = readPersistedLsToken();
+      if (persisted && persisted.csrfToken) {
+        token = persisted.csrfToken;
+      }
+    }
+    if (token) {
+      childEnv.ANTIGRAVITY_CSRF_TOKEN = token;
+    }
+    if (opts.port) {
+      childEnv.ANTIGRAVITY_LS_PORT = String(opts.port);
+    }
+
+    const child = spawn(process.execPath, ['-e', script, __filename], {
       detached: true,
       stdio: 'ignore',
-      windowsHide: true
+      windowsHide: true,
+      env: childEnv
     });
     child.unref();
     return true;
@@ -1745,6 +2003,7 @@ function getDetectedHttpsPorts() {
 
 module.exports = {
   GEMINI_QUOTA_CACHE_FILE,
+  LS_TOKEN_FILE,
   CACHE_TTL_MS,
   PROBE_COOLDOWN_MARKER,
   PROBE_COOLDOWN_MS,
@@ -1768,6 +2027,9 @@ module.exports = {
   extractPortsFromLsof,
   discoverLanguageServer,
   isCsrfUuid,
+  savePersistedLsToken,
+  readPersistedLsToken,
+  applyTurnUsageToQuota,
   extractDiscoveryHits,
   validateTranscriptToken,
   collectTranscriptCandidateFiles,

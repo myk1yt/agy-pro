@@ -1,0 +1,9 @@
+{
+  "profile": "full",
+  "plugins": {
+    "code_reviewer": true,
+    "designer": true,
+    "security_reviewer": true,
+    "deep_investigator": true
+  }
+}

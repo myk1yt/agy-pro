@@ -3,6 +3,8 @@
  * Produces clean box layouts, data grids, progress bars, and localized currency cards.
  */
 
+const fs = require('fs');
+const tty = require('tty');
 const { CURRENCIES, convertCurrency } = require('./config');
 const { t, getLocale } = require('./i18n');
 
@@ -649,11 +651,39 @@ function getBadgeVisibleWidth(str) {
 }
 
 /**
+ * Probes the direct console device descriptor for terminal columns
+ * when standard streams (stdout/stderr/stdin) are redirected or non-TTY.
+ * Windows: \\.\CONOUT$
+ * POSIX: /dev/tty
+ * @returns {number|null}
+ */
+function probeConsoleDeviceColumns() {
+  let fd = null;
+  try {
+    const devPath = process.platform === 'win32' ? '\\\\.\\CONOUT$' : '/dev/tty';
+    fd = fs.openSync(devPath, 'r+');
+    const ws = new tty.WriteStream(fd);
+    const cols = ws.columns;
+    if (Number.isFinite(cols) && cols > 0) return cols;
+  } catch (_e) {
+    // console device probe unavailable
+  } finally {
+    if (fd !== null) {
+      try { fs.closeSync(fd); } catch (_e) {}
+    }
+  }
+  return null;
+}
+
+/**
  * Resolves the render-time terminal width for badge wrapping.
  * Priority: process.env.COLUMNS (test/explicit) ->
  * process.stdout.columns (when stdout is a TTY and has a valid positive width) ->
- * fallback Infinity (default to 1 single line in hook/subprocess/non-TTY environments,
- * or when terminal width cannot be determined).
+ * Infinity when stdout is explicitly non-TTY (REQ-1f) ->
+ * process.stderr.columns (when stderr is a TTY) ->
+ * process.stdin.columns (when stdin is a TTY) ->
+ * direct console device probe (\\.\CONOUT$ / /dev/tty) ->
+ * fallback Infinity.
  * @returns {number}
  */
 function resolveBadgeWidth() {
@@ -662,6 +692,17 @@ function resolveBadgeWidth() {
   if (process.stdout && process.stdout.isTTY && Number.isFinite(process.stdout.columns) && process.stdout.columns > 0) {
     return process.stdout.columns;
   }
+  if (process.stdout && process.stdout.isTTY === false) {
+    return Infinity;
+  }
+  if (process.stderr && process.stderr.isTTY && Number.isFinite(process.stderr.columns) && process.stderr.columns > 0) {
+    return process.stderr.columns;
+  }
+  if (process.stdin && process.stdin.isTTY && Number.isFinite(process.stdin.columns) && process.stdin.columns > 0) {
+    return process.stdin.columns;
+  }
+  const devCols = probeConsoleDeviceColumns();
+  if (devCols) return devCols;
   return Infinity;
 }
 
@@ -792,18 +833,30 @@ function quotaStalenessMarker(gq) {
 
 /**
  * Generates a real-time status badge string for PostInvocation hooks.
- * Normally a single line; when the badge's visible width exceeds the
- * terminal width (COLUMNS || stdout.columns || 100) it is intentionally
- * wrapped into exactly 2 physical lines at ` | ` segment boundaries so the
- * host renderer never auto-wraps a single oversized line (REQ-1).
+ * Supports 2-tier responsive layout according to terminal width:
+ *  - Wide (Full) Mode (width >= 115 cols, or width unconstrained/Infinity):
+ *      Includes mini progress bars (▰▰▰▰▰) and reset countdowns (e.g. 4h 44m).
+ *  - Compact Mode (width < 115 cols):
+ *      Omits mini progress bars and countdown strings to save ~32 columns,
+ *      preserving full readable labels (Turn, Today, Cache, 5h, 7d).
+ *
+ * When badge visible width exceeds terminal columns, it is wrapped into at most
+ * 2 physical lines at ` | ` boundaries (REQ-1).
+ *
  * @param {object} badgeData - Turn & daily metrics.
  * @param {string} [currencyCode='usd'] - Currency code.
  * @param {boolean} [isFree=false] - Free subscription quota mode flag.
  * @param {string|null} [link=null] - Optional OSC 8 link segment appended as
  *   the last badge segment (e.g. clickable 📊 Dashboard). Null/empty omits it.
+ * @param {object|number} [options={}] - Optional options or explicit terminal width.
  * @returns {string} 1 or 2 physical lines (at most one '\n', no trailing one).
  */
-function renderRealTimeBadge(badgeData, currencyCode = 'usd', isFree = false, link = null) {
+function renderRealTimeBadge(badgeData, currencyCode = 'usd', isFree = false, link = null, options = {}) {
+  const opt = typeof options === 'number' ? { width: options } : (options || {});
+  const resolvedWidth = Number.isFinite(opt.width) ? opt.width : resolveBadgeWidth();
+  const mode = opt.mode || 'auto';
+  const isCompact = mode === 'compact' || (mode !== 'wide' && Number.isFinite(resolvedWidth) && resolvedWidth < 115);
+
   const turnTok = formatCompact(badgeData.turnTokens || 0);
   const turnCost = isFree || badgeData.isFree
     ? t('freeCostLabel')
@@ -835,41 +888,59 @@ function renderRealTimeBadge(badgeData, currencyCode = 'usd', isFree = false, li
     if (gq.quota5h || gq.quota7d) {
       if (gq.quota5h && gq.quota5h.remainPercent !== null && gq.quota5h.remainPercent !== undefined) {
         const pct5 = Math.max(0, Math.min(100, Math.round(Number(gq.quota5h.remainPercent) || 0)));
-        const bar5 = formatMiniBar(pct5, 5);
-        const resetPart5 = gq.quota5h.resetFormatted ? ` (${gq.quota5h.resetFormatted})` : '';
-        segments.push(`5h: ${styleText(bar5, 'brightCyan')} ${pct5}%${staleMark}${resetPart5}`);
+        if (isCompact) {
+          segments.push(`5h: ${styleText(`${pct5}%`, 'brightCyan')}${staleMark}`);
+        } else {
+          const bar5 = formatMiniBar(pct5, 5);
+          const resetPart5 = gq.quota5h.resetFormatted ? ` (${gq.quota5h.resetFormatted})` : '';
+          segments.push(`5h: ${styleText(bar5, 'brightCyan')} ${pct5}%${staleMark}${resetPart5}`);
+        }
       }
       if (gq.quota7d && gq.quota7d.remainPercent !== null && gq.quota7d.remainPercent !== undefined) {
         const pct7 = Math.max(0, Math.min(100, Math.round(Number(gq.quota7d.remainPercent) || 0)));
-        const bar7 = formatMiniBar(pct7, 5);
-        const resetPart7 = gq.quota7d.resetFormatted ? ` (${gq.quota7d.resetFormatted})` : '';
-        segments.push(`7d: ${styleText(bar7, 'brightCyan')} ${pct7}%${staleMark}${resetPart7}`);
+        if (isCompact) {
+          segments.push(`7d: ${styleText(`${pct7}%`, 'brightCyan')}${staleMark}`);
+        } else {
+          const bar7 = formatMiniBar(pct7, 5);
+          const resetPart7 = gq.quota7d.resetFormatted ? ` (${gq.quota7d.resetFormatted})` : '';
+          segments.push(`7d: ${styleText(bar7, 'brightCyan')} ${pct7}%${staleMark}${resetPart7}`);
+        }
       }
     } else {
       const gPct = Math.max(0, Math.min(100, Math.round(Number(gq.remainPercent) || 0)));
-      const bar = formatMiniBar(gPct, 5);
-      const resetWord = t('quotaReset') || '리셋';
-      const resetPart = gq.resetFormatted ? ` (${resetWord} ${gq.resetFormatted})` : '';
-      const gqSegment = `${t('quota5h') || '5h'}: ${styleText(bar, 'brightCyan')} ${gPct}%${staleMark}${resetPart}`;
-      segments.push(gqSegment);
+      if (isCompact) {
+        segments.push(`${t('quota5h') || '5h'}: ${styleText(`${gPct}%`, 'brightCyan')}${staleMark}`);
+      } else {
+        const bar = formatMiniBar(gPct, 5);
+        const resetWord = t('quotaReset') || '리셋';
+        const resetPart = gq.resetFormatted ? ` (${resetWord} ${gq.resetFormatted})` : '';
+        const gqSegment = `${t('quota5h') || '5h'}: ${styleText(bar, 'brightCyan')} ${gPct}%${staleMark}${resetPart}`;
+        segments.push(gqSegment);
+      }
     }
   } else if (badgeData.rollingUsage) {
     const ru = badgeData.rollingUsage;
     const r5h = Number.isFinite(ru.remain5hPercent) ? ru.remain5hPercent : 100;
     const r7d = Number.isFinite(ru.remain7dPercent) ? ru.remain7dPercent : 100;
-    const bar5 = formatMiniBar(r5h, 5);
-    const bar7 = formatMiniBar(r7d, 5);
     const estSuffix = isGqStale ? ' (est)' : '';
-    const q5h = `${t('quota5h') || '5h'}: ${styleText(bar5, 'cyan')} ${Math.round(r5h)}%${estSuffix}`;
-    const q7d = `${t('quota7d') || '7d'}: ${styleText(bar7, 'cyan')} ${Math.round(r7d)}%${estSuffix}`;
-    segments.push(q5h, q7d);
+    if (isCompact) {
+      const q5h = `${t('quota5h') || '5h'}: ${styleText(`${Math.round(r5h)}%`, 'cyan')}${estSuffix}`;
+      const q7d = `${t('quota7d') || '7d'}: ${styleText(`${Math.round(r7d)}%`, 'cyan')}${estSuffix}`;
+      segments.push(q5h, q7d);
+    } else {
+      const bar5 = formatMiniBar(r5h, 5);
+      const bar7 = formatMiniBar(r7d, 5);
+      const q5h = `${t('quota5h') || '5h'}: ${styleText(bar5, 'cyan')} ${Math.round(r5h)}%${estSuffix}`;
+      const q7d = `${t('quota7d') || '7d'}: ${styleText(bar7, 'cyan')} ${Math.round(r7d)}%${estSuffix}`;
+      segments.push(q5h, q7d);
+    }
   }
 
   if (link) {
     segments.push(link);
   }
 
-  return wrapBadgeSegments(segments, resolveBadgeWidth());
+  return wrapBadgeSegments(segments, resolvedWidth);
 }
 
 /**
@@ -959,6 +1030,7 @@ module.exports = {
   stripOsc8,
   getBadgeVisibleWidth,
   resolveBadgeWidth,
+  probeConsoleDeviceColumns,
   truncateBadgeSegment,
   wrapBadgeSegments
 };

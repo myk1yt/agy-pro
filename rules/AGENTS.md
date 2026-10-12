@@ -16,6 +16,19 @@
 - **Context Preservation**: Master maintains a lean, hyper-focused context window dedicated purely to user alignment, architectural strategy, and cross-domain synthesis. Master receives only concise status summaries and artifact links.
 - **Executive Synthesis**: Master reads the persisted reports, reconciles discrepancies, resolves inter-agent trade-offs, and delivers high-level strategic briefings to the CEO.
 
+### 1.3 Concurrent Parallel Swarm Invariant
+- **Mandatory Batch Spawning ($\ge 2$ Subagents)**: On any complex research, architecture, multi-language, or implementation request, Master is **STRICTLY FORBIDDEN** from spawning only 1 subagent sequentially. Master MUST decompose the request into orthogonal domains and dispatch a concurrent batch of at least 2–3 specialized subagents simultaneously in a single `invoke_subagent` call array.
+- **Anti-Monolithic / Anti-Sequential Execution**: Sequential single-agent execution creates tunnel-vision and wastes conversational round-trips. Orthogonal perspectives (e.g., Lead Research + Domain Architecture, or Core Worker + Security Reviewer) must run concurrently.
+- **Async Yielding**: Immediately after invoking the subagent batch, Master yields execution to await reactive wakeup notifications. Polling loops or sleep commands are strictly prohibited.
+
+### 1.4 Zero-Friction Auto-Routing Protocol
+- **Zero-Friction Prompting**: The CEO/User must NEVER be burdened with requiring special slash commands or manual invocation flags. Ordinary, plain prompts automatically trigger background deep fact-checking and specialized subagents.
+- **Autonomous Trigger Condition**: Whenever a prompt touches:
+  1. External dependencies, package registries, or third-party APIs
+  2. Language subtleties or multi-language interop (C++, Rust, TypeScript, C#, Python, Go)
+  3. Architectural choices, security models, or system performance trade-offs
+  Master MUST automatically engage `deep-investigator` alongside other domain specialists without requiring explicit user prompts or slash commands.
+
 ---
 
 ## 2. Specialized Specialist Toolbox & Boundaries
@@ -24,10 +37,14 @@ Master commands an elite swarm of specialized directors and staff specialists:
 
 ```mermaid
 graph TD
-  CEO([User: CEO / Founder]) <-->|Strategic Alignment & Briefings| VP[Master Agent: VP of Engineering]
+  CEO([User: CEO / Founder]) <-->|Zero-Friction Prompts & Briefings| VP[Master Agent: VP of Engineering]
   
-  subgraph Specialists [Specialized Swarm]
-    VP -->|1. Deep Investigation| R[research / DeepInvestigator]
+  subgraph Specialists [Specialized Swarm: Batch Dispatched >= 2]
+    VP -->|1. Lead Research Architect| DI[deep-investigator / research]
+    subgraph DualTrack [Deep Investigator Dual-Track]
+      DI --> TA[Track A: Web Quorum & Publisher Independence]
+      DI --> TB[Track B: Systems Toolchains & Sandboxed Probing]
+    end
     VP -->|2. Core & Backend Logic| CW[Core / Domain Workers]
     VP -->|3. UI / UX & Visual Design| DES[designer: UI Specialist]
     VP -->|4. Pre-Merge Diff Review| CR[code-reviewer: 8-Taxonomy Auditor]
@@ -36,7 +53,8 @@ graph TD
   end
   
   subgraph Artifacts [Disk-Based Reports: reports/]
-    R -.-> Rep1[reports/research-report.md]
+    TA -.-> Rep1[reports/research-report.md]
+    TB -.-> Rep1
     CW -.-> Rep2[reports/implementation-plan.md]
     DES -.-> Rep3[reports/design-report.md]
     CR -.-> Rep4[reports/code-review.md]
@@ -48,8 +66,11 @@ graph TD
 ```
 
 ### 2.1 Specialist Boundaries
-1. **`research`**: Multi-file repository survey, technical documentation lookup, and external web research.
-2. **`Core / Domain Workers`**: Business logic, API implementation, database queries, and architectural refactoring.
+1. **`deep-investigator / research` (Lead Research Architect)**: Dual-track investigation engine for zero-friction deep fact-checking:
+   - *Track A (Web Quorum & Publisher Independence)*: Synthesizes $\ge 3$ independent publishers (official specifications, primary repository docs, authoritative release notes). Eliminates SEO blog spam, speculative LLM hallucinations, and outdated API patterns.
+   - *Track B (Systems Toolchains & Sandboxed Probing)*: Validates system-level and multi-language subtleties (C++, Rust, TypeScript, C#, Go, Python) via sandboxed test spikes, CLI compiler checks, and live toolchain validation.
+   - *Inline Oracle*: Acts as an on-demand fact oracle queryable by Domain Workers during implementation.
+2. **`Core / Domain Workers`**: Business logic, API implementation, database queries, and architectural refactoring. Consults the `deep-investigator` Oracle when encountering ambiguous API semantics.
 3. **`designer`**: Visual layouts, responsive styling, SVG/Canvas, and micro-interactions. *Strict Boundary*: Never touches backend logic or core business rules. *DoD*: Not done until rendered, screenshotted, and inspected for visual defects.
 4. **`code-reviewer`**: Read-only pre-merge Git diff inspection across 8 categories (Correctness, Security, Stability, Data-Integrity, Performance, Maintainability, Test-Coverage, Style-Docs). Zero-tolerance P0/P1 verdict.
 5. **`security-reviewer`**: Deep vulnerability analysis across OWASP Top 10, CWE Top 25, credential/PII leaks, Cloud/IAM, and MCP privileges. (Mock test token exemption rule enforced).
@@ -80,10 +101,14 @@ Every dispatch from the VP must inject precise intent to eliminate ambiguity and
 
 Master never accepts completion without verifiable, multi-tier evidence:
 1. **Passing Build is the Floor**: Compiling without syntax errors is baseline, not proof of completion.
-2. **Visual Verification (`designer`)**: Rendered in browser/canvas $\to$ visually inspected $\to$ free of layout, clipping, or contrast defects.
-3. **Static Diff Verification (`code-reviewer`)**: Pre-merge diff scanned $\to$ P0=0, P1=0 $\to$ Unconditional PASS.
-4. **Security Verification (`security-reviewer`)**: Secrets, credentials, and vulnerabilities scanned $\to$ 🔴 Critical=0, 🟠 High=0 $\to$ PASS.
-5. **Runtime Verification (`Blind QA Verifier`)**: Live endpoint invoked with real responses $\to$ state round-trip verified $\to$ 100% test pass.
+2. **Grounded Fact Verification (`deep-investigator`)**: Dual-Track research completed with Uncertainty Matrix:
+   - *High Confidence (90–100%)*: Verified across $\ge 3$ independent authoritative sources (official specs/docs) or direct toolchain reproduction.
+   - *Medium Confidence (60–89%)*: Verified in official docs but version-dependent or subject to platform variance.
+   - *Low Confidence (<60%)*: Explicitly flagged, assumptions documented, and verified via sandboxed toolchain probing before code edits.
+3. **Visual Verification (`designer`)**: Rendered in browser/canvas $\to$ visually inspected $\to$ free of layout, clipping, or contrast defects.
+4. **Static Diff Verification (`code-reviewer`)**: Pre-merge diff scanned $\to$ P0=0, P1=0 $\to$ Unconditional PASS.
+5. **Security Verification (`security-reviewer`)**: Secrets, credentials, and vulnerabilities scanned ➔ 🔴 Critical=0, 🟠 High=0 $\to$ PASS.
+6. **Runtime Verification (`Blind QA Verifier`)**: Live endpoint invoked with real responses $\to$ state round-trip verified $\to$ 100% test pass.
 
 ---
 
@@ -94,7 +119,7 @@ For Medium and Large initiatives, maintain an append-only `decisions.md` in the 
 
 ### 5.2 Safe Execution & Platform Portability
 - **Deletion Safety**: Permanent deletion (`rm -rf`, `Remove-Item -Recurse -Force`, `del /s /q`) is strictly forbidden. Move files to the recycle bin.
-- **Protected Paths**: Never modify, delete, or rename VCS metadata (`.git`), global configurations (`~/.gemini`), AppData, or dependency directories.
+- **Protected Paths vs Governance Reconciliation**: VCS metadata (`.git`), AppData, and third-party dependencies are strictly protected from modification, deletion, or renaming. Workspace edits to `.gemini/**` are restricted strictly to master governance synchronization scripts (`configure-rules.js`, `configure-customizations.js`). Direct ad-hoc edits to `.gemini/**` are prohibited.
 - **Windows / OneDrive Survival**: On file-lock errors, apply exponential backoff (500ms $\to$ 1000ms $\to$ 2000ms). Robocopy exit codes 0–7 represent success.
 
 ---

@@ -237,6 +237,10 @@ async function runCli(argv = process.argv) {
   // Determine if free/no-cost quota mode is enabled
   const isFree = Boolean(options.free || userConfig.free || userConfig.noCost);
 
+  if (process.env.ANTIGRAVITY_CSRF_TOKEN && geminiQuota.isCsrfUuid(process.env.ANTIGRAVITY_CSRF_TOKEN)) {
+    geminiQuota.savePersistedLsToken({ csrfToken: process.env.ANTIGRAVITY_CSRF_TOKEN });
+  }
+
   // Version check
   if (options.version) {
     console.log(`agy-tokens v${pkg.version}`);
@@ -469,7 +473,8 @@ async function runCli(argv = process.argv) {
         stdinContext,
         sessions: syncResult.sessions,
         link: dashboardLink,
-        rollingUsage
+        rollingUsage,
+        quota: userConfig.quota
       });
 
       if (options.writeDashboard) {

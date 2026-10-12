@@ -57,7 +57,7 @@ if %ERRORLEVEL% equ 0 (
 
     echo [SUCCESS] Created launchers in !USER_BIN!
     echo Make sure !USER_BIN! is in your PATH.
-    set "STATUSLINE_CMD=node "%ROOT_DIR%\bin\agy-tokens.js" --hook --raw --write-dashboard"
+    set "STATUSLINE_CMD=agy-tokens --hook --raw --write-dashboard"
 )
 
 echo.

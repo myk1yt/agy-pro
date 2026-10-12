@@ -158,13 +158,25 @@ async function handlePostInvocation(options = {}) {
   const turnCostUsd = isFree ? 0 : (latestTurn ? latestTurn.costUsd : 0);
   const todayCostUsd = isFree ? 0 : todaySummary.costUsd;
 
+  if (process.env.ANTIGRAVITY_CSRF_TOKEN && geminiQuota.isCsrfUuid(process.env.ANTIGRAVITY_CSRF_TOKEN)) {
+    geminiQuota.savePersistedLsToken({ csrfToken: process.env.ANTIGRAVITY_CSRF_TOKEN });
+  }
+
   const currentGeminiQuota = options.geminiQuota !== undefined
     ? options.geminiQuota
-    : geminiQuota.getCachedGeminiQuota();
+    : geminiQuota.getCachedGeminiQuota(undefined, undefined, { sessions, quota: options.quota, now: new Date() });
 
   if (!currentGeminiQuota || !currentGeminiQuota.isFresh) {
-    geminiQuota.triggerBackgroundQuotaRefresh();
+    geminiQuota.triggerBackgroundQuotaRefresh({
+      csrfToken: (currentGeminiQuota && currentGeminiQuota.csrfToken) || undefined
+    });
   }
+
+  const adjustedGeminiQuota = geminiQuota.applyTurnUsageToQuota(
+    currentGeminiQuota,
+    sessions,
+    { quota: options.quota, now: new Date() }
+  );
 
   const badgeData = {
     turnTokens,
@@ -174,7 +186,7 @@ async function handlePostInvocation(options = {}) {
     cacheHitRate: todaySummary.cacheHitRate,
     isFree,
     rollingUsage: options.rollingUsage || null,
-    geminiQuota: currentGeminiQuota
+    geminiQuota: adjustedGeminiQuota
   };
 
   // W1: optional OSC 8 link segment (📊 Dashboard) built by the CLI hook

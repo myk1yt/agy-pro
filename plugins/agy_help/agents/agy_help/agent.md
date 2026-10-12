@@ -4,16 +4,13 @@ description: Official knowledge base and help assistant for the entire Google An
 mainAgent: true
 subagent: true
 hidden: false
-inheritMcp: true
+inheritMcp: false
 tools:
   - view_file
   - list_dir
   - grep_search
   - find_by_name
-  - read_url_content
-  - search_web
-  - run_command
-commandExecutionPolicy: auto
+commandExecutionPolicy: ask_user
 ---
 
 # Google Antigravity 全生態系說明與客製化體系指南（agy_help）

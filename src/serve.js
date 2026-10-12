@@ -34,6 +34,39 @@ const STALENESS_WATCHDOG_MS = 30000; // REQ-101/105: <=60s; 30s chosen for respo
 const IDLE_TIMEOUT_DEFAULT_MS = 30 * 60 * 1000; // 30 minutes default idle auto-shutdown
 const PORT_RETRY_MAX = 10;
 
+const ALLOWED_ORIGIN_REGEX = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i;
+
+/**
+ * Validates whether an incoming request Origin is trusted.
+ * Allows 'null' (file:// URLs) and loopback HTTP origins (localhost / 127.0.0.1 on any port).
+ * @param {string} origin
+ * @returns {boolean}
+ */
+function isAllowedOrigin(origin) {
+  if (typeof origin !== 'string') return false;
+  const trimmed = origin.trim();
+  if (trimmed === 'null') return true;
+  return ALLOWED_ORIGIN_REGEX.test(trimmed);
+}
+
+/**
+ * Validates whether an incoming request Host header targets local loopback.
+ * Strictly enforces 127.0.0.1 or localhost (with optional port).
+ * @param {string} host
+ * @returns {boolean}
+ */
+function isAuthorizedHost(host) {
+  if (typeof host !== 'string') return false;
+  const trimmed = host.trim().toLowerCase();
+  return /^127\.0\.0\.1(:\d+)?$/.test(trimmed) || /^localhost(:\d+)?$/.test(trimmed);
+}
+
+const SECURITY_HEADERS = {
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'DENY',
+  'Vary': 'Origin'
+};
+
 /**
  * Starts the local dashboard server.
  * @param {object} [opts]
@@ -170,13 +203,6 @@ function startDashboardServer(opts = {}) {
       let lastQuotaMtime = fs.existsSync(targetQuotaCacheFile) ? fs.statSync(targetQuotaCacheFile).mtimeMs : 0;
       let lastCacheMtime = fs.existsSync(targetCacheFile) ? fs.statSync(targetCacheFile).mtimeMs : 0;
       let lastHistoryMtime = fs.existsSync(historyFile) ? fs.statSync(historyFile).mtimeMs : 0;
-
-      const CORS_HEADERS = {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, OPTIONS',
-        'Access-Control-Allow-Headers': '*',
-        'Access-Control-Allow-Private-Network': 'true'
-      };
 
       /**
        * Broadcasts payload to all connected SSE clients.
@@ -401,14 +427,49 @@ function startDashboardServer(opts = {}) {
 
       const server = http.createServer(async (req, res) => {
         lastActivityAt = Date.now();
-        // CORS for file:// pages (origin null) — E10; localhost-only server (C6)
-        for (const [k, v] of Object.entries(CORS_HEADERS)) {
+
+        // 1. Host header validation: strictly enforce localhost / 127.0.0.1
+        if (!isAuthorizedHost(req.headers.host)) {
+          res.writeHead(403, {
+            ...SECURITY_HEADERS,
+            'Content-Type': 'text/plain; charset=utf-8'
+          });
+          res.end('Forbidden: Invalid Host header');
+          return;
+        }
+
+        // 2. Origin header validation: if Origin header is present, allow only null, http://localhost(:port), http://127.0.0.1(:port)
+        const reqOrigin = req.headers.origin;
+        if (reqOrigin && !isAllowedOrigin(reqOrigin)) {
+          res.writeHead(403, {
+            ...SECURITY_HEADERS,
+            'Content-Type': 'text/plain; charset=utf-8'
+          });
+          res.end('Forbidden: Invalid Origin');
+          return;
+        }
+
+        // 3. Construct base response headers (Security + conditional CORS)
+        const baseHeaders = {
+          ...SECURITY_HEADERS
+        };
+
+        if (reqOrigin && isAllowedOrigin(reqOrigin)) {
+          baseHeaders['Access-Control-Allow-Origin'] = reqOrigin;
+          baseHeaders['Access-Control-Allow-Methods'] = 'GET, OPTIONS';
+          baseHeaders['Access-Control-Allow-Headers'] = '*';
+          baseHeaders['Access-Control-Allow-Private-Network'] = 'true';
+        }
+
+        for (const [k, v] of Object.entries(baseHeaders)) {
           res.setHeader(k, v);
         }
 
         if (req.method === 'OPTIONS') {
           res.writeHead(204, {
-            ...CORS_HEADERS,
+            ...baseHeaders,
+            'Access-Control-Allow-Methods': 'GET, OPTIONS',
+            'Access-Control-Allow-Headers': '*',
             'Cache-Control': 'no-store'
           });
           res.end();
@@ -433,7 +494,7 @@ function startDashboardServer(opts = {}) {
               });
             } catch (_wErr) {}
             res.writeHead(200, {
-              ...CORS_HEADERS,
+              ...baseHeaders,
               'Content-Type': 'text/html; charset=utf-8',
               'Cache-Control': 'no-store'
             });
@@ -443,7 +504,7 @@ function startDashboardServer(opts = {}) {
               if (fs.existsSync(DASHBOARD_HTML_FILE)) {
                 const fallbackHtml = fs.readFileSync(DASHBOARD_HTML_FILE, 'utf8');
                 res.writeHead(200, {
-                  ...CORS_HEADERS,
+                  ...baseHeaders,
                   'Content-Type': 'text/html; charset=utf-8',
                   'Cache-Control': 'no-store'
                 });
@@ -451,7 +512,7 @@ function startDashboardServer(opts = {}) {
                 return;
               }
             } catch (_fErr) {}
-            res.writeHead(404, { ...CORS_HEADERS, 'Content-Type': 'text/plain; charset=utf-8' });
+            res.writeHead(404, { ...baseHeaders, 'Content-Type': 'text/plain; charset=utf-8' });
             res.end('dashboard.html not found. Run: agy-tokens --html');
           }
           return;
@@ -461,7 +522,7 @@ function startDashboardServer(opts = {}) {
           sseClients.add(res);
           lastActivityAt = Date.now();
           res.writeHead(200, {
-            ...CORS_HEADERS,
+            ...baseHeaders,
             'Content-Type': 'text/event-stream',
             'Cache-Control': 'no-store',
             'Connection': 'keep-alive'
@@ -502,7 +563,7 @@ function startDashboardServer(opts = {}) {
             const payload = await aggregate();
             latestPayload = payload;
             res.writeHead(200, {
-              ...CORS_HEADERS,
+              ...baseHeaders,
               'Content-Type': 'application/json; charset=utf-8',
               'Cache-Control': 'no-store'
             });
@@ -512,7 +573,7 @@ function startDashboardServer(opts = {}) {
               if (fs.existsSync(DASHBOARD_DATA_JSON)) {
                 const json = fs.readFileSync(DASHBOARD_DATA_JSON, 'utf8');
                 res.writeHead(200, {
-                  ...CORS_HEADERS,
+                  ...baseHeaders,
                   'Content-Type': 'application/json; charset=utf-8',
                   'Cache-Control': 'no-store'
                 });
@@ -520,7 +581,7 @@ function startDashboardServer(opts = {}) {
                 return;
               }
             } catch (_fErr) {}
-            res.writeHead(500, { ...CORS_HEADERS, 'Content-Type': 'application/json; charset=utf-8' });
+            res.writeHead(500, { ...baseHeaders, 'Content-Type': 'application/json; charset=utf-8' });
             res.end('{}');
           }
           return;
@@ -531,7 +592,7 @@ function startDashboardServer(opts = {}) {
             const payload = await aggregate();
             latestPayload = payload;
             res.writeHead(200, {
-              ...CORS_HEADERS,
+              ...baseHeaders,
               'Content-Type': 'text/javascript; charset=utf-8',
               'Cache-Control': 'no-store'
             });
@@ -541,7 +602,7 @@ function startDashboardServer(opts = {}) {
               if (fs.existsSync(DASHBOARD_DATA_JS)) {
                 const dataJs = fs.readFileSync(DASHBOARD_DATA_JS, 'utf8');
                 res.writeHead(200, {
-                  ...CORS_HEADERS,
+                  ...baseHeaders,
                   'Content-Type': 'text/javascript; charset=utf-8',
                   'Cache-Control': 'no-store'
                 });
@@ -549,13 +610,13 @@ function startDashboardServer(opts = {}) {
                 return;
               }
             } catch (_fErr) {}
-            res.writeHead(500, { ...CORS_HEADERS, 'Content-Type': 'text/javascript; charset=utf-8' });
+            res.writeHead(500, { ...baseHeaders, 'Content-Type': 'text/javascript; charset=utf-8' });
             res.end('window.__AGY_DASH__ = {};\n');
           }
           return;
         }
 
-        res.writeHead(404, { ...CORS_HEADERS, 'Content-Type': 'text/plain; charset=utf-8' });
+        res.writeHead(404, { ...baseHeaders, 'Content-Type': 'text/plain; charset=utf-8' });
         res.end('Not Found');
       });
 
@@ -727,6 +788,9 @@ module.exports = {
   STALENESS_WATCHDOG_MS,
   IDLE_TIMEOUT_DEFAULT_MS,
   PORT_RETRY_MAX,
+  SECURITY_HEADERS,
+  isAllowedOrigin,
+  isAuthorizedHost,
   startDashboardServer,
   stopDashboardServer,
   broadcastSSE: (server, payload) => {

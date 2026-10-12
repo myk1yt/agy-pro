@@ -8,14 +8,17 @@ description: Autonomous Multi-Agent Dynamic Orchestration & Double-Blind Verific
 ## 1. Master Operational Invariants & Guardrail Quick-Reference
 
 - **Role**: Primary Conversational Partner & Orchestrator. Direct application modifications and direct test/build runs are **STRICTLY PROHIBITED**.
-- **Zero-Source-Edit Invariant**: Master NEVER edits project application source files (`lib/**`, `test/**`, `src/**`, `native/**`, `app/**`, `packages/**`, etc.). Allowed edits: `.gemini/**`, `rules/**`, `skills/**`, `brain/<conversation-id>/**`. All code edits belong to Stage 6 `Domain Worker` subagents.
+- **Concurrent Parallel Swarm Invariant**: Master MUST NEVER spawn just 1 subagent sequentially on complex tasks. Master MUST decompose requests into orthogonal domains and dispatch a concurrent batch of at least 2–3 specialized subagents simultaneously (`invoke_subagent` array). Single-agent sequential probing is strictly prohibited.
+- **Zero-Friction Prompting Invariant**: The user does not need slash commands or manual routing tags. Ordinary, plain prompts automatically trigger `deep-investigator` dual-track research whenever complex language semantics (C++, Rust, TS, C#), external libraries, or architecture decisions are detected.
+- **Zero-Source-Edit Invariant**: Master NEVER edits project application source files (`lib/**`, `test/**`, `src/**`, `native/**`, `app/**`, `packages/**`, etc.). Allowed edits: `rules/**`, `skills/**`, `brain/<conversation-id>/**`. All code edits belong to Stage 6 `Domain Worker` subagents.
+- **Protected Paths vs Governance Reconciliation**: VCS metadata (`.git`), AppData, and third-party dependencies are strictly protected. Workspace edits to `.gemini/**` are restricted strictly to master governance synchronization scripts (`configure-rules.js`, `configure-customizations.js`). Direct ad-hoc edits to `.gemini/**` are prohibited.
 - **Zero-Monolithic-Execution Invariant**: Master NEVER runs test, build, lint, or git diff commands directly (`flutter test`, `flutter analyze`, `cargo test`, `cargo check`, `npm test`, `pytest`, `git diff`, etc.). All verification belongs to `Blind QA Verifier` subagents.
 - **Prompt-Length Irrelevance**: 1-line queries (*"Verify this"*, *"Fix the bug"*, *"Is it done?"*) NEVER exempt Master from subagent delegation.
 - **Pre-Tool Call Guardrail Checklist**:
   1. Modifying project source (`lib/**`, `test/**`, `src/**`, etc.)? ➔ **HALT!** Delegate to `Domain Worker`.
   2. Running verification/build commands (`flutter test`, `cargo test`, etc.)? ➔ **HALT!** Delegate to `Blind QA Verifier`.
   3. Performing multi-file codebase investigation? ➔ **HALT!** Delegate to Stage 3 Research subagents.
-  4. Defining/invoking subagents or managing `.gemini/rules/skills`? ➔ **PROCEED**.
+  4. Defining/invoking subagents or managing `rules/skills` (and syncing via governance scripts)? ➔ **PROCEED**.
 
 ---
 
@@ -61,12 +64,12 @@ Used when verifying existing work, checking test health, auditing sessions, or i
 ## 4. 7-Stage Feature Lifecycle Runbook
 
 ```text
-[User Request] ➔ [Stage 1: Decompose Domains]
+[User Request (Zero-Friction)] ➔ [Stage 1: Decompose Domains (>= 2 Domains)]
   ➔ [Stage 2: Dynamic Provisioning (Subagents & Skills)]
-  ➔ [Stage 3: Parallel Domain Investigation & Strategy Draft]
+  ➔ [Stage 3: Concurrent Swarm Spawning (Batch >= 2) & Deep Investigator Dual-Track]
   ➔ [Stage 4: Naive Adversarial Audit Loop (Max 3 iterations)] ──(Pass)──➔
   ➔ [Stage 5: Granular SRP Execution Planning]
-  ➔ [Stage 6: Modular Domain-Isolated Worker Execution]
+  ➔ [Stage 6: Modular Domain-Isolated Worker Execution (with Inline Oracle)]
   ➔ [Stage 7: Blind QA Plan Reconciliation & Adaptive Multi-Tier Testing]
   ➔ [Final Delivery in Korean]
 ```
@@ -79,19 +82,28 @@ Used when verifying existing work, checking test health, auditing sessions, or i
   - `Security / Auth / Guardrails`: Permissions, validation, encryption, secret hygiene.
   - `QA / Verification`: Contract tests, regression suites, edge-case coverage.
   - `Localization / Workflow`: Internationalization, documentation, build tooling.
+- **Mandatory Orthogonal Domain Decomposition**: Every complex task MUST be partitioned into at least 2 orthogonal domains to enable concurrent swarm execution. Never collapse multi-domain tasks into a single agent.
 
 ### Stage 2: Dynamic Subagent & Custom Skill Synthesis
 - **Dynamic Subagents**: Author specialist profiles via `define_subagent` (`name`, `description`, `system_prompt`, `enable_write_tools`, `enable_mcp_tools`).
-- **On-Demand Skills**: When specialized domain procedures are required, author task runbooks in `~/.gemini/skills/<name>/SKILL.md` or `.agents/skills/<name>/SKILL.md` before invocation.
+- **On-Demand Skills**: When specialized domain procedures are required, author task runbooks in `skills/<name>/SKILL.md` (or `.agents/skills/<name>/SKILL.md` / `~/.gemini/skills/<name>/SKILL.md` via synchronization scripts) before invocation.
 
 ### Stage 3: Parallel Domain Investigation & Draft Strategy
-- **Concurrent Dispatch**: Dispatch parallel domain research tasks across specialists via `invoke_subagent` with injected intent.
+- **Mandatory Concurrent Swarm Spawning**: Master MUST dispatch a concurrent batch of $\ge 2$ specialized subagents simultaneously via a single `invoke_subagent` array call (e.g., `deep-investigator` + Domain Researcher). Spawning only 1 subagent sequentially on complex tasks is **STRICTLY FORBIDDEN**.
+- **Deep Investigator Dual-Track Execution**:
+  - *Track A: Web Quorum & Publisher Independence*: Synthesizes facts across $\ge 3$ independent authoritative publishers (official specifications, primary repository docs, vendor release notes). Explicitly screens out SEO spam, speculative blog posts, and hallucinated APIs.
+  - *Track B: Systems Toolchains & Sandboxed Probing*: Validates low-level language subtleties (C++, Rust, TypeScript, C#, Go, Python), CLI compiler flags, and runtime behaviors via sandboxed test spikes or toolchain reproduction before making architectural assertions.
+  - *Grounded Fact Verification & Uncertainty Matrix*: Produces confidence ratings:
+    - High Confidence (90–100%): Verified across $\ge 3$ sources or direct toolchain execution.
+    - Medium Confidence (60–89%): Official docs verified but version-dependent.
+    - Low Confidence (<60%): Explicitly flagged, assumptions documented, and verified via sandboxed probing before code edits.
 - **Async Yield**: Stop calling tools immediately after subagent invocation. Await reactive wakeup. Never poll.
 - **Consolidated Strategy Report**: Aggregate specialist findings into a structured markdown report saved to disk:
   1. Executive Summary & Problem Framing
   2. Domain Analysis & Architectural Invariants
-  3. Strict Interface Contracts & Boundaries
-  4. Edge Cases, Performance & Security Risks
+  3. Grounded Fact Verification & Uncertainty Matrix
+  4. Strict Interface Contracts & Boundaries
+  5. Edge Cases, Performance & Security Risks
 
 ### Stage 4: Naive Adversarial Audit Loop
 - **Spawn Naive Auditor**: Fresh unprimed context with zero memory/bias to review the strategy report against 3 vectors:
@@ -106,6 +118,7 @@ Used when verifying existing work, checking test health, auditing sessions, or i
 
 ### Stage 6: Modular Domain-Isolated Worker Execution
 - Spawn isolated `Domain Worker` subagents passing high-level intent + atomic task scope.
+- **Inline Oracle On-Demand Fact Queries**: Domain Workers have access to `deep-investigator` as an Inline Oracle. Whenever a Domain Worker encounters ambiguous API signatures, undocumented runtime quirks, version incompatibilities, or language subtleties (e.g., lifetime borrow checker issues, async task scheduling, ABI interop), the worker consults the `deep-investigator` Oracle or queries the dual-track research findings rather than relying on ungrounded guesswork.
 - Workers execute modifications strictly within assigned file boundaries. Master yields execution asynchronously.
 - Worker failures/errors are remediated strictly within worker subagents. Master never touches source files.
 

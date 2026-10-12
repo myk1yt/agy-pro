@@ -1,0 +1,19 @@
+{
+  "defaultProfile": "full",
+  "availableProfiles": [
+    "full",
+    "clean"
+  ],
+  "profiles": {
+    "full": {
+      "name": "full",
+      "path": "profiles/full",
+      "description": "Full-stack VP Orchestrator profile with 9 specialized agents and 4-model fanout swarm"
+    },
+    "clean": {
+      "name": "clean",
+      "path": "profiles/clean",
+      "description": "Minimal baseline Antigravity CLI profile with only mode switcher skill"
+    }
+  }
+}

@@ -3,7 +3,7 @@
 **Execution Status**: **SUCCESS**  
 **Date**: 2026-10-07  
 **Scope**: Code Reviewer & Security Reviewer Ecosystem Upgrade from Kimi Settings (`D:\OneDrive\Projects\kimi-settings` $\to$ `D:\OneDrive\Projects\Antigravity-cli`)  
-**Deployment Target**: `C:\Users\k1yt\.gemini\config`  
+**Deployment Target**: `%USERPROFILE%\.gemini\config` (`~/.gemini/config`)  
 **Test Suite Status**: 251 passed / 0 failed (100% pass rate)
 
 ---
@@ -85,7 +85,7 @@ All modifications strictly uphold:
    ```
    [SUCCESS] Antigravity customizations deployed: 2 created, 9 updated, 40 identical.
    ```
-   Verified synced paths in `C:\Users\k1yt\.gemini\config\`:
+   Verified synced paths in `%USERPROFILE%\.gemini\config\` (`~/.gemini/config/`):
    - `skills/security-review-orchestrator/SKILL.md` (Exists: True)
    - `plugins/security_reviewer/skills/security-review-orchestrator/SKILL.md` (Exists: True)
    - Updated manifests in `plugins/code_reviewer/` and `plugins/security_reviewer/` synced cleanly.

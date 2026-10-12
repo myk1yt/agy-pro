@@ -46,10 +46,10 @@ else
     ln -sf "$ROOT_DIR/bin/agy-tools.js" "$USER_BIN/agy-tools"
     ln -sf "$ROOT_DIR/bin/agy-tools.js" "$USER_BIN/antigravity-tools"
     ln -sf "$ROOT_DIR/bin/agy-tokens.js" "$USER_BIN/agy-tokens"
-    ln -sf "$ROOT_DIR/bin/agy-tokens.js" "$USER_BIN/agy-dashboard"
+    ln -sf "$ROOT_DIR/bin/agy-dashboard.js" "$USER_BIN/agy-dashboard"
     echo "[SUCCESS] Created symlinks in $USER_BIN"
     echo "Make sure $USER_BIN is in your PATH."
-    STATUSLINE_CMD="node \"$ROOT_DIR/bin/agy-tokens.js\" --hook --raw --write-dashboard"
+    STATUSLINE_CMD="agy-tokens --hook --raw --write-dashboard"
 fi
 
 echo ""

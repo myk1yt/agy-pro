@@ -38,8 +38,9 @@ docs/*-report*.md
 docs/NEW-SESSION-PROMPT*.md
 docs/requirement-checklist*.md
 docs/review-probe.js
-*-report.md
-*_report.md
+/*-report.md
+/*_report.md
+!reports/
 NEW-SESSION-PROMPT*.md
 requirement-checklist*.md
 

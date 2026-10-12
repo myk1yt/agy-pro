@@ -211,7 +211,7 @@ async function runAllTests() {
     await test('Should dynamically resolve Pro Tier via smart fuzzy heuristic for unlisted models', () => {
       const modelsToTest = [
         'gemini-3.5-pro-preview',
-        'gemini-ultra-preview',
+        'gemini-pro-preview',
         'llama-3-70b-large',
         'qwen-max-latest',
         'deepseek-high'
@@ -223,6 +223,22 @@ async function runAllTests() {
         assert.strictEqual(pricing.cachedInputPerMillion, 0.3125, `Expected cached input 0.3125 for ${m}`);
         assert.strictEqual(pricing.outputPerMillion, 5.00, `Expected output 5.00 for ${m}`);
         assert.strictEqual(pricing.tier, 'pro', `Expected pro tier for ${m}`);
+      }
+    });
+
+    await test('Should dynamically resolve Ultra Tier via smart fuzzy heuristic for unlisted models', () => {
+      const modelsToTest = [
+        'gemini-ultra-preview',
+        'google-ultra-exp',
+        'custom-ultra-model'
+      ];
+
+      for (const m of modelsToTest) {
+        const pricing = config.getModelPricing(m);
+        assert.strictEqual(pricing.inputPerMillion, 2.50, `Expected input 2.50 for ${m}`);
+        assert.strictEqual(pricing.cachedInputPerMillion, 0.625, `Expected cached input 0.625 for ${m}`);
+        assert.strictEqual(pricing.outputPerMillion, 10.00, `Expected output 10.00 for ${m}`);
+        assert.strictEqual(pricing.tier, 'ultra', `Expected ultra tier for ${m}`);
       }
     });
 
@@ -279,7 +295,9 @@ async function runAllTests() {
       assert(!baseFromSettings.includes('('), `Settings fallback must be suffix-stripped, got "${baseFromSettings}"`);
 
       const pricing = config.getModelPricing('Claude Opus 4.6 (Thinking)');
-      assert.strictEqual(pricing.id, 'claude-3-opus', `Suffixed "Claude Opus 4.6 (Thinking)" must resolve to claude-opus tier, got "${pricing.id}"`);
+      assert.strictEqual(pricing.id, 'claude-opus-4.6', `Suffixed "Claude Opus 4.6 (Thinking)" must resolve to claude-opus-4.6, got "${pricing.id}"`);
+      assert.strictEqual(pricing.inputPerMillion, 15.00);
+      assert.strictEqual(pricing.outputPerMillion, 75.00);
     });
 
     await test('Should merge user configuration custom pricing models directly into MODEL_PRICING', () => {
@@ -1266,11 +1284,71 @@ async function runAllTests() {
       assert.strictEqual(models['gemini-2.0-flash-lite'].inputPerMillion, 0.075);
       assert.strictEqual(models['gemini-2.0-flash-lite'].cachedInputPerMillion, 0.01875);
       assert.strictEqual(models['gemini-2.0-flash-lite'].outputPerMillion, 0.30);
+
+      // Gemini 3.8 Flash
+      assert(models['gemini-3.8-flash']);
+      assert.strictEqual(models['gemini-3.8-flash'].inputPerMillion, 0.15);
+      assert.strictEqual(models['gemini-3.8-flash'].cachedInputPerMillion, 0.0375);
+      assert.strictEqual(models['gemini-3.8-flash'].outputPerMillion, 0.60);
+
+      // Gemini 3.8 Flash Thinking
+      assert(models['gemini-3.8-flash-thinking']);
+      assert.strictEqual(models['gemini-3.8-flash-thinking'].inputPerMillion, 0.15);
+      assert.strictEqual(models['gemini-3.8-flash-thinking'].cachedInputPerMillion, 0.0375);
+      assert.strictEqual(models['gemini-3.8-flash-thinking'].outputPerMillion, 0.60);
+
+      // Gemini 3.0 Flash
+      assert(models['gemini-3.0-flash']);
+      assert.strictEqual(models['gemini-3.0-flash'].inputPerMillion, 0.15);
+      assert.strictEqual(models['gemini-3.0-flash'].cachedInputPerMillion, 0.0375);
+      assert.strictEqual(models['gemini-3.0-flash'].outputPerMillion, 0.60);
+
+      // Gemini 3.0 Pro
+      assert(models['gemini-3.0-pro']);
+      assert.strictEqual(models['gemini-3.0-pro'].inputPerMillion, 1.25);
+      assert.strictEqual(models['gemini-3.0-pro'].cachedInputPerMillion, 0.3125);
+      assert.strictEqual(models['gemini-3.0-pro'].outputPerMillion, 5.00);
+
+      // Gemini 1.5 Flash
+      assert(models['gemini-1.5-flash']);
+      assert.strictEqual(models['gemini-1.5-flash'].inputPerMillion, 0.075);
+      assert.strictEqual(models['gemini-1.5-flash'].cachedInputPerMillion, 0.01875);
+      assert.strictEqual(models['gemini-1.5-flash'].outputPerMillion, 0.30);
+
+      // Gemini 1.5 Pro
+      assert(models['gemini-1.5-pro']);
+      assert.strictEqual(models['gemini-1.5-pro'].inputPerMillion, 1.25);
+      assert.strictEqual(models['gemini-1.5-pro'].cachedInputPerMillion, 0.3125);
+      assert.strictEqual(models['gemini-1.5-pro'].outputPerMillion, 5.00);
     });
 
     await test('Should have complete official Anthropic Claude models and exact rates', () => {
       const catalog = JSON.parse(fs.readFileSync(pricingFilePath, 'utf8'));
       const models = catalog.models;
+
+      // Claude Opus 5.5
+      assert(models['claude-opus-5.5']);
+      assert.strictEqual(models['claude-opus-5.5'].inputPerMillion, 15.00);
+      assert.strictEqual(models['claude-opus-5.5'].cachedInputPerMillion, 1.50);
+      assert.strictEqual(models['claude-opus-5.5'].outputPerMillion, 75.00);
+
+      // Claude Opus 4.6
+      assert(models['claude-opus-4.6']);
+      assert.strictEqual(models['claude-opus-4.6'].inputPerMillion, 15.00);
+      assert.strictEqual(models['claude-opus-4.6'].cachedInputPerMillion, 1.50);
+      assert.strictEqual(models['claude-opus-4.6'].outputPerMillion, 75.00);
+
+      // Claude Sonnet 5.5
+      assert(models['claude-sonnet-5.5']);
+      assert.strictEqual(models['claude-sonnet-5.5'].inputPerMillion, 3.00);
+      assert.strictEqual(models['claude-sonnet-5.5'].cachedInputPerMillion, 0.30);
+      assert.strictEqual(models['claude-sonnet-5.5'].outputPerMillion, 15.00);
+
+      // Claude Sonnet 4.6
+      assert(models['claude-sonnet-4.6']);
+      assert.strictEqual(models['claude-sonnet-4.6'].inputPerMillion, 3.00);
+      assert.strictEqual(models['claude-sonnet-4.6'].cachedInputPerMillion, 0.30);
+      assert.strictEqual(models['claude-sonnet-4.6'].outputPerMillion, 15.00);
 
       // Claude 3.7 Sonnet
       assert(models['claude-3.7-sonnet']);
@@ -1295,6 +1373,23 @@ async function runAllTests() {
       assert.strictEqual(models['claude-3-opus'].inputPerMillion, 15.00);
       assert.strictEqual(models['claude-3-opus'].cachedInputPerMillion, 1.50);
       assert.strictEqual(models['claude-3-opus'].outputPerMillion, 75.00);
+    });
+
+    await test('Should have complete official DeepSeek models and exact rates', () => {
+      const catalog = JSON.parse(fs.readFileSync(pricingFilePath, 'utf8'));
+      const models = catalog.models;
+
+      // DeepSeek V3
+      assert(models['deepseek-v3']);
+      assert.strictEqual(models['deepseek-v3'].inputPerMillion, 0.14);
+      assert.strictEqual(models['deepseek-v3'].cachedInputPerMillion, 0.014);
+      assert.strictEqual(models['deepseek-v3'].outputPerMillion, 0.28);
+
+      // DeepSeek R1
+      assert(models['deepseek-r1']);
+      assert.strictEqual(models['deepseek-r1'].inputPerMillion, 0.55);
+      assert.strictEqual(models['deepseek-r1'].cachedInputPerMillion, 0.14);
+      assert.strictEqual(models['deepseek-r1'].outputPerMillion, 2.19);
     });
 
     await test('Should have complete official OpenAI models and exact rates', () => {
@@ -1333,6 +1428,7 @@ async function runAllTests() {
       assert(catalog.sources.google.includes('ai.google.dev'));
       assert(catalog.sources.anthropic.includes('anthropic.com'));
       assert(catalog.sources.openai.includes('openai.com'));
+      assert(catalog.sources.deepseek.includes('deepseek.com'));
     });
   });
 
@@ -2941,9 +3037,10 @@ async function runAllTests() {
       assert.strictEqual(pricing.id, 'gemini-2.0-flash');
     });
 
-    await test('getModelPricing("sonnet") still returns claude-3.5-sonnet via exact alias', () => {
+    await test('getModelPricing("sonnet") resolves to sonnet tier pricing ($3.00/$15.00) without collision', () => {
       const pricing = config.getModelPricing('sonnet');
-      assert.strictEqual(pricing.id, 'claude-3.5-sonnet');
+      assert.strictEqual(pricing.inputPerMillion, 3.00);
+      assert.strictEqual(pricing.outputPerMillion, 15.00);
     });
   });
 
@@ -4020,45 +4117,51 @@ async function runAllTests() {
         source: 'language_server'
       };
 
-      const badgeStr = formatter.renderRealTimeBadge({
-        turnTokens: 1500,
-        turnCostUsd: 0.001,
-        todayTokens: 25000,
-        todayCostUsd: 0.02,
-        cacheHitRate: 80,
-        isFree: false,
-        geminiQuota: liveQuota
-      }, 'usd', false);
+      const prevCols = process.env.COLUMNS;
+      process.env.COLUMNS = '200';
+      try {
+        const badgeStr = formatter.renderRealTimeBadge({
+          turnTokens: 1500,
+          turnCostUsd: 0.001,
+          todayTokens: 25000,
+          todayCostUsd: 0.02,
+          cacheHitRate: 80,
+          isFree: false,
+          geminiQuota: liveQuota
+        }, 'usd', false);
 
-      assert(badgeStr.includes('5h:'), `Badge must include '5h:', got: ${badgeStr}`);
-      assert(!badgeStr.includes('Gemini 5h:'), `Badge must not include 'Gemini 5h:', got: ${badgeStr}`);
-      assert(badgeStr.includes('79%'), 'Badge must include 79% for 5h quota');
-      assert(badgeStr.includes('4h 10m'), 'Badge must include 4h 10m countdown');
-      assert(badgeStr.includes('7d:'), `Badge must include '7d:', got: ${badgeStr}`);
-      assert(badgeStr.includes('21%'), 'Badge must include 21% for 7d quota');
-      assert(badgeStr.includes('3d 20h'), 'Badge must include 3d 20h countdown');
+        assert(badgeStr.includes('5h:'), `Badge must include '5h:', got: ${badgeStr}`);
+        assert(!badgeStr.includes('Gemini 5h:'), `Badge must not include 'Gemini 5h:', got: ${badgeStr}`);
+        assert(badgeStr.includes('79%'), 'Badge must include 79% for 5h quota');
+        assert(badgeStr.includes('4h 10m'), 'Badge must include 4h 10m countdown');
+        assert(badgeStr.includes('7d:'), `Badge must include '7d:', got: ${badgeStr}`);
+        assert(badgeStr.includes('21%'), 'Badge must include 21% for 7d quota');
+        assert(badgeStr.includes('3d 20h'), 'Badge must include 3d 20h countdown');
 
-      // Fallback rendering when geminiQuota is null
-      const fallbackBadge = formatter.renderRealTimeBadge({
-        turnTokens: 1500,
-        turnCostUsd: 0.001,
-        todayTokens: 25000,
-        todayCostUsd: 0.02,
-        cacheHitRate: 80,
-        isFree: false,
-        geminiQuota: null,
-        rollingUsage: {
-          remain5hPercent: 95,
-          remain7dPercent: 90,
-          tokens5h: 1000,
-          limit5h: 20000000,
-          tokens7d: 5000,
-          limit7d: 150000000
-        }
-      }, 'usd', false);
+        // Fallback rendering when geminiQuota is null
+        const fallbackBadge = formatter.renderRealTimeBadge({
+          turnTokens: 1500,
+          turnCostUsd: 0.001,
+          todayTokens: 25000,
+          todayCostUsd: 0.02,
+          cacheHitRate: 80,
+          isFree: false,
+          geminiQuota: null,
+          rollingUsage: {
+            remain5hPercent: 95,
+            remain7dPercent: 90,
+            tokens5h: 1000,
+            limit5h: 20000000,
+            tokens7d: 5000,
+            limit7d: 150000000
+          }
+        }, 'usd', false);
 
-      assert(fallbackBadge.includes('5시간') || fallbackBadge.includes('5h'), 'Fallback badge must include rolling usage');
-      assert(fallbackBadge.includes('95%'), 'Fallback badge must include 5h percent');
+        assert(fallbackBadge.includes('5시간') || fallbackBadge.includes('5h'), 'Fallback badge must include rolling usage');
+        assert(fallbackBadge.includes('95%'), 'Fallback badge must include 5h percent');
+      } finally {
+        if (prevCols === undefined) delete process.env.COLUMNS; else process.env.COLUMNS = prevCols;
+      }
     });
 
     await test('htmlReport payload and client script should include Gemini 5h and 7d quota live cards and indicator', () => {
@@ -5182,7 +5285,7 @@ agy      1234 user    5u  IPv4 0xbaadf00d      0t0  TCP 127.0.0.1:54457 (LISTEN)
       assert(rawSh.includes('ln -sf "$ROOT_DIR/bin/agy-tools.js" "$USER_BIN/agy-tools"'), 'install.sh must link agy-tools');
       assert(rawSh.includes('ln -sf "$ROOT_DIR/bin/agy-tools.js" "$USER_BIN/antigravity-tools"'), 'install.sh must link antigravity-tools');
       assert(rawSh.includes('ln -sf "$ROOT_DIR/bin/agy-tokens.js" "$USER_BIN/agy-tokens"'), 'install.sh must link agy-tokens');
-      assert(rawSh.includes('ln -sf "$ROOT_DIR/bin/agy-tokens.js" "$USER_BIN/agy-dashboard"'), 'install.sh must link agy-dashboard');
+      assert(rawSh.includes('ln -sf "$ROOT_DIR/bin/agy-dashboard.js" "$USER_BIN/agy-dashboard"'), 'install.sh must link agy-dashboard');
 
       // Automated configure-statusline invocation
       assert(rawSh.includes('configure-statusline.js'), 'install.sh must invoke configure-statusline.js');
@@ -5455,10 +5558,16 @@ agy      1234 user    5u  IPv4 0xbaadf00d      0t0  TCP 127.0.0.1:54457 (LISTEN)
             port: info.port,
             host: '127.0.0.1',
             method: 'OPTIONS',
-            path: '/events'
+            path: '/events',
+            headers: {
+              Origin: 'http://127.0.0.1'
+            }
           }, (res) => {
-            assert.strictEqual(res.headers['access-control-allow-origin'], '*');
+            assert.strictEqual(res.headers['access-control-allow-origin'], 'http://127.0.0.1');
             assert(res.headers['access-control-allow-methods'].includes('OPTIONS'));
+            assert.strictEqual(res.headers['x-content-type-options'], 'nosniff');
+            assert.strictEqual(res.headers['x-frame-options'], 'DENY');
+            assert.strictEqual(res.headers['vary'], 'Origin');
             resolve(res.statusCode);
           });
           req.on('error', reject);
@@ -5468,6 +5577,78 @@ agy      1234 user    5u  IPv4 0xbaadf00d      0t0  TCP 127.0.0.1:54457 (LISTEN)
       } finally {
         await serve.stopDashboardServer(info.server);
       }
+    });
+
+    await test('dashboard server should reject unauthorized Host header with 403 Forbidden', async () => {
+      const http = require('http');
+      const info = await serve.startDashboardServer({ port: 0, idleTimeoutMs: 10000 });
+      try {
+        const status = await new Promise((resolve, reject) => {
+          const req = http.request({
+            port: info.port,
+            host: '127.0.0.1',
+            method: 'GET',
+            path: '/',
+            headers: {
+              Host: 'evil.com'
+            }
+          }, (res) => {
+            resolve(res.statusCode);
+          });
+          req.on('error', reject);
+          req.end();
+        });
+        assert.strictEqual(status, 403);
+      } finally {
+        await serve.stopDashboardServer(info.server);
+      }
+    });
+
+    await test('dashboard server should reject unauthorized Origin header with 403 Forbidden', async () => {
+      const http = require('http');
+      const info = await serve.startDashboardServer({ port: 0, idleTimeoutMs: 10000 });
+      try {
+        const status = await new Promise((resolve, reject) => {
+          const req = http.request({
+            port: info.port,
+            host: '127.0.0.1',
+            method: 'GET',
+            path: '/data.json',
+            headers: {
+              Origin: 'http://malicious-website.com'
+            }
+          }, (res) => {
+            resolve(res.statusCode);
+          });
+          req.on('error', reject);
+          req.end();
+        });
+        assert.strictEqual(status, 403);
+      } finally {
+        await serve.stopDashboardServer(info.server);
+      }
+    });
+
+    await test('isAllowedOrigin and isAuthorizedHost validate loopback and null origins securely', () => {
+      assert.strictEqual(serve.isAllowedOrigin('null'), true);
+      assert.strictEqual(serve.isAllowedOrigin('http://localhost'), true);
+      assert.strictEqual(serve.isAllowedOrigin('http://localhost:8787'), true);
+      assert.strictEqual(serve.isAllowedOrigin('http://127.0.0.1'), true);
+      assert.strictEqual(serve.isAllowedOrigin('http://127.0.0.1:9999'), true);
+      assert.strictEqual(serve.isAllowedOrigin('https://localhost'), false);
+      assert.strictEqual(serve.isAllowedOrigin('http://evil.com'), false);
+      assert.strictEqual(serve.isAllowedOrigin('http://localhost.evil.com'), false);
+      assert.strictEqual(serve.isAllowedOrigin(''), false);
+      assert.strictEqual(serve.isAllowedOrigin(null), false);
+
+      assert.strictEqual(serve.isAuthorizedHost('127.0.0.1'), true);
+      assert.strictEqual(serve.isAuthorizedHost('127.0.0.1:8787'), true);
+      assert.strictEqual(serve.isAuthorizedHost('localhost'), true);
+      assert.strictEqual(serve.isAuthorizedHost('localhost:8787'), true);
+      assert.strictEqual(serve.isAuthorizedHost('evil.com'), false);
+      assert.strictEqual(serve.isAuthorizedHost('evil.com:8787'), false);
+      assert.strictEqual(serve.isAuthorizedHost(''), false);
+      assert.strictEqual(serve.isAuthorizedHost(null), false);
     });
   });
 
@@ -5938,6 +6119,454 @@ agy      1234 user    5u  IPv4 0xbaadf00d      0t0  TCP 127.0.0.1:54457 (LISTEN)
       assert(typeof geminiQuota.triggerBackgroundQuotaRefresh === 'function');
       const spawned = geminiQuota.triggerBackgroundQuotaRefresh();
       assert(typeof spawned === 'boolean');
+    });
+  });
+
+  // --- Suite 29: Statusline 5h/7d Real-Time Update & Token Recovery Validations ---
+  await describe('29. Statusline 5h/7d Real-Time Update & Token Recovery Validations', async () => {
+    await test('savePersistedLsToken and readPersistedLsToken persist valid token and reject invalid UUIDs', () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-ls-tok-test-'));
+      const testTokFile = path.join(tempDir, '.ls_token.json');
+      try {
+        const validUuid = '12345678-1234-1234-1234-123456789abc';
+        // Reject invalid UUID
+        assert.strictEqual(geminiQuota.savePersistedLsToken({ csrfToken: 'not-a-uuid' }, testTokFile), false);
+        assert.strictEqual(geminiQuota.readPersistedLsToken(testTokFile), null);
+
+        // Accept and persist valid UUID
+        const saved = geminiQuota.savePersistedLsToken({
+          pid: 4321,
+          port: 57994,
+          ports: [57995, 57994],
+          csrfToken: validUuid
+        }, testTokFile);
+        assert.strictEqual(saved, true);
+        assert(fs.existsSync(testTokFile));
+
+        const read = geminiQuota.readPersistedLsToken(testTokFile);
+        assert(read !== null);
+        assert.strictEqual(read.pid, 4321);
+        assert.strictEqual(read.port, 57994);
+        assert.deepStrictEqual(read.ports, [57995, 57994]);
+        assert.strictEqual(read.csrfToken, validUuid);
+        assert(typeof read.updatedAt === 'number' && read.updatedAt > 0);
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    await test('applyTurnUsageToQuota deducts subsequent turns in real-time from 5h and 7d quotas', () => {
+      const snapshotTime = Date.now() - 60000; // snapshot 1 min ago
+      const initialQuota = {
+        timestampMs: snapshotTime,
+        quota5h: {
+          remainPercent: 90,
+          remainingFraction: 0.90,
+          resetTime: new Date(Date.now() + 3600000).toISOString(),
+          resetFormatted: '1h',
+          window: '5h'
+        },
+        quota7d: {
+          remainPercent: 60,
+          remainingFraction: 0.60,
+          resetTime: new Date(Date.now() + 86400000).toISOString(),
+          resetFormatted: '1d',
+          window: 'weekly'
+        },
+        remainPercent: 90
+      };
+
+      // Turn 1: 1M tokens executed 30 seconds after snapshot
+      // 1M on 20M limit (5h) = 5% deduction -> 90% - 5% = 85%
+      // 1M on 150M limit (7d) = 0.667% deduction -> 60% - 1% = 59%
+      const mockSessions = [
+        {
+          sessionId: 's1',
+          turns: [
+            { createdAt: new Date(snapshotTime - 10000).toISOString(), totalTokens: 500000 },
+            { createdAt: new Date(snapshotTime + 30000).toISOString(), totalTokens: 1000000 }
+          ]
+        }
+      ];
+
+      const adjusted = geminiQuota.applyTurnUsageToQuota(initialQuota, mockSessions, {
+        now: Date.now(),
+        quota: { limit5h: 20000000, limit7d: 150000000 }
+      });
+
+      assert.strictEqual(adjusted.quota5h.remainPercent, 85);
+      assert.strictEqual(adjusted.quota7d.remainPercent, 59);
+      assert.strictEqual(adjusted.remainPercent, 85);
+      assert.strictEqual(initialQuota.quota5h.remainPercent, 90);
+    });
+
+    await test('applyTurnUsageToQuota replenishes quota to 100% when resetTime has elapsed', () => {
+      const snapshotTime = Date.now() - 3600000; // snapshot 1h ago
+      const expiredQuota = {
+        timestampMs: snapshotTime,
+        quota5h: {
+          remainPercent: 50,
+          remainingFraction: 0.50,
+          resetTime: new Date(Date.now() - 60000).toISOString(), // reset 1m ago
+          resetFormatted: '0s',
+          window: '5h'
+        },
+        quota7d: {
+          remainPercent: 30,
+          remainingFraction: 0.30,
+          resetTime: new Date(Date.now() + 3600000).toISOString(), // not yet reset
+          resetFormatted: '1h',
+          window: 'weekly'
+        },
+        remainPercent: 50
+      };
+
+      const adjusted = geminiQuota.applyTurnUsageToQuota(expiredQuota, [], { now: Date.now() });
+      assert.strictEqual(adjusted.quota5h.remainPercent, 100, '5h quota must replenish to 100% after resetTime passes');
+      assert.strictEqual(adjusted.quota7d.remainPercent, 30, '7d quota must remain unreset before its resetTime');
+    });
+
+    await test('resolveCsrfTokenFallback recovers token from persisted cache on matching live server', () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-fb-test-'));
+      const testTokFile = path.join(tempDir, '.ls_token.json');
+      const validUuid = 'abcdef01-2345-6789-abcd-ef0123456789';
+      try {
+        geminiQuota.savePersistedLsToken({
+          pid: 9999,
+          port: 48000,
+          ports: [48000, 48001],
+          csrfToken: validUuid
+        }, testTokFile);
+
+        const discovery = {
+          pid: 9999,
+          port: 48000,
+          ports: [48000, 48001],
+          csrfToken: ''
+        };
+
+        const resolved = geminiQuota.resolveCsrfTokenFallback(discovery, { tokenFilePath: testTokFile });
+        assert.strictEqual(resolved.csrfToken, validUuid);
+        assert.strictEqual(resolved.tokenSource, 'persisted_cache');
+        assert.strictEqual(resolved.pinnedProtocol, 'https');
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    await test('handlePostInvocation applies dynamic turn adjustments into badge output', async () => {
+      const snapshotTime = Date.now() - 10000;
+      const cached = {
+        timestampMs: snapshotTime,
+        isLive: true,
+        isFresh: true,
+        isStale: false,
+        quota5h: { remainPercent: 95, remainingFraction: 0.95, window: '5h' },
+        quota7d: { remainPercent: 70, remainingFraction: 0.70, window: 'weekly' },
+        remainPercent: 95
+      };
+
+      // 2M tokens on 20M limit = 10% deduction -> 95% - 10% = 85%
+      const sessions = [
+        {
+          sessionId: 'test-sess',
+          turns: [
+            { createdAt: new Date(snapshotTime + 5000).toISOString(), totalTokens: 2000000, costUsd: 0.001 }
+          ]
+        }
+      ];
+
+      const res = await hookHandler.handlePostInvocation({
+        sessions,
+        geminiQuota: cached,
+        quota: { limit5h: 20000000, limit7d: 150000000 }
+      });
+
+      assert(res.badge.includes('85%'), `Badge must reflect real-time 85% instead of frozen 95%, got: ${res.badge}`);
+    });
+  });
+
+  // --- Suite 30: Generational Version-Aware & Provider-Aware Pricing Engine ---
+  await describe('30. Generational Version-Aware & Provider-Aware Pricing Engine', async () => {
+    await test('Generational pricing: gemini-3.8-flash ($0.15) vs gemini-2.0-flash ($0.10) vs gemini-2.0-flash-lite ($0.075)', () => {
+      const g38 = config.getModelPricing('gemini-3.8-flash');
+      assert.strictEqual(g38.inputPerMillion, 0.15);
+      assert.strictEqual(g38.cachedInputPerMillion, 0.0375);
+      assert.strictEqual(g38.outputPerMillion, 0.60);
+
+      const g20 = config.getModelPricing('gemini-2.0-flash');
+      assert.strictEqual(g20.inputPerMillion, 0.10);
+      assert.strictEqual(g20.cachedInputPerMillion, 0.025);
+      assert.strictEqual(g20.outputPerMillion, 0.40);
+
+      const g20lite = config.getModelPricing('gemini-2.0-flash-lite');
+      assert.strictEqual(g20lite.inputPerMillion, 0.075);
+      assert.strictEqual(g20lite.cachedInputPerMillion, 0.01875);
+      assert.strictEqual(g20lite.outputPerMillion, 0.30);
+    });
+
+    await test('Generational Opus: opus-5.5 ($15.00) vs opus-4.6 ($15.00) vs claude-3-opus ($15.00), verifying none mispriced as $1.25', () => {
+      const op55 = config.getModelPricing('opus-5.5');
+      assert.strictEqual(op55.inputPerMillion, 15.00);
+      assert.strictEqual(op55.cachedInputPerMillion, 1.50);
+      assert.strictEqual(op55.outputPerMillion, 75.00);
+      assert.notStrictEqual(op55.inputPerMillion, 1.25, 'opus-5.5 must NEVER be priced as generic $1.25 Pro');
+
+      const op46 = config.getModelPricing('opus-4.6');
+      assert.strictEqual(op46.inputPerMillion, 15.00);
+      assert.strictEqual(op46.cachedInputPerMillion, 1.50);
+      assert.strictEqual(op46.outputPerMillion, 75.00);
+      assert.notStrictEqual(op46.inputPerMillion, 1.25, 'opus-4.6 must NEVER be priced as generic $1.25 Pro');
+
+      const c3op = config.getModelPricing('claude-3-opus');
+      assert.strictEqual(c3op.inputPerMillion, 15.00);
+      assert.strictEqual(c3op.cachedInputPerMillion, 1.50);
+      assert.strictEqual(c3op.outputPerMillion, 75.00);
+      assert.notStrictEqual(c3op.inputPerMillion, 1.25, 'claude-3-opus must NEVER be priced as generic $1.25 Pro');
+    });
+
+    await test('Generational Sonnet: claude-sonnet-5.5 ($3.00) vs claude-3.5-sonnet ($3.00)', () => {
+      const son55 = config.getModelPricing('claude-sonnet-5.5');
+      assert.strictEqual(son55.inputPerMillion, 3.00);
+      assert.strictEqual(son55.cachedInputPerMillion, 0.30);
+      assert.strictEqual(son55.outputPerMillion, 15.00);
+      assert.strictEqual(son55.id, 'claude-sonnet-5.5');
+
+      const son35 = config.getModelPricing('claude-3.5-sonnet');
+      assert.strictEqual(son35.inputPerMillion, 3.00);
+      assert.strictEqual(son35.cachedInputPerMillion, 0.30);
+      assert.strictEqual(son35.outputPerMillion, 15.00);
+      assert.strictEqual(son35.id, 'claude-3.5-sonnet');
+    });
+
+    await test('Future unknown model heuristics: gemini-4.2-flash ($0.15), gemini-2.1-flash ($0.10), claude-opus-6.0 ($15.00), deepseek-v3 ($0.14)', () => {
+      const g42 = config.getModelPricing('gemini-4.2-flash');
+      assert.strictEqual(g42.inputPerMillion, 0.15);
+      assert.strictEqual(g42.cachedInputPerMillion, 0.0375);
+      assert.strictEqual(g42.outputPerMillion, 0.60);
+
+      const g21 = config.getModelPricing('gemini-2.1-flash');
+      assert.strictEqual(g21.inputPerMillion, 0.10);
+      assert.strictEqual(g21.cachedInputPerMillion, 0.025);
+      assert.strictEqual(g21.outputPerMillion, 0.40);
+
+      const op60 = config.getModelPricing('claude-opus-6.0');
+      assert.strictEqual(op60.inputPerMillion, 15.00);
+      assert.strictEqual(op60.cachedInputPerMillion, 1.50);
+      assert.strictEqual(op60.outputPerMillion, 75.00);
+
+      const dsv3 = config.getModelPricing('deepseek-v3');
+      assert.strictEqual(dsv3.inputPerMillion, 0.14);
+      assert.strictEqual(dsv3.cachedInputPerMillion, 0.014);
+      assert.strictEqual(dsv3.outputPerMillion, 0.28);
+    });
+
+    await test('Defensive calculateCostUsd with undefined/null inputs returns valid numeric 0, not NaN', () => {
+      const res1 = config.calculateCostUsd(undefined, null, undefined, 'gemini-3.7-flash');
+      assert.strictEqual(res1, 0);
+      assert(!isNaN(res1));
+
+      const res2 = config.calculateCostUsd(null, null, null, 'claude-opus-5.5');
+      assert.strictEqual(res2, 0);
+      assert(!isNaN(res2));
+
+      const res3 = config.calculateCostUsd(NaN, undefined, null, 'gemini-3.8-flash');
+      assert.strictEqual(res3, 0);
+      assert(!isNaN(res3));
+
+      const savings = config.calculateCacheSavingsUsd(null, 'gemini-3.8-flash');
+      assert.strictEqual(savings, 0);
+      assert(!isNaN(savings));
+    });
+
+    await test('KRW displayDecimals is 0 (whole integer currency)', () => {
+      assert.strictEqual(config.CURRENCIES.krw.displayDecimals, 0);
+    });
+
+    await test('Bare single-word aliases do not cause false substring collisions', () => {
+      const op55 = config.getModelPricing('opus-5.5');
+      assert.strictEqual(op55.id, 'claude-opus-5.5');
+
+      const op46 = config.getModelPricing('opus-4.6');
+      assert.strictEqual(op46.id, 'claude-opus-4.6');
+
+      const son55 = config.getModelPricing('sonnet-5.5');
+      assert.strictEqual(son55.id, 'claude-sonnet-5.5');
+
+      const son46 = config.getModelPricing('sonnet-4.6');
+      assert.strictEqual(son46.id, 'claude-sonnet-4.6');
+    });
+  });
+
+  // --- Suite 31: Adaptive Responsive Statusline Terminal Layout ---
+  await describe('31. Adaptive Responsive Statusline Terminal Layout', async () => {
+    const fixtureBadgeData = (stale = false) => ({
+      turnTokens: 564,
+      turnCostUsd: 0.0003,
+      todayTokens: 123100,
+      todayCostUsd: 0.047,
+      cacheHitRate: 89,
+      geminiQuota: {
+        remainPercent: 97,
+        isFresh: !stale,
+        lastError: stale ? { kind: 'auth_failure', detail: 'HTTP 401' } : undefined,
+        quota5h: { remainPercent: 97, resetFormatted: '4h 44m', window: '5h' },
+        quota7d: { remainPercent: 61, resetFormatted: '9h 25m', window: 'weekly' }
+      }
+    });
+
+    await test('Wide (Full) Mode is rendered when width >= 115 columns (has mini-bar ▰ and countdown timer)', () => {
+      const data = fixtureBadgeData(false);
+      // Width = 120 (Wide mode)
+      const badge120 = formatter.renderRealTimeBadge(data, 'usd', false, '📊 Dashboard', { width: 120 });
+      const plain120 = formatter.stripAnsi(badge120);
+      assert(plain120.includes('▰'), 'Wide mode at width 120 must include mini progress bar ▰');
+      assert(plain120.includes('4h 44m'), 'Wide mode at width 120 must include 5h reset countdown (4h 44m)');
+      assert(plain120.includes('9h 25m'), 'Wide mode at width 120 must include 7d reset countdown (9h 25m)');
+      assert(plain120.includes('5h:'), 'Wide mode must include 5h label');
+      assert(plain120.includes('7d:'), 'Wide mode must include 7d label');
+
+      // Boundary width = 115 (Wide mode threshold)
+      const badge115 = formatter.renderRealTimeBadge(data, 'usd', false, '📊 Dashboard', { width: 115 });
+      const plain115 = formatter.stripAnsi(badge115);
+      assert(plain115.includes('▰'), 'Wide mode at boundary 115 must include mini progress bar');
+      assert(plain115.includes('4h 44m'), 'Wide mode at boundary 115 must include countdown');
+    });
+
+    await test('Compact Mode is rendered when width < 115 columns (omits mini-bar and countdown, preserves full labels)', () => {
+      const data = fixtureBadgeData(false);
+      // Boundary width = 114 (Compact mode threshold)
+      const badge114 = formatter.renderRealTimeBadge(data, 'usd', false, '📊 Dashboard', { width: 114 });
+      const plain114 = formatter.stripAnsi(badge114);
+
+      // Omits mini-bars and countdown strings
+      assert(!plain114.includes('▰') && !plain114.includes('▱'), 'Compact mode must omit mini progress bars');
+      assert(!plain114.includes('4h 44m'), 'Compact mode must omit 5h countdown string');
+      assert(!plain114.includes('9h 25m'), 'Compact mode must omit 7d countdown string');
+
+      // Preserves full readable labels (never ultra-minimal abbreviations like T:, Tod:, C:)
+      const i18nTurn = i18n.t('hookBadgeTurn');
+      const i18nToday = i18n.t('hookBadgeToday');
+      const i18nCache = i18n.t('hookBadgeCache');
+      assert(plain114.includes(`${i18nTurn}:`), 'Compact mode must preserve full Turn label');
+      assert(plain114.includes(`${i18nToday}:`), 'Compact mode must preserve full Today label');
+      assert(plain114.includes(`${i18nCache}:`), 'Compact mode must preserve full Cache label');
+      assert(plain114.includes('5h:'), 'Compact mode must preserve 5h label');
+      assert(plain114.includes('7d:'), 'Compact mode must preserve 7d label');
+      assert(plain114.includes('97%'), 'Compact mode must preserve 5h percentage');
+      assert(plain114.includes('61%'), 'Compact mode must preserve 7d percentage');
+      assert(plain114.includes('📊 Dashboard'), 'Compact mode must preserve Dashboard link');
+
+      // No cryptic abbreviations
+      assert(!plain114.includes('T: ') && !plain114.includes('Tod: ') && !plain114.includes('C: '), 'Compact mode must not use ultra-minimal abbreviations');
+    });
+
+    await test('Compact Mode preserves ⚡ emoji, cost metrics, and staleness markers', () => {
+      const staleData = fixtureBadgeData(true);
+      const badge = formatter.renderRealTimeBadge(staleData, 'usd', false, '📊 Dashboard', { width: 100 });
+      const plain = formatter.stripAnsi(badge);
+
+      assert(plain.startsWith('⚡'), 'Compact mode must preserve ⚡ leading emoji');
+      assert(plain.includes('564'), 'Compact mode must preserve turn tokens');
+      assert(plain.includes('123.1k'), 'Compact mode must preserve today tokens');
+      assert(plain.includes('$0.0003'), 'Compact mode must preserve turn cost');
+      assert(plain.includes('$0.047'), 'Compact mode must preserve today cost');
+      assert(plain.includes('97%!'), 'Compact mode must preserve staleness marker (!) on 5h');
+      assert(plain.includes('61%!'), 'Compact mode must preserve staleness marker (!) on 7d');
+    });
+
+    await test('Statusline wraps into at most 2 physical lines at width 75–80 without clipping any segment', () => {
+      const data = fixtureBadgeData(false);
+      // Width = 80
+      const badge80 = formatter.renderRealTimeBadge(data, 'usd', false, '📊 Dashboard', { width: 80 });
+      const lines80 = badge80.split('\n');
+      assert.strictEqual(lines80.length, 2, 'Compact badge at width 80 must wrap into exactly 2 lines');
+      for (const line of lines80) {
+        const w = formatter.getBadgeVisibleWidth(line);
+        assert(w <= 80, `Line width ${w} must be <= 80: ${JSON.stringify(line)}`);
+      }
+      assert(!badge80.includes('…'), 'No segment should be truncated at width 80');
+
+      // Width = 75
+      const badge75 = formatter.renderRealTimeBadge(data, 'usd', false, '📊 Dashboard', { width: 75 });
+      const lines75 = badge75.split('\n');
+      assert.strictEqual(lines75.length, 2, 'Compact badge at width 75 must wrap into exactly 2 lines');
+      for (const line of lines75) {
+        const w = formatter.getBadgeVisibleWidth(line);
+        assert(w <= 75, `Line width ${w} must be <= 75: ${JSON.stringify(line)}`);
+      }
+      assert(!badge75.includes('…'), 'No segment should be truncated at width 75');
+    });
+
+    await test('resolveBadgeWidth multi-fallback hierarchy and probeConsoleDeviceColumns', () => {
+      const prevCols = process.env.COLUMNS;
+      try {
+        // Priority 1: process.env.COLUMNS
+        process.env.COLUMNS = '88';
+        assert.strictEqual(formatter.resolveBadgeWidth(), 88);
+
+        delete process.env.COLUMNS;
+        const origStdoutTTY = process.stdout ? process.stdout.isTTY : undefined;
+        const origStdoutCols = process.stdout ? process.stdout.columns : undefined;
+        const origStderrTTY = process.stderr ? process.stderr.isTTY : undefined;
+        const origStderrCols = process.stderr ? process.stderr.columns : undefined;
+
+        try {
+          // Priority 2: process.stdout.columns when isTTY is true
+          if (process.stdout) {
+            Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
+            Object.defineProperty(process.stdout, 'columns', { value: 105, configurable: true });
+            assert.strictEqual(formatter.resolveBadgeWidth(), 105);
+          }
+
+          // Priority 3: process.stdout.isTTY === false -> Infinity (REQ-1f)
+          if (process.stdout) {
+            Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true });
+            assert.strictEqual(formatter.resolveBadgeWidth(), Infinity);
+          }
+
+          // Priority 4: fallback to stderr when stdout.isTTY is undefined
+          if (process.stdout && process.stderr) {
+            Object.defineProperty(process.stdout, 'isTTY', { value: undefined, configurable: true });
+            Object.defineProperty(process.stderr, 'isTTY', { value: true, configurable: true });
+            Object.defineProperty(process.stderr, 'columns', { value: 92, configurable: true });
+            assert.strictEqual(formatter.resolveBadgeWidth(), 92);
+          }
+        } finally {
+          if (process.stdout) {
+            Object.defineProperty(process.stdout, 'isTTY', { value: origStdoutTTY, configurable: true });
+            Object.defineProperty(process.stdout, 'columns', { value: origStdoutCols, configurable: true });
+          }
+          if (process.stderr) {
+            Object.defineProperty(process.stderr, 'isTTY', { value: origStderrTTY, configurable: true });
+            Object.defineProperty(process.stderr, 'columns', { value: origStderrCols, configurable: true });
+          }
+        }
+
+        // probeConsoleDeviceColumns direct function validation
+        assert(typeof formatter.probeConsoleDeviceColumns === 'function');
+        const probeResult = formatter.probeConsoleDeviceColumns();
+        assert(probeResult === null || (Number.isFinite(probeResult) && probeResult > 0));
+      } finally {
+        if (prevCols !== undefined) process.env.COLUMNS = prevCols;
+        else delete process.env.COLUMNS;
+      }
+    });
+
+    await test('renderRealTimeBadge supports explicit options overrides (mode and width)', () => {
+      const data = fixtureBadgeData(false);
+      // Explicit mode: 'compact' at wide width 200
+      const forcedCompact = formatter.renderRealTimeBadge(data, 'usd', false, null, { mode: 'compact', width: 200 });
+      assert(!forcedCompact.includes('▰'), 'Forced compact must omit mini progress bar even at width 200');
+      assert(!forcedCompact.includes('4h 44m'), 'Forced compact must omit countdown');
+
+      // Explicit mode: 'wide' at narrow width 80
+      const forcedWide = formatter.renderRealTimeBadge(data, 'usd', false, null, { mode: 'wide', width: 80 });
+      assert(forcedWide.includes('▰'), 'Forced wide must include mini progress bar even at width 80');
+
+      // Numeric width argument shorthand
+      const numericArgCompact = formatter.renderRealTimeBadge(data, 'usd', false, null, 90);
+      assert(!numericArgCompact.includes('▰'), 'Numeric width 90 must select compact layout');
     });
   });
 

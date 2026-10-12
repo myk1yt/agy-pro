@@ -1,13 +1,41 @@
 {
   "schemaVersion": 1,
-  "version": "1.0.0",
-  "lastUpdated": "2026-08-27",
+  "version": "1.1.0",
+  "lastUpdated": "2026-10-07",
   "sources": {
     "google": "https://ai.google.dev/pricing",
     "anthropic": "https://www.anthropic.com/pricing",
-    "openai": "https://openai.com/pricing"
+    "openai": "https://openai.com/pricing",
+    "deepseek": "https://api-docs.deepseek.com/quick_start/pricing"
   },
   "models": {
+    "gemini-3.8-flash": {
+      "id": "gemini-3.8-flash",
+      "provider": "google",
+      "displayName": "Gemini 3.8 Flash",
+      "contextWindow": "1M",
+      "inputPerMillion": 0.15,
+      "cachedInputPerMillion": 0.0375,
+      "outputPerMillion": 0.60,
+      "aliases": [
+        "gemini-3.8-flash",
+        "gemini 3.8 flash",
+        "gemini-3-8-flash"
+      ]
+    },
+    "gemini-3.8-flash-thinking": {
+      "id": "gemini-3.8-flash-thinking",
+      "provider": "google",
+      "displayName": "Gemini 3.8 Flash Thinking",
+      "contextWindow": "1M",
+      "inputPerMillion": 0.15,
+      "cachedInputPerMillion": 0.0375,
+      "outputPerMillion": 0.60,
+      "aliases": [
+        "gemini-3.8-flash-thinking",
+        "gemini 3.8 flash thinking"
+      ]
+    },
     "gemini-3.7-flash": {
       "id": "gemini-3.7-flash",
       "provider": "google",
@@ -41,6 +69,36 @@
         "gemini 3.7 thinking"
       ]
     },
+    "gemini-3.0-flash": {
+      "id": "gemini-3.0-flash",
+      "provider": "google",
+      "displayName": "Gemini 3.0 Flash",
+      "contextWindow": "1M",
+      "inputPerMillion": 0.15,
+      "cachedInputPerMillion": 0.0375,
+      "outputPerMillion": 0.60,
+      "aliases": [
+        "gemini-3.0-flash",
+        "gemini 3.0 flash",
+        "gemini-3-flash",
+        "gemini 3 flash"
+      ]
+    },
+    "gemini-3.0-pro": {
+      "id": "gemini-3.0-pro",
+      "provider": "google",
+      "displayName": "Gemini 3.0 Pro",
+      "contextWindow": "2M",
+      "inputPerMillion": 1.25,
+      "cachedInputPerMillion": 0.3125,
+      "outputPerMillion": 5.00,
+      "aliases": [
+        "gemini-3.0-pro",
+        "gemini 3.0 pro",
+        "gemini-3-pro",
+        "gemini 3 pro"
+      ]
+    },
     "gemini-2.5-flash": {
       "id": "gemini-2.5-flash",
       "provider": "google",
@@ -51,8 +109,7 @@
       "outputPerMillion": 0.60,
       "aliases": [
         "gemini-2.5-flash",
-        "gemini 2.5 flash",
-        "gemini-flash"
+        "gemini 2.5 flash"
       ]
     },
     "gemini-2.5-pro": {
@@ -66,10 +123,7 @@
       "notes": ">128k prompt rate: $2.50 / $10.00",
       "aliases": [
         "gemini-2.5-pro",
-        "gemini 2.5 pro",
-        "gemini-3-pro",
-        "gemini 3 pro",
-        "gemini-pro"
+        "gemini 2.5 pro"
       ]
     },
     "gemini-2.0-flash": {
@@ -100,6 +154,108 @@
         "gemini-2-flash-lite"
       ]
     },
+    "gemini-1.5-flash": {
+      "id": "gemini-1.5-flash",
+      "provider": "google",
+      "displayName": "Gemini 1.5 Flash",
+      "contextWindow": "1M",
+      "inputPerMillion": 0.075,
+      "cachedInputPerMillion": 0.01875,
+      "outputPerMillion": 0.30,
+      "aliases": [
+        "gemini-1.5-flash",
+        "gemini 1.5 flash",
+        "gemini-1-5-flash"
+      ]
+    },
+    "gemini-1.5-pro": {
+      "id": "gemini-1.5-pro",
+      "provider": "google",
+      "displayName": "Gemini 1.5 Pro",
+      "contextWindow": "2M",
+      "inputPerMillion": 1.25,
+      "cachedInputPerMillion": 0.3125,
+      "outputPerMillion": 5.00,
+      "aliases": [
+        "gemini-1.5-pro",
+        "gemini 1.5 pro",
+        "gemini-1-5-pro"
+      ]
+    },
+    "claude-opus-5.5": {
+      "id": "claude-opus-5.5",
+      "provider": "anthropic",
+      "displayName": "Claude Opus 5.5",
+      "contextWindow": "200k",
+      "inputPerMillion": 15.00,
+      "cachedInputPerMillion": 1.50,
+      "outputPerMillion": 75.00,
+      "aliases": [
+        "claude-opus-5.5",
+        "claude opus 5.5",
+        "opus-5.5",
+        "opus 5.5"
+      ]
+    },
+    "claude-opus-4.6": {
+      "id": "claude-opus-4.6",
+      "provider": "anthropic",
+      "displayName": "Claude Opus 4.6",
+      "contextWindow": "200k",
+      "inputPerMillion": 15.00,
+      "cachedInputPerMillion": 1.50,
+      "outputPerMillion": 75.00,
+      "aliases": [
+        "claude-opus-4.6",
+        "claude opus 4.6",
+        "opus-4.6",
+        "opus 4.6"
+      ]
+    },
+    "claude-3-opus": {
+      "id": "claude-3-opus",
+      "provider": "anthropic",
+      "displayName": "Claude 3 Opus",
+      "contextWindow": "200k",
+      "inputPerMillion": 15.00,
+      "cachedInputPerMillion": 1.50,
+      "outputPerMillion": 75.00,
+      "aliases": [
+        "claude-3-opus",
+        "claude 3 opus",
+        "claude-3-opus-20240229"
+      ]
+    },
+    "claude-sonnet-5.5": {
+      "id": "claude-sonnet-5.5",
+      "provider": "anthropic",
+      "displayName": "Claude Sonnet 5.5",
+      "contextWindow": "200k",
+      "inputPerMillion": 3.00,
+      "cachedInputPerMillion": 0.30,
+      "outputPerMillion": 15.00,
+      "aliases": [
+        "claude-sonnet-5.5",
+        "claude sonnet 5.5",
+        "sonnet-5.5",
+        "sonnet 5.5"
+      ]
+    },
+    "claude-sonnet-4.6": {
+      "id": "claude-sonnet-4.6",
+      "provider": "anthropic",
+      "displayName": "Claude Sonnet 4.6",
+      "contextWindow": "200k",
+      "inputPerMillion": 3.00,
+      "cachedInputPerMillion": 0.30,
+      "outputPerMillion": 15.00,
+      "aliases": [
+        "claude-sonnet-4.6",
+        "claude sonnet 4.6",
+        "sonnet-4.6",
+        "sonnet 4.6"
+      ]
+    },
     "claude-3.7-sonnet": {
       "id": "claude-3.7-sonnet",
       "provider": "anthropic",
@@ -127,8 +283,7 @@
       "aliases": [
         "claude-3.5-sonnet",
         "claude 3.5 sonnet",
-        "claude-3-5-sonnet",
-        "sonnet"
+        "claude-3-5-sonnet"
       ]
     },
     "claude-3.5-haiku": {
@@ -142,23 +297,7 @@
       "aliases": [
         "claude-3.5-haiku",
         "claude 3.5 haiku",
-        "claude-3-5-haiku",
-        "haiku"
-      ]
-    },
-    "claude-3-opus": {
-      "id": "claude-3-opus",
-      "provider": "anthropic",
-      "displayName": "Claude 3 Opus",
-      "contextWindow": "200k",
-      "inputPerMillion": 15.00,
-      "cachedInputPerMillion": 1.50,
-      "outputPerMillion": 75.00,
-      "aliases": [
-        "claude-3-opus",
-        "claude 3 opus",
-        "claude-3-opus-20240229",
-        "opus"
+        "claude-3-5-haiku"
       ]
     },
     "gpt-4o": {
@@ -218,6 +357,32 @@
         "o1",
         "o1-preview",
         "o1-full"
+      ]
+    },
+    "deepseek-v3": {
+      "id": "deepseek-v3",
+      "provider": "deepseek",
+      "displayName": "DeepSeek V3",
+      "contextWindow": "64k",
+      "inputPerMillion": 0.14,
+      "cachedInputPerMillion": 0.014,
+      "outputPerMillion": 0.28,
+      "aliases": [
+        "deepseek-v3",
+        "deepseek v3"
+      ]
+    },
+    "deepseek-r1": {
+      "id": "deepseek-r1",
+      "provider": "deepseek",
+      "displayName": "DeepSeek R1",
+      "contextWindow": "64k",
+      "inputPerMillion": 0.55,
+      "cachedInputPerMillion": 0.14,
+      "outputPerMillion": 2.19,
+      "aliases": [
+        "deepseek-r1",
+        "deepseek r1"
       ]
     },
     "default": {

@@ -5,7 +5,7 @@
 **Author**: Staff AI Agent Systems Architect  
 **Scope**:  
 - **Kimi Workspace**: `D:\OneDrive\Projects\kimi-settings` (`agents/code-reviewer.md`, `agents/security-reviewer.md`, `SYSTEM.md`, `AGENTS.md`, `skills/code-review-taxonomy/`, `skills/quality-gate/`, `skills/security-review-orchestrator/`)  
-- **Antigravity CLI Workspace**: `D:\OneDrive\Projects\Antigravity-cli` & Global Config `C:\Users\k1yt\.gemini\config` (`plugins/code_reviewer/`, `plugins/security_reviewer/`, `rules/AGENTS.md`, `rules/GEMINI.md`, `skills/code-review-taxonomy/`, `skills/quality-gate/`, `builtin/`)
+- **Antigravity CLI Workspace**: `D:\OneDrive\Projects\Antigravity-cli` & Global Config `%USERPROFILE%\.gemini\config` (`~/.gemini/config`) (`plugins/code_reviewer/`, `plugins/security_reviewer/`, `rules/AGENTS.md`, `rules/GEMINI.md`, `skills/code-review-taxonomy/`, `skills/quality-gate/`, `builtin/`)
 
 ---
 
@@ -344,7 +344,7 @@ To elevate Antigravity's review ecosystem to the target state, execute the follo
 
 ### Phase 4: Deploy & Synchronize via `agy-tools`
 - **Execution**:
-  1. Run `node scripts/lib/configure-customizations.js` to atomically deploy updated plugins and skills to `C:\Users\k1yt\.gemini\config`.
+  1. Run `node scripts/lib/configure-customizations.js` to atomically deploy updated plugins and skills to `%USERPROFILE%\.gemini\config` (`~/.gemini/config`).
   2. Verify that backup files (`.bak`) are cleanly created and new configurations pass unit tests in `test/run-tests.js`.
 
 ---
