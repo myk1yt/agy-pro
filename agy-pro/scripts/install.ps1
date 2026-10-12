@@ -1,10 +1,15 @@
-﻿# agy-pro one-click installer for Windows
+# agy-pro one-click installer for Windows
 # Automatically installs Go toolchain if missing, builds agy.exe, sets up PATH,
 # and initializes the agy-pro environment with zero manual configuration.
+# - Backs up the previous User PATH (value + registry kind) before rewriting it.
+# - Runs `agy pro doctor --strict` and fails loudly on structural problems.
+# - Offers the external-model setup wizard when the install succeeds
+#   (pass -NoWizard to skip the prompt, -NoPause to skip the final pause).
 
 [CmdletBinding()]
 param(
-    [switch]$NoPause
+    [switch]$NoPause,
+    [switch]$NoWizard
 )
 
 $ErrorActionPreference = "Stop"
@@ -57,6 +62,23 @@ function Wait-ForUserExit {
     } catch {
         # Fallback if Console.ReadKey is not available
     }
+}
+
+function Test-GoVersionSufficient {
+    param([string]$GoExecutable)
+    # agy-pro's go.mod declares `go 1.22`; older toolchains cannot build it.
+    # Returns $true only when `go version` parses and meets 1.22+.
+    try {
+        $verOutput = (& $GoExecutable version 2>$null) -join " "
+    } catch {
+        return $false
+    }
+    if ($verOutput -match 'go(\d+)\.(\d+)') {
+        $major = [int]$Matches[1]
+        $minor = [int]$Matches[2]
+        return ($major -gt 1) -or ($major -eq 1 -and $minor -ge 22)
+    }
+    return $false
 }
 
 function Show-TroubleshootingGuide {
@@ -127,8 +149,18 @@ try {
         $GoExe = $portableGo
     }
 
+    # An existing toolchain older than the go.mod requirement (Go 1.22) cannot
+    # build agy-pro; route it into the automated install path below instead of
+    # failing at compile time.
+    if ($GoExe -and -not (Test-GoVersionSufficient -GoExecutable $GoExe)) {
+        $tooOld = ""
+        try { $tooOld = (& $GoExe version 2>$null) -join " " } catch { }
+        Write-Notice "Detected Go toolchain is too old for agy-pro ($tooOld). Go 1.22+ is required; installing a newer toolchain..."
+        $GoExe = $null
+    }
+
     if (-not $GoExe) {
-        Write-Notice "Go is not detected on this system. Starting automated installation..."
+        Write-Notice "No usable Go toolchain found (none installed, or older than Go 1.22). Starting automated installation..."
         
         # Try winget first
         $wingetAvailable = Get-Command "winget.exe" -ErrorAction SilentlyContinue
@@ -138,7 +170,7 @@ try {
                 $wingetProc = Start-Process -FilePath "winget.exe" `
                     -ArgumentList "install --id GoLang.Go -e --silent --accept-source-agreements --accept-package-agreements" `
                     -NoNewWindow -Wait -PassThru
-                if ($wingetProc.ExitCode -eq 0 -and (Test-Path "C:\Program Files\Go\bin\go.exe")) {
+                if ($wingetProc.ExitCode -eq 0 -and (Test-Path "C:\Program Files\Go\bin\go.exe") -and (Test-GoVersionSufficient -GoExecutable "C:\Program Files\Go\bin\go.exe")) {
                     $GoExe = "C:\Program Files\Go\bin\go.exe"
                 }
             } catch {
@@ -173,8 +205,8 @@ try {
         }
     }
 
-    if (-not $GoExe -or -not (Test-Path $GoExe)) {
-        throw "Failed to configure Go toolchain. Please check your internet connection or install Go manually from https://go.dev"
+    if (-not $GoExe -or -not (Test-Path $GoExe) -or -not (Test-GoVersionSufficient -GoExecutable $GoExe)) {
+        throw "Failed to configure a Go toolchain (Go 1.22+ required). Please check your internet connection or install Go manually from https://go.dev"
     }
 
     # Add Go directory to process PATH
@@ -190,7 +222,17 @@ try {
     try {
         & $GoExe build -ldflags="-s -w" -o $tempBuildOutput ./cmd/agy
         if ($LASTEXITCODE -ne 0) {
-            throw "Go build failed (exit code: $LASTEXITCODE)"
+            # Fallback: the repository ships a prebuilt shim binary; use it so a
+            # broken local toolchain still completes the installation. The user
+            # is told exactly where the binary came from.
+            $repoExe = Join-Path $AgyProDir "bin\agy.exe"
+            if (Test-Path $repoExe) {
+                Write-Notice "Go build failed (exit code: $LASTEXITCODE). Falling back to the repository prebuilt binary."
+                Write-Notice "Source of agy.exe: $repoExe (prebuilt fallback, not freshly compiled)."
+                Copy-Item -Path $repoExe -Destination $tempBuildOutput -Force
+            } else {
+                throw "Go build failed (exit code: $LASTEXITCODE) and no prebuilt fallback binary exists at $repoExe. Check the Go error output above or install Go manually from https://go.dev"
+            }
         }
 
         # Safely swap into target
@@ -208,6 +250,15 @@ try {
             }
         }
         Move-Item -Path $tempBuildOutput -Destination $TargetExe -Force
+
+        # Housekeeping: keep only the newest agy.old.*.exe swap remnant; older
+        # ones are stale copies of previous installs and only waste disk space.
+        $oldShims = @(Get-ChildItem -Path $TargetBin -Filter "agy.old.*.exe" -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)
+        if ($oldShims.Count -gt 1) {
+            $staleCount = $oldShims.Count - 1
+            $oldShims | Select-Object -Skip 1 | Remove-Item -Force -ErrorAction SilentlyContinue
+            Write-Notice "Cleaned up $staleCount stale agy.old.*.exe backup(s); kept the most recent one."
+        }
     } finally {
         Pop-Location
         if (Test-Path $tempBuildOutput) {
@@ -218,6 +269,29 @@ try {
 
     # 4. Register ~/.agy-pro/bin to Windows User PATH (prepend to highest priority)
     Write-Step "4/5 Registering ~/.agy-pro/bin to Windows User PATH (highest priority)..."
+
+    # Back up the current User PATH (raw, unexpanded value + registry kind)
+    # before touching it, so a corrupted PATH can always be restored.
+    $oldPathKind = [string][Microsoft.Win32.RegistryValueKind]::String
+    $oldPathRaw = ""
+    $pathExisted = $false
+    try {
+        $envKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Environment")
+        if ($envKey) {
+            try {
+                $oldPathRaw = [string]$envKey.GetValue("Path", "", [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+                $pathExisted = $envKey.GetValueNames() -contains "Path"
+                if ($pathExisted) {
+                    $oldPathKind = [string]$envKey.GetValueKind("Path")
+                }
+            } finally {
+                $envKey.Close()
+            }
+        }
+    } catch {
+        Write-Notice "Could not read the current registry PATH for backup: $_"
+    }
+
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
     if (-not $userPath) {
         $userPath = ""
@@ -235,13 +309,55 @@ try {
     $newUserPath = "$TargetBin;" + ($cleanedEntries -join ';')
     [Environment]::SetEnvironmentVariable("Path", $newUserPath, "User")
     $env:PATH = "$TargetBin;$env:PATH"
-    Write-Success "Windows User PATH successfully updated ($TargetBin)"
+
+    # [Environment]::SetEnvironmentVariable may flatten a REG_EXPAND_SZ value
+    # to REG_SZ, which would stop %VAR% entries from expanding. Restore the
+    # original registry kind when it changed.
+    try {
+        $kindKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Environment", $true)
+        if ($kindKey) {
+            try {
+                if ($pathExisted -and ([string]$kindKey.GetValueKind("Path")) -ne $oldPathKind) {
+                    $kindKey.SetValue("Path", $newUserPath, [Enum]::Parse([Microsoft.Win32.RegistryValueKind], $oldPathKind))
+                }
+            } finally {
+                $kindKey.Close()
+            }
+        }
+    } catch {
+        Write-Notice "Could not verify the registry value kind of User PATH: $_"
+    }
+
+    # Persist the previous PATH so it can be restored verbatim.
+    $pathBackupFile = Join-Path $TargetBackups ("path-" + (Get-Date -Format "yyyyMMdd_HHmmss") + ".json")
+    try {
+        $pathBackup = [ordered]@{
+            created   = (Get-Date).ToString("o")
+            hive      = "HKCU\Environment"
+            valueName = "Path"
+            existed   = $pathExisted
+            kind      = $oldPathKind
+            value     = $oldPathRaw
+        }
+        $pathBackup | ConvertTo-Json | Set-Content -Path $pathBackupFile -Encoding UTF8
+        Write-Success "Windows User PATH successfully updated ($TargetBin)"
+        Write-Notice "Previous User PATH backed up to: $pathBackupFile"
+        Write-Notice "If the PATH was damaged by this install, restore it with:"
+        $restoreCmd = 'powershell -NoProfile -Command ''$b = Get-Content "{0}" -Raw | ConvertFrom-Json; [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Environment", $true).SetValue("Path", $b.value, [Microsoft.Win32.RegistryValueKind]$b.kind)''' -f $pathBackupFile
+        Write-Notice ("  " + $restoreCmd)
+    } catch {
+        Write-Notice "Could not write the PATH backup file: $_"
+        Write-Success "Windows User PATH successfully updated ($TargetBin)"
+    }
 
     # 5. Verification
-    Write-Step "5/5 Running post-installation diagnostics..."
-    & $TargetExe pro doctor
+    Write-Step "5/5 Running post-installation diagnostics (strict)..."
+    & $TargetExe pro doctor --strict
     if ($LASTEXITCODE -ne 0) {
-        throw "Post-installation diagnostics (Doctor) reported an error (exit code: $LASTEXITCODE)"
+        Write-Notice "Doctor --strict reported structural problems (exit code: $LASTEXITCODE)."
+        Write-Notice "Most common cause: the authentic Antigravity CLI is not installed, or the shim is not reachable on PATH."
+        Write-Notice "Run 'agy pro doctor' (without --strict) in a NEW terminal for full details, fix the [FAIL] items, then re-run this installer."
+        throw "Post-installation diagnostics (Doctor --strict) reported an error (exit code: $LASTEXITCODE)"
     }
 
     Write-Header "Installation Completed Successfully!"
@@ -257,6 +373,26 @@ try {
     Write-Host "  3. agy pro doctor : System diagnostics and toolchain health check" -ForegroundColor Yellow
     Write-Host "  4. agy            : 100% transparent passthrough to native Antigravity CLI" -ForegroundColor Yellow
     Write-Host ""
+
+    # Offer the external-model setup wizard right away so a fresh install ends
+    # with at least one working provider. -NoWizard (automation) skips it.
+    if (-not $NoWizard) {
+        $wizardAnswer = ""
+        try {
+            $wizardAnswer = (Read-Host "Run the external model setup wizard now? (y/N)").Trim()
+        } catch {
+            # Non-interactive stdin: treat as "no".
+        }
+        if ($wizardAnswer -match '^(y|yes)$') {
+            Write-Step "Launching the provider setup wizard (agy pro setup)..."
+            & $TargetExe pro setup
+            if ($LASTEXITCODE -ne 0) {
+                Write-Notice "Setup wizard exited with code $LASTEXITCODE. You can re-run 'agy pro setup' anytime."
+            }
+        } else {
+            Write-Notice "Skipping the wizard. Run 'agy pro setup' anytime to connect external models."
+        }
+    }
 
     Wait-ForUserExit
     exit 0
