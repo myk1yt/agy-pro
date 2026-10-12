@@ -2,13 +2,16 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"agypro/internal/inventory"
 	"agypro/internal/paths"
 	"agypro/internal/providers"
 )
@@ -268,6 +271,9 @@ func TestPrintProHelpReflectsStatusAndConfig(t *testing.T) {
 		"status          Display current mode, providers, and real agy status",
 		"config          Show or set persistent defaults (default-profile, bridge-tools)",
 		"doctor          Diagnose toolchain, paths, keys (--strict, --fix-keys, --rollback-keys)",
+		"models          Configured providers & models; --all adds the numbered combined inventory",
+		"swarm           Build and run a multi-model swarm with numbered seat selection",
+		"settings        Show or change settings (TUI, show/set, providers, mode, doctor)",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("help missing %q:\n%s", want, out)
@@ -654,4 +660,176 @@ func writeTestRegistry(t *testing.T) *providers.Registry {
 		t.Fatalf("loading test registry: %v", err)
 	}
 	return reg
+}
+
+// ---------------------------------------------------------------------------
+// U-wiring dispatch tests (architect-report docs/261012_0002 §2.6 + §4)
+// ---------------------------------------------------------------------------
+
+// The pro dispatch lines terminate the process via os.Exit with the command
+// function's return value. os.Exit cannot be exercised in-process, so each
+// dispatch case runs end to end in a helper subprocess of this test binary
+// (standard Go helper-process pattern): the child synthesizes argv, calls
+// main(), and the parent asserts the real exit code and captured stdout.
+const dispatchHelperEnv = "AGY_PRO_DISPATCH_HELPER"
+
+// TestProDispatchHelperProcess is the child side of TestProDispatchWiring.
+// The parent picks the case through dispatchHelperEnv; without that env var
+// the test is a no-op so ordinary `go test` runs skip it.
+func TestProDispatchHelperProcess(t *testing.T) {
+	switch os.Getenv(dispatchHelperEnv) {
+	case "models-all":
+		// Stub the inventory source: the child must never spawn `agy models`.
+		loadModelsInventory = func(context.Context) (*inventory.Inventory, error) {
+			return &inventory.Inventory{Entries: []inventory.Entry{{
+				Number:      1,
+				Kind:        "native",
+				Group:       "native",
+				ModelID:     "gemini-3.8-flash-high",
+				DisplayName: "Gemini 3.8 Flash (High)",
+				Spec:        "native:gemini-3.8-flash-high",
+			}}}, nil
+		}
+		os.Args = []string{"agy-test", "pro", "models", "--all"}
+		main()
+	case "models-legacy":
+		os.Args = []string{"agy-test", "pro", "models"}
+		main()
+	case "models-bad-flag":
+		os.Args = []string{"agy-test", "pro", "models", "--bogus"}
+		main()
+	case "swarm-dry-run":
+		os.Args = []string{"agy-test", "pro", "swarm", "--template", "code-review", "--seats", "native:gemini-3.8-flash-high", "--dry-run"}
+		main()
+	case "swarm-missing-required":
+		os.Args = []string{"agy-test", "pro", "swarm", "--root", "."}
+		main()
+	case "settings-version":
+		os.Args = []string{"agy-test", "pro", "settings", "version-info"}
+		main()
+	case "settings-unknown":
+		os.Args = []string{"agy-test", "pro", "settings", "bogus-verb"}
+		main()
+	case "unknown-subcommand":
+		os.Args = []string{"agy-test", "pro", "bogus-subcommand"}
+		main()
+	}
+	// Dispatch paths that return instead of exiting (help) fall through and
+	// the child finishes with the test framework's exit code 0.
+}
+
+// runDispatchHelper spawns this test binary as a helper subprocess running
+// one dispatch case. The child gets a hermetic environment (temp agy-pro
+// home, a providers path that does not exist) so no real configuration is
+// read or written. Returns the real process exit code and the child stdout.
+func runDispatchHelper(t *testing.T, dispatchCase string) (int, string) {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=TestProDispatchHelperProcess")
+	cmd.Env = append(os.Environ(),
+		dispatchHelperEnv+"="+dispatchCase,
+		paths.EnvAgyProHome+"="+filepath.Join(t.TempDir(), "home"),
+		providers.EnvProviders+"="+filepath.Join(t.TempDir(), "missing-providers.json"),
+	)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	code := 0
+	if err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			t.Fatalf("dispatch helper %q failed to run: %v\nstderr:\n%s", dispatchCase, err, stderr.String())
+		}
+		code = exitErr.ExitCode()
+	}
+	return code, stdout.String()
+}
+
+// TestProDispatchWiring drives the `agy pro` switch end to end: models
+// forwards subArgs into runModelsCmd (legacy no-arg output preserved, --all
+// rendering the combined inventory), swarm and settings are reachable, and
+// every dispatch line passes the command's exit code through os.Exit. The
+// unknown-subcommand default case keeps its exit 1.
+func TestProDispatchWiring(t *testing.T) {
+	cases := []struct {
+		name       string
+		dispatch   string
+		wantCode   int
+		wantStdout []string
+	}{
+		{
+			name:       "models --all passes args through and renders the inventory",
+			dispatch:   "models-all",
+			wantCode:   0,
+			wantStdout: []string{"gemini-3.8-flash-high", "[native]"},
+		},
+		{
+			name:       "models no-args keeps the legacy output verbatim",
+			dispatch:   "models-legacy",
+			wantCode:   0,
+			wantStdout: []string{"agy-pro Configured Models"},
+		},
+		{
+			name:     "models --bogus exits 2 through the dispatch line",
+			dispatch: "models-bad-flag",
+			wantCode: 2,
+		},
+		{
+			name:       "swarm --dry-run prints the fanout command and exits 0",
+			dispatch:   "swarm-dry-run",
+			wantCode:   0,
+			wantStdout: []string{"agy pro fanout"},
+		},
+		{
+			name:     "swarm missing required options exits 2 without prompting",
+			dispatch: "swarm-missing-required",
+			wantCode: 2,
+		},
+		{
+			name:       "settings version-info is reachable and exits 0",
+			dispatch:   "settings-version",
+			wantCode:   0,
+			wantStdout: []string{"agy-pro version"},
+		},
+		{
+			name:     "settings unknown verb exits 2",
+			dispatch: "settings-unknown",
+			wantCode: 2,
+		},
+		{
+			name:     "unknown subcommand still exits 1",
+			dispatch: "unknown-subcommand",
+			wantCode: 1,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			code, out := runDispatchHelper(t, tc.dispatch)
+			if code != tc.wantCode {
+				t.Fatalf("dispatch case %q exit code = %d; want %d\nstdout:\n%s", tc.dispatch, code, tc.wantCode, out)
+			}
+			for _, want := range tc.wantStdout {
+				if !strings.Contains(out, want) {
+					t.Errorf("dispatch case %q stdout missing %q:\n%s", tc.dispatch, want, out)
+				}
+			}
+		})
+	}
+}
+
+// U7 machine-output guard (contract §2.10): the community banner lives only
+// in the interactive launcher, so `agy pro` help and status output must
+// never mention it.
+func TestProHelpAndStatusHaveNoCommunityBanner(t *testing.T) {
+	t.Setenv(paths.EnvAgyProHome, filepath.Join(t.TempDir(), "home"))
+	t.Setenv(providers.EnvProviders, filepath.Join(t.TempDir(), "missing-providers.json"))
+	outputs := map[string]string{
+		"help":   captureStdout(t, printProHelp),
+		"status": captureStdout(t, runStatus),
+	}
+	for name, out := range outputs {
+		if strings.Contains(out, "reddit.com") {
+			t.Errorf("agy pro %s output leaks the community banner:\n%s", name, out)
+		}
+	}
 }

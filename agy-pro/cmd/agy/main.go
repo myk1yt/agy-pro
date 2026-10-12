@@ -62,7 +62,11 @@ func handleProCommand(args []string) {
 	case "status":
 		runStatus()
 	case "models":
-		runModels()
+		os.Exit(runModelsCmd(subArgs))
+	case "swarm":
+		os.Exit(runSwarmCmd(subArgs, os.Stdin, os.Stdout, os.Stderr))
+	case "settings":
+		os.Exit(runSettingsCmd(subArgs, os.Stdin, os.Stdout, os.Stderr))
 	case "doctor":
 		runDoctor(subArgs)
 	case "fanout":
@@ -90,7 +94,9 @@ func printProHelp() {
 	fmt.Println("  setup           Interactive conversational setup wizard for LLM providers & keys")
 	fmt.Println("  mode            Switch profile between full-stack and clean (or restore)")
 	fmt.Println("  status          Display current mode, providers, and real agy status")
-	fmt.Println("  models          Display configured providers and detailed model specifications")
+	fmt.Println("  models          Configured providers & models; --all adds the numbered combined inventory")
+	fmt.Println("  swarm           Build and run a multi-model swarm with numbered seat selection")
+	fmt.Println("  settings        Show or change settings (TUI, show/set, providers, mode, doctor)")
 	fmt.Println("  doctor          Diagnose toolchain, paths, keys (--strict, --fix-keys, --rollback-keys)")
 	fmt.Println("  fanout          Run multi-model parallel audit, review, or research swarm")
 	fmt.Println("  config          Show or set persistent defaults (default-profile, bridge-tools)")
