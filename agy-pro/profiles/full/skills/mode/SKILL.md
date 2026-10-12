@@ -28,14 +28,19 @@ Invoke profile operations via `agy pro mode`:
   ```bash
   agy pro mode clean
   ```
-- Query active profile status:
+- Query active profile status (mode, last backup, managed manifest):
   ```bash
   agy pro mode status
+  ```
+- Query combined status (profile mode + registered providers + real `agy` path):
+  ```bash
+  agy pro status
   ```
 
 ## 3. Switching Protocol & Governance
 1. Validate requested target profile (`full` or `clean`).
-2. Verify active profile state from configuration registry (`~/.gemini/config`).
+2. Verify active profile state from the agy-pro state registry (`~/.agy-pro/state.json`); the managed
+   configuration targets live in `~/.gemini/config`.
 3. Atomic profile swap:
    - Synchronize rules (`rules/AGENTS.md`, `rules/GEMINI.md`)
    - Synchronize skill directory trees (`skills/**`)

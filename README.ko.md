@@ -79,12 +79,14 @@ flowchart TD
     Sec["Agent/security-reviewer\n@security-reviewer 스위트"]
     CodeRev["Agent/code-reviewer\n@code-reviewer 스위트"]
     Gov["gemini-config\n자율 거버넌스 규칙"]
+    Pro["feature/agy-pro\nagy-pro Go 셔틀 & 스웜"]
     Dash["dashboard\n히스토리컬 프로토타입"]
     
     Core -->|플러그인| Des
     Core -->|플러그인| Sec
     Core -->|플러그인| CodeRev
     Core -->|글로벌 설정| Gov
+    Core -->|Go 셔틀 스위트| Pro
     Dash -->|병합 및 대체| Core
 ```
 
@@ -95,6 +97,7 @@ flowchart TD
 | [`Agent/security-reviewer`](https://github.com/myk1yt/agy-tools/tree/Agent/security-reviewer) | **엔터프라이즈 멀티 에이전트 보안 감사** | `@security-reviewer` 오케스트레이터 + 4개 도메인 인스펙터 (OWASP, IAM, 자격 증명, 공급망) | `git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-security-reviewer.ps1` | `cmd /c "git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-security-reviewer.ps1"` | `git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install-security-reviewer.sh` |
 | [`Agent/code-reviewer`](https://github.com/myk1yt/agy-tools/tree/Agent/code-reviewer) | **Pre-Merge 코드 리뷰 & 퀄리티 게이트** | `@code-reviewer` 에이전트, 4단계 파이프라인, 8개 텍사노미, P0-P3 무관용 판정 게이트 | `git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-code-reviewer.ps1` | `cmd /c "git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-code-reviewer.ps1"` | `git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install-code-reviewer.sh` |
 | [`gemini-config`](https://github.com/myk1yt/agy-tools/tree/gemini-config) | **자율 멀티 에이전트 거버넌스** | 7단계 라이프사이클 프로토콜, Master Zero-Source-Edit 불변성, 오케스트레이터 스킬 | `git clone -b gemini-config https://github.com/myk1yt/agy-tools.git && cd agy-tools && scripts\install.bat` | `cmd /c "git clone -b gemini-config https://github.com/myk1yt/agy-tools.git && cd agy-tools && scripts\install.bat"` | `git clone -b gemini-config https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install.sh` |
+| [`feature/agy-pro`](https://github.com/myk1yt/agy-tools/tree/feature/agy-pro) | **Go 셔틀 & 멀티모델 스웜 (`agy-pro`)** | 투명 `agy` 셔틀, 2초 모델 런처, 외부 모델 브릿지, `agy pro` 스위트 (setup / mode / fanout / doctor), 원큐 Windows 설치·설치 제거 (Windows 전용) | `git clone -b feature/agy-pro https://github.com/myk1yt/agy-tools.git && cd agy-tools && install.cmd` | `cmd /c "git clone -b feature/agy-pro https://github.com/myk1yt/agy-tools.git && cd agy-tools && install.cmd"` | — |
 | [`dashboard`](https://github.com/myk1yt/agy-tools/tree/dashboard) | **히스토리컬 프로토타입** | 최초 토큰 추적기 기반 (현재 `main`에 완전 병합됨) | — | — | — |
 
 > [!TIP]
@@ -300,6 +303,89 @@ git clone https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash script
 ```bash
 agy-tokens --html --open
 ```
+
+---
+
+## 🚀 agy-pro: Go 셔틀, 모델 런처 & 스웜 오케스트레이터
+
+`agy-pro/`는 정품 `agy` 바이너리를 감싸는 Go 셔틀입니다. 네이티브 TUI와 표준 입출력 핸들, 종료 코드는 그대로 두고, 모델 런처, 외부 OpenAI 호환 모델용 로컬 브릿지, 프로필 전환, 멀티 모델 스웜을 더합니다. Go 표준 라이브러리만 사용합니다.
+
+### 📋 복사-붙여넣기 설치 (Windows)
+
+PowerShell 창(Windows PowerShell 5.1 또는 PowerShell 7)에 아래 **한 줄**을 그대로 붙여넣으세요. git이 있으면 `feature/agy-pro` 브랜치를 클론해 `install.cmd`를 실행하고, git이 없으면 브랜치 ZIP을 `%TEMP%`에 내려받아 `install.ps1`을 실행하는 경로로 자동 분기합니다.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -Command "if (Get-Command git -ErrorAction SilentlyContinue) { cmd /c 'git clone -b feature/agy-pro https://github.com/myk1yt/agy-tools.git && cd agy-tools && install.cmd' } else { iwr 'https://codeload.github.com/myk1yt/agy-tools/zip/refs/heads/feature/agy-pro' -OutFile '$env:TEMP\agy-tools-agy-pro.zip' -UseBasicParsing; Expand-Archive -Path '$env:TEMP\agy-tools-agy-pro.zip' -DestinationPath '$env:TEMP\agy-tools-agy-pro' -Force; & (Resolve-Path '$env:TEMP\agy-tools-agy-pro\*\install.ps1').Path }"
+```
+
+> 이 문서의 모든 원라인 명령은 GitHub의 `feature/agy-pro` 브랜치 **현재 상태**를 내려받습니다. 아직 push하지 않은 로컬 커밋은 내려받는 내용에 포함되지 않습니다.
+
+명령 프롬프트에서는 감싸는 부분 없이 클론 한 줄만 실행하면 됩니다: `git clone -b feature/agy-pro https://github.com/myk1yt/agy-tools.git && cd agy-tools && install.cmd`. 이미 클론해 둔 경우에는 저장소 루트에서 `install.cmd`를 실행하거나, `powershell -NoProfile -ExecutionPolicy Bypass -File agy-pro\scripts\install.ps1`로 설치 스크립트를 직접 호출하면 됩니다.
+
+설치 스크립트는 Go 툴체인이 없으면 설치하고, `agy.exe`를 `~/.agy-pro/bin/`에 빌드하고, 그 디렉터리를 사용자 `PATH` 맨 앞에 추가한 뒤 `agy pro doctor`를 실행합니다. 설치 후에는 새 터미널을 열어야 PATH 변경이 반영됩니다.
+
+### 🧹 지우기 (Windows, 한 줄)
+
+PowerShell 창에 아래 **한 줄**을 붙여넣으세요. 설치 제거 스크립트를 내려받아 실행하고, 무엇을 지울지 먼저 보여준 뒤 `y/N` 확인을 기다립니다:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr 'https://raw.githubusercontent.com/myk1yt/agy-tools/feature/agy-pro/agy-pro/scripts/uninstall.ps1' -OutFile '$env:TEMP\agy-pro-uninstall.ps1' -UseBasicParsing; & '$env:TEMP\agy-pro-uninstall.ps1'"
+```
+
+설치기가 추가한 것만 정확히 되돌립니다:
+
+1. 사용자 `PATH`에서 `~/.agy-pro/bin` 항목만 제거 (다른 항목과 레지스트리 값 종류는 그대로 유지)
+2. `~/.agy-pro` 폴더 전체를 **휴지통**으로 이동 (영구 삭제하지 않음)
+
+같은 줄 뒤에 붙이거나 클론 폴더에서 실행할 수 있는 옵션: `-KeepState`는 shim만 지우고 `providers.json`, `state.json`, 백업을 남깁니다. `-DryRun`은 계획만 출력하고 아무것도 바꾸지 않습니다. `-RestorePath`는 설치 전에 저장해 둔 사용자 `PATH`(가장 최근 `~/.agy-pro/backups/path-*.json`)를 되돌립니다. `-Force`는 스크립트용으로 `y/N` 확인을 건너뜁니다. 이미 클론해 둔 경우에는 저장소 루트의 `uninstall.cmd`를 더블클릭하거나 `.\uninstall.cmd`를 실행하세요. `agy pro mode`로 프로필을 바꿨다면 지우기 **전에** `agy pro mode restore`를 실행하세요(프로필 백업이 있으면 설치 제거 스크립트가 이 안내를 출력합니다). 콘솔이 없는 실행(파이프 입력, 예약 작업)에서는 `y/N`이 자동으로 `no`가 되므로 실수로 설치가 지워지지 않습니다.
+
+### 첫 실행
+
+```bash
+agy pro setup          # 프로바이더 등록 (OpenRouter, DeepSeek, Groq, Google AI Studio 등)
+agy                    # 2초 픽커: [1] 네이티브 Gemini  [2] 외부 모델  [3] 스웜
+```
+
+픽커는 **인자 없는** `agy`에만 뜹니다. 인자를 하나라도 주면 픽커를 건너뛰고 실제 바이너리로 바로 실행됩니다. 프로바이더를 하나만 등록해도 런처가 뜹니다. 픽커를 건너뛰려면:
+
+```bash
+agy pro config default-profile gateway   # 모든 `agy` 실행이 등록된 외부 모델을 /model에 노출
+agy pro config default-profile native    # 항상 네이티브 Gemini, 프롬프트 없음
+agy -m "gemini-2.5-flash (google)"       # 이번 실행에만 외부 모델 하나 사용
+agy pro config bridge-tools read,search  # 게이트웨이 도구 루프: 기본 읽기 전용
+agy pro config bridge-tools none         # 도구 루프 끄기 (순수 패스스루)
+agy pro mode full                        # full-stack 오케스트레이터 프로필로 전환
+agy pro status                           # 현재 모드, 프로바이더, 실제 agy 경로
+```
+
+### 추가되는 기능
+
+| 기능 | 명령 |
+|---|---|
+| 2초 인터랙티브 모델 런처 | 인자 없는 `agy` |
+| 네이티브 `/model` 픽커 안의 외부 모델 | `agy -b`, `agy -m "<모델> (<프로바이더>)"`, `AGY_PRO_BRIDGE=1` |
+| 시작 프로필 고정 (native / gateway / prompt) | `agy pro config default-profile <값>` |
+| 외부 모델용 게이트웨이 도구 루프 (기본 읽기 전용) | `agy pro config bridge-tools read,search`, `agy pro config show` |
+| 프로필 전환 (full-stack / clean) | `agy pro mode full`, `agy pro mode clean` |
+| 프로바이더 & 모델 설정 마법사 | `agy pro setup` |
+| 멀티 모델 팬아웃 스웜 | `agy pro fanout -task=security -n=3` |
+| 진단 | `agy pro doctor`, `agy pro status`, `agy pro models` |
+
+`agy pro doctor`는 등록된 프로바이더 키를 토큰을 쓰지 않고 업스트림으로 probe(`GET <baseURL>/models`, 5초 타임아웃)하여 프로바이더별 결과를 마스킹해 표시합니다 (`valid` / `invalid` / `indeterminate` / `SKIP`). `agy pro doctor --fix-keys`는 probe를 `valid`로 통과한 BOM 변형 이름을 정상 이름으로 복원하고(실행 전 백업 생성), `agy pro doctor --rollback-keys <디렉터리>`는 그 복원을 되돌립니다.
+
+자세한 내용: [`agy-pro/README.md`](agy-pro/README.md), [`agy-pro/docs/bridge-architecture.md`](agy-pro/docs/bridge-architecture.md).
+
+### 게이트웨이 도구 루프 (외부 모델이 파일을 읽고 검색하게 하기)
+
+`agy`의 게이트웨이 클라이언트는 `tools`를 보내지 않고 응답의 `tool_calls`도 버립니다. 그래서 외부 모델은 그대로는 워크스페이스를 건드릴 수 없습니다. `agy-pro`는 브릿지 안에 도구 루프를 넣어 이 문제를 해결합니다. 모델에 도구 정의를 붙여 호출하고, 돌아온 도구 호출을 로컬에서 실행한 뒤 결과를 다시 먹여서, `agy`에는 최종 텍스트만 돌려줍니다.
+
+- 기본값은 `read,search`입니다. 모델은 `read_file`, `list_dir`, `grep`, `glob`으로 워크스페이스를 읽고 검색할 수 있지만 바꿀 수는 없습니다.
+- `write`(`write_file`, `replace_in_file`)와 `exec`(`run_command`)는 opt-in입니다. 실제 파일을 고치고 실제 명령을 실행하므로 필요한 세션에서만 켜세요: `agy pro config bridge-tools read,search,write,exec`.
+- `none`은 도구 루프를 완전히 끄고 기존 패스스루로 돌립니다.
+- 작업 기준 폴더는 `agy`를 실행한 디렉터리입니다. 세션마다 shim 프로세스가 하나씩이므로 두 세션의 워크스페이스는 섞이지 않습니다.
+- 한도는 업스트림 8턴, 턴당 60초, 전체 240초입니다. 모든 종료 경로가 비어 있지 않은 텍스트로 끝나므로 `agy`의 무한 재시도가 생기지 않습니다.
+- 도구 턴은 기본 출력 타임아웃보다 길어질 수 있습니다. 일회성 실행에는 `agy --print-timeout 300s`를 권장합니다(루프 자체 상한 240초).
+- 우선순위: `AGY_PRO_BRIDGE_TOOLS` 환경변수 > `~/.agy-pro/state.json`의 `bridge_tools` > 기본 `read,search`. 알 수 없는 토큰은 설정 시 거부되고, 실행 시에는 루프를 끄는 쪽으로 처리됩니다(허용 목록을 넓히지 않음).
 
 ---
 

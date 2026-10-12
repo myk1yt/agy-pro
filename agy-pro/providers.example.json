@@ -153,6 +153,39 @@
           "maxOutputTokens": 4096
         }
       ]
+    },
+    {
+      "name": "google",
+      "baseURL": "https://generativelanguage.googleapis.com/v1beta/openai/",
+      "apiKeyEnv": "GEMINI_API_KEY",
+      "models": [
+        {
+          "id": "gemini-2.5-flash",
+          "family": "gemini",
+          "tags": ["fast", "tools", "vision", "reasoning"],
+          "contextLength": 1048576,
+          "maxOutputTokens": 65536,
+          "capabilities": {
+            "supportsVision": true,
+            "supportsThinking": true,
+            "supportsTools": true,
+            "allowedTools": ["read_file", "list_dir", "grep", "glob"]
+          }
+        },
+        {
+          "id": "gemini-2.5-pro",
+          "family": "gemini",
+          "tags": ["flagship", "tools", "vision", "reasoning"],
+          "contextLength": 1048576,
+          "maxOutputTokens": 65536,
+          "capabilities": {
+            "supportsVision": true,
+            "supportsThinking": true,
+            "supportsTools": true,
+            "allowedTools": ["read_file", "list_dir", "grep", "glob"]
+          }
+        }
+      ]
     }
   ]
 }
