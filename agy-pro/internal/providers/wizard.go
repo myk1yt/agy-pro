@@ -23,6 +23,10 @@ import (
 // in ~/.agy-pro/providers.json in a friendly, conversational manner.
 func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 	reader := bufio.NewReader(in)
+	var console *os.File
+	if f, ok := in.(*os.File); ok {
+		console = f
+	}
 
 	fmt.Fprintln(out, "===========================================================")
 	fmt.Fprintln(out, "  agy-pro Multi-Model Provider Setup Wizard")
@@ -84,10 +88,10 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 
 	if existingVal != "" {
 		fmt.Fprintf(out, "Detected existing environment variable %s.\n", defaultEnv)
-		keyInput, _ := promptLine(reader, out, fmt.Sprintf("API Key (press Enter to keep %s, or paste new key)", defaultEnv), "")
+		keyInput, _ := promptSecret(reader, out, console, fmt.Sprintf("API Key (press Enter to keep %s, or paste new key)", defaultEnv), "")
 		if keyInput == "" {
 			keyValue = existingVal
-			fmt.Fprintf(out, "Using existing value from %s.\n", defaultEnv)
+			fmt.Fprintf(out, "Using existing value from %s: %s\n", defaultEnv, MaskSecret(existingVal))
 		} else {
 			keyValue = keyInput
 		}
@@ -96,7 +100,7 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 			fmt.Fprintf(out, "Get a key at: %s\n", hint.KeyURL)
 		}
 		fmt.Fprintf(out, "Enter API Key for %s (will be stored in environment variable %s):\n", provName, defaultEnv)
-		keyInput, _ := promptLine(reader, out, "API Key (sk-... or leave blank to skip)", "")
+		keyInput, _ := promptSecret(reader, out, console, "API Key (sk-... or leave blank to skip)", "")
 		keyValue = keyInput
 	}
 
@@ -107,6 +111,10 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 			keyValue = envVal
 			fmt.Fprintf(out, "Using environment variable %s (loaded from current session).\n", apiKeyEnv)
 		}
+	}
+	// U8: every confirmation of key material shows the canonical mask only.
+	if keyValue != "" {
+		fmt.Fprintf(out, "API Key recorded: %s\n", MaskSecret(keyValue))
 	}
 	// normalizeEnvName (not a leading-only TrimPrefix) because U+FEFF is not
 	// whitespace: a trailing BOM pasted with the name would otherwise survive
@@ -275,7 +283,7 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 				if newURL != "" {
 					baseURL = newURL
 				}
-				newKey, _ := promptLine(reader, out, "API Key", "keep current")
+				newKey, _ := promptSecret(reader, out, console, "API Key", "keep current")
 				newKey = strings.TrimSpace(newKey)
 				if newKey != "" && !strings.EqualFold(newKey, "keep current") {
 					if !isLikelyAPIKey(newKey) && envNameRe.MatchString(newKey) {
@@ -285,6 +293,7 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 							fmt.Fprintf(out, "Using environment variable %s (loaded from current session).\n", apiKeyEnv)
 						} else {
 							keyValue = newKey
+							fmt.Fprintf(out, "API Key recorded: %s\n", MaskSecret(keyValue))
 							_ = os.Setenv(apiKeyEnv, keyValue)
 							if runtime.GOOS == "windows" && !isRunningTests() {
 								_ = persistWindowsUserEnv(apiKeyEnv, keyValue)
@@ -292,6 +301,7 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 						}
 					} else {
 						keyValue = newKey
+						fmt.Fprintf(out, "API Key recorded: %s\n", MaskSecret(keyValue))
 						_ = os.Setenv(apiKeyEnv, keyValue)
 						if runtime.GOOS == "windows" && !isRunningTests() {
 							_ = persistWindowsUserEnv(apiKeyEnv, keyValue)
@@ -386,7 +396,7 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 	fmt.Fprintf(out, "Base URL        : %s\n", baseURL)
 	keyStatus := "not set; export it before use"
 	if keyValue != "" {
-		keyStatus = "saved in environment"
+		keyStatus = "saved in environment, " + MaskSecret(keyValue)
 	}
 	fmt.Fprintf(out, "API Key Env     : %s (%s)\n", apiKeyEnv, keyStatus)
 	fmt.Fprintf(out, "Config File     : %s\n", targetPath)

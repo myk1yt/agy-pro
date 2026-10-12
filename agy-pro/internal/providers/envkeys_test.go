@@ -321,27 +321,44 @@ func TestProbeKeyValidity(t *testing.T) {
 	})
 }
 
+// TestMaskSecret pins the canonical U8 mask shape (contract §2.11): first 5
+// RUNES + "****", values of <= 5 runes fully hidden, no trailing suffix ever.
+// The old prefix6…suffix4 shape is deliberately gone (R-12: suffix exposure
+// violates the first-5 rule).
 func TestMaskSecret(t *testing.T) {
 	cases := []struct{ in, want string }{
-		{"", "(empty)"},
-		{"short", "*****"},
-		{"12345678", "********"},
+		{"", "****"},                        // empty → full mask
+		{"a", "****"},                       // shorter than 5
+		{"abcde", "****"},                   // exactly 5 runes → full mask
+		{"abcdef", "abcde****"},             // 6 runes → first 5 + mask
+		{"sk-proj-abcdef1234567890", "sk-pr****"},
+		{"sk-a83a3c2abcdef1234567890b7569", "sk-a8****"},
+		{"12345678", "12345****"},
+		{"日本語キーX", "日本語キー****"}, // 6 runes, multi-byte → rune boundary
+		{"日本語キー", "****"},               // exactly 5 multi-byte runes
 	}
 	for _, c := range cases {
 		if got := MaskSecret(c.in); got != c.want {
 			t.Errorf("MaskSecret(%q) = %q; want %q", c.in, got, c.want)
 		}
 	}
+	// A short key is never echoed even partially (contract: <= 5 runes → "****").
+	if got := MaskSecret("sk-12"); got != "****" {
+		t.Errorf("MaskSecret of a 5-rune key = %q; want \"****\"", got)
+	}
 	long := "sk-a83a3c2abcdef1234567890b7569"
 	got := MaskSecret(long)
 	if strings.Contains(got, long) {
 		t.Errorf("MaskSecret leaks the full secret: %q", got)
 	}
-	if !strings.HasPrefix(got, "sk-a83") || !strings.HasSuffix(got, "7569") || !strings.Contains(got, "…") {
-		t.Errorf("MaskSecret(%q) = %q; want prefix6…suffix4 shape", long, got)
+	// No suffix exposure: nothing after the first 5 runes survives.
+	for _, suf := range []string{"7569", "b7569", "90b7569", "3c2abcdef"} {
+		if strings.Contains(got, suf) {
+			t.Errorf("MaskSecret(%q) = %q leaks suffix material %q", long, got, suf)
+		}
 	}
-	if runes := len([]rune(strings.Trim(got, "…"))); runes > 12 {
-		t.Errorf("MaskSecret exposes too much: %q (%d chars)", got, runes)
+	if got != "sk-a8****" {
+		t.Errorf("MaskSecret(%q) = %q; want canonical first5+\"****\"", long, got)
 	}
 }
 

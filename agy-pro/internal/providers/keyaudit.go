@@ -114,23 +114,17 @@ func redactProbeDetail(detail, apiKey string) string {
 	return strings.ReplaceAll(detail, apiKey, "[REDACTED]")
 }
 
-// MaskSecret renders a value safe for doctor output: long secrets keep a short
-// prefix/suffix, short ones are fully masked. The result never contains more
-// than 10 characters of the original.
+// MaskSecret renders any API-key value for display: first 5 RUNES + "****"
+// (contract §2.11 / U8). Values of length <= 5 runes render as "****" (a short
+// key is never echoed, not even partially). Nothing beyond the 5 leading
+// characters is ever exposed — specifically NO trailing suffix. The result
+// counts runes, not bytes, so multi-byte keys mask at the same boundary.
 func MaskSecret(secret string) string {
-	s := strings.TrimSpace(secret)
-	r := []rune(s)
-	n := len(r)
-	switch {
-	case n == 0:
-		return "(empty)"
-	case n <= 8:
-		return strings.Repeat("*", n)
-	case n < 16:
-		return string(r[:3]) + "…" + string(r[n-2:])
-	default:
-		return string(r[:6]) + "…" + string(r[n-4:])
+	r := []rune(strings.TrimSpace(secret))
+	if len(r) <= 5 {
+		return "****"
 	}
+	return string(r[:5]) + "****"
 }
 
 // EnvCandidateMasked is the printable view of an EnvCandidate: same location
