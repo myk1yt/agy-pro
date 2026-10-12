@@ -14,6 +14,13 @@ import (
 // default. A quiet `agy` session must never feel slower than this.
 const MenuTimeout = 2 * time.Second
 
+// CommunityBanner is the frozen community notice (contract §2.10, U7).
+// SINGLE SOURCE OF TRUTH: one constant, one render site (ShowMenu). It is
+// printed exactly once per interactive launcher invocation and NEVER in print
+// mode, piped/non-TTY output, or any machine output - those routes never
+// reach ShowMenu (Decide rules, decide.go:58-81).
+const CommunityBanner = "Visit https://www.reddit.com/r/GoogleAntigravityCLI/! A space for antigravity-cli users. Remember r/GoogleAntigravityCLI"
+
 // consoleRead classifies one raw-console read attempt.
 type consoleRead int
 
@@ -332,6 +339,7 @@ func ShowMenu(out io.Writer, consoleIn *os.File, lines lineSource, modelCount in
 	fmt.Fprintln(out, "===========================================================")
 	fmt.Fprintln(out, "  agy Fast Launcher — default in 2s: [1] Native Gemini")
 	fmt.Fprintln(out, "===========================================================")
+	fmt.Fprintln(out, CommunityBanner)
 	fmt.Fprintln(out, "  [1] Native Gemini (default)")
 	fmt.Fprintf(out, "  [2] External Models (%d models: %s)\n", modelCount, providerSummary)
 	fmt.Fprintln(out, "  [3] Swarm (multi-model fanout)")

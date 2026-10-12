@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -19,120 +18,31 @@ import (
 	"agypro/internal/mode"
 	"agypro/internal/paths"
 	"agypro/internal/providers"
+	"agypro/internal/realagy"
 )
 
 // ErrRecursionDetected is returned when agy-pro detects an infinite call loop.
-var ErrRecursionDetected = errors.New("infinite recursion detected: real agy resolved back to agy-pro shim")
+// D-1 (contract §2.2.1): the sentinels ARE realagy's errors - the single
+// source of truth - so errors.Is keeps working at every call site
+// (main.go:41, launcher tests) whether the error originates in realagy.Resolve
+// or in the passthrough recursion guard.
+var ErrRecursionDetected = realagy.ErrRecursion
 
 // ErrRealAgyNotFound is returned when the original agy binary cannot be located.
-var ErrRealAgyNotFound = errors.New("real agy binary not found")
+var ErrRealAgyNotFound = realagy.ErrNotFound
 
-// FindRealAgy locates the authentic agy binary using the system environment and PATH.
+// FindRealAgy locates the authentic agy binary. Delegates to realagy.Resolve
+// (contract §2.2.1, D-1 single-logic guarantee): AGY_PRO_REAL_AGY > PATH scan
+// (excluding the shim) > paths.DefaultRealAgyPath() > Windows
+// ~/.gemini/bin/agy.exe.
 func FindRealAgy() (string, error) {
-	selfPath, err := os.Executable()
-	if err != nil {
-		selfPath = ""
-	} else {
-		selfPath, _ = filepath.EvalSymlinks(selfPath)
-	}
-
-	envReal := os.Getenv(paths.EnvAgyProRealAgy)
-	pathEnv := os.Getenv("PATH")
-	fallback, _ := paths.DefaultRealAgyPath()
-
-	return resolveRealAgy(selfPath, envReal, pathEnv, fallback)
+	return realagy.Resolve()
 }
 
-// resolveRealAgy implements the resolution precedence:
-// 1. AGY_PRO_REAL_AGY override
-// 2. PATH search (excluding self directory and os.SameFile)
-// 3. Platform default fallback location
+// resolveRealAgy is the pure, injectable core behind FindRealAgy; it delegates
+// to realagy.ResolveWith so the resolution logic has exactly one home (D-1).
 func resolveRealAgy(selfPath, envReal, pathEnv, fallback string) (string, error) {
-	// 1. AGY_PRO_REAL_AGY override
-	if trimmed := strings.TrimSpace(envReal); trimmed != "" {
-		cleaned := filepath.Clean(trimmed)
-		if fi, err := os.Stat(cleaned); err == nil && !fi.IsDir() {
-			if selfPath != "" && isSameFile(selfPath, cleaned) {
-				return "", fmt.Errorf("%w: AGY_PRO_REAL_AGY points to shim itself (%s)", ErrRecursionDetected, cleaned)
-			}
-			return cleaned, nil
-		}
-		return "", fmt.Errorf("%w: configured path %q does not exist", ErrRealAgyNotFound, trimmed)
-	}
-
-	var selfDir string
-	if selfPath != "" {
-		selfDir = filepath.Clean(filepath.Dir(selfPath))
-	}
-
-	agyProBinDir, _ := paths.AgyProBin()
-	if agyProBinDir != "" {
-		agyProBinDir = filepath.Clean(agyProBinDir)
-	}
-
-	// Candidates to check in each PATH entry
-	binaryNames := []string{"agy"}
-	if runtime.GOOS == "windows" {
-		binaryNames = []string{"agy.exe", "agy.cmd", "agy.bat", "agy"}
-	}
-
-	// 2. PATH search
-	for _, dir := range filepath.SplitList(pathEnv) {
-		trimmedDir := strings.TrimSpace(dir)
-		if trimmedDir == "" {
-			continue
-		}
-		cleanDir := filepath.Clean(trimmedDir)
-
-		// Exclude directory containing the current running shim
-		if selfDir != "" && isSameDir(selfDir, cleanDir) {
-			continue
-		}
-
-		// Exclude ~/.agy-pro/bin (where installed shim agy.exe resides)
-		if agyProBinDir != "" && isSameDir(agyProBinDir, cleanDir) {
-			continue
-		}
-
-		for _, name := range binaryNames {
-			candidate := filepath.Join(cleanDir, name)
-			fi, err := os.Stat(candidate)
-			if err != nil || fi.IsDir() {
-				continue
-			}
-
-			// Ensure candidate is not the shim binary itself
-			if selfPath != "" && isSameFile(selfPath, candidate) {
-				continue
-			}
-
-			return candidate, nil
-		}
-	}
-
-	// 3. Fallback check
-	if fallback != "" {
-		cleanedFallback := filepath.Clean(fallback)
-		if fi, err := os.Stat(cleanedFallback); err == nil && !fi.IsDir() {
-			if selfPath == "" || !isSameFile(selfPath, cleanedFallback) {
-				return cleanedFallback, nil
-			}
-		}
-	}
-
-	// Fallback secondary check on Windows: ~/.gemini/bin/agy.exe
-	if runtime.GOOS == "windows" {
-		if home, err := paths.UserHome(); err == nil {
-			geminiAgy := filepath.Join(home, ".gemini", "bin", "agy.exe")
-			if fi, err := os.Stat(geminiAgy); err == nil && !fi.IsDir() {
-				if selfPath == "" || !isSameFile(selfPath, geminiAgy) {
-					return geminiAgy, nil
-				}
-			}
-		}
-	}
-
-	return "", fmt.Errorf("%w: please install official agy or set %s to its path", ErrRealAgyNotFound, paths.EnvAgyProRealAgy)
+	return realagy.ResolveWith(selfPath, envReal, pathEnv, fallback)
 }
 
 // ExecutePassthrough runs the real agy binary with the given arguments,
@@ -158,13 +68,25 @@ func ExecutePassthrough(realAgyPath string, args []string) (int, error) {
 	childStdin := io.Reader(os.Stdin)
 
 	forceBridge := false
-	switch Decide(args, os.Getenv, isTerminal(os.Stdin), modelCount, loadDefaultProfile()) {
+	forcedNativeID := ""
+	switch Decide(args, os.Getenv, stdinIsTTY(), modelCount, loadDefaultProfile()) {
 	case RouteMenu:
 		names := EnabledProviderNames(reg)
 		choice := ShowMenu(os.Stdout, os.Stdin, rel, modelCount, ProviderSummary(names), MenuTimeout)
 		switch choice {
 		case RouteBridge:
-			forceBridge = true
+			// Plan §4.2 B1: choice [2] opens the combined model sub-menu.
+			// Routing is by Entry.Kind provenance (F-BRIDGE): a native pick
+			// bypasses ShouldActivateBridge entirely; an external pick keeps
+			// the forceBridge path; an aborted pick keeps the legacy [2]
+			// bridge behavior.
+			pick := showModelPicker(os.Stdout, rel, pickerInventory(reg))
+			plan := planFromPick(pick)
+			forcedNativeID = plan.ForcedNativeID
+			if plan.ForceBridge {
+				forceBridge = true
+				args = append(args, plan.ModelArgs...)
+			}
 		case RouteFanout:
 			code, handled, err := runSwarmFromMenu(rel, os.Stdout, os.Stderr)
 			if handled || err != nil {
@@ -179,12 +101,18 @@ func ExecutePassthrough(realAgyPath string, args []string) (int, error) {
 		forceBridge = true
 	}
 
+	// Forced-native picker pick: pure native session, scrubbed env, no bridge
+	// (contract §2.7 F-BRIDGE), regardless of registry contents.
+	if forcedNativeID != "" {
+		return executeForcedNative(realAgyPath, forcedNativeID, childStdin, reg)
+	}
+
 	activateBridge, cleanArgs := ShouldActivateBridge(args, reg)
 	if forceBridge && modelCount > 0 {
 		activateBridge = true
 	}
 
-	cmd := exec.Command(realAgyPath, cleanArgs...)
+	cmd := spawnRealAgy(realAgyPath, cleanArgs...)
 	cmd.Stdin = childStdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -236,6 +164,10 @@ func ExecutePassthrough(realAgyPath string, args []string) (int, error) {
 // startBridgeFunc is the bridge starter seam; tests stub it to exercise the
 // failure fallback without binding a port.
 var startBridgeFunc = bridge.StartBridge
+
+// stdinIsTTY reports whether the launcher should consider stdin interactive.
+// It is a seam so route tests can drive the TTY and piped paths deterministically.
+var stdinIsTTY = func() bool { return isTerminal(os.Stdin) }
 
 // workspaceEnv is the bridge tool loop's workspace root. The shim sets it on
 // its OWN process env (never on the child agy env) so the bridge resolves tool
@@ -554,36 +486,4 @@ func setEnvKV(env []string, entry string) []string {
 		out = append(out, e)
 	}
 	return append(out, entry)
-}
-
-// isSameDir checks if two directories refer to the same location.
-func isSameDir(dirA, dirB string) bool {
-	dirA = filepath.Clean(dirA)
-	dirB = filepath.Clean(dirB)
-	if runtime.GOOS == "windows" {
-		if strings.EqualFold(dirA, dirB) {
-			return true
-		}
-	}
-	fiA, errA := os.Stat(dirA)
-	fiB, errB := os.Stat(dirB)
-	if errA == nil && errB == nil {
-		return os.SameFile(fiA, fiB)
-	}
-	return false
-}
-
-// isSameFile checks if two paths point to the same physical file.
-func isSameFile(pathA, pathB string) bool {
-	pathA = filepath.Clean(pathA)
-	pathB = filepath.Clean(pathB)
-	if runtime.GOOS == "windows" && strings.EqualFold(pathA, pathB) {
-		return true
-	}
-	fiA, errA := os.Stat(pathA)
-	fiB, errB := os.Stat(pathB)
-	if errA == nil && errB == nil {
-		return os.SameFile(fiA, fiB)
-	}
-	return false
 }
