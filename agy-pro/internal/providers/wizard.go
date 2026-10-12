@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"testing"
 	"time"
 )
 
@@ -29,9 +30,14 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 	fmt.Fprintln(out, "Configure OpenAI-compatible LLM endpoints for multi-model fanout.")
 	fmt.Fprintln(out, "API keys are stored securely in your environment, never in providers.json.")
 	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Known providers: "+providerLabelList())
+	if aliases := providerAliasList(); aliases != "" {
+		fmt.Fprintln(out, "Aliases: "+aliases)
+	}
+	fmt.Fprintln(out)
 
 	// Step 1: Provider Name
-	provName, isEOF := promptLine(reader, out, "Provider name (e.g., deepseek, openrouter, groq, openai, NW)", "")
+	provName, isEOF := promptLine(reader, out, "Provider name", "")
 	provName = strings.TrimPrefix(strings.TrimSpace(provName), "\ufeff")
 	if isEOF && provName == "" {
 		return errors.New("input closed (EOF); setup aborted")
@@ -40,8 +46,22 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 		return errors.New("provider name cannot be empty")
 	}
 
+	// A name that resolves to a catalog entry (via an alias such as "gemini")
+	// keeps the name the user typed but takes the catalog base URL, key variable,
+	// and presets.
+	hint, knownProvider := LookupProviderHint(provName)
+	if knownProvider && !strings.EqualFold(provName, hint.Name) {
+		fmt.Fprintf(out, "Using %s settings for %q (base URL, %s).\n", hint.Name, provName, hint.KeyEnv)
+	}
+
 	// Step 2: Base URL
 	defaultURL := defaultBaseURLFor(provName)
+	if defaultURL == "" {
+		// Unregistered provider: nothing was invented for it, so show the
+		// expected shape and make the user type a real endpoint (empty input
+		// is rejected below).
+		fmt.Fprintf(out, "No built-in default Base URL for %q. Example: https://api.openai.com/v1 (an OpenAI-compatible /v1 endpoint)\n", provName)
+	}
 	baseURL, isEOF := promptLine(reader, out, "OpenAI-compatible Base URL", defaultURL)
 	baseURL = strings.TrimPrefix(strings.TrimSpace(baseURL), "\ufeff")
 	if isEOF && baseURL == "" {
@@ -50,8 +70,8 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 	if baseURL == "" {
 		return errors.New("base URL cannot be empty")
 	}
-	if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
-		return fmt.Errorf("baseURL must start with http:// or https://: %s", baseURL)
+	if err := validateBaseURL(baseURL); err != nil {
+		return fmt.Errorf("%w: %s", err, baseURL)
 	}
 
 	// Step 3: API Key & Environment Variable Name
@@ -72,6 +92,9 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 			keyValue = keyInput
 		}
 	} else {
+		if knownProvider && hint.KeyURL != "" {
+			fmt.Fprintf(out, "Get a key at: %s\n", hint.KeyURL)
+		}
 		fmt.Fprintf(out, "Enter API Key for %s (will be stored in environment variable %s):\n", provName, defaultEnv)
 		keyInput, _ := promptLine(reader, out, "API Key (sk-... or leave blank to skip)", "")
 		keyValue = keyInput
@@ -85,7 +108,10 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 			fmt.Fprintf(out, "Using environment variable %s (loaded from current session).\n", apiKeyEnv)
 		}
 	}
-	apiKeyEnv = strings.TrimPrefix(strings.TrimSpace(apiKeyEnv), "\ufeff")
+	// normalizeEnvName (not a leading-only TrimPrefix) because U+FEFF is not
+	// whitespace: a trailing BOM pasted with the name would otherwise survive
+	// and be written back to the registry as a fresh polluted entry.
+	apiKeyEnv = normalizeEnvName(apiKeyEnv)
 
 	// Persist API key if provided
 	if keyValue != "" && apiKeyEnv != "" {
@@ -209,7 +235,7 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 		// Live Connection Probe Loop
 	probeLoop:
 		for {
-			fmt.Fprintf(out, "\n[Live Probe] Testing endpoint connection with model %q...\n", selectedModel.ID)
+			fmt.Fprintf(out, "\n[Live Probe] Testing endpoint %s connection with model %q...\n", endpointHost(baseURL), selectedModel.ID)
 			latency, probeErr := ProbeEndpoint(baseURL, keyValue, selectedModel.ID)
 			if probeErr == nil {
 				fmt.Fprintf(out, "✅ Connection succeeded! Latency: %dms\n", latency)
@@ -358,32 +384,29 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 	fmt.Fprintln(out, "===========================================================")
 	fmt.Fprintf(out, "Provider        : %s\n", provName)
 	fmt.Fprintf(out, "Base URL        : %s\n", baseURL)
-	fmt.Fprintf(out, "API Key Env     : %s (saved in environment)\n", apiKeyEnv)
+	keyStatus := "not set; export it before use"
+	if keyValue != "" {
+		keyStatus = "saved in environment"
+	}
+	fmt.Fprintf(out, "API Key Env     : %s (%s)\n", apiKeyEnv, keyStatus)
 	fmt.Fprintf(out, "Config File     : %s\n", targetPath)
 	fmt.Fprintf(out, "Configured Models (%d):\n", len(models))
 	for i, m := range models {
-		toolsStr := "no"
-		if m.Capabilities.SupportsTools {
-			toolsStr = "yes"
-		}
 		ctxDisplay := fmt.Sprintf("%dk", m.ContextLength/1000)
 		if m.ContextLength <= 0 {
 			ctxDisplay = "server-max"
 		} else if m.ContextLength >= 1048576 {
 			ctxDisplay = fmt.Sprintf("%dM", m.ContextLength/1048576)
 		}
-		thinkingStr := "no"
-		if m.Capabilities.SupportsThinking {
-			effort := m.Capabilities.ReasoningEffort
-			if effort == "" {
-				effort = "default"
-			}
-			thinkingStr = fmt.Sprintf("yes (%s)", effort)
-		}
-		fmt.Fprintf(out, "  %d. %-24s [family: %s, context: %s, tools: %s, thinking: %s]\n", i+1, m.ID, m.FamilyName(), ctxDisplay, toolsStr, thinkingStr)
+		fmt.Fprintf(out, "  %d. %-32s [family: %s, context: %s, capabilities: %s]\n",
+			i+1, DisplayName(m.ID, provName), m.FamilyName(), ctxDisplay, m.CapabilitySummary())
 	}
 	fmt.Fprintln(out, "===========================================================")
-	fmt.Fprintf(out, "Ready to use! Example:\n  agy pro fanout -m %s/%s \"your prompt\"\n", provName, models[0].ID)
+	fmt.Fprintln(out, "Ready to use! The gateway bridge activates whenever an external model is targeted:")
+	fmt.Fprintf(out, "  Native agy   : agy -m %q\n", DisplayName(models[0].ID, provName))
+	fmt.Fprintln(out, "                 (set AGY_PRO_BRIDGE=1 to expose every model in the /model picker)")
+	fmt.Fprintf(out, "  Fanout swarm : agy pro fanout --models %q --prompt \"your prompt\"\n", provName+"/"+models[0].ID)
+	fmt.Fprintln(out, "  List models  : agy pro models")
 	fmt.Fprintln(out, "===========================================================")
 	return nil
 }
@@ -412,7 +435,7 @@ func promptCustomModel(r *bufio.Reader, w io.Writer, modelID string) Model {
 
 	var allowedTools []string
 	if supportsTools {
-		toolsListStr, _ := promptLine(r, w, "Allowed tools", "read_file,list_dir,grep,glob")
+		toolsListStr, _ := promptLine(r, w, "Allowed tools for this model (fanout --tools read,search,write,exec; read,search = read_file,list_dir,grep,glob; write = write_file; exec = run_command - and write/exec only take effect for tools listed here)", "read_file,list_dir,grep,glob")
 		for _, t := range strings.Split(toolsListStr, ",") {
 			t = strings.TrimSpace(t)
 			if t != "" {
@@ -476,6 +499,22 @@ func DeriveTags(cap Capabilities) []string {
 	return tags
 }
 
+// MissingCapabilityTags lists the capability tags implied by Capabilities
+// ("tools", "reasoning", "vision") that Tags does not carry. The gateway, the
+// wizard summary, and `agy pro models` read the flags while the model list reads
+// the tags, so a model whose tags lag behind its flags is displayed
+// inconsistently. Empty result means the two agree.
+func (m Model) MissingCapabilityTags() []string {
+	var missing []string
+	for _, tag := range DeriveTags(m.Capabilities) {
+		if tag == "general" || m.HasTag(tag) {
+			continue
+		}
+		missing = append(missing, tag)
+	}
+	return missing
+}
+
 // ProbeEndpoint sends a minimal ping completion request to verify connection & authentication.
 func ProbeEndpoint(baseURL, apiKey, modelID string) (latencyMs int64, err error) {
 	if strings.TrimSpace(baseURL) == "" {
@@ -515,14 +554,15 @@ func ProbeEndpoint(baseURL, apiKey, modelID string) (latencyMs int64, err error)
 	start := time.Now()
 	resp, err := client.Do(req)
 	latency := time.Since(start).Milliseconds()
+	dest := endpointHost(baseURL)
 	if err != nil {
-		return latency, fmt.Errorf("network error: %w", err)
+		return latency, fmt.Errorf("network error contacting %s: %w", dest, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respSnippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return latency, fmt.Errorf("HTTP %d (%s): %s", resp.StatusCode, resp.Status, strings.TrimSpace(string(respSnippet)))
+		return latency, fmt.Errorf("HTTP %d contacting %s (%s): %s", resp.StatusCode, dest, resp.Status, strings.TrimSpace(string(respSnippet)))
 	}
 
 	return latency, nil
@@ -567,51 +607,63 @@ func promptString(r *bufio.Reader, w io.Writer, prompt, defaultValue string) str
 	return val
 }
 
+// defaultBaseURLFor returns the OpenAI-compatible base URL suggested for a
+// provider name. Cataloged providers return their known endpoint; unknown
+// names return "" (no invented default) and the wizard shows an example
+// format instead, so a typo like "ocn" never silently targets openai.com.
 func defaultBaseURLFor(name string) string {
-	norm := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(name)), "\ufeff")
-	switch norm {
-	case "openai":
-		return "https://api.openai.com/v1"
-	case "deepseek":
-		return "https://api.deepseek.com/v1"
-	case "openrouter":
-		return "https://openrouter.ai/api/v1"
-	case "groq":
-		return "https://api.groq.com/openai/v1"
-	case "nw", "neuralwatt":
-		return "https://api.neuralwatt.com/v1"
-	case "together":
-		return "https://api.together.xyz/v1"
-	case "mistral":
-		return "https://api.mistral.ai/v1"
-	default:
-		return "https://api.openai.com/v1"
+	if hint, ok := LookupProviderHint(name); ok {
+		return hint.BaseURL
 	}
+	return ""
 }
 
+// defaultEnvFor returns the API key environment variable suggested for a
+// provider name. Unknown names are upper-cased with every non-alphanumeric
+// character replaced by "_" so the result is always a valid variable name.
 func defaultEnvFor(name string) string {
-	norm := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(name)), "\ufeff")
-	switch norm {
-	case "openai":
-		return "OPENAI_API_KEY"
-	case "deepseek":
-		return "DEEPSEEK_API_KEY"
-	case "openrouter":
-		return "OPENROUTER_API_KEY"
-	case "groq":
-		return "GROQ_API_KEY"
-	case "nw", "neuralwatt":
-		return "NW_API_KEY"
-	case "together":
-		return "TOGETHER_API_KEY"
-	case "mistral":
-		return "MISTRAL_API_KEY"
-	default:
-		upper := strings.ToUpper(strings.ReplaceAll(norm, "-", "_"))
-		return upper + "_API_KEY"
+	if hint, ok := LookupProviderHint(name); ok {
+		return hint.KeyEnv
 	}
+	upper := strings.ToUpper(strings.TrimPrefix(strings.TrimSpace(name), "\ufeff"))
+	var b strings.Builder
+	for _, r := range upper {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('_')
+		}
+	}
+	return b.String() + "_API_KEY"
 }
 
+// providerLabelList renders the known-provider catalog for the wizard banner.
+func providerLabelList() string {
+	hints := KnownProviders()
+	labels := make([]string, 0, len(hints))
+	for _, h := range hints {
+		labels = append(labels, h.Label)
+	}
+	return strings.Join(labels, ", ")
+}
+
+// providerAliasList renders the accepted aliases as "alias -> canonical".
+func providerAliasList() string {
+	var parts []string
+	for _, h := range KnownProviders() {
+		if len(h.Aliases) > 0 {
+			parts = append(parts, strings.Join(h.Aliases, ", ")+" -> "+h.Name)
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
+// isRunningTests is a development-time safety rail, NOT a security boundary:
+// it keeps `go test` away from the real Windows environment stores. Detection
+// is exact (testing.Testing()) and cannot be spoofed by renaming the binary,
+// unlike the old os.Args[0] ".test" suffix heuristic. Single helper shared by
+// the wizard persistence, the env store, and the key-repair path.
 func isRunningTests() bool {
-	return strings.HasSuffix(os.Args[0], ".test.exe") || strings.HasSuffix(os.Args[0], ".test")
+	return testing.Testing()
 }

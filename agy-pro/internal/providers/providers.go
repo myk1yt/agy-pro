@@ -8,10 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"sort"
 	"strings"
 )
@@ -47,6 +48,36 @@ func (c Capabilities) EffectiveReasoningEffort() string {
 // CanUseTools reports whether function calling / tools are enabled for this model.
 func (c Capabilities) CanUseTools() bool {
 	return c.SupportsTools
+}
+
+// Summary renders the enabled capability flags as a comma-separated list, e.g.
+// "tools, vision, thinking(high)". It is the canonical renderer for the wizard
+// summary, `agy pro models`, and the launcher menu so that every surface shows
+// the same flags the gateway acts on. A model with no optional capability
+// renders as "none".
+func (c Capabilities) Summary() string {
+	parts := make([]string, 0, 4)
+	if c.SupportsTools {
+		parts = append(parts, "tools")
+	}
+	if c.SupportsVision {
+		parts = append(parts, "vision")
+	}
+	if c.SupportsVideo {
+		parts = append(parts, "video")
+	}
+	if c.SupportsThinking {
+		parts = append(parts, "thinking("+c.EffectiveReasoningEffort()+")")
+	}
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, ", ")
+}
+
+// CapabilitySummary renders this model's capability flags; see Capabilities.Summary.
+func (m Model) CapabilitySummary() string {
+	return m.Capabilities.Summary()
 }
 
 // ToolPermitted reports whether a specific tool name is allowed for this model.
@@ -112,21 +143,32 @@ func (p Provider) Endpoint() string {
 
 // KeyValue returns the API key read from the environment ("" if unset or if
 // the provider needs no key). The value must never be logged.
+//
+// Resolution order: exact process env, exact persistent entries (HKCU then
+// HKLM), then BOM-polluted name variants (see envkeys.go). An exact match
+// always wins, so a clean name holding a stale value keeps winning; use
+// AuditProviderKeys to surface that conflict. Resolved values are returned
+// as-is and never promoted into the process environment: caching them there
+// used to leak store-only keys into every child process this shim spawns
+// (security finding S-3).
 func (p Provider) KeyValue() string {
 	if p.APIKeyEnv == "" {
 		return ""
 	}
-	val := strings.TrimSpace(os.Getenv(p.APIKeyEnv))
-	if val != "" {
-		return val
+	val, _ := p.KeyValueWithOrigin()
+	return val
+}
+
+// KeyValueWithOrigin resolves the provider's key like KeyValue and additionally
+// reports where the value came from (KeyOriginNone when unresolved). It performs
+// no caching, so it is safe for audit paths that must observe the persistent
+// stores directly.
+func (p Provider) KeyValueWithOrigin() (string, KeyOrigin) {
+	if p.APIKeyEnv == "" {
+		return "", KeyOriginNone
 	}
-	if runtime.GOOS == "windows" {
-		if uVal := strings.TrimSpace(GetWindowsUserEnv(p.APIKeyEnv)); uVal != "" {
-			_ = os.Setenv(p.APIKeyEnv, uVal)
-			return uVal
-		}
-	}
-	return ""
+	v, origin, _ := resolveEnvValueWithStore(p.APIKeyEnv, defaultEnvStore)
+	return v, origin
 }
 
 // KeyAvailable reports whether the provider can authenticate: either it
@@ -214,6 +256,41 @@ func LoadFrom(path string) (*Registry, error) {
 	return &r, nil
 }
 
+// validateBaseURL enforces the endpoint transport rule (security finding S-6):
+// bearer keys transit this URL on every probe and chat request, so https:// is
+// required except for loopback hosts (127.0.0.1, localhost, ::1) where http://
+// is acceptable for local development servers.
+func validateBaseURL(baseURL string) error {
+	u, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return fmt.Errorf("baseURL is not a valid URL: %v", err)
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+		return nil
+	case "http":
+		if isLoopbackHost(u.Hostname()) {
+			return nil
+		}
+		return errors.New("baseURL must use https:// (http:// is only allowed for loopback hosts)")
+	default:
+		return errors.New("baseURL must start with http:// or https://")
+	}
+}
+
+// isLoopbackHost reports whether host names a loopback address.
+func isLoopbackHost(host string) bool {
+	h := strings.ToLower(strings.TrimSpace(host))
+	h = strings.Trim(h, "[]")
+	if h == "localhost" || strings.HasSuffix(h, ".localhost") {
+		return true
+	}
+	if ip := net.ParseIP(h); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
+
 // Validate checks structural rules. It never echoes apiKeyEnv values because a
 // mistaken paste of a real key must not leak into logs.
 func (r *Registry) Validate() error {
@@ -232,8 +309,8 @@ func (r *Registry) Validate() error {
 		if strings.TrimSpace(p.BaseURL) == "" {
 			return fmt.Errorf("provider %q: baseURL is required", p.Name)
 		}
-		if !strings.HasPrefix(p.BaseURL, "http://") && !strings.HasPrefix(p.BaseURL, "https://") {
-			return fmt.Errorf("provider %q: baseURL must start with http:// or https://", p.Name)
+		if err := validateBaseURL(p.BaseURL); err != nil {
+			return fmt.Errorf("provider %q: %w", p.Name, err)
 		}
 		if p.APIKeyEnv != "" && !envNameRe.MatchString(p.APIKeyEnv) {
 			return fmt.Errorf("provider %q: apiKeyEnv must be an environment variable NAME, not a key (value hidden)", p.Name)
@@ -306,6 +383,15 @@ func (r *Registry) Redactor() func(string) string {
 var (
 	bearerRe = regexp.MustCompile(`(?i)(bearer\s+)[A-Za-z0-9._~+/=-]{8,}`)
 	skRe     = regexp.MustCompile(`\b(sk|pk|key|tok)-[A-Za-z0-9_-]{12,}`)
+	// Generic credential shapes (S-4/F2 extension): material the registry
+	// does not know about - AWS key IDs, secret-key assignments, Authorization
+	// header values and PEM private key blocks - so a leaked file or provider
+	// error body still leaves the process masked. These extend, never replace,
+	// the registered-key masking above.
+	awsKeyIDRe   = regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`)
+	awsSecretRe  = regexp.MustCompile(`(?i)(aws_secret_access_key\s*[=:]\s*)[^\s'"` + "`" + `]+`)
+	authValueRe  = regexp.MustCompile(`(?i)(authorization["']?\s*[:=]\s*["']?)(?:bearer\s+)?[A-Za-z0-9._~+/=-]{8,}`)
+	privateKeyRe = regexp.MustCompile(`(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----`)
 )
 
 // NewRedactor builds a redaction function for the given secret values.
@@ -321,6 +407,10 @@ func NewRedactor(secrets ...string) func(string) string {
 		}
 		s = bearerRe.ReplaceAllString(s, "${1}[REDACTED]")
 		s = skRe.ReplaceAllString(s, "[REDACTED]")
+		s = awsKeyIDRe.ReplaceAllString(s, "[REDACTED]")
+		s = awsSecretRe.ReplaceAllString(s, "${1}[REDACTED]")
+		s = authValueRe.ReplaceAllString(s, "${1}[REDACTED]")
+		s = privateKeyRe.ReplaceAllString(s, "[REDACTED PRIVATE KEY]")
 		return s
 	}
 }

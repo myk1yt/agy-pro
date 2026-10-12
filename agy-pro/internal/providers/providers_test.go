@@ -77,6 +77,42 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+// S-6: bearer keys transit the baseURL, so http:// is only acceptable for
+// loopback endpoints; everything else must be https://.
+func TestValidateBaseURL(t *testing.T) {
+	cases := []struct {
+		url  string
+		ok   bool
+		desc string
+	}{
+		{"https://api.openai.com/v1", true, "https anywhere"},
+		{"https://10.0.0.5:8443/v1", true, "https on a private host"},
+		{"http://127.0.0.1:8080/v1", true, "http loopback ipv4"},
+		{"http://localhost:11434/v1", true, "http localhost"},
+		{"http://[::1]:8080/v1", true, "http loopback ipv6"},
+		{"http://127.0.0.53/v1", true, "http loopback range"},
+		{"http://example.com/v1", false, "http cleartext to a remote host"},
+		{"http://10.0.0.5:8000/v1", false, "http cleartext on a private host"},
+		{"ftp://foo", false, "unsupported scheme"},
+		{"ws://127.0.0.1/v1", false, "unsupported scheme even on loopback"},
+		{"", false, "empty"},
+	}
+	for _, tc := range cases {
+		err := validateBaseURL(tc.url)
+		if tc.ok && err != nil {
+			t.Errorf("validateBaseURL(%q) [%s] = %v; want nil", tc.url, tc.desc, err)
+		}
+		if !tc.ok && err == nil {
+			t.Errorf("validateBaseURL(%q) [%s] = nil; want error", tc.url, tc.desc)
+		}
+	}
+
+	reg := Registry{Providers: []Provider{{Name: "p1", BaseURL: "http://collect.attacker.tld/v1", Models: []Model{{ID: "m1"}}}}}
+	if err := reg.Validate(); err == nil {
+		t.Fatal("Validate must reject a cleartext non-loopback baseURL")
+	}
+}
+
 func TestLoadFrom_NotExist(t *testing.T) {
 	_, err := LoadFrom(filepath.Join(t.TempDir(), "nonexistent.json"))
 	if !errors.Is(err, os.ErrNotExist) {
@@ -285,7 +321,7 @@ func TestInteractiveSetupWizard(t *testing.T) {
 }
 
 func TestGetModelPresets(t *testing.T) {
-	cases := []string{"deepseek", "openrouter", "groq", "openai", "nw", "neuralwatt", "together", "mistral"}
+	cases := []string{"deepseek", "openrouter", "groq", "openai", "bigmodel", "glm", "zhipu", "nw", "neuralwatt", "together", "mistral", "google", "gemini", "google ai studio"}
 	for _, name := range cases {
 		presets := GetModelPresets(name)
 		if len(presets) == 0 {
@@ -475,6 +511,68 @@ func TestInteractiveSetupWizard_NWPreset(t *testing.T) {
 	}
 }
 
+// I12: an unregistered provider gets no invented Base URL default - the wizard
+// prints an example format and requires explicit input, then saves exactly
+// what the user typed.
+func TestInteractiveSetupWizard_UnknownProviderNoDefaultURL(t *testing.T) {
+	tmpDir := t.TempDir()
+	provPath := filepath.Join(tmpDir, "providers.json")
+	t.Setenv(EnvProviders, provPath)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"choices":[{"message":{"content":"pong"}}]}`))
+	}))
+	defer server.Close()
+
+	// Simulate an unknown provider: the Base URL must be typed by hand, then
+	// the custom-model prompts accept defaults (empty lines), then N to stop.
+	input := strings.Join([]string{
+		"mycustomvendor",
+		server.URL + "/v1",
+		"mock-dummy-key-789",
+		"custom-model-x",
+		"", "", "", "", "", "", "", "",
+		"N",
+	}, "\n") + "\n"
+
+	in := strings.NewReader(input)
+	out := &bytes.Buffer{}
+
+	if err := InteractiveSetupWizard(in, out); err != nil {
+		t.Fatalf("wizard returned error: %v\nOutput: %s", err, out.String())
+	}
+
+	if !strings.Contains(out.String(), `No built-in default Base URL for "mycustomvendor"`) {
+		t.Errorf("missing no-default notice:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "Example: https://api.openai.com/v1") {
+		t.Errorf("missing example format hint:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "OpenAI-compatible Base URL [https://api.openai.com/v1]:") {
+		t.Errorf("unknown provider must not get an OpenAI default prompt:\n%s", out.String())
+	}
+
+	reg, err := LoadFrom(provPath)
+	if err != nil {
+		t.Fatalf("failed to load registry: %v", err)
+	}
+	if len(reg.Providers) != 1 {
+		t.Fatalf("expected 1 provider, got %d", len(reg.Providers))
+	}
+	p := reg.Providers[0]
+	if p.BaseURL != server.URL+"/v1" {
+		t.Errorf("baseURL = %q; want the explicitly typed %q", p.BaseURL, server.URL+"/v1")
+	}
+	if p.APIKeyEnv != "MYCUSTOMVENDOR_API_KEY" {
+		t.Errorf("apiKeyEnv = %q; want MYCUSTOMVENDOR_API_KEY", p.APIKeyEnv)
+	}
+	if len(p.Models) != 1 || p.Models[0].ID != "custom-model-x" {
+		t.Fatalf("unexpected models: %+v", p.Models)
+	}
+}
+
 func TestInteractiveSetupWizard_PastedRawKeyAbsorption(t *testing.T) {
 	tmpDir := t.TempDir()
 	provPath := filepath.Join(tmpDir, "providers.json")
@@ -583,11 +681,11 @@ func TestInteractiveSetupWizard_ServerMaximumTokens(t *testing.T) {
 		"SERVER_MAX_KEY",
 		"",
 		"custom-server-max-model",
-		"openai", // family
-		"-1",     // context length: -1 for server maximum
-		"-1",     // max output tokens: -1 for server maximum
-		"Y",      // supports tools: Y
-		"",       // allowed tools default
+		"openai",  // family
+		"-1",      // context length: -1 for server maximum
+		"-1",      // max output tokens: -1 for server maximum
+		"Y",       // supports tools: Y
+		"",        // allowed tools default
 		"y",       // reasoning: y
 		"default", // reasoning effort
 		"y",       // vision: y
@@ -817,11 +915,11 @@ func TestInteractiveSetupWizard_ProbeFailure_EditAndRetry(t *testing.T) {
 		"NW",
 		server.URL + "/v1",
 		"wrong-key",
-		"1", // select preset 1
-		"3", // choice 3: Edit Base URL or API Key
-		"",  // Base URL: hit enter to keep current
+		"1",             // select preset 1
+		"3",             // choice 3: Edit Base URL or API Key
+		"",              // Base URL: hit enter to keep current
 		"corrected-key", // API Key: updated key
-		"N", // add another: N
+		"N",             // add another: N
 	}, "\n") + "\n"
 
 	in := strings.NewReader(input)
@@ -955,12 +1053,12 @@ func TestInteractiveSetupWizard_ReasoningEffortDefault(t *testing.T) {
 		"thinkfam",
 		"128000",
 		"4096",
-		"Y",  // tools: Y
-		"",   // allowed tools default
-		"",   // reasoning: Enter -> defaults to Y!
-		"",   // reasoning effort: Enter -> defaults to "default"!
-		"N",  // vision: N
-		"N",  // add another: N
+		"Y", // tools: Y
+		"",  // allowed tools default
+		"",  // reasoning: Enter -> defaults to Y!
+		"",  // reasoning effort: Enter -> defaults to "default"!
+		"N", // vision: N
+		"N", // add another: N
 	}, "\n") + "\n"
 
 	in := strings.NewReader(input)
@@ -1036,4 +1134,426 @@ func TestInteractiveSetupWizard_ReasoningEffortExplicitHigh(t *testing.T) {
 	}
 }
 
+func TestKnownProviderCatalog(t *testing.T) {
+	hints := KnownProviders()
+	if len(hints) == 0 {
+		t.Fatal("known provider catalog is empty")
+	}
+	for _, h := range hints {
+		if h.Name == "" || h.Label == "" {
+			t.Errorf("catalog entry %+v is missing name or label", h)
+		}
+		if strings.Contains(h.Name, "/") {
+			t.Errorf("provider name %q must not contain '/'", h.Name)
+		}
+		if !strings.HasPrefix(h.BaseURL, "https://") {
+			t.Errorf("provider %q baseURL %q must be https", h.Name, h.BaseURL)
+		}
+		if !envNameRe.MatchString(h.KeyEnv) {
+			t.Errorf("provider %q keyEnv %q is not a valid environment variable name", h.Name, h.KeyEnv)
+		}
+	}
 
+	google, ok := LookupProviderHint("google")
+	if !ok {
+		t.Fatal("expected a catalog entry for google")
+	}
+	if google.BaseURL != GoogleAIStudioBaseURL {
+		t.Errorf("google baseURL = %q; want %q", google.BaseURL, GoogleAIStudioBaseURL)
+	}
+	if google.KeyEnv != GoogleAIStudioKeyEnv {
+		t.Errorf("google keyEnv = %q; want %q", google.KeyEnv, GoogleAIStudioKeyEnv)
+	}
+	if GoogleAIStudioKeyEnv != "GEMINI_API_KEY" {
+		t.Errorf("GoogleAIStudioKeyEnv = %q; want GEMINI_API_KEY", GoogleAIStudioKeyEnv)
+	}
+
+	// Aliases resolve to the canonical name.
+	for _, alias := range []string{"gemini", "Gemini", "google ai studio", "google-ai-studio", "AIStudio"} {
+		hint, ok := LookupProviderHint(alias)
+		if !ok || hint.Name != "google" {
+			t.Errorf("LookupProviderHint(%q) = %+v, %v; want canonical google", alias, hint, ok)
+		}
+	}
+	// bigmodel (Zhipu GLM): catalog entry, key env, and aliases.
+	bigmodel, ok := LookupProviderHint("bigmodel")
+	if !ok {
+		t.Fatal("expected a catalog entry for bigmodel")
+	}
+	if bigmodel.BaseURL != "https://open.bigmodel.cn/api/paas/v4" {
+		t.Errorf("bigmodel baseURL = %q", bigmodel.BaseURL)
+	}
+	if bigmodel.KeyEnv != "BIGMODEL_API_KEY" {
+		t.Errorf("bigmodel keyEnv = %q; want BIGMODEL_API_KEY", bigmodel.KeyEnv)
+	}
+	for _, alias := range []string{"glm", "GLM", "zhipu", "Zhipu"} {
+		hint, ok := LookupProviderHint(alias)
+		if !ok || hint.Name != "bigmodel" {
+			t.Errorf("LookupProviderHint(%q) = %+v, %v; want canonical bigmodel", alias, hint, ok)
+		}
+	}
+	if got := CanonicalProviderName("NeuralWatt"); got != "nw" {
+		t.Errorf("CanonicalProviderName(NeuralWatt) = %q; want nw", got)
+	}
+	if got := CanonicalProviderName("MyCustomVendor"); got != "mycustomvendor" {
+		t.Errorf("CanonicalProviderName(MyCustomVendor) = %q; want mycustomvendor", got)
+	}
+	if _, ok := LookupProviderHint("mycustomvendor"); ok {
+		t.Error("unknown provider must not resolve to a catalog entry")
+	}
+}
+
+func TestDefaultBaseURLAndEnvFor(t *testing.T) {
+	baseCases := map[string]string{
+		"google":           GoogleAIStudioBaseURL,
+		"gemini":           GoogleAIStudioBaseURL,
+		"Google AI Studio": GoogleAIStudioBaseURL,
+		"openai":           "https://api.openai.com/v1",
+		"deepseek":         "https://api.deepseek.com/v1",
+		"openrouter":       "https://openrouter.ai/api/v1",
+		"groq":             "https://api.groq.com/openai/v1",
+		"bigmodel":         "https://open.bigmodel.cn/api/paas/v4",
+		"glm":              "https://open.bigmodel.cn/api/paas/v4",
+		"NW":               "https://api.neuralwatt.com/v1",
+		"neuralwatt":       "https://api.neuralwatt.com/v1",
+		"together":         "https://api.together.xyz/v1",
+		"mistral":          "https://api.mistral.ai/v1",
+		// Unregistered providers get NO invented default (the wizard shows an
+		// example and requires explicit input instead of silently targeting
+		// api.openai.com).
+		"unknown-custom":    "",
+		"my local gateway ": "",
+	}
+	for name, want := range baseCases {
+		if got := defaultBaseURLFor(name); got != want {
+			t.Errorf("defaultBaseURLFor(%q) = %q; want %q", name, got, want)
+		}
+	}
+
+	envCases := map[string]string{
+		"google":           "GEMINI_API_KEY",
+		"gemini":           "GEMINI_API_KEY",
+		"google ai studio": "GEMINI_API_KEY",
+		"openai":           "OPENAI_API_KEY",
+		"nw":               "NW_API_KEY",
+		"neuralwatt":       "NW_API_KEY",
+		"my-prov":          "MY_PROV_API_KEY",
+		"My Provider":      "MY_PROVIDER_API_KEY",
+	}
+	for name, want := range envCases {
+		got := defaultEnvFor(name)
+		if got != want {
+			t.Errorf("defaultEnvFor(%q) = %q; want %q", name, got, want)
+		}
+		if !envNameRe.MatchString(got) {
+			t.Errorf("defaultEnvFor(%q) = %q is not a valid environment variable name", name, got)
+		}
+	}
+}
+
+func TestGoogleAIStudioPresets(t *testing.T) {
+	presets := GetModelPresets("google")
+	if len(presets) != 2 {
+		t.Fatalf("expected 2 Google presets, got %d", len(presets))
+	}
+
+	// "gemini" is an alias for the same preset set.
+	aliasPresets := GetModelPresets("gemini")
+	if len(aliasPresets) != len(presets) {
+		t.Fatalf("alias preset count = %d; want %d", len(aliasPresets), len(presets))
+	}
+
+	byID := map[string]ModelPreset{}
+	for _, p := range presets {
+		byID[p.ID] = p
+		if !p.Recommended && p.ID == "gemini-2.5-flash" {
+			t.Error("gemini-2.5-flash should be the recommended preset")
+		}
+		if !p.Capabilities.SupportsVision {
+			t.Errorf("preset %q must declare SupportsVision", p.ID)
+		}
+		if !p.Capabilities.SupportsThinking {
+			t.Errorf("preset %q must declare SupportsThinking", p.ID)
+		}
+		if !p.Capabilities.SupportsTools {
+			t.Errorf("preset %q must declare SupportsTools", p.ID)
+		}
+		// Effort is intentionally unset: the gateway then omits reasoning_effort
+		// and Google applies its own thinking budget.
+		if p.Capabilities.ReasoningEffort != "" {
+			t.Errorf("preset %q ReasoningEffort = %q; want empty (provider default)", p.ID, p.Capabilities.ReasoningEffort)
+		}
+		if !presetHasTag(p, "vision") || !presetHasTag(p, "reasoning") {
+			t.Errorf("preset %q tags = %v; want vision and reasoning", p.ID, p.Tags)
+		}
+	}
+
+	flash, ok := byID["gemini-2.5-flash"]
+	if !ok {
+		t.Fatal("missing gemini-2.5-flash preset")
+	}
+	if flash.Family != "gemini" || flash.ContextLength != 1048576 || flash.MaxOutputTokens != -1 {
+		t.Errorf("unexpected gemini-2.5-flash preset: %+v", flash)
+	}
+	pro, ok := byID["gemini-2.5-pro"]
+	if !ok {
+		t.Fatal("missing gemini-2.5-pro preset")
+	}
+	if pro.Family != "gemini" || pro.ContextLength != 1048576 {
+		t.Errorf("unexpected gemini-2.5-pro preset: %+v", pro)
+	}
+
+	// The AI Studio endpoint must resolve to the OpenAI-compatible paths the
+	// bridge and the wizard probe append.
+	prov := Provider{Name: "google", BaseURL: GoogleAIStudioBaseURL, APIKeyEnv: GoogleAIStudioKeyEnv}
+	if got, want := prov.Endpoint(), "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"; got != want {
+		t.Errorf("AI Studio endpoint = %q; want %q", got, want)
+	}
+}
+
+// I12: bigmodel (Zhipu GLM) presets. Specs come from docs.bigmodel.cn
+// (model overview): GLM-4.6 = 200K context, coding/reasoning/tools;
+// GLM-4.5-Flash = free tier, 128K context, thinking + tools. Neither is a
+// vision model, and GLM thinking has no effort dial (ReasoningEffort unset).
+func TestBigModelPresets(t *testing.T) {
+	presets := GetModelPresets("bigmodel")
+	if len(presets) != 2 {
+		t.Fatalf("expected 2 bigmodel presets, got %d", len(presets))
+	}
+
+	// "glm" / "zhipu" resolve to the same preset set.
+	if alias := GetModelPresets("glm"); len(alias) != len(presets) {
+		t.Fatalf("alias preset count = %d; want %d", len(alias), len(presets))
+	}
+
+	byID := map[string]ModelPreset{}
+	for _, p := range presets {
+		byID[p.ID] = p
+		if !p.Capabilities.SupportsTools || !p.Capabilities.SupportsThinking {
+			t.Errorf("preset %q must declare tools and thinking, got %+v", p.ID, p.Capabilities)
+		}
+		if p.Capabilities.SupportsVision {
+			t.Errorf("preset %q must not claim vision (GLM text models)", p.ID)
+		}
+		if p.Capabilities.ReasoningEffort != "" {
+			t.Errorf("preset %q ReasoningEffort = %q; want empty (GLM thinking is on/off, no dial)", p.ID, p.Capabilities.ReasoningEffort)
+		}
+		if !presetHasTag(p, "tools") {
+			t.Errorf("preset %q tags = %v; want the tools tag", p.ID, p.Tags)
+		}
+	}
+
+	glm46, ok := byID["glm-4.6"]
+	if !ok {
+		t.Fatal("missing glm-4.6 preset")
+	}
+	if !glm46.Recommended {
+		t.Error("glm-4.6 should be the recommended bigmodel preset")
+	}
+	if glm46.Family != "glm" || glm46.ContextLength != 200000 || glm46.MaxOutputTokens != -1 {
+		t.Errorf("unexpected glm-4.6 preset: %+v", glm46)
+	}
+
+	flash, ok := byID["glm-4.5-flash"]
+	if !ok {
+		t.Fatal("missing glm-4.5-flash preset")
+	}
+	if flash.Recommended {
+		t.Error("glm-4.5-flash is the free tier; glm-4.6 should carry the recommendation")
+	}
+	if flash.Family != "glm" || flash.ContextLength != 128000 {
+		t.Errorf("unexpected glm-4.5-flash preset: %+v", flash)
+	}
+	if !presetHasTag(flash, "free") {
+		t.Errorf("glm-4.5-flash tags = %v; want the free tag", flash.Tags)
+	}
+}
+
+// presetHasTag mirrors Model.HasTag for ModelPreset.
+func presetHasTag(p ModelPreset, tag string) bool {
+	for _, t := range p.Tags {
+		if strings.EqualFold(t, tag) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestPresetsCapabilityTagConsistency(t *testing.T) {
+	for _, hint := range KnownProviders() {
+		presets := GetModelPresets(hint.Name)
+		if len(presets) == 0 {
+			t.Errorf("catalog provider %q has no model presets", hint.Name)
+			continue
+		}
+		for _, p := range presets {
+			m := Model{ID: p.ID, Tags: p.Tags, Capabilities: p.Capabilities}
+			if missing := m.MissingCapabilityTags(); len(missing) > 0 {
+				t.Errorf("preset %q (%s) declares capabilities but is missing tags %v", p.ID, hint.Name, missing)
+			}
+		}
+	}
+
+	// The wizard writes these presets into the registry, so the saved models must
+	// keep the same guarantee.
+	for _, p := range GetModelPresets("openrouter") {
+		m := Model{ID: p.ID, Tags: p.Tags, Capabilities: p.Capabilities}
+		if missing := m.MissingCapabilityTags(); len(missing) > 0 {
+			t.Errorf("openrouter preset %q is missing tags %v", p.ID, missing)
+		}
+	}
+
+	// DeriveTags and MissingCapabilityTags agree on the tag vocabulary.
+	if got := DeriveTags(Capabilities{SupportsTools: true, SupportsVision: true, SupportsThinking: true}); len(got) != 4 {
+		t.Errorf("DeriveTags = %v; want 4 tags", got)
+	}
+	m := Model{ID: "x", Tags: []string{"general", "tools"}, Capabilities: Capabilities{SupportsTools: true, SupportsVision: true}}
+	if missing := m.MissingCapabilityTags(); len(missing) != 1 || missing[0] != "vision" {
+		t.Errorf("MissingCapabilityTags = %v; want [vision]", missing)
+	}
+}
+
+func TestCapabilitySummary(t *testing.T) {
+	cases := []struct {
+		caps Capabilities
+		want string
+	}{
+		{Capabilities{}, "none"},
+		{Capabilities{SupportsTools: true}, "tools"},
+		{Capabilities{SupportsTools: true, SupportsVision: true}, "tools, vision"},
+		{Capabilities{SupportsThinking: true}, "thinking(default)"},
+		{Capabilities{SupportsThinking: true, ReasoningEffort: "high"}, "thinking(high)"},
+		{Capabilities{SupportsTools: true, SupportsVision: true, SupportsThinking: true, ReasoningEffort: "high"}, "tools, vision, thinking(high)"},
+		{Capabilities{SupportsVideo: true, SupportsThinking: true, ReasoningEffort: "low"}, "video, thinking(low)"},
+	}
+	for _, tc := range cases {
+		if got := tc.caps.Summary(); got != tc.want {
+			t.Errorf("Capabilities%+v.Summary() = %q; want %q", tc.caps, got, tc.want)
+		}
+	}
+	if got := (Model{Capabilities: Capabilities{SupportsVision: true}}).CapabilitySummary(); got != "vision" {
+		t.Errorf("Model.CapabilitySummary() = %q; want vision", got)
+	}
+}
+
+func TestDisplayNameRoundTrip(t *testing.T) {
+	alias := DisplayName("gemini-2.5-flash", "google")
+	if alias != "gemini-2.5-flash (google)" {
+		t.Errorf("DisplayName = %q; want \"gemini-2.5-flash (google)\"", alias)
+	}
+	base, prov := ParseModelSpec(alias)
+	if base != "gemini-2.5-flash" || prov != "google" {
+		t.Errorf("ParseModelSpec(%q) = (%q, %q); want (gemini-2.5-flash, google)", alias, base, prov)
+	}
+
+	tgt := Target{Provider: Provider{Name: "google"}, Model: Model{ID: "gemini-2.5-pro"}}
+	if tgt.DisplayName() != "gemini-2.5-pro (google)" {
+		t.Errorf("Target.DisplayName() = %q", tgt.DisplayName())
+	}
+	if tgt.FullName() != "google/gemini-2.5-pro" {
+		t.Errorf("Target.FullName() = %q", tgt.FullName())
+	}
+
+	// Names with spaces must still round-trip.
+	spaced := DisplayName("gemini-2.5-flash", "Google AI Studio")
+	base, prov = ParseModelSpec(spaced)
+	if base != "gemini-2.5-flash" || prov != "Google AI Studio" {
+		t.Errorf("ParseModelSpec(%q) = (%q, %q)", spaced, base, prov)
+	}
+}
+
+func TestInteractiveSetupWizard_GoogleAIStudioPreset(t *testing.T) {
+	tmpDir := t.TempDir()
+	provPath := filepath.Join(tmpDir, "providers.json")
+	t.Setenv(EnvProviders, provPath)
+	t.Setenv(GoogleAIStudioKeyEnv, "")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"choices":[{"message":{"content":"pong"}}]}`))
+	}))
+	defer server.Close()
+
+	// Simulate the AI Studio path via the "gemini" alias:
+	// 1. Provider name: gemini
+	// 2. Base URL: mock server (the AI Studio default is asserted separately)
+	// 3. API Key: mock-google-key-123456
+	// 4. Select preset 1: gemini-2.5-flash
+	// 5. Add another model: N
+	input := strings.Join([]string{
+		"gemini",
+		server.URL + "/v1beta/openai/",
+		"mock-google-key-123456",
+		"1",
+		"N",
+	}, "\n") + "\n"
+
+	in := strings.NewReader(input)
+	out := &bytes.Buffer{}
+
+	if err := InteractiveSetupWizard(in, out); err != nil {
+		t.Fatalf("wizard returned error: %v\nOutput: %s", err, out.String())
+	}
+
+	outStr := out.String()
+	for _, want := range []string{
+		"Known providers:",
+		"google (Google AI Studio)",
+		"Aliases: glm, zhipu -> bigmodel; gemini, google ai studio, aistudio -> google; neuralwatt -> nw",
+		"Get a key at: https://aistudio.google.com/apikey",
+		"gemini-2.5-flash (gemini)",
+		"capabilities: tools, vision, thinking(default)",
+		`agy -m "gemini-2.5-flash (gemini)"`,
+		`agy pro fanout --models "gemini/gemini-2.5-flash" --prompt`,
+		"agy pro models",
+	} {
+		if !strings.Contains(outStr, want) {
+			t.Errorf("wizard output missing %q\nOutput: %s", want, outStr)
+		}
+	}
+	// Stale guidance: `agy pro fanout` has no -m flag and no positional prompt.
+	if strings.Contains(outStr, "fanout -m") {
+		t.Errorf("wizard still prints the removed `agy pro fanout -m` form:\n%s", outStr)
+	}
+
+	reg, err := LoadFrom(provPath)
+	if err != nil {
+		t.Fatalf("failed to load registry: %v", err)
+	}
+	if len(reg.Providers) != 1 {
+		t.Fatalf("expected 1 provider, got %d", len(reg.Providers))
+	}
+	p := reg.Providers[0]
+	if p.Name != "gemini" {
+		t.Errorf("provider name = %q; want the name the user typed (gemini)", p.Name)
+	}
+	if p.APIKeyEnv != "GEMINI_API_KEY" {
+		t.Errorf("apiKeyEnv = %q; want GEMINI_API_KEY", p.APIKeyEnv)
+	}
+	if len(p.Models) != 1 || p.Models[0].ID != "gemini-2.5-flash" {
+		t.Fatalf("unexpected models: %+v", p.Models)
+	}
+	m := p.Models[0]
+	if !m.Capabilities.SupportsVision || !m.Capabilities.SupportsThinking || !m.Capabilities.SupportsTools {
+		t.Errorf("gemini-2.5-flash capabilities = %+v; want tools, vision, thinking", m.Capabilities)
+	}
+	if missing := m.MissingCapabilityTags(); len(missing) > 0 {
+		t.Errorf("saved model is missing capability tags %v", missing)
+	}
+
+	// The gateway resolves both alias forms, and the display alias round-trips.
+	for _, spec := range []string{"gemini-2.5-flash (gemini)", "gemini/gemini-2.5-flash", "gemini-2.5-flash"} {
+		tgt, err := reg.FindTarget(spec)
+		if err != nil {
+			t.Errorf("FindTarget(%q) failed: %v", spec, err)
+			continue
+		}
+		if tgt.DisplayName() != "gemini-2.5-flash (gemini)" {
+			t.Errorf("FindTarget(%q).DisplayName() = %q", spec, tgt.DisplayName())
+		}
+		if got, want := tgt.Provider.Endpoint(), server.URL+"/v1beta/openai/chat/completions"; got != want {
+			t.Errorf("gateway endpoint = %q; want %q", got, want)
+		}
+	}
+}

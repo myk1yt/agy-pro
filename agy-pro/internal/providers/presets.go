@@ -2,11 +2,8 @@ package providers
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"net/http"
-	"os/exec"
 	"runtime"
 	"strings"
 	"time"
@@ -24,10 +21,90 @@ type ModelPreset struct {
 	Capabilities    Capabilities `json:"capabilities,omitempty"`
 }
 
+// GoogleAIStudioBaseURL is the Google AI Studio OpenAI-compatibility endpoint.
+// The gateway bridge appends "/chat/completions" and "/models" to it.
+const GoogleAIStudioBaseURL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+
+// GoogleAIStudioKeyEnv is the environment variable holding a Google AI Studio
+// (Gemini API) key.
+const GoogleAIStudioKeyEnv = "GEMINI_API_KEY"
+
+// ProviderHint describes a well-known OpenAI-compatible provider: the canonical
+// name stored in providers.json, its OpenAI-compatible base URL, the API key
+// variable, and the names accepted as aliases at the setup prompt. It is the
+// single source of truth for the setup wizard, the model presets, and any
+// interactive provider menu built on top of this package.
+type ProviderHint struct {
+	Name    string   `json:"name"`
+	Label   string   `json:"label"`
+	BaseURL string   `json:"baseURL"`
+	KeyEnv  string   `json:"keyEnv"`
+	Aliases []string `json:"aliases,omitempty"`
+	KeyURL  string   `json:"keyURL,omitempty"`
+}
+
+var knownProviders = []ProviderHint{
+	{Name: "deepseek", Label: "deepseek", BaseURL: "https://api.deepseek.com/v1", KeyEnv: "DEEPSEEK_API_KEY", KeyURL: "https://platform.deepseek.com/api_keys"},
+	{Name: "openrouter", Label: "openrouter", BaseURL: "https://openrouter.ai/api/v1", KeyEnv: "OPENROUTER_API_KEY", KeyURL: "https://openrouter.ai/keys"},
+	{Name: "groq", Label: "groq", BaseURL: "https://api.groq.com/openai/v1", KeyEnv: "GROQ_API_KEY", KeyURL: "https://console.groq.com/keys"},
+	{Name: "openai", Label: "openai", BaseURL: "https://api.openai.com/v1", KeyEnv: "OPENAI_API_KEY", KeyURL: "https://platform.openai.com/api-keys"},
+	{Name: "bigmodel", Label: "bigmodel (Zhipu GLM)", BaseURL: "https://open.bigmodel.cn/api/paas/v4", KeyEnv: "BIGMODEL_API_KEY", Aliases: []string{"glm", "zhipu"}},
+	{Name: "google", Label: "google (Google AI Studio)", BaseURL: GoogleAIStudioBaseURL, KeyEnv: GoogleAIStudioKeyEnv, Aliases: []string{"gemini", "google ai studio", "aistudio"}, KeyURL: "https://aistudio.google.com/apikey"},
+	{Name: "nw", Label: "nw (NeuralWatt)", BaseURL: "https://api.neuralwatt.com/v1", KeyEnv: "NW_API_KEY", Aliases: []string{"neuralwatt"}},
+	{Name: "together", Label: "together", BaseURL: "https://api.together.xyz/v1", KeyEnv: "TOGETHER_API_KEY"},
+	{Name: "mistral", Label: "mistral", BaseURL: "https://api.mistral.ai/v1", KeyEnv: "MISTRAL_API_KEY", KeyURL: "https://console.mistral.ai/api-keys"},
+}
+
+// KnownProviders returns the well-known provider catalog in menu order. The
+// returned slice and its Alias lists are copies, so callers may modify them.
+func KnownProviders() []ProviderHint {
+	out := make([]ProviderHint, len(knownProviders))
+	copy(out, knownProviders)
+	for i := range out {
+		out[i].Aliases = append([]string(nil), out[i].Aliases...)
+	}
+	return out
+}
+
+// providerAliasKey folds a provider name for alias matching: lowercase, with
+// spaces, underscores, hyphens, and dots removed.
+func providerAliasKey(name string) string {
+	norm := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(name)), "\ufeff")
+	return strings.NewReplacer(" ", "", "_", "", "-", "", ".", "").Replace(norm)
+}
+
+// CanonicalProviderName resolves a provider name typed at the prompt to the
+// canonical catalog name ("gemini", "google ai studio" -> "google"). Names that
+// are not in the catalog are returned lowercased and trimmed.
+func CanonicalProviderName(name string) string {
+	key := providerAliasKey(name)
+	for _, h := range knownProviders {
+		if key == providerAliasKey(h.Name) {
+			return h.Name
+		}
+		for _, alias := range h.Aliases {
+			if key == providerAliasKey(alias) {
+				return h.Name
+			}
+		}
+	}
+	return strings.TrimPrefix(strings.ToLower(strings.TrimSpace(name)), "\ufeff")
+}
+
+// LookupProviderHint returns the catalog entry for a provider name or alias.
+func LookupProviderHint(name string) (ProviderHint, bool) {
+	canonical := CanonicalProviderName(name)
+	for _, h := range knownProviders {
+		if h.Name == canonical {
+			return h, true
+		}
+	}
+	return ProviderHint{}, false
+}
+
 // GetModelPresets returns curated popular models for well-known providers.
 func GetModelPresets(providerName string) []ModelPreset {
-	norm := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(providerName)), "\ufeff")
-	switch norm {
+	switch CanonicalProviderName(providerName) {
 	case "deepseek":
 		return []ModelPreset{
 			{
@@ -67,7 +144,7 @@ func GetModelPresets(providerName string) []ModelPreset {
 				Recommended:     true,
 				ContextLength:   200000,
 				MaxOutputTokens: -1,
-				Tags:            []string{"flagship", "tools", "coding"},
+				Tags:            []string{"flagship", "tools", "coding", "reasoning"},
 				Capabilities: Capabilities{
 					SupportsTools:    true,
 					SupportsThinking: true,
@@ -191,7 +268,7 @@ func GetModelPresets(providerName string) []ModelPreset {
 			},
 		}
 
-	case "nw", "neuralwatt":
+	case "nw":
 		return []ModelPreset{
 			{
 				ID:              "nw-flash",
@@ -306,33 +383,74 @@ func GetModelPresets(providerName string) []ModelPreset {
 				},
 			},
 		}
-	case "google", "gemini":
+	// bigmodel.cn (Zhipu GLM): specs verified against docs.bigmodel.cn
+	// (model-overview table, 2026-01): GLM-4.6 = 200K context, advanced
+	// coding/reasoning/tool-calling; GLM-4.5-Flash = free tier, 128K context,
+	// thinking mode + tool calling. GLM's hybrid thinking is toggled per call
+	// (no effort dial), so ReasoningEffort stays unset like the google presets.
+	case "bigmodel":
+		return []ModelPreset{
+			{
+				ID:              "glm-4.6",
+				Family:          "glm",
+				Description:     "GLM-4.6 (200k context, advanced coding, reasoning & tool calling)",
+				Recommended:     true,
+				ContextLength:   200000,
+				MaxOutputTokens: -1,
+				Tags:            []string{"flagship", "tools", "coding", "reasoning"},
+				Capabilities: Capabilities{
+					SupportsTools:    true,
+					SupportsThinking: true,
+					AllowedTools:     []string{"read_file", "list_dir", "grep", "glob"},
+				},
+			},
+			{
+				ID:              "glm-4.5-flash",
+				Family:          "glm",
+				Description:     "GLM-4.5-Flash (free tier, 128k context, thinking & tool calling)",
+				Recommended:     false,
+				ContextLength:   128000,
+				MaxOutputTokens: -1,
+				Tags:            []string{"free", "fast", "tools", "reasoning"},
+				Capabilities: Capabilities{
+					SupportsTools:    true,
+					SupportsThinking: true,
+					AllowedTools:     []string{"read_file", "list_dir", "grep", "glob"},
+				},
+			},
+		}
+
+	// Gemini 2.5 models think by default, so ReasoningEffort is left unset: the
+	// gateway then omits reasoning_effort and Google applies its own budget.
+	case "google":
 		return []ModelPreset{
 			{
 				ID:              "gemini-2.5-flash",
 				Family:          "gemini",
-				Description:     "Gemini 2.5 Flash (1M context, Google AI Studio OpenAI endpoint)",
+				Description:     "Gemini 2.5 Flash (1M context, Google AI Studio OpenAI endpoint, vision & thinking)",
 				Recommended:     true,
 				ContextLength:   1048576,
 				MaxOutputTokens: -1,
-				Tags:            []string{"fast", "tools"},
+				Tags:            []string{"fast", "tools", "vision", "reasoning"},
 				Capabilities: Capabilities{
-					SupportsTools: true,
-					AllowedTools:  []string{"read_file", "list_dir", "grep", "glob"},
+					SupportsTools:    true,
+					SupportsVision:   true,
+					SupportsThinking: true,
+					AllowedTools:     []string{"read_file", "list_dir", "grep", "glob"},
 				},
 			},
 			{
 				ID:              "gemini-2.5-pro",
 				Family:          "gemini",
-				Description:     "Gemini 2.5 Pro (1M context, Google AI Studio OpenAI endpoint)",
+				Description:     "Gemini 2.5 Pro (1M context, Google AI Studio OpenAI endpoint, vision & thinking)",
 				Recommended:     false,
 				ContextLength:   1048576,
 				MaxOutputTokens: -1,
-				Tags:            []string{"flagship", "reasoning"},
+				Tags:            []string{"flagship", "tools", "vision", "reasoning"},
 				Capabilities: Capabilities{
 					SupportsTools:    true,
+					SupportsVision:   true,
 					SupportsThinking: true,
-					ReasoningEffort:  "high",
 					AllowedTools:     []string{"read_file", "list_dir", "grep", "glob"},
 				},
 			},
@@ -415,63 +533,17 @@ func isLikelyAPIKey(val string) bool {
 	return false
 }
 
-// persistWindowsUserEnv safely sets a persistent user environment variable
-// on Windows using base64 encoding to avoid any shell escaping issues.
+// persistWindowsUserEnv sets a persistent user environment variable on
+// Windows through the advapi32 registry API (win32reg_windows.go). It used to
+// launch powershell.exe with the name and value base64-encoded on the argv,
+// which exposed every saved key to process-list and command-line telemetry
+// (security finding S-2); the registry API passes both as UTF-16 pointers.
 func persistWindowsUserEnv(key, value string) error {
 	if runtime.GOOS != "windows" {
 		return nil
 	}
-	b64Key := base64.StdEncoding.EncodeToString([]byte(key))
-	b64Val := base64.StdEncoding.EncodeToString([]byte(value))
-	script := fmt.Sprintf(
-		`$k = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('%s')); `+
-			`$v = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('%s')); `+
-			`[Environment]::SetEnvironmentVariable($k, $v, 'User')`,
-		b64Key, b64Val,
-	)
-	cmd := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script)
-	return cmd.Run()
-}
-
-// GetWindowsUserEnv queries HKCU\Environment (and HKLM as fallback) for key via reg.exe.
-// It retrieves user environment variables that were saved in the Windows registry
-// even if the current process has not yet inherited them.
-func GetWindowsUserEnv(key string) string {
-	if runtime.GOOS != "windows" || strings.TrimSpace(key) == "" {
-		return ""
+	if store := defaultEnvStore; store != nil {
+		return store.Set(EnvRootUser, key, value)
 	}
-	key = strings.TrimSpace(key)
-	roots := []string{
-		`HKCU\Environment`,
-		`HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`,
-	}
-	for _, root := range roots {
-		cmd := exec.Command("reg", "query", root, "/v", key)
-		out, err := cmd.Output()
-		if err != nil {
-			continue
-		}
-		lines := strings.Split(string(out), "\n")
-		for _, l := range lines {
-			l = strings.TrimSpace(l)
-			fields := strings.Fields(l)
-			if len(fields) >= 3 && strings.EqualFold(fields[0], key) {
-				for _, typ := range []string{"REG_SZ", "REG_EXPAND_SZ"} {
-					if idx := strings.Index(l, typ); idx >= 0 {
-						val := strings.TrimSpace(l[idx+len(typ):])
-						if val != "" {
-							return val
-						}
-					}
-				}
-			}
-		}
-	}
-	return ""
+	return (&windowsEnvStore{}).Set(EnvRootUser, key, value)
 }
-
-// getWindowsUserEnv is a backward-compatible wrapper for GetWindowsUserEnv.
-func getWindowsUserEnv(key string) string {
-	return GetWindowsUserEnv(key)
-}
-

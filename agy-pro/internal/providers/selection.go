@@ -8,6 +8,14 @@ import (
 
 var modelDisplayRe = regexp.MustCompile(`^(.+?)\s*\(([^)]+)\)$`)
 
+// DisplayName renders the "model (provider)" alias that identifies a model on
+// every external-model surface: the bridge /models listing, the
+// AGY_LLM_GATEWAY_MODELS list behind the native /model picker, and the wizard
+// summary. It is the exact form ParseModelSpec parses back.
+func DisplayName(modelID, providerName string) string {
+	return fmt.Sprintf("%s (%s)", strings.TrimSpace(modelID), strings.TrimSpace(providerName))
+}
+
 // ParseModelSpec parses a model specification string into its base model ID
 // and provider name (if specified).
 // Supported formats:
@@ -51,6 +59,11 @@ type Target struct {
 // FullName returns "provider/model" identifier.
 func (t Target) FullName() string {
 	return t.Provider.Name + "/" + t.Model.ID
+}
+
+// DisplayName returns the "model (provider)" alias for this target.
+func (t Target) DisplayName() string {
+	return DisplayName(t.Model.ID, t.Provider.Name)
 }
 
 // AllCandidates returns all enabled model targets across all providers.
