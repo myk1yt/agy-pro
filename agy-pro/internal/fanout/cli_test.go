@@ -3,6 +3,7 @@ package fanout
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -304,6 +305,13 @@ func TestFanoutPlantedKeySweep(t *testing.T) {
 		skMask   = "sk-pl****"
 		awsPlant = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
 		awsMask  = "wJalr****"
+		// E1 plants: a JWT (3-segment dotted token) and an ASIA-prefixed AWS
+		// access key id (the credentialShapeRe sibling of AKIA that the
+		// generic AKIA-only redactor pattern misses).
+		jwtPlant  = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+		jwtMask   = "eyJhb****"
+		asiaPlant = "ASIAIOSFODNN7EXAMPLE"
+		asiaMask  = "ASIAI****"
 	)
 
 	type site struct {
@@ -345,8 +353,11 @@ func TestFanoutPlantedKeySweep(t *testing.T) {
 			wantCode: 2, want: skMask,
 		},
 		{
-			name: "tools AWS plant (case-folded echo)", args: []string{"--tools", "read," + awsPlant},
-			wantCode: 2, want: "wjalr****",
+			// E9: agenttools.ParseToolTokens masks the unknown token in its
+			// ORIGINAL case (the folded copy destroyed shape prefixes and let
+			// separator-carrying keys echo); the CLI must not un-mask it.
+			name: "tools AWS plant (original-case echo)", args: []string{"--tools", "read," + awsPlant},
+			wantCode: 2, want: awsMask,
 		},
 		{
 			name: "tools benign token error stays readable", args: []string{"--tools", "read,nowrite"},
@@ -366,6 +377,42 @@ func TestFanoutPlantedKeySweep(t *testing.T) {
 			name: "timeout benign value stays readable", args: []string{"-prompt", "x", "-timeout", "abc"},
 			wantCode: 2, want: `invalid value "abc"`,
 		},
+		{
+			// E1: the stdlib echoes an undefined flag name unquoted, so the
+			// quoted-segment redactor cannot see it; the unquoted-run scan
+			// masks the 16+ rune base64 run / JWT-shaped token.
+			name: "undefined flag AWS plant", args: []string{"--" + awsPlant},
+			wantCode: 2, want: awsMask,
+		},
+		{
+			name: "undefined flag JWT plant", args: []string{"--" + jwtPlant},
+			wantCode: 2, want: jwtMask,
+		},
+		{
+			name: "undefined flag ASIA plant", args: []string{"--" + asiaPlant},
+			wantCode: 2, want: asiaMask,
+		},
+		{
+			// E1: "bad flag syntax: <arg>" echoes the raw argument unquoted.
+			name: "bad flag syntax AWS plant", args: []string{"----" + awsPlant},
+			wantCode: 2, want: awsMask,
+		},
+		{
+			name: "bad flag syntax JWT plant", args: []string{"----" + jwtPlant},
+			wantCode: 2, want: jwtMask,
+		},
+		{
+			name: "bad flag syntax ASIA plant", args: []string{"----" + asiaPlant},
+			wantCode: 2, want: asiaMask,
+		},
+		{
+			// E2: a hash-named relative path is not location-shaped, so the
+			// old fragment extractor seeded its 16-rune hash and the composite
+			// sentence printed "[REDACTED].md". Whole-operand seeding keeps it
+			// readable in both the slot and the sentence.
+			name: "prompt-file hash-named path stays readable", args: []string{"--prompt-file", "prompts/3f2a8b9c1d2e3f4a.md"},
+			wantCode: 1, want: "prompts/3f2a8b9c1d2e3f4a.md", wantNot: "[REDACTED]",
+		},
 	}
 	for _, s := range sites {
 		t.Run(s.name, func(t *testing.T) {
@@ -374,7 +421,7 @@ func TestFanoutPlantedKeySweep(t *testing.T) {
 			if code != s.wantCode {
 				t.Fatalf("exit code = %d; want %d\nstdout:\n%s\nstderr:\n%s", code, s.wantCode, out.String(), errw.String())
 			}
-			for _, plant := range []string{skPlant, awsPlant} {
+			for _, plant := range []string{skPlant, awsPlant, jwtPlant, asiaPlant} {
 				if strings.Contains(out.String(), plant) || strings.Contains(errw.String(), plant) {
 					t.Errorf("fanout output leaks the planted key:\nstdout:\n%s\nstderr:\n%s", out.String(), errw.String())
 				}
@@ -386,5 +433,158 @@ func TestFanoutPlantedKeySweep(t *testing.T) {
 				t.Errorf("output must not contain %q:\nstdout:\n%s\nstderr:\n%s", s.wantNot, out.String(), errw.String())
 			}
 		})
+	}
+}
+
+// E2: composite-error seeding is whole-operand only (mirrors cmd/agy's
+// TestE2SeedEligibilityWholeOperandOnly). The old run extractor seeded every
+// separator-free 16+ rune fragment, which mangled benign tokens inside
+// composite sentences ("native:anthropic/claude-sonnet-4-5/x" printed
+// "native:[REDACTED]-sonnet-4-5/x", "prompts/3f2a8b9c1d2e3f4a.md" printed
+// "[REDACTED].md"). Seeds now require the WHOLE trimmed operand to be
+// secret-shaped; the lowercase twin of every seed stays armed for
+// case-folding parsers.
+func TestE2SeedEligibilityWholeOperandOnly(t *testing.T) {
+	awsPlant := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+
+	// AWS whole-operand secrets stay masked (classifier verdict seeds the
+	// redactor, which renders the seed as [REDACTED]).
+	msg := "open " + awsPlant + ": The system cannot find the file specified."
+	if got := maskOperandSentence(msg, awsPlant); strings.Contains(got, awsPlant) || !strings.Contains(got, "[REDACTED]") {
+		t.Errorf("AWS whole-operand must stay masked:\n%s", got)
+	}
+
+	// Benign operands stay readable, fragment seeds gone.
+	for _, op := range []string{
+		"native:anthropic/claude-sonnet-4-5/x",
+		"prompts/3f2a8b9c1d2e3f4a.md",
+		"./prompts/3f2a8b9c1d2e3f4a.md",
+		"/var/lib/agy/providers.json",
+		"https://acme.example/v1",
+	} {
+		msg := fmt.Sprintf("seat %d: %q: native model id must not contain %q", 1, op, "/")
+		got := maskOperandSentence(msg, op)
+		if !strings.Contains(got, op) {
+			t.Errorf("benign operand %q must stay readable:\n%s", op, got)
+		}
+		if strings.Contains(got, "[REDACTED]") {
+			t.Errorf("benign operand %q must not trigger any redaction:\n%s", op, got)
+		}
+	}
+
+	// JWT-shaped operands are masked: the eyJ header classifies, the shape
+	// rule covers headers the classifier cannot see.
+	for _, jwt := range []string{
+		"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+		"abcdefghijklmnop.qrstuvwxyz0123.456789",
+	} {
+		msg := fmt.Sprintf("invalid selection token %q", jwt)
+		got := maskOperandSentence(msg, jwt)
+		if strings.Contains(got, jwt) {
+			t.Errorf("JWT operand must be masked:\n%s", got)
+		}
+		if !strings.Contains(got, "[REDACTED]") {
+			t.Errorf("JWT operand should carry the redaction marker:\n%s", got)
+		}
+	}
+
+	// Decorated secrets keep the D1/D3 coverage: the whole operand seeds, so
+	// "1-<aws-secret>" and "native:<aws-secret>/x" stay masked in composite
+	// sentences without any fragment seed.
+	for _, op := range []string{"1-" + awsPlant, "native:" + awsPlant + "/x"} {
+		msg := fmt.Sprintf("invalid selection token %q", op)
+		got := maskOperandSentence(msg, op)
+		if strings.Contains(got, awsPlant) {
+			t.Errorf("decorated AWS operand %q must stay masked:\n%s", op, got)
+		}
+	}
+}
+
+// E4: the completion banner echoes the raw --task/--out flag values, so a
+// misdirected paste in either slot must be masked on the way out while benign
+// values stay readable.
+func TestE4CompletionBannerMasksTaskAndOut(t *testing.T) {
+	t.Setenv(paths.EnvAgyProHome, t.TempDir())
+	old := executeEngine
+	executeEngine = func(ctx context.Context, cfg RunConfig) (*SummaryReport, error) {
+		return &SummaryReport{Task: cfg.Task, NRequested: cfg.N, NCompleted: cfg.N}, nil
+	}
+	t.Cleanup(func() { executeEngine = old })
+
+	const (
+		plant  = "sk-planted-c2-sweep-key-0123456789abcdef"
+		masked = "sk-pl****"
+	)
+	var out, errw bytes.Buffer
+	if code := Run([]string{"-prompt", "p", "-task", plant, "-out", plant}, nil, &out, &errw); code != 0 {
+		t.Fatalf("exit = %d; want 0\nstderr:\n%s", code, errw.String())
+	}
+	if strings.Contains(out.String(), plant) {
+		t.Errorf("banner leaks the planted flag value:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "Task:                  "+masked) {
+		t.Errorf("banner task line should carry the readable mask %q:\n%s", masked, out.String())
+	}
+	if !strings.Contains(out.String(), masked) {
+		t.Errorf("banner artifact lines should carry the readable mask %q:\n%s", masked, out.String())
+	}
+
+	// Benign flag values stay byte-identical in the banner.
+	var out2, errw2 bytes.Buffer
+	if code := Run([]string{"-prompt", "p", "-task", "review", "-out", "reports/fanout"}, nil, &out2, &errw2); code != 0 {
+		t.Fatalf("exit = %d; want 0\nstderr:\n%s", code, errw2.String())
+	}
+	for _, want := range []string{
+		"Task:                  review",
+		"  Reconciliation:      " + filepath.Join("reports/fanout", "reconciliation.md"),
+		"  Machine Summary:     " + filepath.Join("reports/fanout", "summary.json"),
+	} {
+		if !strings.Contains(out2.String(), want) {
+			t.Errorf("benign banner lost %q:\n%s", want, out2.String())
+		}
+	}
+}
+
+// E2-adjacent (S-7 console line): the engine error names the seat/model spec
+// that failed to resolve, so a secret planted in --seats/--models that passes
+// validation but fails resolution must not reach stderr. The line routes
+// through the composite-error masker; benign engine errors stay readable.
+func TestFanoutEngineErrorMasksSeatSpecs(t *testing.T) {
+	t.Setenv(paths.EnvAgyProHome, t.TempDir())
+	old := executeEngine
+	executeEngine = func(ctx context.Context, cfg RunConfig) (*SummaryReport, error) {
+		spec := ""
+		switch {
+		case len(cfg.Seats) > 0:
+			spec = cfg.Seats[0].ModelID
+		case len(cfg.Models) > 0:
+			spec = cfg.Models[0]
+		}
+		return nil, fmt.Errorf("failed to resolve model %q: model %q not found in registry", spec, spec)
+	}
+	t.Cleanup(func() { executeEngine = old })
+
+	const plant = "1-wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	var out, errw bytes.Buffer
+	if code := Run([]string{"-prompt", "p", "-seats", plant}, nil, &out, &errw); code != 1 {
+		t.Fatalf("exit = %d; want 1\nstderr:\n%s", code, errw.String())
+	}
+	if strings.Contains(errw.String(), "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY") {
+		t.Errorf("engine error leaks the planted seat spec:\n%s", errw.String())
+	}
+	if !strings.Contains(errw.String(), "[REDACTED]") {
+		t.Errorf("engine error should carry the redaction marker:\n%s", errw.String())
+	}
+
+	// A benign engine error stays readable (no seed, generic pass only).
+	var out2, errw2 bytes.Buffer
+	if code := Run([]string{"-prompt", "p", "-models", "prov/m1"}, nil, &out2, &errw2); code != 1 {
+		t.Fatalf("exit = %d; want 1\nstderr:\n%s", code, errw2.String())
+	}
+	if !strings.Contains(errw2.String(), `failed to resolve model "prov/m1"`) {
+		t.Errorf("benign engine error must stay readable:\n%s", errw2.String())
+	}
+	if strings.Contains(errw2.String(), "[REDACTED]") {
+		t.Errorf("benign engine error must not be redacted:\n%s", errw2.String())
 	}
 }

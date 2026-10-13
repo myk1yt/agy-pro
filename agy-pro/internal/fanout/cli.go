@@ -28,7 +28,8 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 	flags := flag.NewFlagSet("fanout", flag.ContinueOnError)
 	// D8: stdlib flag output routes through the echo-line redactor so parse
 	// errors cannot echo a planted operand.
-	flags.SetOutput(&maskedFlagWriter{w: errw})
+	echo := &maskedFlagWriter{w: errw}
+	flags.SetOutput(echo)
 
 	var (
 		taskFlag       = flags.String("task", "review", "Task type: review|security|plan-audit|research|ideas|custom")
@@ -50,7 +51,16 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 	flags.Usage = func() {
 		fmt.Fprintln(errw, "Usage: agy pro fanout [options]")
 		fmt.Fprintln(errw, "\nOptions:")
+		// PrintDefaults renders static flag metadata only (names, types,
+		// defaults and our own usage strings) - never a user operand - so it
+		// writes straight to errw instead of the echo-line writer. That keeps
+		// our own examples readable: 'deepseek/deepseek-chat' and
+		// './reports/fanout/<ts>' are 16+ rune base64-shaped runs that the E1
+		// unquoted scan would otherwise mask inside help text (the E2
+		// over-mask class). Swarm and models route their usage the same way.
+		flags.SetOutput(errw)
 		flags.PrintDefaults()
+		flags.SetOutput(echo)
 	}
 
 	if err := flags.Parse(args); err != nil {
@@ -117,8 +127,11 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 	summary, err := executeEngine(ctx, cfg)
 	if err != nil {
 		// S-7: provider error snippets may echo credential fragments; the
-		// console line uses the same Redactor path as the reports.
-		fmt.Fprintf(errw, "Fanout error: %v\n", providers.NewRedactor()(err.Error()))
+		// console line uses the same Redactor path as the reports. The raw
+		// --seats/--models values are seeded too, so a secret in a spec that
+		// passes validation but fails to resolve (e.g. a pasted key used as a
+		// provider token) cannot reach stderr through the engine error.
+		fmt.Fprintf(errw, "Fanout error: %v\n", maskOperandSentence(err.Error(), *seatsFlag, *modelsFlag))
 		return 1
 	}
 
@@ -134,7 +147,11 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 	fmt.Fprintln(out, "===========================================================")
 	fmt.Fprintln(out, "  agy-pro Multi-Model Fanout Swarm Complete")
 	fmt.Fprintln(out, "===========================================================")
-	fmt.Fprintf(out, "Task:                  %s\n", summary.Task)
+	// E4: the completion banner echoes the raw --task/--out flag values; a
+	// misdirected paste must not reach stdout, so every echoed slot routes
+	// through providers.MaskOperand (credential shapes mask, benign values
+	// stay readable).
+	fmt.Fprintf(out, "Task:                  %s\n", providers.MaskOperand(summary.Task))
 	fmt.Fprintf(out, "Seats Evaluated:       %d / %d\n", summary.NCompleted, summary.NRequested)
 	fmt.Fprintf(out, "Degraded Mode:         %v\n", summary.Degraded)
 	fmt.Fprintf(out, "Confirmed Issues:      %d\n", summary.ConfirmedCount)
@@ -145,8 +162,8 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 	if rel, err := filepath.Rel(".", filepath.Join(summary.Root, "reports")); err == nil {
 		_ = rel
 	}
-	fmt.Fprintf(out, "  Reconciliation:      %s\n", filepath.Join(cfg.OutDir, "reconciliation.md"))
-	fmt.Fprintf(out, "  Machine Summary:     %s\n", filepath.Join(cfg.OutDir, "summary.json"))
+	fmt.Fprintf(out, "  Reconciliation:      %s\n", providers.MaskOperand(filepath.Join(cfg.OutDir, "reconciliation.md")))
+	fmt.Fprintf(out, "  Machine Summary:     %s\n", providers.MaskOperand(filepath.Join(cfg.OutDir, "summary.json")))
 	for _, seat := range summary.Seats {
 		fmt.Fprintf(out, "  Seat %d Report:       seat-%d-%s-%s.md\n",
 			seat.SeatID, seat.SeatID,
@@ -262,10 +279,22 @@ func ParseToolTokens(spec string) (string, error) {
 	return agenttools.ParseToolTokens(spec)
 }
 
-// operandRunRe matches an opaque base64-alphabet run inside a larger operand
-// (mirrors cmd/agy's composite-error helper; the fanout CLI is a separate
-// package). The 16-rune floor mirrors the operand classifier's
-// contiguousSecretRun threshold (D7), so ordinary tokens never produce seeds.
+// wholeOperandBase64Re matches a WHOLE operand that is one uninterrupted base64
+// run of 16+ runes (E2 seed-eligibility shape 1): the AWS-secret shape, whose
+// real instances carry "/". The classifier recognizes the same run; this shape
+// is stated explicitly so a leading-"/" secret (which the classifier's
+// location rule would exempt) still seeds.
+var wholeOperandBase64Re = regexp.MustCompile(`^[A-Za-z0-9+/=]{16,}$`)
+
+// jwtOperandRe matches a WHOLE operand in the 3-segment JWT shape (E2
+// seed-eligibility shape 2). Together with the 16-rune total floor it covers
+// JWTs whose header does not start with "eyJ" and so escapes the classifier.
+var jwtOperandRe = regexp.MustCompile(`^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$`)
+
+// operandRunRe matches an opaque base64-alphabet run inside a larger operand.
+// Seeding never emits a bare run (E2): a 16-rune fragment cannot be told apart
+// from a benign hash or path segment ("3f2a8b9c1d2e3f4a", "anthropic/claude"),
+// so the extractor only feeds the decorated-secret test below.
 var operandRunRe = regexp.MustCompile(`[A-Za-z0-9+/=]{16,}`)
 
 // isLocationShaped mirrors the operand classifier's location rule: URLs,
@@ -287,14 +316,76 @@ func isLocationShaped(s string) bool {
 	return false
 }
 
+// runIsCredentialShaped reports whether an opaque base64 run carries the
+// base64-of-random-bytes signature (mixed case plus a digit) of a real secret
+// such as an AWS secret access key. Lowercase-only runs are ordinary word,
+// hash and path fragments ("anthropic/claude", "3f2a8b9c1d2e3f4a",
+// "abcdefghijklmnop") and never seed; uppercase-only runs are access-key IDs
+// the generic AKIA/ASIA patterns or the whole-operand rule already cover.
+func runIsCredentialShaped(run string) bool {
+	var upper, lower, digit bool
+	for _, r := range run {
+		switch {
+		case r >= 'A' && r <= 'Z':
+			upper = true
+		case r >= 'a' && r <= 'z':
+			lower = true
+		case r >= '0' && r <= '9':
+			digit = true
+		}
+	}
+	return upper && lower && digit
+}
+
+// hasCredentialRun reports whether op carries a 16+ rune base64 run with the
+// credential signature: the "1-<aws-secret>" / "native:<aws-secret>/x"
+// decorated-operand class. Location-shaped operands are exempt (their inner
+// runs are path segments and stay readable by policy).
+func hasCredentialRun(op string) bool {
+	if isLocationShaped(op) {
+		return false
+	}
+	for _, run := range operandRunRe.FindAllString(op, -1) {
+		if runIsCredentialShaped(run) {
+			return true
+		}
+	}
+	return false
+}
+
+// seedEligible reports whether op may seed the composite-error redactor (E2).
+// Only WHOLE operands are ever seeded, never a fragment: the run extractor
+// used to seed every separator-free 16+ rune fragment, which mangled benign
+// tokens inside composite sentences ("native:anthropic/claude-sonnet-4-5/x"
+// printed "native:[REDACTED]-sonnet-4-5/x", "prompts/3f2a8b9c1d2e3f4a.md"
+// printed "[REDACTED].md"). An operand is eligible when the canonical
+// classifier masks it, when the whole trimmed operand is a 16+ rune base64 run
+// or a 16+ rune JWT shape (both shapes imply no whitespace), or when it carries
+// a decorated credential run so the D1/D3 decorated-operand coverage survives.
+func seedEligible(op string) bool {
+	if providers.MaskOperand(op) != op {
+		return true
+	}
+	t := strings.TrimSpace(op)
+	if t == "" || strings.ContainsAny(t, " \t\r\n\v\f") {
+		return false
+	}
+	if wholeOperandBase64Re.MatchString(t) {
+		return true
+	}
+	if len([]rune(t)) >= 16 && jwtOperandRe.MatchString(t) {
+		return true
+	}
+	return hasCredentialRun(op)
+}
+
 // maskOperandSentence renders an error message that may embed raw CLI
 // operands (D1/D3 composite-error class). MaskOperand alone cannot mask a
 // secret embedded in a full sentence (the sentence never classifies
-// secret-shaped), so the redactor is seeded with every operand that
-// MaskOperand masks, each 16+ rune base64 run inside non-location operands,
-// and the lowercase twin of every seed (token parsers may case-fold the
-// echo). With no seed the message falls back to plain MaskOperand, keeping
-// benign operands readable.
+// secret-shaped), so the redactor is seeded with every eligible operand and
+// the lowercase twin of every seed (token parsers may case-fold the echo).
+// With no seed the message falls back to plain MaskOperand, keeping benign
+// operands readable.
 func maskOperandSentence(msg string, operands ...string) string {
 	seen := map[string]bool{}
 	var seeds []string
@@ -305,20 +396,11 @@ func maskOperandSentence(msg string, operands ...string) string {
 		}
 	}
 	for _, op := range operands {
-		if op == "" {
+		if op == "" || !seedEligible(op) {
 			continue
 		}
-		if providers.MaskOperand(op) != op {
-			addSeed(op)
-			addSeed(strings.ToLower(op))
-		}
-		if isLocationShaped(op) {
-			continue
-		}
-		for _, run := range operandRunRe.FindAllString(op, -1) {
-			addSeed(run)
-			addSeed(strings.ToLower(run))
-		}
+		addSeed(op)
+		addSeed(strings.ToLower(op))
 	}
 	if len(seeds) == 0 {
 		return providers.MaskOperand(msg)
@@ -326,12 +408,61 @@ func maskOperandSentence(msg string, operands ...string) string {
 	return providers.NewRedactor(seeds...)(msg)
 }
 
+// quotedEchoRe splits a flag echo line into double-quoted and unquoted spans,
+// mirroring providers' quoted-segment rule: the stdlib quotes the offending
+// value in its errors, and RedactEchoLine has already masked that content, so
+// the unquoted scan below must not touch it.
+var quotedEchoRe = regexp.MustCompile(`"[^"]*"`)
+
+// unquotedRunRe matches a 16+ rune base64-shaped run in an unquoted span: the
+// shape of an opaque credential (AWS secret keys, most carrying "/" or "+").
+var unquotedRunRe = regexp.MustCompile(`[A-Za-z0-9+/=]{16,}`)
+
+// unquotedJWTRe matches a 3-segment dotted token (JWT shape) in an unquoted
+// span. The 16-rune total floor matches the operand-seeding rule so short
+// dotted tokens (versions, "e.g.") stay readable.
+var unquotedJWTRe = regexp.MustCompile(`[A-Za-z0-9][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+){2}`)
+
+// maskUnquotedEcho masks credential-shaped runs in the UNQUOTED spans of a
+// stdlib flag echo line (E1). The flag package prints an undefined flag name
+// and a bad-syntax argument bare — `flag provided but not defined:
+// -wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY` echoed all 40 runes (live PoC),
+// and `bad flag syntax: ----wJalr...` does the same — so the quoted-segment
+// redactor cannot see them and the generic patterns only cover sk-/AKIA
+// shapes. Each 16+ rune base64 run renders through the canonical classifier
+// (providers.MaskOperand) and each 16+ rune JWT-shaped token renders as
+// MaskSecret (U8: first 5 runes + ****). Quoted spans are left exactly as
+// RedactEchoLine rendered them.
+func maskUnquotedEcho(line string) string {
+	var b strings.Builder
+	last := 0
+	for _, loc := range quotedEchoRe.FindAllStringIndex(line, -1) {
+		b.WriteString(maskUnquotedSpan(line[last:loc[0]]))
+		b.WriteString(line[loc[0]:loc[1]])
+		last = loc[1]
+	}
+	b.WriteString(maskUnquotedSpan(line[last:]))
+	return b.String()
+}
+
+func maskUnquotedSpan(span string) string {
+	span = unquotedJWTRe.ReplaceAllStringFunc(span, func(tok string) string {
+		if len([]rune(tok)) < 16 {
+			return tok
+		}
+		return providers.MaskSecret(tok)
+	})
+	return unquotedRunRe.ReplaceAllStringFunc(span, providers.MaskOperand)
+}
+
 // maskedFlagWriter is the flag.FlagSet output sink (D8, mirrors cmd/agy's
 // writer): stdlib parse errors echo the raw operand — `invalid value "sk-..."
 // for flag -timeout` — and undefined flag names unquoted. Every complete line
-// passes through providers.RedactEchoLine (quoted segments) and then
+// passes through providers.RedactEchoLine (quoted segments), then
 // providers.MaskOperand (generic credential patterns catch unquoted sk-/AKIA
-// runs) before it reaches stderr. Benign lines are unchanged by both passes.
+// runs), and finally maskUnquotedEcho (E1: 16+ rune base64 runs and
+// JWT-shaped tokens outside quotes) before it reaches stderr. Benign lines are
+// unchanged by all three passes.
 type maskedFlagWriter struct {
 	w    io.Writer
 	tail []byte
@@ -346,7 +477,7 @@ func (m *maskedFlagWriter) Write(p []byte) (int, error) {
 		}
 		line := strings.TrimSuffix(string(m.tail[:i]), "\r")
 		m.tail = m.tail[i+1:]
-		if _, err := fmt.Fprintln(m.w, providers.MaskOperand(providers.RedactEchoLine(line))); err != nil {
+		if _, err := fmt.Fprintln(m.w, maskUnquotedEcho(providers.MaskOperand(providers.RedactEchoLine(line)))); err != nil {
 			return len(p), err
 		}
 	}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -82,6 +83,22 @@ func TestD1CompositeErrorMasksPlantedKeys(t *testing.T) {
 			strings.NewReader(""), &out, &errw)
 		if !strings.Contains(errw.String(), "./prompts/missing.md") {
 			t.Errorf("benign path must stay readable in the error:\n%s", errw.String())
+		}
+		if strings.Contains(errw.String(), "[REDACTED]") {
+			t.Errorf("benign operand must not trigger any redaction:\n%s", errw.String())
+		}
+	})
+
+	// E2: a hash-named relative path is not location-shaped, so the old
+	// fragment extractor seeded its 16-rune hash and the composite sentence
+	// printed "[REDACTED].md". Whole-operand seeding keeps it readable.
+	t.Run("swarm prompt-file hash-named path stays readable", func(t *testing.T) {
+		defer withStubSwarmInventory(t, swarmFixtureInventory(t), nil)()
+		var out, errw strings.Builder
+		runSwarmCmd([]string{"--template", "code-review", "--seats", "p1", "--prompt-file", "prompts/3f2a8b9c1d2e3f4a.md"},
+			strings.NewReader(""), &out, &errw)
+		if !strings.Contains(errw.String(), "prompts/3f2a8b9c1d2e3f4a.md") {
+			t.Errorf("hash-named relative path must stay readable in the error:\n%s", errw.String())
 		}
 		if strings.Contains(errw.String(), "[REDACTED]") {
 			t.Errorf("benign operand must not trigger any redaction:\n%s", errw.String())
@@ -227,7 +244,7 @@ func TestD3FixKeysTargetsAndReportMasked(t *testing.T) {
 			Entries: []providers.RepairEntry{
 				{
 					Provider: sweepAWSKey, Env: maskSweepKey,
-					Action: providers.RepairActionRewrite,
+					Action:      providers.RepairActionRewrite,
 					VariantName: "\ufeff" + maskSweepKey, MaskedValue: "sk-…0001",
 				},
 				{
@@ -282,5 +299,132 @@ func TestD3DoctorUnknownOptionMasked(t *testing.T) {
 	// A benign unknown option stays readable so the error stays actionable.
 	if _, err := parseDoctorArgs([]string{"--bogus"}); err == nil || !strings.Contains(err.Error(), "--bogus") {
 		t.Errorf("benign unknown option must stay readable: %v", err)
+	}
+}
+
+// E1: the stdlib prints undefined flag names and bad-syntax arguments
+// UNQUOTED, so the quoted-segment redactor cannot see a planted secret there
+// (live PoC: `agy pro swarm --wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY`
+// echoed all 40 runes of the AWS secret). Both flag writers now scan unquoted
+// runs: 16+ rune base64-shaped runs (AWS secrets, ASIA key ids) render through
+// the canonical classifier and JWT-shaped 3-segment tokens render as
+// MaskSecret, while benign echo lines and usage text stay byte-identical.
+func TestE1UnquotedFlagEchoMasked(t *testing.T) {
+	plants := []struct{ name, key, masked string }{
+		{"aws", sweepAWSKey, sweepAWSMask},
+		{"jwt", sweepJWTKey, sweepJWTMask},
+		{"asia", sweepASIAKey, sweepASIAMask},
+	}
+	for _, p := range plants {
+		for _, kind := range []struct{ name, arg string }{
+			{"undefined flag", "--" + p.key},
+			{"bad flag syntax", "----" + p.key},
+		} {
+			t.Run("models "+kind.name+" "+p.name+" plant", func(t *testing.T) {
+				var out, errw strings.Builder
+				code := runModelsCmdTo([]string{kind.arg}, &out, &errw)
+				if code != 2 {
+					t.Fatalf("exit = %d; want 2\nstderr:\n%s", code, errw.String())
+				}
+				if strings.Contains(errw.String(), p.key) {
+					t.Errorf("%s echo leaks the planted key:\n%s", kind.name, errw.String())
+				}
+				if !strings.Contains(errw.String(), p.masked) {
+					t.Errorf("%s echo should carry the readable mask %q:\n%s", kind.name, p.masked, errw.String())
+				}
+				if !strings.Contains(errw.String(), "Usage: agy pro models [--all | --json]") {
+					t.Errorf("usage text must stay readable:\n%s", errw.String())
+				}
+			})
+			t.Run("swarm "+kind.name+" "+p.name+" plant", func(t *testing.T) {
+				var out, errw strings.Builder
+				code := runSwarmCmd([]string{kind.arg}, strings.NewReader(""), &out, &errw)
+				if code != 2 {
+					t.Fatalf("exit = %d; want 2\nstderr:\n%s", code, errw.String())
+				}
+				if strings.Contains(errw.String(), p.key) {
+					t.Errorf("%s echo leaks the planted key:\n%s", kind.name, errw.String())
+				}
+				if !strings.Contains(errw.String(), p.masked) {
+					t.Errorf("%s echo should carry the readable mask %q:\n%s", kind.name, p.masked, errw.String())
+				}
+				if !strings.Contains(errw.String(), "Usage: agy pro swarm [options]") {
+					t.Errorf("usage text must stay readable:\n%s", errw.String())
+				}
+			})
+		}
+	}
+
+	// Benign stdlib echo lines stay byte-identical through the scan.
+	t.Run("benign echoes stay readable", func(t *testing.T) {
+		var out, errw strings.Builder
+		runSwarmCmd([]string{"--template", "code-review", "--seats", "p1", "--timeout", "abc"},
+			strings.NewReader(""), &out, &errw)
+		if !strings.Contains(errw.String(), `invalid value "abc" for flag -timeout`) {
+			t.Errorf("benign flag value must stay readable:\n%s", errw.String())
+		}
+		var out2, errw2 strings.Builder
+		runModelsCmdTo([]string{"--bogus"}, &out2, &errw2)
+		if !strings.Contains(errw2.String(), "flag provided but not defined: -bogus") {
+			t.Errorf("benign undefined flag name must stay readable:\n%s", errw2.String())
+		}
+	})
+}
+
+// E2: composite-error seeding is whole-operand only. The old run extractor
+// seeded every separator-free 16+ rune fragment, which mangled benign tokens
+// inside composite sentences ("native:anthropic/claude-sonnet-4-5/x" printed
+// "native:[REDACTED]-sonnet-4-5/x", "prompts/3f2a8b9c1d2e3f4a.md" printed
+// "[REDACTED].md"). Seeds now require the WHOLE trimmed operand to be
+// secret-shaped; the lowercase twin of every seed stays armed for
+// case-folding parsers.
+func TestE2SeedEligibilityWholeOperandOnly(t *testing.T) {
+	// AWS whole-operand secrets stay masked (classifier verdict seeds the
+	// redactor, which renders the seed as [REDACTED]).
+	msg := "open " + sweepAWSKey + ": The system cannot find the file specified."
+	if got := maskOperandSentence(msg, sweepAWSKey); strings.Contains(got, sweepAWSKey) || !strings.Contains(got, "[REDACTED]") {
+		t.Errorf("AWS whole-operand must stay masked:\n%s", got)
+	}
+
+	// Benign operands stay readable, fragment seeds gone.
+	for _, op := range []string{
+		"native:anthropic/claude-sonnet-4-5/x",
+		"prompts/3f2a8b9c1d2e3f4a.md",
+		"./prompts/3f2a8b9c1d2e3f4a.md",
+		"/var/lib/agy/providers.json",
+		"https://acme.example/v1",
+	} {
+		msg := fmt.Sprintf("seat 1: %q: native model id must not contain %q", op, "/")
+		got := maskOperandSentence(msg, op)
+		if !strings.Contains(got, op) {
+			t.Errorf("benign operand %q must stay readable:\n%s", op, got)
+		}
+		if strings.Contains(got, "[REDACTED]") {
+			t.Errorf("benign operand %q must not trigger any redaction:\n%s", op, got)
+		}
+	}
+
+	// JWT-shaped operands are masked: the eyJ header classifies, the shape
+	// rule covers headers the classifier cannot see.
+	for _, jwt := range []string{sweepJWTKey, "abcdefghijklmnop.qrstuvwxyz0123.456789"} {
+		msg := fmt.Sprintf("invalid selection token %q", jwt)
+		got := maskOperandSentence(msg, jwt)
+		if strings.Contains(got, jwt) {
+			t.Errorf("JWT operand must be masked:\n%s", got)
+		}
+		if !strings.Contains(got, "[REDACTED]") {
+			t.Errorf("JWT operand should carry the redaction marker:\n%s", got)
+		}
+	}
+
+	// Decorated secrets keep the D1/D3 coverage: the whole operand seeds, so
+	// "1-<aws-secret>" and "native:<aws-secret>/x" stay masked in composite
+	// sentences without any fragment seed.
+	for _, op := range []string{"1-" + sweepAWSKey, "native:" + sweepAWSKey + "/x"} {
+		msg := fmt.Sprintf("invalid selection token %q", op)
+		got := maskOperandSentence(msg, op)
+		if strings.Contains(got, sweepAWSKey) {
+			t.Errorf("decorated AWS operand %q must stay masked:\n%s", op, got)
+		}
 	}
 }

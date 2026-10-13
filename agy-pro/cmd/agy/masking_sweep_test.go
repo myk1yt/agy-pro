@@ -30,6 +30,16 @@ const (
 	sweepAWSMask  = "wJalr****"
 	sweepAKIAKey  = "AKIAIOSFODNN7EXAMPLE"
 	sweepAKIAMask = "AKIAI****"
+
+	// E1 delta fixtures: a JWT (3-segment dotted token; the "eyJ" header
+	// classifies as a credential, the shape rule covers other headers) and an
+	// ASIA-prefixed AWS access key id (the credentialShapeRe sibling of AKIA
+	// that the generic AKIA-only redactor pattern misses, so only the
+	// unquoted-run scan catches it).
+	sweepJWTKey   = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+	sweepJWTMask  = "eyJhb****"
+	sweepASIAKey  = "ASIAIOSFODNN7EXAMPLE"
+	sweepASIAMask = "ASIAI****"
 )
 
 // TestWrapperPlantedKeySweep drives every in-process wrapper echo site with a
@@ -161,6 +171,67 @@ func TestWrapperPlantedKeySweep(t *testing.T) {
 				strings.NewReader(""), &out, &errw)
 			return code, out.String(), errw.String()
 		}},
+		// --- E1: stdlib unquoted flag echoes (undefined flag / bad syntax) -----
+		{"models undefined flag AWS plant", func() (int, string, string) {
+			var out, errw strings.Builder
+			code := runModelsCmdTo([]string{"--" + sweepAWSKey}, &out, &errw)
+			return code, out.String(), errw.String()
+		}},
+		{"models bad flag syntax AWS plant", func() (int, string, string) {
+			var out, errw strings.Builder
+			code := runModelsCmdTo([]string{"----" + sweepAWSKey}, &out, &errw)
+			return code, out.String(), errw.String()
+		}},
+		{"models undefined flag JWT plant", func() (int, string, string) {
+			var out, errw strings.Builder
+			code := runModelsCmdTo([]string{"--" + sweepJWTKey}, &out, &errw)
+			return code, out.String(), errw.String()
+		}},
+		{"models bad flag syntax JWT plant", func() (int, string, string) {
+			var out, errw strings.Builder
+			code := runModelsCmdTo([]string{"----" + sweepJWTKey}, &out, &errw)
+			return code, out.String(), errw.String()
+		}},
+		{"models undefined flag ASIA plant", func() (int, string, string) {
+			var out, errw strings.Builder
+			code := runModelsCmdTo([]string{"--" + sweepASIAKey}, &out, &errw)
+			return code, out.String(), errw.String()
+		}},
+		{"models bad flag syntax ASIA plant", func() (int, string, string) {
+			var out, errw strings.Builder
+			code := runModelsCmdTo([]string{"----" + sweepASIAKey}, &out, &errw)
+			return code, out.String(), errw.String()
+		}},
+		{"swarm undefined flag AWS plant", func() (int, string, string) {
+			var out, errw strings.Builder
+			code := runSwarmCmd([]string{"--" + sweepAWSKey}, strings.NewReader(""), &out, &errw)
+			return code, out.String(), errw.String()
+		}},
+		{"swarm bad flag syntax AWS plant", func() (int, string, string) {
+			var out, errw strings.Builder
+			code := runSwarmCmd([]string{"----" + sweepAWSKey}, strings.NewReader(""), &out, &errw)
+			return code, out.String(), errw.String()
+		}},
+		{"swarm undefined flag JWT plant", func() (int, string, string) {
+			var out, errw strings.Builder
+			code := runSwarmCmd([]string{"--" + sweepJWTKey}, strings.NewReader(""), &out, &errw)
+			return code, out.String(), errw.String()
+		}},
+		{"swarm bad flag syntax JWT plant", func() (int, string, string) {
+			var out, errw strings.Builder
+			code := runSwarmCmd([]string{"----" + sweepJWTKey}, strings.NewReader(""), &out, &errw)
+			return code, out.String(), errw.String()
+		}},
+		{"swarm undefined flag ASIA plant", func() (int, string, string) {
+			var out, errw strings.Builder
+			code := runSwarmCmd([]string{"--" + sweepASIAKey}, strings.NewReader(""), &out, &errw)
+			return code, out.String(), errw.String()
+		}},
+		{"swarm bad flag syntax ASIA plant", func() (int, string, string) {
+			var out, errw strings.Builder
+			code := runSwarmCmd([]string{"----" + sweepASIAKey}, strings.NewReader(""), &out, &errw)
+			return code, out.String(), errw.String()
+		}},
 	}
 	for _, s := range sites {
 		t.Run(s.name, func(t *testing.T) {
@@ -174,6 +245,12 @@ func TestWrapperPlantedKeySweep(t *testing.T) {
 				}
 				if strings.Contains(src.body, sweepAKIAKey) {
 					t.Errorf("exit=%d %s prints the planted AKIA key raw:\n%s", code, src.name, src.body)
+				}
+				if strings.Contains(src.body, sweepJWTKey) {
+					t.Errorf("exit=%d %s prints the planted JWT raw:\n%s", code, src.name, src.body)
+				}
+				if strings.Contains(src.body, sweepASIAKey) {
+					t.Errorf("exit=%d %s prints the planted ASIA key raw:\n%s", code, src.name, src.body)
 				}
 			}
 		})
