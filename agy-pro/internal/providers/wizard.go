@@ -49,13 +49,22 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 	if provName == "" {
 		return errors.New("provider name cannot be empty")
 	}
+	// B5 data-layer completeness: the wizard persists to the same registry as
+	// the registry-ops path, so names must satisfy the same shell-safe charset
+	// (a name later lands in plugin run_command lines).
+	if err := ValidateProviderName(provName); err != nil {
+		return err
+	}
+	// B2/U8: every later echo of the name goes through MaskOperand — a
+	// misdirected key paste in the name slot must never reach the transcript.
+	provLabel := MaskOperand(provName)
 
 	// A name that resolves to a catalog entry (via an alias such as "gemini")
 	// keeps the name the user typed but takes the catalog base URL, key variable,
 	// and presets.
 	hint, knownProvider := LookupProviderHint(provName)
 	if knownProvider && !strings.EqualFold(provName, hint.Name) {
-		fmt.Fprintf(out, "Using %s settings for %q (base URL, %s).\n", hint.Name, provName, hint.KeyEnv)
+		fmt.Fprintf(out, "Using %s settings for %q (base URL, %s).\n", hint.Name, provLabel, hint.KeyEnv)
 	}
 
 	// Step 2: Base URL
@@ -64,7 +73,7 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 		// Unregistered provider: nothing was invented for it, so show the
 		// expected shape and make the user type a real endpoint (empty input
 		// is rejected below).
-		fmt.Fprintf(out, "No built-in default Base URL for %q. Example: https://api.openai.com/v1 (an OpenAI-compatible /v1 endpoint)\n", provName)
+		fmt.Fprintf(out, "No built-in default Base URL for %q. Example: https://api.openai.com/v1 (an OpenAI-compatible /v1 endpoint)\n", provLabel)
 	}
 	baseURL, isEOF := promptLine(reader, out, "OpenAI-compatible Base URL", defaultURL)
 	baseURL = strings.TrimPrefix(strings.TrimSpace(baseURL), "\ufeff")
@@ -75,7 +84,8 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 		return errors.New("base URL cannot be empty")
 	}
 	if err := validateBaseURL(baseURL); err != nil {
-		return fmt.Errorf("%w: %s", err, baseURL)
+		// B2/U8: the operand may be a misdirected key paste; never echo it raw.
+		return fmt.Errorf("%w: %s", err, MaskOperand(baseURL))
 	}
 
 	// Step 3: API Key & Environment Variable Name
@@ -88,7 +98,11 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 
 	if existingVal != "" {
 		fmt.Fprintf(out, "Detected existing environment variable %s.\n", defaultEnv)
-		keyInput, _ := promptSecret(reader, out, console, fmt.Sprintf("API Key (press Enter to keep %s, or paste new key)", defaultEnv), "")
+		keyInput, keyErr := promptSecret(reader, out, console, fmt.Sprintf("API Key (press Enter to keep %s, or paste new key)", defaultEnv), "")
+		if keyErr != nil {
+			// B6: Ctrl+C aborts — never silently keep the existing key.
+			return fmt.Errorf("setup aborted: %w", keyErr)
+		}
 		if keyInput == "" {
 			keyValue = existingVal
 			fmt.Fprintf(out, "Using existing value from %s: %s\n", defaultEnv, MaskSecret(existingVal))
@@ -99,8 +113,11 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 		if knownProvider && hint.KeyURL != "" {
 			fmt.Fprintf(out, "Get a key at: %s\n", hint.KeyURL)
 		}
-		fmt.Fprintf(out, "Enter API Key for %s (will be stored in environment variable %s):\n", provName, defaultEnv)
-		keyInput, _ := promptSecret(reader, out, console, "API Key (sk-... or leave blank to skip)", "")
+		fmt.Fprintf(out, "Enter API Key for %s (will be stored in environment variable %s):\n", provLabel, defaultEnv)
+		keyInput, keyErr := promptSecret(reader, out, console, "API Key (sk-... or leave blank to skip)", "")
+		if keyErr != nil {
+			return fmt.Errorf("setup aborted: %w", keyErr)
+		}
 		keyValue = keyInput
 	}
 
@@ -109,7 +126,7 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 		if envVal := os.Getenv(keyValue); envVal != "" {
 			apiKeyEnv = keyValue
 			keyValue = envVal
-			fmt.Fprintf(out, "Using environment variable %s (loaded from current session).\n", apiKeyEnv)
+			fmt.Fprintf(out, "Using environment variable %s (loaded from current session).\n", MaskOperand(apiKeyEnv))
 		}
 	}
 	// U8: every confirmation of key material shows the canonical mask only.
@@ -126,15 +143,15 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 		_ = os.Setenv(apiKeyEnv, keyValue)
 		if runtime.GOOS == "windows" && !isRunningTests() {
 			if err := persistWindowsUserEnv(apiKeyEnv, keyValue); err != nil {
-				fmt.Fprintf(out, "Warning: could not persist %s to Windows user environment: %v\n", apiKeyEnv, err)
+				fmt.Fprintf(out, "Warning: could not persist %s to Windows user environment: %v\n", MaskOperand(apiKeyEnv), err)
 			} else {
-				fmt.Fprintf(out, "✅ Saved %s to Windows User Environment.\n", apiKeyEnv)
+				fmt.Fprintf(out, "✅ Saved %s to Windows User Environment.\n", MaskOperand(apiKeyEnv))
 			}
 		} else if runtime.GOOS == "windows" {
 			// In test environment, skip persisting to system registry
 		} else {
-			fmt.Fprintf(out, "Set %s in current session. To persist across shells, add to ~/.bashrc or ~/.zshrc:\n", apiKeyEnv)
-			fmt.Fprintf(out, "  export %s=\"...\"\n", apiKeyEnv)
+			fmt.Fprintf(out, "Set %s in current session. To persist across shells, add to ~/.bashrc or ~/.zshrc:\n", MaskOperand(apiKeyEnv))
+			fmt.Fprintf(out, "  export %s=\"...\"\n", MaskOperand(apiKeyEnv))
 		}
 	} else if apiKeyEnv != "" {
 		keyValue = os.Getenv(apiKeyEnv)
@@ -171,7 +188,7 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 
 	for {
 		fmt.Fprintln(out)
-		fmt.Fprintf(out, "--- Model Configuration (%s) ---\n", provName)
+		fmt.Fprintf(out, "--- Model Configuration (%s) ---\n", provLabel)
 
 		var selectedModel Model
 		hasSelection := false
@@ -236,14 +253,14 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 
 		// Prevent duplicate models
 		if configuredSet[selectedModel.ID] {
-			fmt.Fprintf(out, "Model %q is already configured for %s.\n", selectedModel.ID, provName)
+			fmt.Fprintf(out, "Model %q is already configured for %s.\n", MaskOperand(selectedModel.ID), provLabel)
 			continue
 		}
 
 		// Live Connection Probe Loop
 	probeLoop:
 		for {
-			fmt.Fprintf(out, "\n[Live Probe] Testing endpoint %s connection with model %q...\n", endpointHost(baseURL), selectedModel.ID)
+			fmt.Fprintf(out, "\n[Live Probe] Testing endpoint %s connection with model %q...\n", endpointHost(baseURL), MaskOperand(selectedModel.ID))
 			latency, probeErr := ProbeEndpoint(baseURL, keyValue, selectedModel.ID)
 			if probeErr == nil {
 				fmt.Fprintf(out, "✅ Connection succeeded! Latency: %dms\n", latency)
@@ -273,7 +290,7 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 			case "1", "save":
 				models = append(models, selectedModel)
 				configuredSet[selectedModel.ID] = true
-				fmt.Fprintf(out, "Saved model %q anyway.\n", selectedModel.ID)
+				fmt.Fprintf(out, "Saved model %q anyway.\n", MaskOperand(selectedModel.ID))
 				break probeLoop
 			case "2", "retry", "r":
 				continue probeLoop
@@ -283,14 +300,18 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 				if newURL != "" {
 					baseURL = newURL
 				}
-				newKey, _ := promptSecret(reader, out, console, "API Key", "keep current")
+				newKey, keyErr := promptSecret(reader, out, console, "API Key", "keep current")
+				if keyErr != nil {
+					// B6: Ctrl+C aborts setup instead of silently keeping.
+					return fmt.Errorf("setup aborted: %w", keyErr)
+				}
 				newKey = strings.TrimSpace(newKey)
 				if newKey != "" && !strings.EqualFold(newKey, "keep current") {
 					if !isLikelyAPIKey(newKey) && envNameRe.MatchString(newKey) {
 						if envVal := os.Getenv(newKey); envVal != "" {
 							apiKeyEnv = newKey
 							keyValue = envVal
-							fmt.Fprintf(out, "Using environment variable %s (loaded from current session).\n", apiKeyEnv)
+							fmt.Fprintf(out, "Using environment variable %s (loaded from current session).\n", MaskOperand(apiKeyEnv))
 						} else {
 							keyValue = newKey
 							fmt.Fprintf(out, "API Key recorded: %s\n", MaskSecret(keyValue))
@@ -310,15 +331,15 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 				}
 				continue probeLoop
 			case "4", "discard", "d":
-				fmt.Fprintf(out, "Discarded model %q.\n", selectedModel.ID)
+				fmt.Fprintf(out, "Discarded model %q.\n", MaskOperand(selectedModel.ID))
 				break probeLoop
 			default:
-				fmt.Fprintf(out, "Discarded model %q.\n", selectedModel.ID)
+				fmt.Fprintf(out, "Discarded model %q.\n", MaskOperand(selectedModel.ID))
 				break probeLoop
 			}
 		}
 
-		more, isEOF := promptLine(reader, out, fmt.Sprintf("Add another model for %s? (y/N)", provName), "N")
+		more, isEOF := promptLine(reader, out, fmt.Sprintf("Add another model for %s? (y/N)", provLabel), "N")
 		if isEOF || (!strings.EqualFold(more, "y") && !strings.EqualFold(more, "yes")) {
 			break
 		}
@@ -392,13 +413,13 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 	fmt.Fprintln(out, "===========================================================")
 	fmt.Fprintln(out, "  ✅ Provider Setup Complete!")
 	fmt.Fprintln(out, "===========================================================")
-	fmt.Fprintf(out, "Provider        : %s\n", provName)
+	fmt.Fprintf(out, "Provider        : %s\n", provLabel)
 	fmt.Fprintf(out, "Base URL        : %s\n", baseURL)
 	keyStatus := "not set; export it before use"
 	if keyValue != "" {
 		keyStatus = "saved in environment, " + MaskSecret(keyValue)
 	}
-	fmt.Fprintf(out, "API Key Env     : %s (%s)\n", apiKeyEnv, keyStatus)
+	fmt.Fprintf(out, "API Key Env     : %s (%s)\n", MaskOperand(apiKeyEnv), keyStatus)
 	fmt.Fprintf(out, "Config File     : %s\n", targetPath)
 	fmt.Fprintf(out, "Configured Models (%d):\n", len(models))
 	for i, m := range models {
@@ -409,13 +430,13 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 			ctxDisplay = fmt.Sprintf("%dM", m.ContextLength/1048576)
 		}
 		fmt.Fprintf(out, "  %d. %-32s [family: %s, context: %s, capabilities: %s]\n",
-			i+1, DisplayName(m.ID, provName), m.FamilyName(), ctxDisplay, m.CapabilitySummary())
+			i+1, DisplayName(MaskOperand(m.ID), provLabel), m.FamilyName(), ctxDisplay, m.CapabilitySummary())
 	}
 	fmt.Fprintln(out, "===========================================================")
 	fmt.Fprintln(out, "Ready to use! The gateway bridge activates whenever an external model is targeted:")
-	fmt.Fprintf(out, "  Native agy   : agy -m %q\n", DisplayName(models[0].ID, provName))
+	fmt.Fprintf(out, "  Native agy   : agy -m %q\n", DisplayName(MaskOperand(models[0].ID), provLabel))
 	fmt.Fprintln(out, "                 (set AGY_PRO_BRIDGE=1 to expose every model in the /model picker)")
-	fmt.Fprintf(out, "  Fanout swarm : agy pro fanout --models %q --prompt \"your prompt\"\n", provName+"/"+models[0].ID)
+	fmt.Fprintf(out, "  Fanout swarm : agy pro fanout --models %q --prompt \"your prompt\"\n", provLabel+"/"+MaskOperand(models[0].ID))
 	fmt.Fprintln(out, "  List models  : agy pro models")
 	fmt.Fprintln(out, "===========================================================")
 	return nil
@@ -572,7 +593,15 @@ func ProbeEndpoint(baseURL, apiKey, modelID string) (latencyMs int64, err error)
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respSnippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return latency, fmt.Errorf("HTTP %d contacting %s (%s): %s", resp.StatusCode, dest, resp.Status, strings.TrimSpace(string(respSnippet)))
+		// B1: OpenAI-compatible gateways routinely echo the offending bearer
+		// key in the error body. Wrap the snippet with the same redactor the
+		// sibling ProbeKeyValidity uses (seeded with the probe key) plus the
+		// generic credential patterns, so a key-echoing upstream body can never
+		// reach the wizard transcript (U8).
+		detail := strings.TrimSpace(string(respSnippet))
+		detail = redactProbeDetail(detail, apiKey)
+		detail = NewRedactor()(detail)
+		return latency, fmt.Errorf("HTTP %d contacting %s (%s): %s", resp.StatusCode, dest, resp.Status, detail)
 	}
 
 	return latency, nil

@@ -175,7 +175,7 @@ func ResolveRepairTargets(reg *Registry, arg string) ([]string, error) {
 		return r == ',' || r == ';' || r == ' ' || r == '\t'
 	})
 	if len(tokens) == 0 {
-		return nil, fmt.Errorf("cannot parse repair target argument %q", arg)
+		return nil, fmt.Errorf("cannot parse repair target argument %q", MaskOperand(arg))
 	}
 	var out []string
 	seen := map[string]bool{}
@@ -186,7 +186,7 @@ func ResolveRepairTargets(reg *Registry, arg string) ([]string, error) {
 		seen[strings.ToLower(tok)] = true
 		if p, ok := reg.Provider(tok); ok {
 			if strings.TrimSpace(p.APIKeyEnv) == "" {
-				return nil, fmt.Errorf("provider %q declares no API key variable; nothing to repair", p.Name)
+				return nil, fmt.Errorf("provider %q declares no API key variable; nothing to repair", MaskOperand(p.Name))
 			}
 			out = append(out, strings.TrimSpace(p.APIKeyEnv))
 			continue
@@ -200,7 +200,7 @@ func ResolveRepairTargets(reg *Registry, arg string) ([]string, error) {
 			}
 		}
 		if !found {
-			return nil, fmt.Errorf("%q matches no provider name or known API key variable", tok)
+			return nil, fmt.Errorf("%q matches no provider name or known API key variable", MaskOperand(tok))
 		}
 	}
 	return out, nil

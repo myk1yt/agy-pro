@@ -238,6 +238,25 @@ func Load() (*Registry, error) {
 
 var envNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+// providerNameRe is the closed provider-name charset (B5): a name is one
+// shell-safe token starting with an alphanumeric, so a name interpolated into
+// a run_command line cannot smuggle quotes, spaces, $-expansions, or other
+// metacharacters (indirect prompt injection / confused-deputy class).
+var providerNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+
+// ValidateProviderName vets a provider NAME operand (registry ops + settings).
+// The error never echoes the operand (B2/U8: a misdirected paste may be a key).
+func ValidateProviderName(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("provider name is required")
+	}
+	if !providerNameRe.MatchString(name) {
+		return fmt.Errorf("provider name must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ (letters, digits, dot, underscore, hyphen; no spaces or shell metacharacters)")
+	}
+	return nil
+}
+
 // LoadFrom reads and validates a registry file.
 func LoadFrom(path string) (*Registry, error) {
 	data, err := os.ReadFile(path)
@@ -263,7 +282,9 @@ func LoadFrom(path string) (*Registry, error) {
 func validateBaseURL(baseURL string) error {
 	u, err := url.Parse(strings.TrimSpace(baseURL))
 	if err != nil {
-		return fmt.Errorf("baseURL is not a valid URL: %v", err)
+		// B2/U8: url.Error text embeds the operand; pattern-redact before
+		// returning so a misdirected key paste cannot ride along (U8).
+		return fmt.Errorf("baseURL is not a valid URL: %s", NewRedactor()(err.Error()))
 	}
 	switch strings.ToLower(u.Scheme) {
 	case "https":
@@ -292,7 +313,8 @@ func isLoopbackHost(host string) bool {
 }
 
 // Validate checks structural rules. It never echoes apiKeyEnv values because a
-// mistaken paste of a real key must not leak into logs.
+// mistaken paste of a real key must not leak into logs; provider names pass
+// through MaskOperand for the same reason (B2/U8).
 func (r *Registry) Validate() error {
 	seen := map[string]bool{}
 	for i, p := range r.Providers {
@@ -300,28 +322,28 @@ func (r *Registry) Validate() error {
 			return fmt.Errorf("providers[%d]: name is required", i)
 		}
 		if seen[p.Name] {
-			return fmt.Errorf("provider %q is defined twice", p.Name)
+			return fmt.Errorf("provider %q is defined twice", MaskOperand(p.Name))
 		}
 		seen[p.Name] = true
 		if strings.Contains(p.Name, "/") {
-			return fmt.Errorf("provider %q: name must not contain '/'", p.Name)
+			return fmt.Errorf("provider %q: name must not contain '/'", MaskOperand(p.Name))
 		}
 		if strings.TrimSpace(p.BaseURL) == "" {
-			return fmt.Errorf("provider %q: baseURL is required", p.Name)
+			return fmt.Errorf("provider %q: baseURL is required", MaskOperand(p.Name))
 		}
 		if err := validateBaseURL(p.BaseURL); err != nil {
-			return fmt.Errorf("provider %q: %w", p.Name, err)
+			return fmt.Errorf("provider %q: %w", MaskOperand(p.Name), err)
 		}
 		if p.APIKeyEnv != "" && !envNameRe.MatchString(p.APIKeyEnv) {
-			return fmt.Errorf("provider %q: apiKeyEnv must be an environment variable NAME, not a key (value hidden)", p.Name)
+			return fmt.Errorf("provider %q: apiKeyEnv must be an environment variable NAME, not a key (value hidden)", MaskOperand(p.Name))
 		}
 		mseen := map[string]bool{}
 		for j, m := range p.Models {
 			if strings.TrimSpace(m.ID) == "" {
-				return fmt.Errorf("provider %q: models[%d].id is required", p.Name, j)
+				return fmt.Errorf("provider %q: models[%d].id is required", MaskOperand(p.Name), j)
 			}
 			if mseen[m.ID] {
-				return fmt.Errorf("provider %q: model %q is listed twice", p.Name, m.ID)
+				return fmt.Errorf("provider %q: model %q is listed twice", MaskOperand(p.Name), MaskOperand(m.ID))
 			}
 			mseen[m.ID] = true
 		}

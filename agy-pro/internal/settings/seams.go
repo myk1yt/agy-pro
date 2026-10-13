@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"agypro/internal/inventory"
@@ -132,7 +133,7 @@ func defaultDoctor(out io.Writer, strict bool) error {
 		if strict {
 			structuralFail = true
 		}
-	} else if strings.EqualFold(filepath.Dir(selfPath), filepath.Dir(binDir)) {
+	} else if shimInInstalledBin(selfPath, binDir) {
 		fmt.Fprintf(out, "[OK]   Running shim executable: %s\n", selfPath)
 	} else {
 		fmt.Fprintf(out, "[WARN] Running shim executable: %s\n", selfPath)
@@ -187,4 +188,21 @@ func printKeyAuditLine(out io.Writer, a providers.KeyAudit) {
 	default:
 		fmt.Fprintf(out, "[WARN] %s (%s): %s (probe %s)\n", a.Provider, a.Env, hint, a.Probe.Status)
 	}
+}
+
+// shimInInstalledBin reports whether the running shim executable sits directly
+// inside the installed shim bin directory (B3). paths.AgyProBin() ALREADY
+// returns the bin DIRECTORY (paths.go:54-61), so the comparison is
+// filepath.Dir(selfPath) == binDir — the earlier filepath.Dir(binDir) form
+// compared one level too high and made the OK branch unreachable on every
+// standard install (false "not first on PATH" WARN, and under --strict a false
+// structural failure). Mirrors baseline `agy pro doctor` sameDirPath
+// (cmd/agy/main.go:655-662): case-insensitive on Windows, exact elsewhere.
+func shimInInstalledBin(selfPath, binDir string) bool {
+	selfPath = filepath.Clean(selfPath)
+	binDir = filepath.Clean(binDir)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(filepath.Dir(selfPath), binDir)
+	}
+	return filepath.Dir(selfPath) == binDir
 }

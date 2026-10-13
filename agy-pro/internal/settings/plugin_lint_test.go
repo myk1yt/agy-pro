@@ -152,3 +152,38 @@ func looksLikePlantedKey(w string) bool {
 	}
 	return false
 }
+
+// TestPluginBodyShellSafeInterpolation (B5): the plugin body must mandate
+// quoted tokens on every run_command line and prefer the stdin add-json shape,
+// so a user-supplied provider name can never be spliced raw into a shell line
+// (indirect prompt injection / confused deputy).
+func TestPluginBodyShellSafeInterpolation(t *testing.T) {
+	root := filepath.Join("..", "..", "..", "plugins", "agypro_settings")
+	body, err := os.ReadFile(filepath.Join(root, "commands", "setting_agypro.md"))
+	if err != nil {
+		t.Fatalf("read command body: %v", err)
+	}
+	text := string(body)
+
+	for _, want := range []string{
+		"Shell-safe interpolation",
+		"quoted",
+		"add-json -",
+		"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+		"never splice a user-supplied name raw",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("command body missing shell-safe rule element %q", want)
+		}
+	}
+	// The name-taking verbs must show quoted tokens.
+	for _, want := range []string{
+		`providers test "<name>"`,
+		`providers rename "<old>" "<new>"`,
+		`providers delete "<name>"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("command body missing quoted-verb form %q", want)
+		}
+	}
+}

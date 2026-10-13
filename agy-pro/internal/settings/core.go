@@ -120,7 +120,8 @@ func (c *Core) Set(key, value string) error {
 	case "default-profile", "default_profile":
 		profile := strings.ToLower(strings.TrimSpace(value))
 		if !mode.ValidProfile(profile) {
-			return fmt.Errorf("invalid default profile %q (use prompt, native, or gateway)", value)
+			// B2/U8: operands may be misdirected key pastes; mask before echo.
+			return fmt.Errorf("invalid default profile %q (use prompt, native, or gateway)", providers.MaskOperand(value))
 		}
 		st.DefaultProfile = mode.NormalizeProfile(profile)
 	case "bridge-tools", "bridge_tools":
@@ -132,14 +133,14 @@ func (c *Core) Set(key, value string) error {
 	case "native-seat-concurrency", "native_seat_concurrency":
 		n, err := strconv.Atoi(strings.TrimSpace(value))
 		if err != nil {
-			return fmt.Errorf("native-seat-concurrency must be an integer (got %q)", value)
+			return fmt.Errorf("native-seat-concurrency must be an integer (got %q)", providers.MaskOperand(value))
 		}
 		if n < 1 || n > 8 {
 			return fmt.Errorf("native-seat-concurrency must be 1..8 (got %d)", n)
 		}
 		st.NativeSeatConcurrency = n
 	default:
-		return fmt.Errorf("unknown settings key %q (want default-profile, bridge-tools, or native-seat-concurrency)", key)
+		return fmt.Errorf("unknown settings key %q (want default-profile, bridge-tools, or native-seat-concurrency)", providers.MaskOperand(key))
 	}
 	if err := c.deps.SaveState(st); err != nil {
 		return fmt.Errorf("save state: %w", err)
@@ -216,20 +217,20 @@ func (c *Core) ProviderTest(name string) error {
 		}
 	}
 	if found == nil {
-		return fmt.Errorf("provider %q not found", name)
+		return fmt.Errorf("provider %q not found", providers.MaskOperand(name))
 	}
 	audits := c.deps.AuditKeys(&providers.Registry{Providers: []providers.Provider{*found}}, providers.AuditOptions{})
 	if len(audits) == 0 {
-		return fmt.Errorf("provider %q has no API key env to probe", name)
+		return fmt.Errorf("provider %q has no API key env to probe", providers.MaskOperand(name))
 	}
 	a := audits[0]
 	switch a.Probe.Status {
 	case providers.ProbeValid:
 		return nil
 	case providers.ProbeSkipped:
-		return fmt.Errorf("provider %q: %s", name, a.Probe.Detail)
+		return fmt.Errorf("provider %q: %s", providers.MaskOperand(name), a.Probe.Detail)
 	default:
-		return fmt.Errorf("provider %q: key probe status %s (%s)", name, a.Probe.Status, a.Probe.Detail)
+		return fmt.Errorf("provider %q: key probe status %s (%s)", providers.MaskOperand(name), a.Probe.Status, a.Probe.Detail)
 	}
 }
 

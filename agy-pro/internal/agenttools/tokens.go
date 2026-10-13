@@ -3,6 +3,8 @@ package agenttools
 import (
 	"fmt"
 	"strings"
+
+	"agypro/internal/providers"
 )
 
 // toolTokenSet is the closed capability-token set shared by the fanout CLI
@@ -42,7 +44,9 @@ func ParseToolTokens(spec string) (string, error) {
 			}
 		}
 		if !known {
-			return "", fmt.Errorf("unknown tool %q in --tools (want read,search,write,exec)", tok)
+			// B2/U8: the operand may be a misdirected key paste; mask it so no
+			// key value beyond the first 5 characters ever reaches a transcript.
+			return "", fmt.Errorf("unknown tool %q in --tools (want read,search,write,exec)", providers.MaskOperand(tok))
 		}
 		if !seen[tok] {
 			seen[tok] = true

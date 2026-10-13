@@ -424,10 +424,17 @@ func (t *TUI) activate(it Item) {
 }
 
 // runPrompt reads one text line, runs fn, and records the outcome message.
+// When fn only arms the danger y/n gate (delete / fix-keys / rollback), the
+// message is "confirm to proceed" — [SUCCESS] is stamped only by the confirm
+// runner once the gate resolves (B8).
 func (t *TUI) runPrompt(prompt string, fn func(string) error) {
-	if err := t.promptLine(prompt, fn); err != nil {
+	err := t.promptLine(prompt, fn)
+	switch {
+	case err != nil:
 		t.message = "error: " + err.Error()
-	} else {
+	case t.pending != nil:
+		t.message = "confirm to proceed — " + prompt
+	default:
 		t.message = "[SUCCESS] " + prompt
 	}
 	t.reload()

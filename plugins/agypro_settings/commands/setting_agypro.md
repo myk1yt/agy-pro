@@ -42,6 +42,14 @@ executes the deterministic, non-interactive `agy pro settings` verbs and reports
    you run the verb. On "n", cancel and return to the menu.
 8. **Loop until exit**: after each result, re-show the main menu. Exit only when the user picks
    `[0] Exit` (or says stop/exit).
+9. **Shell-safe interpolation (mandatory)**: never splice a user-supplied name raw into a
+   `run_command` shell line (indirect prompt injection / confused-deputy class). Provider names
+   must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` (letter or digit first, then letters, digits,
+   dot, underscore, hyphen; no spaces, quotes, or shell metacharacters). Every such token must be
+   quoted inside the command line. PREFER the stdin `add-json -` shape for provider add/update so
+   no name or URL is ever interpolated into a shell line; only fall back to the name-taking verbs
+   (`test`, `rename`, `delete`, `fix-keys`) with a quoted, charset-valid token. If a supplied name
+   violates the charset, refuse it and re-ask — do not shell-escape around the rule.
 
 ## Loop footer (print after EVERY iteration, verbatim)
 
@@ -107,9 +115,9 @@ are compile-time constants shown read-only; tell the user they are not configura
                                              NEVER accept a key VALUE in apiKeyEnv (rule 4).
 [3] Add/update provider (interactive wizard) -> tell the user to run `agy pro setup` in their
                                                 terminal (secret entry lives only there, masked)
-[4] Test a provider                    -> asks for the provider name -> `agy pro settings providers test <name>`
-[5] Rename a provider                  -> asks for old + new name -> `agy pro settings providers rename <old> <new>`
-[6] Delete a provider                  (DANGER: y/n confirm) -> `agy pro settings providers delete <name>`
+[4] Test a provider                    -> asks for the provider name -> `agy pro settings providers test "<name>"` (quoted token, rule 9)
+[5] Rename a provider                  -> asks for old + new name -> `agy pro settings providers rename "<old>" "<new>"` (quoted tokens, rule 9)
+[6] Delete a provider                  (DANGER: y/n confirm) -> `agy pro settings providers delete "<name>"` (quoted token, rule 9)
                                            (registry entry only: key values in the environment are untouched)
 [7] Combined model inventory           -> `agy pro models --all`
 [0] Back
@@ -126,7 +134,8 @@ are compile-time constants shown read-only; tell the user they are not configura
 **[5] Diagnostics & Keys** (every action is DANGEROUS except [1])
 ```
 [1] Run doctor                         -> `agy pro settings doctor diagnose` (or `--strict`)
-[2] Repair key names (fix-keys)        (DANGER: y/n confirm) -> `agy pro settings doctor fix-keys [targets]`
+[2] Repair key names (fix-keys)        (DANGER: y/n confirm) -> `agy pro settings doctor fix-keys ["targets"]`
+                                           (quote each target token; prefer a single quoted list — rule 9)
 [3] Rollback key repair                (DANGER: y/n confirm) -> `agy pro settings doctor rollback-keys <dir>`
 [0] Back
 ```

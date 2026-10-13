@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -509,12 +510,34 @@ func FetchRemoteModels(baseURL, apiKey string) []string {
 	return models
 }
 
+// credentialShapeRe matches well-known credential formats that are short
+// enough to slip past the length heuristic yet are never environment-variable
+// names (B4): AWS access key IDs (AKIA/ASIA + 16), GitHub tokens, Slack
+// tokens, Google API/OAuth tokens, GitLab/NPM/Docker tokens, and JWTs. These
+// closed shapes catch the AKIA-style apiKeyEnv bypass without flagging real
+// env names such as MY_CUSTOM_VAR.
+var credentialShapeRe = regexp.MustCompile(
+	`^(?:AKIA|ASIA)[0-9A-Z]{16}$` +
+		`|^gh[pousr]_[A-Za-z0-9]{16,}$` +
+		`|^github_pat_[A-Za-z0-9_]{20,}$` +
+		`|^xox[baprs]-[A-Za-z0-9-]{10,}$` +
+		`|^AIza[0-9A-Za-z_-]{35}$` +
+		`|^ya29\.[0-9A-Za-z_-]{20,}$` +
+		`|^sk-ant-[A-Za-z0-9_-]{10,}$` +
+		`|^glpat-[A-Za-z0-9_-]{16,}$` +
+		`|^npm_[A-Za-z0-9]{30,}$` +
+		`|^dckr_pat-[A-Za-z0-9_-]{20,}$` +
+		`|^eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.`)
+
 // isLikelyAPIKey returns true if the input resembles an API key/secret token
 // rather than an environment variable name.
 func isLikelyAPIKey(val string) bool {
 	val = strings.TrimSpace(val)
 	if val == "" {
 		return false
+	}
+	if credentialShapeRe.MatchString(val) {
+		return true
 	}
 	lower := strings.ToLower(val)
 	for _, p := range []string{"sk-", "key-", "gsk_", "nvapi-", "live_", "secret_"} {

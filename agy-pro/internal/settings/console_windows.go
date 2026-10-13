@@ -16,6 +16,10 @@ import (
 // peek-then-consume ordering is preserved: the poller reports sightings and
 // records are consumed only once the caller accepts them.
 
+// rawConsoleKeysSupported reports that this build owns a raw-console key
+// reader (B7): an interactive TTY takes the raw-console path here.
+const rawConsoleKeysSupported = true
+
 var (
 	settingsKernel32                     = syscall.NewLazyDLL("kernel32.dll")
 	settingsProcPeekConsoleInputW        = settingsKernel32.NewProc("PeekConsoleInputW")

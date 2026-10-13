@@ -3,6 +3,8 @@ package providers
 import (
 	"bufio"
 	"bytes"
+	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -60,9 +62,9 @@ func TestSecretEcho_Backspace(t *testing.T) {
 func TestPromptSecret_DefaultOnEmpty(t *testing.T) {
 	var out bytes.Buffer
 	r := bufio.NewReader(strings.NewReader("\n"))
-	got, isEOF := promptSecret(r, &out, nil, "API Key", "keep current")
-	if got != "keep current" || isEOF {
-		t.Errorf("promptSecret empty = (%q, %v); want (keep current, false)", got, isEOF)
+	got, err := promptSecret(r, &out, nil, "API Key", "keep current")
+	if got != "keep current" || err != nil {
+		t.Errorf("promptSecret empty = (%q, %v); want (keep current, nil)", got, err)
 	}
 	// The prompt itself must not echo any secret (none was typed here).
 	if strings.Contains(out.String(), "keep current: keep current") {
@@ -73,11 +75,67 @@ func TestPromptSecret_DefaultOnEmpty(t *testing.T) {
 func TestPromptSecret_NonConsoleReadsLine(t *testing.T) {
 	var out bytes.Buffer
 	r := bufio.NewReader(strings.NewReader("sk-planted-key-99887766\n"))
-	got, isEOF := promptSecret(r, &out, nil, "API Key", "")
-	if got != "sk-planted-key-99887766" || isEOF {
-		t.Errorf("promptSecret = (%q, %v)", got, isEOF)
+	got, err := promptSecret(r, &out, nil, "API Key", "")
+	if got != "sk-planted-key-99887766" || err != nil {
+		t.Errorf("promptSecret = (%q, %v)", got, err)
 	}
 	assertNoLeak(t, out.String(), "sk-planted-key-99887766")
+}
+
+// TestPromptSecret_InterruptAbortsNotSilentKeep (B6): Ctrl+C during masked
+// key entry must abort — it must NOT fall through to the empty-value default
+// path that silently keeps the existing key.
+func TestPromptSecret_InterruptAbortsNotSilentKeep(t *testing.T) {
+	old := readConsoleSecretFn
+	readConsoleSecretFn = func(f *os.File, echo *secretEcho) (string, error) {
+		return "", errSecretInterrupted
+	}
+	defer func() { readConsoleSecretFn = old }()
+
+	var out bytes.Buffer
+	// Buffered()==0 routes the read through the console seam.
+	r := bufio.NewReader(strings.NewReader(""))
+	got, err := promptSecret(r, &out, nil, "API Key (press Enter to keep OLD_KEY, or paste new key)", "")
+	if !errors.Is(err, errSecretInterrupted) {
+		t.Fatalf("interrupt must return errSecretInterrupted, got (value=%q, err=%v)", got, err)
+	}
+	if got != "" {
+		t.Errorf("interrupt must not return a value (would be treated as a key), got %q", got)
+	}
+}
+
+// TestWizardTranscript_InterruptDoesNotKeepExistingKey (B6): a Ctrl+C during
+// the "press Enter to keep" prompt aborts the wizard instead of silently
+// keeping the existing key.
+func TestWizardTranscript_InterruptDoesNotKeepExistingKey(t *testing.T) {
+	old := readConsoleSecretFn
+	readConsoleSecretFn = func(f *os.File, echo *secretEcho) (string, error) {
+		return "", errSecretInterrupted
+	}
+	defer func() { readConsoleSecretFn = old }()
+
+	tmpDir := t.TempDir()
+	provPath := filepath.Join(tmpDir, "providers.json")
+	t.Setenv(EnvProviders, provPath)
+	existing := "sk-EXISTINGKEY-should-not-be-kept-1234"
+	t.Setenv("INTPROV_API_KEY", existing)
+
+	// Name + base URL lines are consumed; the key prompt then hits the
+	// console seam (buffer drained) and returns the interrupt.
+	input := "intprov\nhttp://127.0.0.1:9/v1\n"
+	out := &bytes.Buffer{}
+	err := InteractiveSetupWizard(strings.NewReader(input), out)
+	if err == nil {
+		t.Fatal("wizard must abort on Ctrl+C during key entry")
+	}
+	if !errors.Is(err, errSecretInterrupted) {
+		t.Errorf("abort must carry errSecretInterrupted, got %v", err)
+	}
+	transcript := out.String()
+	if strings.Contains(transcript, "Using existing value") {
+		t.Errorf("interrupt silently kept the existing key:\n%s", transcript)
+	}
+	assertNoLeak(t, transcript, existing)
 }
 
 // TestWizardTranscript_MasksKeyEcho drives the full wizard with a planted key

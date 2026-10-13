@@ -20,6 +20,10 @@ type ProviderSpecJSON struct {
 }
 
 // ParseProviderSpecJSON decodes and guards one non-interactive provider spec.
+// APIKeyEnv is an environment-variable NAME — a key VALUE is rejected, and the
+// NAME must resolve via os.LookupEnv or match the known env-name hint catalog
+// (B4). The provider name is restricted to the shell-safe charset (B5). Errors
+// never echo the operands (B2/U8).
 func ParseProviderSpecJSON(data []byte) (ProviderSpec, error) {
 	var raw ProviderSpecJSON
 	dec := json.NewDecoder(strings.NewReader(string(data)))
@@ -27,8 +31,10 @@ func ParseProviderSpecJSON(data []byte) (ProviderSpec, error) {
 		return ProviderSpec{}, fmt.Errorf("invalid provider spec JSON: %w", err)
 	}
 	env := strings.TrimSpace(raw.APIKeyEnv)
-	if env != "" && providers.LooksLikeAPIKey(env) {
-		return ProviderSpec{}, fmt.Errorf("apiKeyEnv must be an environment variable NAME, not a key value (value hidden)")
+	if env != "" {
+		if err := providers.ValidateAPIKeyEnvName(env); err != nil {
+			return ProviderSpec{}, err
+		}
 	}
 	spec := ProviderSpec{
 		Name:      strings.TrimSpace(raw.Name),
@@ -36,8 +42,8 @@ func ParseProviderSpecJSON(data []byte) (ProviderSpec, error) {
 		APIKeyEnv: env,
 		Models:    raw.Models,
 	}
-	if spec.Name == "" {
-		return ProviderSpec{}, fmt.Errorf("provider spec: name is required")
+	if err := providers.ValidateProviderName(spec.Name); err != nil {
+		return ProviderSpec{}, err
 	}
 	if spec.BaseURL == "" {
 		return ProviderSpec{}, fmt.Errorf("provider spec: baseURL is required")

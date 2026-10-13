@@ -39,21 +39,21 @@ type secretInputRecord struct {
 }
 
 // readConsoleSecret reads one secret line from a Windows console with masked
-// echo. Returns ok=false when f is not a usable console, in which case the
+// echo. Returns errNotConsole when f is not a usable console, in which case the
 // caller falls back to an ordinary line read (pipes and scripted tests have no
-// console echo to mask).
-func readConsoleSecret(f *os.File, echo *secretEcho) (string, bool) {
+// console echo to mask). Returns errSecretInterrupted on Ctrl+C (B6).
+func readConsoleSecret(f *os.File, echo *secretEcho) (string, error) {
 	if f == nil || echo == nil {
-		return "", false
+		return "", errNotConsole
 	}
 	h := f.Fd()
 	if h == 0 || h == uintptr(syscall.InvalidHandle) {
-		return "", false
+		return "", errNotConsole
 	}
 	var mode uint32
 	r, _, _ := procGetConsoleMode.Call(h, uintptr(unsafe.Pointer(&mode)))
 	if r == 0 {
-		return "", false
+		return "", errNotConsole
 	}
 	// Echo and line input off so every keystroke is visible to us and not
 	// auto-echoed by the console. Keep the original mode for restore.
@@ -63,7 +63,7 @@ func readConsoleSecret(f *os.File, echo *secretEcho) (string, bool) {
 	newMode |= enableExtendedFlags
 	newMode &^= enableQuickEdit
 	if r, _, _ := procSetConsoleMode.Call(h, uintptr(newMode)); r == 0 {
-		return "", false
+		return "", errNotConsole
 	}
 	defer procSetConsoleMode.Call(h, uintptr(mode))
 
@@ -86,15 +86,16 @@ func readConsoleSecret(f *os.File, echo *secretEcho) (string, bool) {
 		switch rec.char {
 		case 0x0d, 0x0a: // Enter
 			echo.newline()
-			return string(typed), true
+			return string(typed), nil
 		case 0x08: // Backspace
 			if n := len(typed); n > 0 {
 				typed = typed[:n-1]
 				echo.backspace()
 			}
-		case 0x03: // Ctrl+C: abort secret entry, do not leak a partial echo
+		case 0x03: // Ctrl+C: abort secret entry (B6) — never fall through to
+			// the empty-value default path that silently keeps the old key.
 			echo.newline()
-			return "", true
+			return "", errSecretInterrupted
 		case 0x1b, 0x09: // Esc/Tab are not part of a key; ignore
 			continue
 		default:
@@ -106,5 +107,5 @@ func readConsoleSecret(f *os.File, echo *secretEcho) (string, bool) {
 		}
 	}
 	echo.newline()
-	return string(typed), true
+	return string(typed), nil
 }

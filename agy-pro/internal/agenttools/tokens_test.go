@@ -1,6 +1,9 @@
 package agenttools
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // The token set is closed and shared by fanout (--tools) and the bridge
 // (bridge-tools / AGY_PRO_BRIDGE_TOOLS). R1-9: the parser moved here from
@@ -39,5 +42,31 @@ func TestParseToolTokensClosedSet(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("ParseToolTokens(%q) = %q; want %q", tc.spec, got, tc.want)
 		}
+	}
+}
+
+// TestParseToolTokens_MasksKeyOperand (B2, tokens.go:45): a misdirected
+// run_command that pastes a key into --tools must not write the full key into
+// the session transcript — only the first 5 characters. Benign unknown tokens
+// stay readable (`unknown tool "nowrite"` is a real CLI assertion downstream).
+func TestParseToolTokens_MasksKeyOperand(t *testing.T) {
+	secret := "sk-XYZZYQUUX-89abcdef01234567"
+	_, err := ParseToolTokens("read," + secret)
+	if err == nil {
+		t.Fatal("key-shaped tool token accepted")
+	}
+	runes := []rune(secret)
+	for n := 6; n <= len(runes); n++ {
+		for i := 0; i+n <= len(runes); i++ {
+			frag := string(runes[i : i+n])
+			if strings.Contains(err.Error(), frag) {
+				t.Fatalf("error leaks %d runes of the key: %q in %q", n, frag, err)
+			}
+		}
+	}
+	// Benign operands stay actionable.
+	_, err = ParseToolTokens("read,search,nowrite")
+	if err == nil || !strings.Contains(err.Error(), `"nowrite"`) {
+		t.Errorf("benign token must stay readable, got %v", err)
 	}
 }

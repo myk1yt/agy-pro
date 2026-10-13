@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -117,8 +119,22 @@ var spawnRealAgy = func(name string, args ...string) *exec.Cmd {
 // registry id collision must not hijack a native pick into gateway mode.
 // Legacy `-m` passthrough behavior is unchanged (direct CLI invocations
 // still go through ShouldActivateBridge).
+//
+// B9: .cmd/.bat real-agy targets get the same Windows batch wrap+escape guard
+// as native seats (internal/fanout/native_seat.go isBatchScript /
+// buildBatchCmdLine / escapeCmdToken / setRawCmdLine — copied here verbatim
+// because those helpers are unexported and internal/fanout is outside this
+// change's edit scope). Go os/exec cannot spawn batch files directly; the
+// wrap is cmd.exe /d /s /c with a hand-escaped raw command line.
 func executeForcedNative(realAgyPath, modelID string, stdin io.Reader, reg *providers.Registry) (int, error) {
-	cmd := spawnRealAgy(realAgyPath, "--model", modelID)
+	args := []string{"--model", modelID}
+	var cmd *exec.Cmd
+	if isBatchScript(realAgyPath) {
+		cmd = spawnRealAgy("cmd.exe")
+		setRawCmdLine(cmd, buildBatchCmdLine(realAgyPath, args))
+	} else {
+		cmd = spawnRealAgy(realAgyPath, args...)
+	}
 	if stdin != nil {
 		cmd.Stdin = stdin
 	}
@@ -134,7 +150,106 @@ func executeForcedNative(realAgyPath, modelID string, stdin io.Reader, reg *prov
 		if errors.As(err, &exitErr) {
 			return exitErr.ExitCode(), nil
 		}
-		return 1, fmt.Errorf("failed to run real agy at %q: %w", realAgyPath, err)
+		// B2/U8: the operand may be a misdirected key paste; mask before echo.
+		return 1, fmt.Errorf("failed to run real agy at %q: %w", providers.MaskOperand(realAgyPath), err)
 	}
 	return 0, nil
+}
+
+// isBatchScript reports whether bin is a Windows batch file that os/exec
+// cannot spawn directly. Copied from internal/fanout/native_seat.go (B9).
+func isBatchScript(bin string) bool {
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	switch strings.ToLower(filepath.Ext(bin)) {
+	case ".cmd", ".bat":
+		return true
+	}
+	return false
+}
+
+// buildBatchCmdLine renders `cmd.exe /d /s /c "<bin> <args...>"` with every
+// token escaped for the two cmd parse passes plus the target's
+// CommandLineToArgvW tokenizer. Copied from internal/fanout/native_seat.go
+// (B9); escaping validated empirically by the fanout .cmd round-trip test.
+func buildBatchCmdLine(bin string, args []string) string {
+	parts := make([]string, 0, len(args)+1)
+	parts = append(parts, escapeCmdToken(bin))
+	for _, a := range args {
+		parts = append(parts, escapeCmdToken(a))
+	}
+	return `cmd.exe /d /s /c "` + strings.Join(parts, " ") + `"`
+}
+
+// escapeCmdToken escapes one argument for a raw cmd.exe /d /s /c line so the
+// bytes survive: pass 1 (cmd /c parse), pass 2 (batch %* re-parse) and the
+// target program's CommandLineToArgvW tokenization. Copied from
+// internal/fanout/native_seat.go (B9) — keep the two in sync.
+//
+// Rules (empirically verified, see coder-report-u1.md live evidence):
+//   - the token is wrapped in double quotes;
+//   - `"` -> `\"` (CommandLineToArgvW literal quote; cmd sees a bare quote
+//     and toggles its own quote parity - tracked below);
+//   - backslash runs are doubled only before an escaped quote or the closing
+//     quote (CommandLineToArgvW), literal elsewhere;
+//   - cmd metacharacters (& | < > ( )) are literal while cmd-parity is
+//     inside quotes; outside they need three carets (one consumed per cmd
+//     pass plus the escape itself);
+//   - `^` is literal inside quotes; outside it needs four carets;
+//   - `%` is never safe inside cmd quotes (variable expansion ignores
+//     quotes): step out, emit `^%` (percent is not re-expanded after batch
+//     %* substitution, so one caret survives both passes), step back in.
+//
+// Newlines must never reach this function on the argv path: multi-line
+// prompts on .cmd/.bat targets force ViaStdin (F-Dc).
+func escapeCmdToken(a string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	cmdIn := true // cmd quote parity (toggles on every emitted `"` char)
+	pending := 0  // pending literal backslashes
+	flushBS := func(doubled bool) {
+		n := pending
+		if doubled {
+			n *= 2
+		}
+		b.WriteString(strings.Repeat(`\`, n))
+		pending = 0
+	}
+	for i := 0; i < len(a); i++ {
+		switch c := a[i]; c {
+		case '\\':
+			pending++
+		case '"':
+			flushBS(true)
+			b.WriteString(`\"`)
+			cmdIn = !cmdIn
+		case '%':
+			flushBS(false)
+			if cmdIn {
+				b.WriteString(`"^%"`)
+			} else {
+				b.WriteString(`^%`)
+			}
+		case '&', '|', '<', '>', '(', ')':
+			flushBS(false)
+			if !cmdIn {
+				b.WriteString("^^^")
+			}
+			b.WriteByte(c)
+		case '^':
+			flushBS(false)
+			if !cmdIn {
+				b.WriteString("^^^^")
+			} else {
+				b.WriteByte('^')
+			}
+		default:
+			flushBS(false)
+			b.WriteByte(c)
+		}
+	}
+	flushBS(true) // trailing backslashes doubled before the closing quote
+	b.WriteByte('"')
+	return b.String()
 }

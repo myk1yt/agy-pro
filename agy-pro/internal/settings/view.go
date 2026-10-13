@@ -192,17 +192,23 @@ func (c *Core) sectionProviders(reg *providers.Registry, regErr error) Section {
 	}
 	for _, p := range reg.Providers {
 		status := "(no key env)"
+		// B4 display defense: a legacy registry can hold a credential in the
+		// name or env-name slot (short env-name-shaped values were accepted as
+		// apiKeyEnv before the LookupEnv-or-catalog guard). Anything key-shaped
+		// renders through providers.MaskOperand — first-5 + **** or pattern
+		// [REDACTED], never raw.
+		envName := providers.MaskOperand(p.APIKeyEnv)
 		if p.APIKeyEnv != "" {
 			val := p.KeyValue()
 			if val == "" {
-				status = fmt.Sprintf("env %s: (not set)", p.APIKeyEnv)
+				status = fmt.Sprintf("env %s: (not set)", envName)
 			} else {
-				status = fmt.Sprintf("env %s: %s", p.APIKeyEnv, providers.MaskSecret(val))
+				status = fmt.Sprintf("env %s: %s", envName, providers.MaskSecret(val))
 			}
 		}
 		items = append(items, Item{
-			ID:     "provider.key." + p.Name,
-			Label:  "Key status — " + p.Name,
+			ID:     "provider.key." + providers.MaskOperand(p.Name),
+			Label:  "Key status — " + providers.MaskOperand(p.Name),
 			Value:  status,
 			Source: "registry", ReadOnly: true,
 			Note: "resolved from process env then persistent stores; values never shown beyond the mask",

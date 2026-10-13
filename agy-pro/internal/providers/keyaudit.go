@@ -127,6 +127,67 @@ func MaskSecret(secret string) string {
 	return string(r[:5]) + "****"
 }
 
+// MaskOperand renders an untrusted CLI operand inside an error or status
+// message (B2 / U8). A misdirected run_command can carry a pasted key in any
+// operand slot, so credential-looking operands render as MaskSecret (first-5 +
+// **** and never more). Benign operands — conventional env-var names, short
+// provider/model tokens, URLs — keep their readable form so errors stay
+// actionable, but still pass through the generic redactor so pattern-shaped
+// secrets (bearer tokens, sk- IDs, AWS key IDs, PEM blocks) embedded in them
+// cannot survive into a session transcript.
+func MaskOperand(s string) string {
+	if s == "" {
+		return s
+	}
+	if operandLooksSecret(s) {
+		return MaskSecret(s)
+	}
+	return NewRedactor()(s)
+}
+
+// operandLooksSecret decides whether an echoed operand is plausibly credential
+// material. Unlike isLikelyAPIKey (which must reject hyphenated strings in the
+// apiKeyEnv slot because env names never carry hyphens), this keeps ordinary
+// hyphenated tokens ("my-provider", "native-seat-concurrency") and URLs
+// readable while still catching real key shapes and opaque long tokens.
+func operandLooksSecret(s string) bool {
+	t := strings.TrimSpace(s)
+	if t == "" {
+		return false
+	}
+	// Known credential shapes are secrets in every slot.
+	if credentialShapeRe.MatchString(t) {
+		return true
+	}
+	lower := strings.ToLower(t)
+	for _, p := range []string{
+		"sk-", "key-", "gsk_", "nvapi-", "live_", "secret_",
+		"ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_",
+		"xox", "glpat-", "npm_", "dckr_pat_", "eyj",
+	} {
+		if strings.HasPrefix(lower, p) {
+			return true
+		}
+	}
+	// Conventional environment-variable names (UPPER_SNAKE) stay readable;
+	// the credential-shape pass above already caught look-alikes.
+	if envNameRe.MatchString(t) && strings.ToUpper(t) == t {
+		return false
+	}
+	// URLs and file paths stay readable (spawn errors must name the binary);
+	// embedded credential material is pattern-redacted by the NewRedactor pass
+	// in MaskOperand.
+	if strings.Contains(t, "://") || strings.ContainsAny(t, `/\`) {
+		return false
+	}
+	// Short provider/model-style tokens stay readable.
+	if len(t) < 24 && providerNameRe.MatchString(t) {
+		return false
+	}
+	// Everything else long or opaque is treated as a secret.
+	return isLikelyAPIKey(t) || len(t) >= 20
+}
+
 // EnvCandidateMasked is the printable view of an EnvCandidate: same location
 // information, value replaced by its masked form.
 type EnvCandidateMasked struct {

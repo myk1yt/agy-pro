@@ -2,6 +2,7 @@ package providers
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +13,15 @@ import (
 // shows the first 5 typed runes and "*" for every later rune, and every
 // confirmation prints only MaskSecret output. The raw value is written to
 // nothing — not the transcript, not logs, not error text.
+
+// errSecretInterrupted is returned when the user aborts masked key entry with
+// Ctrl+C (B6). The caller must abort: it must NOT fall through to the
+// empty-value default path and silently keep an existing key.
+var errSecretInterrupted = errors.New("secret entry aborted (Ctrl+C)")
+
+// errNotConsole is the internal fallback signal from the platform console
+// reader: no raw console is available, use the plain line read instead.
+var errNotConsole = errors.New("secret input: not a console")
 
 // secretEcho renders the U8 mask while the user types. The first 5 runes echo
 // verbatim; every rune after that echoes as a single '*'. backspace erases one
@@ -45,11 +55,20 @@ func (e *secretEcho) newline() { fmt.Fprintln(e.w) }
 // masked is the canonical first-5 + "****" rendering of what was typed.
 func (e *secretEcho) masked() string { return MaskSecret(string(e.typed)) }
 
+// readConsoleSecretFn is the platform console reader seam; B6 tests stub it to
+// drive the interrupt path without a live console.
+var readConsoleSecretFn = readConsoleSecret
+
 // promptSecret reads an API-key line with masked echo. When console is a real
 // Windows console, echo is taken over by secretEcho (first 5 runes verbatim,
 // "*" afterwards). Otherwise the line is read plainly (pipes and test scripts
 // have no terminal echo) and the raw value is never written to w.
-func promptSecret(r *bufio.Reader, w io.Writer, console *os.File, prompt, defaultValue string) (string, bool) {
+//
+// Returns (defaultValue, nil) on empty input — the historical empty-value
+// default path (Enter keeps the existing key). Returns errSecretInterrupted
+// when the user presses Ctrl+C during masked entry (B6): the caller must abort
+// and must NOT treat the empty result as "keep the existing key".
+func promptSecret(r *bufio.Reader, w io.Writer, console *os.File, prompt, defaultValue string) (string, error) {
 	if defaultValue != "" && !strings.Contains(prompt, "[") {
 		fmt.Fprintf(w, "%s [%s]: ", prompt, defaultValue)
 	} else {
@@ -58,21 +77,28 @@ func promptSecret(r *bufio.Reader, w io.Writer, console *os.File, prompt, defaul
 
 	if r.Buffered() == 0 {
 		echo := newSecretEcho(w)
-		if val, ok := readConsoleSecret(console, echo); ok {
+		val, err := readConsoleSecretFn(console, echo)
+		switch {
+		case err == nil:
 			val = strings.TrimSpace(val)
 			if val == "" {
-				return defaultValue, false
+				return defaultValue, nil
 			}
-			return strings.TrimPrefix(val, "\ufeff"), false
+			return strings.TrimPrefix(val, "\ufeff"), nil
+		case errors.Is(err, errSecretInterrupted):
+			return "", errSecretInterrupted
 		}
+		// errNotConsole: fall through to the plain line read below.
 	}
 
 	line, err := r.ReadString('\n')
-	isEOF := err == io.EOF || (err != nil && len(line) == 0)
+	if err != nil && len(line) == 0 {
+		return defaultValue, nil
+	}
 	line = strings.TrimPrefix(line, "\ufeff")
 	line = strings.TrimSpace(line)
 	if line == "" {
-		return defaultValue, isEOF
+		return defaultValue, nil
 	}
-	return line, isEOF
+	return line, nil
 }

@@ -22,7 +22,13 @@ func RunTUI(core *Core, in io.Reader, out io.Writer, startPanel string) int {
 	}
 
 	file, isFile := in.(*os.File)
-	interactive := isFile && isTerminalFile(file)
+	isTTY := isFile && isTerminalFile(file)
+	// Raw console keys exist on Windows only (console_other.go:9-11 returns no
+	// keys). On a non-Windows interactive TTY the old check still chose the
+	// raw-console path, which rendered one frame and exited instead of the
+	// documented line-mode degrade (B7). Degrade whenever the build cannot
+	// serve raw keys — line-mode works over a TTY line discipline too.
+	interactive := useRawConsoleKeys(isTTY)
 
 	var keys KeySource
 	var lines LineReader
@@ -154,6 +160,21 @@ func isTerminalFile(f *os.File) bool {
 		return false
 	}
 	return fi.Mode()&os.ModeCharDevice != 0
+}
+
+// wantRawConsole is the pure degrade rule (B7): raw console keys are used only
+// when the input is a TTY AND the build implements a raw console key reader.
+// A non-Windows TTY degrades to the documented line-mode UI instead of the
+// one-frame-and-exit stub that readConsoleKey's empty answer produced.
+func wantRawConsole(isTTY, rawConsoleOK bool) bool {
+	return isTTY && rawConsoleOK
+}
+
+// useRawConsoleKeys applies wantRawConsole to a RunTUI input file, with the
+// build's raw-console capability (rawConsoleKeysSupported: true on Windows,
+// false elsewhere — console_other.go returns no keys).
+func useRawConsoleKeys(isTTY bool) bool {
+	return wantRawConsole(isTTY, rawConsoleKeysSupported)
 }
 
 // ScriptedKeys feeds a fixed key sequence (headless capture tests / D3).

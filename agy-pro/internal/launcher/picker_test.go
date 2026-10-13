@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -312,3 +313,107 @@ func TestShouldActivateBridgeLegacySemanticsUnchanged(t *testing.T) {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+// ---------------------------------------------------------------------------
+// B9 — executeForcedNative carries the same .cmd/.bat wrap+escape guard as the
+// native seats (internal/fanout/native_seat.go).
+// ---------------------------------------------------------------------------
+
+func TestIsBatchScriptAndBuildBatchCmdLine(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		if !isBatchScript(`C:\bin\real-agy.cmd`) || !isBatchScript(`C:\bin\REAL-AGY.BAT`) {
+			t.Error("Windows .cmd/.bat targets must be detected as batch scripts")
+		}
+	}
+	if isBatchScript("/usr/bin/agy") || isBatchScript(`C:\bin\agy.exe`) {
+		t.Error("non-batch targets must not take the wrap path")
+	}
+	got := buildBatchCmdLine(`C:\bin\real-agy.cmd`, []string{"--model", "m1"})
+	// cmd /s /c strips the first and last quote of the raw line and takes the
+	// rest verbatim, so the line carries its own outer quotes around the
+	// individually quoted tokens (same shape as the fanout guard).
+	want := `cmd.exe /d /s /c ""C:\bin\real-agy.cmd" "--model" "m1""`
+	if got != want {
+		t.Errorf("buildBatchCmdLine = %q; want %q", got, want)
+	}
+	// Every token is double-quoted; cmd metacharacters stay literal inside
+	// quotes (the fanout escape rules).
+	wrapped := buildBatchCmdLine(`C:\bin\real-agy.cmd`, []string{"--model", `m&1`})
+	if !strings.Contains(wrapped, `"m&1"`) {
+		t.Errorf("argument must be quoted as one token: %q", wrapped)
+	}
+}
+
+func TestEscapeCmdToken_RoundTripShape(t *testing.T) {
+	// Quotes, percent, carets and backslash runs follow the fanout rules.
+	if got, want := escapeCmdToken("plain"), `"plain"`; got != want {
+		t.Errorf("escapeCmdToken(plain) = %q; want %q", got, want)
+	}
+	if got := escapeCmdToken(`say "hi"`); !strings.Contains(got, `\"hi\"`) {
+		t.Errorf("embedded quotes not escaped: %q", got)
+	}
+	if got := escapeCmdToken("100%"); !strings.Contains(got, `^%`) {
+		t.Errorf("percent not escaped: %q", got)
+	}
+	if got := escapeCmdToken(`C:\dir\`); !strings.HasSuffix(got, `\\"`) {
+		t.Errorf("trailing backslashes not doubled before closing quote: %q", got)
+	}
+}
+
+// TestExecuteForcedNative_BatchWrapGuard (B9): a .cmd real-agy target is
+// spawned via cmd.exe /d /s /c with a raw, hand-escaped command line — the
+// guard that used to exist only on the native-seat path.
+func TestExecuteForcedNative_BatchWrapGuard(t *testing.T) {
+	batch := filepath.Join(t.TempDir(), "real-agy.cmd")
+	if err := os.WriteFile(batch, []byte("@echo off\r\nexit /b 0\r\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var gotName string
+	var gotArgs []string
+	var gotCmd *exec.Cmd
+	oldSpawn := spawnRealAgy
+	spawnRealAgy = func(name string, args ...string) *exec.Cmd {
+		gotName, gotArgs = name, append([]string{}, args...)
+		if name == "cmd.exe" {
+			gotCmd = exec.Command("cmd.exe", "/c", "exit 0")
+			return gotCmd
+		}
+		gotCmd = exec.Command(os.Args[0], "-test.run=TestBannerHelperChild")
+		return gotCmd
+	}
+	defer func() { spawnRealAgy = oldSpawn }()
+
+	code, err := executeForcedNative(batch, "m1", nil, &providers.Registry{})
+	if err != nil {
+		t.Fatalf("executeForcedNative: %v", err)
+	}
+	if code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+
+	if runtime.GOOS == "windows" {
+		if gotName != "cmd.exe" {
+			t.Errorf("batch target must be wrapped in cmd.exe, got spawn %q", gotName)
+		}
+		if len(gotArgs) != 0 {
+			t.Errorf("wrap puts the whole line on the raw command line, got args %v", gotArgs)
+		}
+		if gotCmd == nil || gotCmd.SysProcAttr == nil || gotCmd.SysProcAttr.CmdLine == "" {
+			t.Fatal("setRawCmdLine did not stamp the raw command line")
+		}
+		if !strings.Contains(gotCmd.SysProcAttr.CmdLine, "real-agy.cmd") {
+			t.Errorf("raw line must carry the batch target: %q", gotCmd.SysProcAttr.CmdLine)
+		}
+		if !strings.HasPrefix(gotCmd.SysProcAttr.CmdLine, `cmd.exe /d /s /c "`) {
+			t.Errorf("raw line must be the /d /s /c wrap: %q", gotCmd.SysProcAttr.CmdLine)
+		}
+	} else {
+		if gotName != batch {
+			t.Errorf("non-Windows must spawn the target directly, got %q", gotName)
+		}
+		if strings.Join(gotArgs, " ") != "--model m1" {
+			t.Errorf("args = %v; want [--model m1]", gotArgs)
+		}
+	}
+}
