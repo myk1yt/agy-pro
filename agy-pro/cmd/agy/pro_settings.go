@@ -129,9 +129,11 @@ func settingsProvidersCmd(core *settings.Core, args []string, in io.Reader, out,
 		data, err := readSettingsSpec(args[1], in)
 		if err != nil {
 			// C2/D1: os.ReadFile embeds the operand in its error text; the
-			// redactor is seeded with the raw operand so a planted key is
-			// masked wherever it appears in the composite sentence.
-			fmt.Fprintf(errw, "[agy-pro] %v\n", maskOperandSentence(err.Error(), args[1]))
+			// redactor is seeded with the raw operand and its per-token
+			// forms (the same composition as the prompt-file and rollback
+			// twins), so a comma-decorated plant is masked in the composite
+			// sentence and not only at the operand slot.
+			fmt.Fprintf(errw, "[agy-pro] %v\n", maskOperandSentence(err.Error(), providers.FlagSeedOperands(args[1])...))
 			return 1
 		}
 		spec, err := settings.ParseProviderSpecJSON(data)

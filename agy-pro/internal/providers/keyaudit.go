@@ -184,26 +184,31 @@ func MaskFamilyName(m Model) string {
 }
 
 // MaskRegistryValue is the registry-slot display authority (batch L, closes
-// F-1 and M1): it renders a registry-persisted display value (explicit family,
-// reasoning effort) at every display sink (models --json, status banner,
-// RenderNumbered, the wizard model list). A registry slot is never a
-// legitimate path and carries no readability requirement, so unlike a CLI
-// operand (whose spawn error must still name the binary and therefore keeps
-// MaskOperand's location exemption) a location-shaped key-shaped registry
-// value must mask here.
+// F-1 and M1; batch M, closes the round-4 P1): it renders a registry-persisted
+// display value (explicit family, reasoning effort) at every display sink
+// (models --json, status banner, RenderNumbered, the wizard model list). A
+// registry slot is never a legitimate path and carries no readability
+// requirement, so unlike a CLI operand (whose spawn error must still name the
+// binary and therefore keeps MaskOperand's location exemption) a
+// location-shaped key-shaped registry value must mask here.
 //
 // The pipeline, every branch mask-only or identity (it can never unmask):
 //   - TrimSpace first (K2/M1: padding defeated the classifier, so a padded
 //     plant rode raw at every sink);
 //   - MaskOperand next, returned unchanged when it masked anything;
-//   - else strip every location marker (relative ./ ../ .\ ..\, a URL scheme
-//     "://", a Windows drive "C:\", leading separators) into core; a value
-//     with no markers returns unchanged;
+//   - else strip every location marker (a LEADING URL scheme "://", a Windows
+//     drive "C:\", relative ./ ../ .\ ..\, leading separators) into core,
+//     repeating until stable so stacked markers ("./C:\<key>",
+//     "file:///C:\<key>", "D:\D:\<key>") reduce to the bare core; a value with
+//     no markers returns unchanged;
 //   - when the stripped core is secret-shaped (operandLooksSecret, seedShaped,
-//     or the generic redactor) mask it, so neither the location marker nor any
-//     secret fragment beyond the mask survives;
+//     the JWT class isJWTShapedOperand, or the generic redactor) mask it, so
+//     neither the location marker nor any secret fragment beyond the mask
+//     survives;
+//   - when the strip leaves no core at all (a scheme-only value such as
+//     "https://") render the input unchanged, never an empty string;
 //   - else render the marker-stripped core, so a benign location-shaped value
-//     ("./gemini" -> "gemini", a URL scheme-stripped) stays readable.
+//     ("./gemini" -> "gemini", a leading-URL-scheme value) stays readable.
 //
 // MaskOperand itself and every classifier stay byte-unchanged: CLI operands
 // keep the location exemption, only registry slots route through this.
@@ -213,32 +218,48 @@ func MaskRegistryValue(s string) string {
 		return m
 	}
 	core := stripLocationMarkers(s)
-	if core == s {
+	if core == s || core == "" {
 		return s
 	}
-	if operandLooksSecret(core) || seedShaped(core) || NewRedactor()(core) != core {
+	if operandLooksSecret(core) || seedShaped(core) || isJWTShapedOperand(strings.TrimSpace(core)) || NewRedactor()(core) != core {
 		return MaskSecret(core)
 	}
 	return core
 }
 
+// leadingSchemeRe matches a URL scheme at the START of a value ("https://",
+// "file:///"). Only a leading scheme is a location marker: a value that merely
+// CONTAINS a URL ("see https://example.com docs") names no location and must
+// render intact (batch M P3; the old stripper cut at the LAST "://" anywhere
+// in the value and truncated such a sentence).
+var leadingSchemeRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*://`)
+
+// locationMarkerPrefixes are the relative-path markers a registry slot never
+// legitimately carries, hoisted to package level so the strip loop allocates
+// nothing per iteration (batch M P3).
+var locationMarkerPrefixes = []string{"./", "../", `.\`, `..\`}
+
 // stripLocationMarkers removes the location markers a registry slot never
-// legitimately carries, returning the value's opaque core: a URL scheme (up to
-// and including the last "://"), a Windows drive ("C:\" or "C:/"), repeated
-// relative markers (./ ../ .\ ..\), and any leading path separators. It is the
-// marker stripper MaskRegistryValue uses so a location-shaped key-shaped
-// registry value can be classified on its core; a value with no markers
-// returns unchanged.
+// legitimately carries, returning the value's opaque core: a LEADING URL
+// scheme, a Windows drive ("C:\" or "C:/"), relative markers (./ ../ .\ ..\),
+// and any leading path separators. The passes repeat until the value stops
+// changing (a fixpoint) so stacked markers ("./C:\<key>", "file:///C:\<key>",
+// "D:\D:\<key>") all reduce to the bare core; the old single pass left an
+// IsAbs core that every classifier location-exempts. It is the marker
+// stripper MaskRegistryValue uses so a location-shaped key-shaped registry
+// value can be classified on its core; a value with no markers returns
+// unchanged, and a value that strips away entirely (a scheme-only "https://")
+// returns an empty core, which MaskRegistryValue renders as the input.
 func stripLocationMarkers(s string) string {
-	if i := strings.LastIndex(s, "://"); i >= 0 {
-		s = s[i+len("://"):]
-	}
-	if len(s) >= 3 && ((s[0] >= 'A' && s[0] <= 'Z') || (s[0] >= 'a' && s[0] <= 'z')) && s[1] == ':' && (s[2] == '/' || s[2] == '\\') {
-		s = s[3:]
-	}
 	for {
 		before := s
-		for _, p := range []string{"./", "../", `.\`, `..\`} {
+		if loc := leadingSchemeRe.FindStringIndex(s); loc != nil {
+			s = s[loc[1]:]
+		}
+		if len(s) >= 3 && ((s[0] >= 'A' && s[0] <= 'Z') || (s[0] >= 'a' && s[0] <= 'z')) && s[1] == ':' && (s[2] == '/' || s[2] == '\\') {
+			s = s[3:]
+		}
+		for _, p := range locationMarkerPrefixes {
 			s = strings.TrimPrefix(s, p)
 		}
 		s = strings.TrimLeft(s, `/\`)

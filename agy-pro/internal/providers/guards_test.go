@@ -879,6 +879,13 @@ func TestMaskFamilyName(t *testing.T) {
 		// markers. Before batch L maskRegistryValue stripped only the leading
 		// ./ \ class, so this rode raw at every sink.
 		{"https://wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY", "wJalr****"},
+		// Round-4 P1 (batch M): a marker-decorated JWT family masks. The
+		// MaskRegistryValue mask branch dropped isJWTShapedOperand, so the
+		// stripped JWT core rode raw at this sink (3f9ce5a inherited the class
+		// by re-running full MaskOperand on the core).
+		{"./abcDef.ghiJkl.mnopqr", "abcDe****"},
+		{"../aaaabcdef.gggghijk.iiiijjjj", "aaaab****"},
+		{"https://abcDef.ghiJkl.mnopqr", "abcDe****"},
 	} {
 		got := MaskFamilyName(Model{ID: "m", Family: tc.family})
 		if got != tc.want {
@@ -954,6 +961,33 @@ func TestMaskRegistryValue(t *testing.T) {
 			t.Errorf("MaskRegistryValue(%q) = %q; want a mask", v, got)
 		}
 	}
+	// Round-4 P1 (batch M): a marker-decorated JWT core must mask. The mask
+	// branch classified the stripped core with operandLooksSecret ∨ seedShaped
+	// ∨ redactor, dropping isJWTShapedOperand — the class 3f9ce5a inherited by
+	// re-running full MaskOperand on the stripped core — so a relative- or
+	// scheme-decorated JWT rode raw at every sink. The plants carry no "eyJ"
+	// header, so the classifier's closed shapes cannot see them either.
+	for _, tc := range []struct{ decorated, want string }{
+		{"./abcDef.ghiJkl.mnopqr", "abcDe****"},
+		{"../aaaabcdef.gggghijk.iiiijjjj", "aaaab****"},
+		{"https://abcDef.ghiJkl.mnopqr", "abcDe****"},
+		{"./aaaabcdef.gggghijk.iiiijjjj", "aaaab****"},
+	} {
+		if got := MaskRegistryValue(tc.decorated); got != tc.want {
+			t.Errorf("MaskRegistryValue(%q) = %q; want %q (JWT class restored)", tc.decorated, got, tc.want)
+		}
+		assertNoLeak(t, MaskRegistryValue(tc.decorated), tc.decorated)
+	}
+	// Round-4 P2 (batch M): stacked markers strip to a FIXPOINT. The old
+	// single drive pass left an IsAbs core ("C:\<key>") that every classifier
+	// location-exempts, so "./C:\<key>", "file:///C:\<key>" and the
+	// double-volume "D:\D:\<key>" each stripped one marker and rode raw.
+	for _, v := range []string{`./C:\` + key, `file:///C:\` + key, `D:\D:\` + key} {
+		if got := MaskRegistryValue(v); got != "wJalr****" {
+			t.Errorf("MaskRegistryValue(%q) = %q; want wJalr**** (stacked markers stripped to a fixpoint)", v, got)
+		}
+		assertNoLeak(t, MaskRegistryValue(v), v)
+	}
 	// A bare and a PADDED key-shaped value mask (the top trim is the M1 fix: a
 	// padded plant defeated the display class's space/newline gates).
 	for _, v := range []string{key, key + "\n", " " + key + " ", "\t" + key} {
@@ -971,6 +1005,17 @@ func TestMaskRegistryValue(t *testing.T) {
 	}
 	if got := MaskRegistryValue("https://api.example.com/v1"); got != "api.example.com/v1" {
 		t.Errorf("MaskRegistryValue(benign URL) = %q; want api.example.com/v1 (scheme-stripped)", got)
+	}
+	// Round-4 P3 (batch M): a scheme is stripped only when it LEADS the
+	// value. The old stripper cut at the LAST "://" anywhere, so a benign
+	// sentence that merely contains a URL was truncated to its tail.
+	if got := MaskRegistryValue("see https://example.com docs"); got != "see https://example.com docs" {
+		t.Errorf("MaskRegistryValue(benign sentence containing a URL) = %q; want unchanged", got)
+	}
+	// Round-4 LOW (batch M): a scheme-only value strips to an empty core and
+	// rendered as "" before; the empty core now renders as the input.
+	if got := MaskRegistryValue("https://"); got != "https://" {
+		t.Errorf("MaskRegistryValue(scheme-only) = %q; want https:// (an empty core renders the input)", got)
 	}
 }
 
@@ -991,6 +1036,21 @@ func TestStripLocationMarkers(t *testing.T) {
 		{"../" + key, key},
 		{`.\` + key, key},
 		{`..\` + key, key},
+		// Round-4 P2 (batch M): stacked markers reduce to the bare core only
+		// when the passes repeat to a fixpoint. The old single drive pass left
+		// "C:\<key>" (an IsAbs core every classifier location-exempts) for the
+		// first two, and stripped only the first volume of the double-volume
+		// form.
+		{`./C:\` + key, key},
+		{"file:///C:\\" + key, key},
+		{`D:\D:\` + key, key},
+		// Round-4 P3 (batch M): a scheme is stripped only when it leads the
+		// value; a sentence that merely contains a URL is unchanged (the old
+		// stripper cut at the last "://" anywhere and truncated it).
+		{"see https://example.com docs", "see https://example.com docs"},
+		// Round-4 LOW (batch M): a scheme-only value strips to an empty core;
+		// MaskRegistryValue renders such a value as the input.
+		{"https://", ""},
 		{key, key},
 		{"./gemini", "gemini"},
 		{"high", "high"},
@@ -1122,6 +1182,22 @@ func TestMaskModelForReport_LocationShapedEffortMasked(t *testing.T) {
 	m := MaskModelForReport(Model{ID: "m", Capabilities: Capabilities{SupportsThinking: true, ReasoningEffort: "high"}})
 	if m.Capabilities.ReasoningEffort != "high" {
 		t.Errorf("MaskModelForReport(benign effort) = %q; want high", m.Capabilities.ReasoningEffort)
+	}
+	// Round-4 P1 (batch M): the JWT class is restored at the mask branch, so a
+	// marker-decorated JWT masks in BOTH report paths (the explicit family
+	// through MaskFamilyName, the reasoning effort through MaskRegistryValue).
+	// Before the fix the stripped JWT core serialized raw into the report copy.
+	for _, tc := range []struct{ plant, want string }{
+		{"./abcDef.ghiJkl.mnopqr", "abcDe****"},
+		{"../aaaabcdef.gggghijk.iiiijjjj", "aaaab****"},
+	} {
+		got := MaskModelForReport(Model{ID: "m", Family: tc.plant, Capabilities: Capabilities{SupportsThinking: true, ReasoningEffort: tc.plant}})
+		if got.Family != tc.want {
+			t.Errorf("MaskModelForReport(family %q) = %q; want %q (JWT class restored)", tc.plant, got.Family, tc.want)
+		}
+		if got.Capabilities.ReasoningEffort != tc.want {
+			t.Errorf("MaskModelForReport(effort %q) = %q; want %q (JWT class restored)", tc.plant, got.Capabilities.ReasoningEffort, tc.want)
+		}
 	}
 }
 

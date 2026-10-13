@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"os"
 	"strings"
 	"testing"
 
@@ -599,12 +600,10 @@ func TestRunSwarmCmdPromptFileSlotRenderingPins(t *testing.T) {
 // class, so both plants render masked in the prompt-file slot. Without the
 // widening the raw plants reach the slot and this test fails.
 //
-// Scope note: the trailing os.ReadFile sentence is seeded only with the
-// WHOLE operand, and a location-shaped whole operand never seeds
-// (SeedEligible's location exemption); that sentence-class boundary is
-// pre-existing (byte-identical at 21827f6 and 3f9ce5a) and unchanged by
-// this batch, so the pin asserts the slot rendering, exactly like the
-// rendering-pin table above.
+// Scope note: the trailing os.ReadFile sentence now takes the same per-token
+// seeds as the slot (batch M), so the full slot+tail line is pinned in
+// TestRunSwarmCmdPromptFileCompositeTailSeedsTokens below; this table keeps
+// asserting the slot rendering exactly like the rendering-pin table above.
 func TestRunSwarmCmdPromptFileSlotCommaDecoratedOperands(t *testing.T) {
 	for _, tc := range []struct{ name, path, wantSlot string }{
 		{"comma-decorated compound plant", "./backups,wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "./backups,[REDACTED]"},
@@ -625,5 +624,75 @@ func TestRunSwarmCmdPromptFileSlotCommaDecoratedOperands(t *testing.T) {
 				t.Errorf("slot rendering drifted:\ngot:  %q\nwant prefix: %q", errBuf.String(), want)
 			}
 		})
+	}
+}
+
+// Batch M (round-4 CONFIRMED MEDIUM, security + code swarm): the composite
+// error TAIL beside the masked slot re-echoed the secret raw. The tail seeded
+// the redactor with the WHOLE prompt-file operand only, and a location-shaped
+// whole operand ("./backups,<secret>") never seeds (SeedEligible's location
+// exemption), so MaskSentence fell back to MaskOperand, whose generic patterns
+// do not cover a bare secret token: the slot beside it masked (per-token
+// seeds) while the os.ReadFile sentence rode raw. The tail now takes the same
+// per-token seeds as the slot (providers.FlagSeedOperands, the composition the
+// cmd/agy main.go rollback twin already used).
+//
+// The pins assert the FULL output line (slot + tail). Without the fix the raw
+// plant reaches stderr through the sentence and the equality pins fail.
+func TestRunSwarmCmdPromptFileCompositeTailSeedsTokens(t *testing.T) {
+	awsPlant := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+
+	for _, tc := range []struct{ name, path, plant, wantSlot string }{
+		{"comma-decorated compound plant", "./backups," + awsPlant, awsPlant, "./backups,[REDACTED]"},
+		{"semicolon-decorated compound plant", "./backups;" + awsPlant, awsPlant, "./backups;[REDACTED]"},
+		{"comma-decorated bare secret", "note,abcdefghijklmnopqrs", "abcdefghijklmnopqrs", "note,[REDACTED]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("AGY_PRO_HOME", t.TempDir())
+			defer withStubSwarmInventory(t, swarmFixtureInventory(t), nil)()
+			var outBuf, errBuf strings.Builder
+			code := runSwarmCmd([]string{"--template", "code-review", "--seats", "p1", "--prompt-file", tc.path},
+				strings.NewReader(""), &outBuf, &errBuf)
+			if code != 1 {
+				t.Fatalf("exit = %d, want 1\nstderr:\n%s", code, errBuf.String())
+			}
+			// The expected full line: masked slot + the composite sentence with
+			// the plant replaced by the redaction marker. The OS wording comes
+			// from a real os.ReadFile of the same path, so the pin is
+			// platform-independent and still byte-exact.
+			_, readErr := os.ReadFile(tc.path)
+			if readErr == nil {
+				t.Fatalf("os.ReadFile(%q) unexpectedly succeeded", tc.path)
+			}
+			want := "Error reading prompt file " + tc.wantSlot + ": " +
+				strings.ReplaceAll(readErr.Error(), tc.plant, "[REDACTED]") + "\n"
+			if errBuf.String() != want {
+				t.Errorf("full prompt-file error line drifted:\ngot:  %q\nwant: %q", errBuf.String(), want)
+			}
+			if strings.Contains(errBuf.String(), tc.plant) {
+				t.Errorf("prompt-file error tail leaks the planted secret %q:\n%s", tc.plant, errBuf.String())
+			}
+		})
+	}
+
+	// The other side of the composition: a benign comma list seeds no token,
+	// so the added per-token seeds must not start masking ordinary values.
+	// The full line stays byte-identical to the whole-operand seeding.
+	const benign = "read,search"
+	t.Setenv("AGY_PRO_HOME", t.TempDir())
+	defer withStubSwarmInventory(t, swarmFixtureInventory(t), nil)()
+	var outBuf, errBuf strings.Builder
+	code := runSwarmCmd([]string{"--template", "code-review", "--seats", "p1", "--prompt-file", benign},
+		strings.NewReader(""), &outBuf, &errBuf)
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1\nstderr:\n%s", code, errBuf.String())
+	}
+	_, readErr := os.ReadFile(benign)
+	if readErr == nil {
+		t.Fatalf("os.ReadFile(%q) unexpectedly succeeded", benign)
+	}
+	want := "Error reading prompt file " + benign + ": " + readErr.Error() + "\n"
+	if errBuf.String() != want {
+		t.Errorf("benign comma list full line drifted:\ngot:  %q\nwant: %q", errBuf.String(), want)
 	}
 }

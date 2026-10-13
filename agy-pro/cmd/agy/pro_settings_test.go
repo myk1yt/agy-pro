@@ -141,6 +141,37 @@ func TestRunSettingsCmd_Set(t *testing.T) {
 	}
 }
 
+// Batch M: the add-json read-failure line seeds the composite sentence with
+// the per-token forms too (the same composition as the prompt-file and
+// rollback twins), so a comma-decorated plant is masked inside the os.ReadFile
+// sentence and not only at the operand slot. Without the token seeds the tail
+// echoes the bare secret raw beside its own [REDACTED].
+func TestRunSettingsCmdAddJSONCompositeTailSeedsTokens(t *testing.T) {
+	installSettingsCore(t)
+	plant := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	operand := "./backups," + plant
+	code, _, errw := runSettings(t, []string{"providers", "add-json", operand}, "")
+	if code != 1 {
+		t.Fatalf("add-json(missing file) exit = %d, want 1 (stderr=%s)", code, errw)
+	}
+	if strings.Contains(errw, plant) {
+		t.Errorf("add-json read error leaks the plant raw:\n%s", errw)
+	}
+	if !strings.Contains(errw, "[REDACTED]") {
+		t.Errorf("add-json read error must mask the comma-decorated operand:\n%s", errw)
+	}
+	// A benign comma list renders byte-identical (no eligible seed, the
+	// sentence keeps its readable path).
+	benign := "read,search"
+	code, _, errw = runSettings(t, []string{"providers", "add-json", benign}, "")
+	if code != 1 {
+		t.Fatalf("add-json(benign missing file) exit = %d, want 1", code)
+	}
+	if !strings.Contains(errw, benign) {
+		t.Errorf("add-json read error must keep the benign operand readable:\n%s", errw)
+	}
+}
+
 func TestRunSettingsCmd_Providers(t *testing.T) {
 	tc := installSettingsCore(t)
 

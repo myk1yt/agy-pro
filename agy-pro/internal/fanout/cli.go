@@ -129,8 +129,19 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 				if strings.ContainsAny(*promptFileFlag, " \t\n\r,;") {
 					pathSlot = maskOperandSentence(pathSlot, providers.FlagSeedOperands(*promptFileFlag)...)
 				}
+				// Batch M: the composite tail beside the slot takes the same
+				// per-token seeds as the slot (and as the cmd/agy main.go
+				// rollback twin). The whole operand alone is not enough: a
+				// location-shaped whole operand ("./backups,<secret>") never
+				// seeds (SeedEligible's location exemption), so the sentence
+				// fell back to MaskOperand, whose generic patterns do not cover
+				// a bare secret token, and the tail re-echoed it raw while the
+				// slot beside it was masked. FlagSeedOperands keeps the whole
+				// value AND adds each comma/space/semicolon-separated token, so
+				// the token seed closes the sentence; separator-free operands
+				// seed exactly what they seeded before (byte-identical).
 				fmt.Fprintf(errw, "Error reading prompt file %s: %v\n",
-					pathSlot, maskOperandSentence(err.Error(), *promptFileFlag))
+					pathSlot, maskOperandSentence(err.Error(), providers.FlagSeedOperands(*promptFileFlag)...))
 				return 1
 			}
 			promptText = string(data)

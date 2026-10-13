@@ -670,9 +670,10 @@ func TestFanoutPromptFileSlotMasksCommaDecoratedOperand(t *testing.T) {
 	// The comma/semicolon-decorated classes the whitespace-only gate dropped.
 	// Each escapes MaskOperand entirely (location marker or all-lowercase
 	// squash), so without the widened gate the slot itself echoes the raw
-	// token. The slot is the regression site: the composite sentence beside
-	// it has always taken the whole raw operand as its only seed (unchanged
-	// since 21827f6), which is deliberately ineligible for these fixtures.
+	// token. Batch M closed the sentence side too (the composite tail now
+	// takes the same per-token seeds); this pin keeps asserting the slot
+	// rendering, and TestFanoutPromptFileCompositeTailSeedsTokens pins the
+	// full slot+tail line.
 	for _, tc := range []struct{ arg, want string }{
 		{"./backups," + awsPlant, "./backups,[REDACTED]"},
 		{"note,abcdefghijklmnopqrs", "note,[REDACTED]"},
@@ -698,6 +699,70 @@ func TestFanoutPromptFileSlotMasksCommaDecoratedOperand(t *testing.T) {
 	}
 	if strings.Contains(stderr, "[REDACTED]") {
 		t.Errorf("benign comma list must not be redacted:\n%s", stderr)
+	}
+}
+
+// Batch M (round-4 CONFIRMED MEDIUM, security + code swarm): the composite
+// error TAIL beside the masked slot re-echoed the secret raw. The tail seeded
+// the redactor with the WHOLE prompt-file operand only, and a location-shaped
+// whole operand ("./backups,<secret>") never seeds (SeedEligible's location
+// exemption), so MaskSentence fell back to MaskOperand, whose generic patterns
+// do not cover a bare secret token: the slot beside it masked (per-token
+// seeds) while the os.ReadFile sentence rode raw. The tail now takes the same
+// per-token seeds as the slot (providers.FlagSeedOperands, the composition the
+// cmd/agy main.go rollback twin already used).
+//
+// The pins assert the FULL output line (slot + tail). Without the fix the raw
+// plant reaches stderr through the sentence and the equality pins fail.
+func TestFanoutPromptFileCompositeTailSeedsTokens(t *testing.T) {
+	t.Setenv(paths.EnvAgyProHome, t.TempDir())
+	awsPlant := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+
+	for _, tc := range []struct{ name, arg, plant, wantSlot string }{
+		{"comma-decorated compound plant", "./backups," + awsPlant, awsPlant, "./backups,[REDACTED]"},
+		{"semicolon-decorated compound plant", "./backups;" + awsPlant, awsPlant, "./backups;[REDACTED]"},
+		{"comma-decorated bare secret", "note,abcdefghijklmnopqrs", "abcdefghijklmnopqrs", "note,[REDACTED]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out, errw bytes.Buffer
+			code := Run([]string{"-prompt-file", tc.arg}, nil, &out, &errw)
+			if code != 1 {
+				t.Fatalf("exit = %d; want 1 for %q\nstderr:\n%s", code, tc.arg, errw.String())
+			}
+			// The expected full line: masked slot + the composite sentence with
+			// the plant replaced by the redaction marker. The OS wording comes
+			// from a real os.ReadFile of the same path, so the pin is
+			// platform-independent and still byte-exact.
+			_, readErr := os.ReadFile(tc.arg)
+			if readErr == nil {
+				t.Fatalf("os.ReadFile(%q) unexpectedly succeeded", tc.arg)
+			}
+			want := "Error reading prompt file " + tc.wantSlot + ": " +
+				strings.ReplaceAll(readErr.Error(), tc.plant, "[REDACTED]") + "\n"
+			if errw.String() != want {
+				t.Errorf("full prompt-file error line drifted:\ngot:  %q\nwant: %q", errw.String(), want)
+			}
+			if strings.Contains(errw.String(), tc.plant) {
+				t.Errorf("prompt-file error tail leaks the planted secret %q:\n%s", tc.plant, errw.String())
+			}
+		})
+	}
+
+	// The other side of the composition: a benign comma list seeds no token,
+	// so the added per-token seeds must not start masking ordinary values.
+	// The full line stays byte-identical to the whole-operand seeding.
+	const benign = "read,search"
+	var out, errw bytes.Buffer
+	if code := Run([]string{"-prompt-file", benign}, nil, &out, &errw); code != 1 {
+		t.Fatalf("exit = %d; want 1 for the benign comma list\nstderr:\n%s", code, errw.String())
+	}
+	_, readErr := os.ReadFile(benign)
+	if readErr == nil {
+		t.Fatalf("os.ReadFile(%q) unexpectedly succeeded", benign)
+	}
+	want := "Error reading prompt file " + benign + ": " + readErr.Error() + "\n"
+	if errw.String() != want {
+		t.Errorf("benign comma list full line drifted:\ngot:  %q\nwant: %q", errw.String(), want)
 	}
 }
 

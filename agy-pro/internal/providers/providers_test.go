@@ -1501,6 +1501,12 @@ func TestCapabilitySummary(t *testing.T) {
 		// M1: a PADDED key effort is trimmed before the masker, so the trailing
 		// newline no longer defeats the classifier and rides raw.
 		{Capabilities{SupportsThinking: true, ReasoningEffort: "wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY\n"}, "thinking(wJalr****)"},
+		// Round-4 P1 (batch M): a marker-decorated JWT effort masks at the
+		// composition. The MaskRegistryValue mask branch dropped
+		// isJWTShapedOperand, so the stripped JWT core rode raw here (and at
+		// every other Summary sink: the banner, the wizard list).
+		{Capabilities{SupportsThinking: true, ReasoningEffort: "./abcDef.ghiJkl.mnopqr"}, "thinking(abcDe****)"},
+		{Capabilities{SupportsThinking: true, ReasoningEffort: "../aaaabcdef.gggghijk.iiiijjjj"}, "thinking(aaaab****)"},
 	}
 	for _, tc := range cases {
 		if got := tc.caps.Summary(); got != tc.want {
