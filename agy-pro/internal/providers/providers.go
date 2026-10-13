@@ -406,11 +406,12 @@ var (
 	bearerRe = regexp.MustCompile(`(?i)(bearer\s+)[A-Za-z0-9._~+/=-]{8,}`)
 	skRe     = regexp.MustCompile(`\b(sk|pk|key|tok)-[A-Za-z0-9_-]{12,}`)
 	// Generic credential shapes (S-4/F2 extension): material the registry
-	// does not know about - AWS key IDs, secret-key assignments, Authorization
-	// header values and PEM private key blocks - so a leaked file or provider
-	// error body still leaves the process masked. These extend, never replace,
-	// the registered-key masking above.
-	awsKeyIDRe   = regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`)
+	// does not know about - AWS access key IDs (the AKIA and ASIA twins),
+	// secret-key assignments, Authorization header values and PEM private key
+	// blocks - so a leaked file or provider error body still leaves the
+	// process masked. These extend, never replace, the registered-key masking
+	// above.
+	awsKeyIDRe   = regexp.MustCompile(`\b(?:AKIA|ASIA)[0-9A-Z]{16}\b`)
 	awsSecretRe  = regexp.MustCompile(`(?i)(aws_secret_access_key\s*[=:]\s*)[^\s'"` + "`" + `]+`)
 	authValueRe  = regexp.MustCompile(`(?i)(authorization["']?\s*[:=]\s*["']?)(?:bearer\s+)?[A-Za-z0-9._~+/=-]{8,}`)
 	privateKeyRe = regexp.MustCompile(`(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----`)

@@ -283,6 +283,10 @@ func TestD3DoctorUnknownOptionMasked(t *testing.T) {
 		{maskSweepKey, maskSweepMasked},
 		{sweepAKIAKey, sweepAKIAMask},
 		{sweepAWSKey, sweepAWSMask},
+		// The classifier's first-5 form for the ASIA twin: the generic
+		// redactor pattern (F3) renders the full marker inside sentences, but a
+		// bare operand echo still shows first-5 + **** (U8).
+		{sweepASIAKey, sweepASIAMask},
 	} {
 		_, err := parseDoctorArgs([]string{tc.plant})
 		if err == nil {
@@ -313,7 +317,12 @@ func TestE1UnquotedFlagEchoMasked(t *testing.T) {
 	plants := []struct{ name, key, masked string }{
 		{"aws", sweepAWSKey, sweepAWSMask},
 		{"jwt", sweepJWTKey, sweepJWTMask},
-		{"asia", sweepASIAKey, sweepASIAMask},
+		// F3: the ASIA twin in the generic redactor pattern now masks the id in
+		// the whole line BEFORE the unquoted scan sees it (the AKIA class has
+		// always rendered this way), so the flag echo carries the full marker
+		// rather than the first-5 mask. The classifier's first-5 form stays
+		// pinned by TestD3DoctorUnknownOptionMasked below.
+		{"asia", sweepASIAKey, "[REDACTED]"},
 	}
 	for _, p := range plants {
 		for _, kind := range []struct{ name, arg string }{
@@ -371,13 +380,16 @@ func TestE1UnquotedFlagEchoMasked(t *testing.T) {
 	})
 }
 
-// E2: composite-error seeding is whole-operand only. The old run extractor
-// seeded every separator-free 16+ rune fragment, which mangled benign tokens
-// inside composite sentences ("native:anthropic/claude-sonnet-4-5/x" printed
+// E2: composite-error seeding follows the ONE shared rule
+// (providers.SeedEligible / providers.MaskSentence, F-alpha); this twin
+// delegates to it. Only WHOLE operands are ever seeded, never a fragment: the
+// old run extractor seeded every separator-free 16+ rune fragment, which
+// mangled benign tokens inside composite sentences
+// ("native:anthropic/claude-sonnet-4-5/x" printed
 // "native:[REDACTED]-sonnet-4-5/x", "prompts/3f2a8b9c1d2e3f4a.md" printed
 // "[REDACTED].md"). Seeds now require the WHOLE trimmed operand to be
-// secret-shaped; the lowercase twin of every seed stays armed for
-// case-folding parsers.
+// secret-shaped; the trimmed form of every seed stays armed for parsers that
+// echo the operand without surrounding whitespace.
 func TestE2SeedEligibilityWholeOperandOnly(t *testing.T) {
 	// AWS whole-operand secrets stay masked (classifier verdict seeds the
 	// redactor, which renders the seed as [REDACTED]).
@@ -393,6 +405,11 @@ func TestE2SeedEligibilityWholeOperandOnly(t *testing.T) {
 		"./prompts/3f2a8b9c1d2e3f4a.md",
 		"/var/lib/agy/providers.json",
 		"https://acme.example/v1",
+		// F-alpha benign pins: dotted names and filenames the JWT/squash shapes
+		// must not claim (r5 N1 over-mask class, MyReport filename class).
+		"config.dev.override",
+		"claude-3.5.sonnet",
+		"MyReport2024FINAL.pdf",
 	} {
 		msg := fmt.Sprintf("seat 1: %q: native model id must not contain %q", op, "/")
 		got := maskOperandSentence(msg, op)
@@ -417,14 +434,33 @@ func TestE2SeedEligibilityWholeOperandOnly(t *testing.T) {
 		}
 	}
 
-	// Decorated secrets keep the D1/D3 coverage: the whole operand seeds, so
-	// "1-<aws-secret>" and "native:<aws-secret>/x" stay masked in composite
-	// sentences without any fragment seed.
+	// Decorated secrets keep the D1/D3 coverage through the shared squash
+	// rule: "1-<aws-secret>" and "native:<aws-secret>/x" stay masked in
+	// composite sentences without any fragment seed.
 	for _, op := range []string{"1-" + sweepAWSKey, "native:" + sweepAWSKey + "/x"} {
 		msg := fmt.Sprintf("invalid selection token %q", op)
 		got := maskOperandSentence(msg, op)
 		if strings.Contains(got, sweepAWSKey) {
 			t.Errorf("decorated AWS operand %q must stay masked:\n%s", op, got)
+		}
+	}
+
+	// F-alpha regression pins (r5 N2): decorated operands whose inner run is
+	// NOT mixed-case-plus-digit used to print raw. The uppercase-only class
+	// (ASIA id, bare upper run) and the whitespace-decorated AWS secret seed
+	// through the shared rule now.
+	for _, op := range []string{
+		"1-" + sweepASIAKey,
+		"1-ABCDEFGHIJKLMNOPQRST",
+		"native: " + sweepAWSKey,
+	} {
+		msg := fmt.Sprintf("invalid selection token %q", op)
+		got := maskOperandSentence(msg, op)
+		if strings.Contains(got, sweepASIAKey) || strings.Contains(got, "ABCDEFGHIJKLMNOPQRST") || strings.Contains(got, sweepAWSKey) {
+			t.Errorf("decorated operand %q must stay masked:\n%s", op, got)
+		}
+		if !strings.Contains(got, "[REDACTED]") {
+			t.Errorf("decorated operand %q should carry the redaction marker:\n%s", op, got)
 		}
 	}
 }

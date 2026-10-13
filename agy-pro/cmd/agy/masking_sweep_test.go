@@ -171,6 +171,26 @@ func TestWrapperPlantedKeySweep(t *testing.T) {
 				strings.NewReader(""), &out, &errw)
 			return code, out.String(), errw.String()
 		}},
+		// F-alpha: the uppercase-only decorated class (r5 N2). "1-<ASIA>" is a
+		// range-shaped seat token whose inner run carries no lowercase, so the
+		// old mixed-case+digit decorated test dropped it; the shared squash
+		// rule seeds it.
+		{"swarm seats selection token ASIA plant", func() (int, string, string) {
+			defer withStubSwarmInventory(t, swarmFixtureInventory(t), nil)()
+			var out, errw strings.Builder
+			code := runSwarmCmd([]string{"--template", "code-review", "--seats", "1-" + sweepASIAKey},
+				strings.NewReader(""), &out, &errw)
+			return code, out.String(), errw.String()
+		}},
+		// F-alpha: a decorated operand whose echo carries interior whitespace
+		// ("native: <aws>") seeds through the shared squash rule.
+		{"swarm seats native id AWS plant with whitespace", func() (int, string, string) {
+			defer withStubSwarmInventory(t, swarmFixtureInventory(t), nil)()
+			var out, errw strings.Builder
+			code := runSwarmCmd([]string{"--template", "code-review", "--seats", "native: " + sweepAWSKey},
+				strings.NewReader(""), &out, &errw)
+			return code, out.String(), errw.String()
+		}},
 		// --- E1: stdlib unquoted flag echoes (undefined flag / bad syntax) -----
 		{"models undefined flag AWS plant", func() (int, string, string) {
 			var out, errw strings.Builder

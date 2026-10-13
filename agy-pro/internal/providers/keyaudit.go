@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // KeyProbeStatus is the verdict of one upstream credential probe.
@@ -166,6 +167,125 @@ func RedactEchoLine(s string) string {
 	return quotedSegmentRe.ReplaceAllStringFunc(s, func(q string) string {
 		return `"` + MaskOperand(q[1:len(q)-1]) + `"`
 	})
+}
+
+// jwtOperandRe matches a WHOLE operand in the 3-segment JWT shape
+// (header.payload.signature). Together with the per-segment and total floors
+// below it covers JWTs whose header does not start with "eyJ" and so escapes
+// the classifier's credentialShapeRe.
+var jwtOperandRe = regexp.MustCompile(`^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$`)
+
+const (
+	// jwtShapeFloorRunes is the whole-token floor of the JWT shape.
+	jwtShapeFloorRunes = 16
+	// jwtSegmentFloorRunes is the per-segment floor of the JWT shape: a real
+	// header/payload/signature segment is a base64 blob, never a short word, so
+	// dotted names ("config.dev.override", "claude-3.5.sonnet") stay readable
+	// (r5 N1 over-mask) while blob-segment tokens seed.
+	jwtSegmentFloorRunes = 6
+	// decoratedSecretFloorRunes is the squash-length floor of the decorated
+	// secret class. It sits ABOVE 20, not at 20: a 20-rune mixed-case squash is
+	// the filename class ("MyReport2024FINAL.pdf"), which must stay readable,
+	// while the 21+ rune class ("1-ASIAIOSFODNN7EXAMPLE") seeds. The bare
+	// 20-rune uppercase class ("ABCDEFGHIJKLMNOPQRST") seeds through the
+	// classifier's contiguous-run rule instead, so no coverage is lost.
+	decoratedSecretFloorRunes = 21
+)
+
+// isJWTShapedOperand reports whether s (already trimmed) is a 3-segment JWT:
+// exactly three dot-separated base64url segments, each at least
+// jwtSegmentFloorRunes runes, totaling at least jwtShapeFloorRunes runes.
+func isJWTShapedOperand(s string) bool {
+	if !jwtOperandRe.MatchString(s) {
+		return false
+	}
+	total := 0
+	for _, seg := range strings.Split(s, ".") {
+		n := len([]rune(seg))
+		if n < jwtSegmentFloorRunes {
+			return false
+		}
+		total += n
+	}
+	return total >= jwtShapeFloorRunes
+}
+
+// squashOperand strips the separator characters (`/ : + = . _ -`) and
+// whitespace from an operand, collapsing a decorated secret
+// ("1-<aws-secret>", "native:<aws-secret>/x", "native: <aws-secret>") to its
+// opaque core so length and charset can be judged as one run.
+func squashOperand(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '/', ':', '+', '=', '.', '_', '-', ' ', '\t', '\n', '\v', '\f', '\r':
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// SeedEligible reports whether operand may seed the composite-error redactor
+// (MaskSentence). A composite error is a sentence a library call built from a
+// raw CLI operand (*fs.PathError wraps the path into the sentence, seat-spec
+// validators quote the token): MaskOperand classifies the WHOLE string, and a
+// full sentence never looks secret-shaped, so the redactor is seeded with the
+// operand and masks it wherever the sentence echoes it. This is the ONE
+// seed-eligibility rule, shared by the cmd/agy wrapper and internal/fanout. An
+// operand seeds when it is NOT location-shaped AND any of:
+//
+//   - the canonical classifier already masks it (MaskOperand(operand) !=
+//     operand): sk-/AKIA/ASIA/eyJ shapes, 16+ rune contiguous base64 runs
+//     (D7), isLikelyAPIKey verdicts;
+//   - the whole trimmed operand is a 3-segment JWT (isJWTShapedOperand),
+//     covering headers the classifier cannot see;
+//   - its squash exceeds decoratedSecretFloorRunes runes and carries an
+//     uppercase letter: the decorated-operand class whose separators defeat
+//     the contiguous-run heuristic.
+//
+// Location-shaped operands (a URL scheme, an absolute path, or a leading
+// ./ ../ .\ ..\ marker) never seed: spawn errors must name the binary, and
+// their inner base64 runs are ordinary path segments.
+func SeedEligible(operand string) bool {
+	if operand == "" || isLocationShaped(operand) {
+		return false
+	}
+	if MaskOperand(operand) != operand {
+		return true
+	}
+	if isJWTShapedOperand(strings.TrimSpace(operand)) {
+		return true
+	}
+	sq := squashOperand(operand)
+	return len([]rune(sq)) >= decoratedSecretFloorRunes && strings.IndexFunc(sq, unicode.IsUpper) >= 0
+}
+
+// MaskSentence renders an error or status message that may embed raw CLI
+// operands (the composite-error class). Every SeedEligible operand seeds the
+// redactor together with its trimmed form (a parser may echo the operand
+// without surrounding whitespace), so a planted secret is masked wherever the
+// sentence echoes it while the sentence's own wording stays intact. With no
+// eligible operand the sentence falls back to MaskOperand, which keeps benign
+// operands readable and still applies the generic credential patterns.
+func MaskSentence(sentence string, operands ...string) string {
+	seen := map[string]bool{}
+	var seeds []string
+	addSeed := func(s string) {
+		if s != "" && !seen[s] {
+			seen[s] = true
+			seeds = append(seeds, s)
+		}
+	}
+	for _, op := range operands {
+		if !SeedEligible(op) {
+			continue
+		}
+		addSeed(op)
+		addSeed(strings.TrimSpace(op))
+	}
+	if len(seeds) == 0 {
+		return MaskOperand(sentence)
+	}
+	return NewRedactor(seeds...)(sentence)
 }
 
 // operandLooksSecret decides whether an echoed operand is plausibly credential

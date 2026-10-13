@@ -11,6 +11,7 @@ import (
 
 	"agypro/internal/mode"
 	"agypro/internal/paths"
+	"agypro/internal/providers"
 )
 
 // S-8: --tools parsing is fail-closed. A "restrictive-looking" value must not
@@ -306,12 +307,12 @@ func TestFanoutPlantedKeySweep(t *testing.T) {
 		awsPlant = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
 		awsMask  = "wJalr****"
 		// E1 plants: a JWT (3-segment dotted token) and an ASIA-prefixed AWS
-		// access key id (the credentialShapeRe sibling of AKIA that the
-		// generic AKIA-only redactor pattern misses).
+		// access key id (the credentialShapeRe sibling of AKIA; F3 added the
+		// ASIA twin to the generic redactor pattern, so flag echoes of the id
+		// now carry the full marker instead of the first-5 mask).
 		jwtPlant  = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
 		jwtMask   = "eyJhb****"
 		asiaPlant = "ASIAIOSFODNN7EXAMPLE"
-		asiaMask  = "ASIAI****"
 	)
 
 	type site struct {
@@ -343,6 +344,12 @@ func TestFanoutPlantedKeySweep(t *testing.T) {
 			wantCode: 2, want: "[REDACTED]",
 		},
 		{
+			// F-alpha: a decorated operand whose echo carries interior
+			// whitespace ("native: <aws>") seeds through the shared squash rule.
+			name: "seats native AWS plant with whitespace", args: []string{"--seats", "native: " + awsPlant},
+			wantCode: 2, want: "[REDACTED]",
+		},
+		{
 			name: "seats benign token error stays readable", args: []string{"--seats", "native:"},
 			wantCode: 2, want: `"native:" prefix requires a model id`, wantNot: "[REDACTED]",
 		},
@@ -362,6 +369,18 @@ func TestFanoutPlantedKeySweep(t *testing.T) {
 		{
 			name: "tools benign token error stays readable", args: []string{"--tools", "read,nowrite"},
 			wantCode: 2, want: `unknown tool "nowrite"`, wantNot: "[REDACTED]",
+		},
+		{
+			// F-alpha: the uppercase-only decorated class (r5 N2). A
+			// "1-<aws>" / "1-<ASIA>" token is an unknown tool whose source echo
+			// is raw (the classifier keeps the decorated form readable), so the
+			// composite sentence must be seeded by the shared rule.
+			name: "tools 1-<AWS> plant", args: []string{"--tools", "1-" + awsPlant},
+			wantCode: 2, want: "[REDACTED]",
+		},
+		{
+			name: "tools 1-<ASIA> plant", args: []string{"--tools", "1-" + asiaPlant},
+			wantCode: 2, want: "[REDACTED]",
 		},
 		{
 			// D8: the stdlib invalid-value echo for -timeout routes through the
@@ -389,8 +408,12 @@ func TestFanoutPlantedKeySweep(t *testing.T) {
 			wantCode: 2, want: jwtMask,
 		},
 		{
+			// F3: the ASIA twin in the generic redactor pattern now masks the
+			// id in the whole line before the unquoted scan sees it (the AKIA
+			// class has always rendered this way), so the echo carries the full
+			// marker; the first-5 form stays pinned in TestE2 below.
 			name: "undefined flag ASIA plant", args: []string{"--" + asiaPlant},
-			wantCode: 2, want: asiaMask,
+			wantCode: 2, want: "[REDACTED]",
 		},
 		{
 			// E1: "bad flag syntax: <arg>" echoes the raw argument unquoted.
@@ -402,8 +425,10 @@ func TestFanoutPlantedKeySweep(t *testing.T) {
 			wantCode: 2, want: jwtMask,
 		},
 		{
+			// F3: same as the undefined-flag row above — the generic pattern
+			// redacts the ASIA id in the whole line first.
 			name: "bad flag syntax ASIA plant", args: []string{"----" + asiaPlant},
-			wantCode: 2, want: asiaMask,
+			wantCode: 2, want: "[REDACTED]",
 		},
 		{
 			// E2: a hash-named relative path is not location-shaped, so the
@@ -436,16 +461,19 @@ func TestFanoutPlantedKeySweep(t *testing.T) {
 	}
 }
 
-// E2: composite-error seeding is whole-operand only (mirrors cmd/agy's
-// TestE2SeedEligibilityWholeOperandOnly). The old run extractor seeded every
-// separator-free 16+ rune fragment, which mangled benign tokens inside
-// composite sentences ("native:anthropic/claude-sonnet-4-5/x" printed
+// E2: composite-error seeding follows the ONE shared rule
+// (providers.SeedEligible / providers.MaskSentence, F-alpha) and mirrors
+// cmd/agy's TestE2SeedEligibilityWholeOperandOnly. The old run extractor
+// seeded every separator-free 16+ rune fragment, which mangled benign tokens
+// inside composite sentences ("native:anthropic/claude-sonnet-4-5/x" printed
 // "native:[REDACTED]-sonnet-4-5/x", "prompts/3f2a8b9c1d2e3f4a.md" printed
-// "[REDACTED].md"). Seeds now require the WHOLE trimmed operand to be
-// secret-shaped; the lowercase twin of every seed stays armed for
-// case-folding parsers.
+// "[REDACTED].md"). Seeds now require the WHOLE operand to be secret-shaped;
+// the trimmed form of every seed stays armed for parsers that echo the operand
+// without surrounding whitespace.
 func TestE2SeedEligibilityWholeOperandOnly(t *testing.T) {
 	awsPlant := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	asiaPlant := "ASIAIOSFODNN7EXAMPLE"
+	asiaMask := "ASIAI****"
 
 	// AWS whole-operand secrets stay masked (classifier verdict seeds the
 	// redactor, which renders the seed as [REDACTED]).
@@ -461,6 +489,11 @@ func TestE2SeedEligibilityWholeOperandOnly(t *testing.T) {
 		"./prompts/3f2a8b9c1d2e3f4a.md",
 		"/var/lib/agy/providers.json",
 		"https://acme.example/v1",
+		// F-alpha benign pins: dotted names and filenames the JWT/squash shapes
+		// must not claim (r5 N1 over-mask class, MyReport filename class).
+		"config.dev.override",
+		"claude-3.5.sonnet",
+		"MyReport2024FINAL.pdf",
 	} {
 		msg := fmt.Sprintf("seat %d: %q: native model id must not contain %q", 1, op, "/")
 		got := maskOperandSentence(msg, op)
@@ -470,6 +503,13 @@ func TestE2SeedEligibilityWholeOperandOnly(t *testing.T) {
 		if strings.Contains(got, "[REDACTED]") {
 			t.Errorf("benign operand %q must not trigger any redaction:\n%s", op, got)
 		}
+	}
+
+	// The classifier's first-5 form for the ASIA twin stays pinned: a bare
+	// operand echo renders first-5 + **** (U8) even though the generic
+	// redactor pattern (F3) renders the full marker inside sentences.
+	if got := providers.MaskOperand(asiaPlant); got != asiaMask {
+		t.Errorf("MaskOperand(ASIA id) = %q; want %q", got, asiaMask)
 	}
 
 	// JWT-shaped operands are masked: the eyJ header classifies, the shape
@@ -496,6 +536,25 @@ func TestE2SeedEligibilityWholeOperandOnly(t *testing.T) {
 		got := maskOperandSentence(msg, op)
 		if strings.Contains(got, awsPlant) {
 			t.Errorf("decorated AWS operand %q must stay masked:\n%s", op, got)
+		}
+	}
+
+	// F-alpha regression pins (r5 N2): decorated operands whose inner run is
+	// NOT mixed-case-plus-digit used to print raw. The uppercase-only class
+	// (ASIA id, bare upper run) and the whitespace-decorated AWS secret seed
+	// through the shared squash rule now.
+	for _, op := range []string{
+		"1-" + asiaPlant,
+		"1-ABCDEFGHIJKLMNOPQRST",
+		"native: " + awsPlant,
+	} {
+		msg := fmt.Sprintf("invalid selection token %q", op)
+		got := maskOperandSentence(msg, op)
+		if strings.Contains(got, asiaPlant) || strings.Contains(got, "ABCDEFGHIJKLMNOPQRST") || strings.Contains(got, awsPlant) {
+			t.Errorf("decorated operand %q must stay masked:\n%s", op, got)
+		}
+		if !strings.Contains(got, "[REDACTED]") {
+			t.Errorf("decorated operand %q should carry the redaction marker:\n%s", op, got)
 		}
 	}
 }
@@ -564,16 +623,21 @@ func TestFanoutEngineErrorMasksSeatSpecs(t *testing.T) {
 	}
 	t.Cleanup(func() { executeEngine = old })
 
-	const plant = "1-wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-	var out, errw bytes.Buffer
-	if code := Run([]string{"-prompt", "p", "-seats", plant}, nil, &out, &errw); code != 1 {
-		t.Fatalf("exit = %d; want 1\nstderr:\n%s", code, errw.String())
-	}
-	if strings.Contains(errw.String(), "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY") {
-		t.Errorf("engine error leaks the planted seat spec:\n%s", errw.String())
-	}
-	if !strings.Contains(errw.String(), "[REDACTED]") {
-		t.Errorf("engine error should carry the redaction marker:\n%s", errw.String())
+	const (
+		awsPlant  = "1-wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+		asiaPlant = "1-ASIAIOSFODNN7EXAMPLE"
+	)
+	for _, plant := range []string{awsPlant, asiaPlant} {
+		var out, errw bytes.Buffer
+		if code := Run([]string{"-prompt", "p", "-seats", plant}, nil, &out, &errw); code != 1 {
+			t.Fatalf("exit = %d; want 1\nstderr:\n%s", code, errw.String())
+		}
+		if strings.Contains(errw.String(), plant) {
+			t.Errorf("engine error leaks the planted seat spec %q:\n%s", plant, errw.String())
+		}
+		if !strings.Contains(errw.String(), "[REDACTED]") {
+			t.Errorf("engine error should carry the redaction marker for %q:\n%s", plant, errw.String())
+		}
 	}
 
 	// A benign engine error stays readable (no seed, generic pass only).

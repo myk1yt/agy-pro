@@ -484,3 +484,146 @@ func TestSecretInterruptSentinel(t *testing.T) {
 		t.Errorf("interrupt error message = %q", errSecretInterrupted)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// F-alpha — the unified seed-eligibility rule (SeedEligible) and the shared
+// composite-error masker (MaskSentence). Both twins (cmd/agy/masking.go and
+// internal/fanout/cli.go) delegate here; the pinned table below is the
+// acceptance contract for the rule, and the twin E2 tests mirror it.
+// ---------------------------------------------------------------------------
+
+// TestSeedEligible_PinnedTable pins the F-alpha acceptance cases. Seeds:
+// classifier-flagged operands (sk-, AKIA, the AWS-secret contiguous run) and
+// the decorated class whose separators defeat the contiguous-run heuristic
+// ("native: <aws>" with whitespace, "1-<ASIA>"), plus the bare uppercase run
+// the classifier flags on length. Readable: lowercase hash/model/filename
+// shapes, dotted config names, and every location-shaped operand.
+func TestSeedEligible_PinnedTable(t *testing.T) {
+	for _, op := range []string{
+		"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+		"native: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+		"1-ASIAIOSFODNN7EXAMPLE",
+		"ABCDEFGHIJKLMNOPQRST",
+		"sk-verysecretkey-0123456789abcdef",
+		"AKIAIOSFODNN7EXAMPLE",
+	} {
+		if !SeedEligible(op) {
+			t.Errorf("SeedEligible(%.20q...) = false; want true", op)
+		}
+	}
+	for _, op := range []string{
+		"native:anthropic/claude-sonnet-4-5/x",
+		"prompts/3f2a8b9c1d2e3f4a.md",
+		"config.dev.override",
+		"MyReport2024FINAL.pdf",
+		"claude-3.5.sonnet",
+		"https://host/p",
+		`C:\x\y`,
+		"./keys/x.txt",
+	} {
+		if SeedEligible(op) {
+			t.Errorf("SeedEligible(%q) = true; want false", op)
+		}
+	}
+}
+
+// TestSeedEligible_JWTShape: 3-segment tokens whose segments are blob-length
+// seed (the shape covers headers the classifier's eyJ rule cannot see);
+// short-segment dotted names stay readable (the r5 N1 over-mask class).
+func TestSeedEligible_JWTShape(t *testing.T) {
+	for _, op := range []string{
+		"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
+		"abcdefghijklmnop.qrstuvwxyz0123.456789",
+	} {
+		if !SeedEligible(op) {
+			t.Errorf("SeedEligible(JWT %.20q...) = false; want true", op)
+		}
+	}
+	for _, op := range []string{"config.dev.override", "claude-3.5.sonnet", "v1.2.3"} {
+		if SeedEligible(op) {
+			t.Errorf("SeedEligible(%q) = true; want false", op)
+		}
+	}
+}
+
+// TestNewRedactor_AWSKeyIDTwinsMasked: the generic redactor pattern covers the
+// ASIA twin of the AKIA access-key-id class (F3) inside sentences, and the
+// classifier still renders a bare id as the first-5 readable mask (U8).
+func TestNewRedactor_AWSKeyIDTwinsMasked(t *testing.T) {
+	redact := NewRedactor()
+	for _, key := range []string{"AKIAIOSFODNN7EXAMPLE", "ASIAIOSFODNN7EXAMPLE"} {
+		got := redact("key " + key + " rejected")
+		if strings.Contains(got, key) {
+			t.Errorf("redactor leaks the AWS key id %q:\n%s", key, got)
+		}
+		if !strings.Contains(got, "[REDACTED]") {
+			t.Errorf("redactor output missing the marker for %q:\n%s", key, got)
+		}
+	}
+	if got := MaskOperand("ASIAIOSFODNN7EXAMPLE"); got != "ASIAI****" {
+		t.Errorf("MaskOperand(ASIA id) = %q; want %q", got, "ASIAI****")
+	}
+}
+
+// TestMaskSentence_MasksPlantedOperand: a secret embedded in a composite
+// sentence is masked wherever the sentence echoes the operand, while the
+// sentence's own wording survives.
+func TestMaskSentence_MasksPlantedOperand(t *testing.T) {
+	secret := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	msg := "open " + secret + ": The system cannot find the file specified."
+	got := MaskSentence(msg, secret)
+	assertNoLeak(t, got, secret)
+	if !strings.Contains(got, "[REDACTED]") {
+		t.Errorf("MaskSentence output missing the marker:\n%s", got)
+	}
+	if !strings.Contains(got, "The system cannot find the file specified.") {
+		t.Errorf("sentence wording lost:\n%s", got)
+	}
+}
+
+// TestMaskSentence_BenignSentenceUnchanged: with no eligible operand the
+// sentence falls back to MaskOperand, so benign operands stay readable.
+func TestMaskSentence_BenignSentenceUnchanged(t *testing.T) {
+	op := "native:anthropic/claude-sonnet-4-5/x"
+	msg := `seat 1: "` + op + `": native model id must not contain "/"`
+	if got := MaskSentence(msg, op); got != msg {
+		t.Errorf("MaskSentence changed a benign sentence:\n got %q\nwant %q", got, msg)
+	}
+}
+
+// TestMaskSentence_SeedsTrimmedForm: a parser may echo the operand without
+// surrounding whitespace, so the trimmed twin of every seed is armed too.
+func TestMaskSentence_SeedsTrimmedForm(t *testing.T) {
+	secret := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	msg := "open " + secret + ": no such file"
+	got := MaskSentence(msg, "  "+secret+"  ")
+	assertNoLeak(t, got, secret)
+	if !strings.Contains(got, "[REDACTED]") {
+		t.Errorf("trimmed-form seed missing:\n%s", got)
+	}
+}
+
+// TestMaskSentence_DecoratedOperandMasked: the decorated class
+// ("1-<aws>", "native:<aws>/x", "native: <aws>") seeds through the squash rule
+// so the composite sentence cannot echo the inner secret raw.
+func TestMaskSentence_DecoratedOperandMasked(t *testing.T) {
+	secret := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	for _, op := range []string{"1-" + secret, "native:" + secret + "/x", "native: " + secret} {
+		msg := fmt.Sprintf("invalid selection token %q", op)
+		got := MaskSentence(msg, op)
+		assertNoLeak(t, got, secret)
+		if !strings.Contains(got, "[REDACTED]") {
+			t.Errorf("decorated operand %q must carry the marker:\n%s", op, got)
+		}
+	}
+}
+
+// TestMaskSentence_NoSeedFallbackAppliesGenericPatterns: with no eligible
+// operand the fallback still masks generic credential patterns in the
+// sentence (the seeded path applies the same patterns via NewRedactor).
+func TestMaskSentence_NoSeedFallbackAppliesGenericPatterns(t *testing.T) {
+	got := MaskSentence("unauthorized: bearer sk-planted-c2-sweep-key-0123456789abcdef rejected", "bogus")
+	if strings.Contains(got, "sk-planted-c2-sweep-key-0123456789abcdef") {
+		t.Errorf("fallback must still mask generic credential patterns:\n%s", got)
+	}
+}
