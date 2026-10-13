@@ -2,6 +2,55 @@
 Antigravity-cli (agy-tools) Changelog
 ================================================================================
 
+Version: 0.10.4
+Release Date: 2026-10-13
+Previous Version: 0.10.3
+
+--------------------------------------------------------------------------------
+[Overview]
+--------------------------------------------------------------------------------
+agy-pro hybrid swarm model UX delivery (commits on main, 2026-10-12..13). One
+swarm now mixes Antigravity native models and registered external providers,
+each seat its own agent, with a combined inventory/picker, a numbered swarm
+builder, a settings surface, and owner-only masked reporting. Verified by a
+four-round double-blind review swarm (code + security) plus a live mixed run.
+
+[Added]
+- Native fanout seats: `--seats "native:<id>,<prov>/<model>"` runs real-agy
+  subprocesses beside provider seats (2-cap concurrency, kind:native
+  provenance, failover with k3 exclusion, all-native runs tolerate a missing
+  registry). Live-verified: a mixed 2-seat run completed 2/2 with a provider
+  HTTP 401 failing over to a second registered provider.
+- Combined inventory/picker: `agy pro models --all` / `--json`, launcher [2]
+  picker sub-menu, env-scrubbed cached native catalog fetch.
+- Numbered swarm builder: `agy pro swarm` interactive (numbered only in the
+  happy path) plus non-interactive flags (--template/--seats/--root/--prompt/
+  --prompt-file/--tools/--task/--timeout/--dry-run).
+- Settings: `/setting_agypro` plugin command and `agy pro settings` full-screen
+  TUI (native keybindings; non-Windows degrades to line mode).
+- U7 community banner at interactive launcher startup only (never in -p/piped/
+  machine output). U8 API-key masking: first 5 runes + `****` at every display
+  sink (wizard input, confirmations, lists, settings, logs, reports, JSON).
+
+[Security]
+- One shared masking authority in internal/providers: the decorated-secret
+  classifier, per-token flag seeds at CLI flag sites, mask-before-sanitize
+  ordering, and the registry-slot masker (family / reasoning-effort display
+  slots mask location-shaped values too). summary.json / seat reports /
+  reconciliation.md written owner-only; key-shaped values never serialize raw.
+- Registry stays permissive by design; display masks are the backstop. The
+  user's real API keys and provider registry live outside the repository.
+
+[Verification]
+- `go build ./... && go vet ./... && go test ./... -count=1`: 12 packages ok.
+- Final gate: 4 code + 4 security double-blind reviewers per round across four
+  rounds on the fix batches; every confirmed finding fixed and pinned with a
+  fail-without-fix test before the next round; final round reconciled PASS
+  (code P0=0/P1=0, security CRITICAL=0/HIGH=0).
+- Live probes (headless, --print-timeout pinned at 300s): models --all,
+  mixed-seat dry-run, and a 2-seat mixed run (native success, provider 401
+  failover, artifacts written).
+
 Version: 0.10.3
 Release Date: 2026-09-12
 Previous Version: 0.10.2

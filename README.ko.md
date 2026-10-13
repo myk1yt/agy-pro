@@ -367,6 +367,32 @@ agy pro fanout --seats "native:gemini-3.8-flash-high,nw/glm-5.3-flash"   # 하�
 agy pro settings                         # 전체 화면 설정 패널 (TUI)
 ```
 
+### 하이브리드 스웜: 네이티브 모델과 외부 프로바이더 모델을 한 번에
+
+한 스웜에서 Antigravity 네이티브 모델과 등록해 둔 외부 프로바이더 모델을 함께 쓸 수 있고, 좌석마다 별개 에이전트로 실행됩니다. 2026-10-13에 좌석 2개(네이티브 1 + 외부 1)로 실검증했습니다. 외부 프로바이더가 HTTP 401을 반환하자 다른 등록 프로바이더로 failover했고, 최종 2/2 좌석이 완료됐습니다.
+
+```bash
+# 1. 배정 가능한 전부: 네이티브 모델 + 등록된 프로바이더
+agy pro models --all
+#   [ 1] gemini-3.8-flash-high     Gemini 3.8 Flash (High)          [native]
+#   [11] glm-5.3-flash-flex        tools, vision, thinking(default) [NW]
+#   [13] glm-5.3-flash             tools, vision, thinking(default) [Charm]
+
+# 2. 먼저 dry-run: 실제로는 아무것도 돌리지 않고 정확한 fanout 명령만 출력
+agy pro swarm --template code-review --seats "1,13" --dry-run
+#   agy pro fanout --task review --seats native:gemini-3.8-flash-high,Charm/glm-5.3-flash \
+#     --root . --timeout 120 --tools read,search --prompt "..." --json
+
+# 3. 실제 실행: 좌석마다 에이전트 1개; 결과물은 ./reports/fanout/<타임스탬프>/ 에 저장
+#    (--timeout 305 는 네이티브 좌석의 agy --print-timeout 을 300초로 고정)
+agy pro fanout --task review --seats "native:gemini-3.8-flash-high,NW/glm-5.3-flash-flex" \
+  --root . --timeout 305 --tools read --prompt "Review the auth flow" --json
+```
+
+좌석 문법: Antigravity 네이티브 모드는 `native:<모델-id>`, 등록한 외부 프로바이더는 `<프로바이더>/<모델-id>`, 쉼표로 구분. `agy pro swarm --seats` 는 위 목록의 번호("1,13", "2-4", 프리셋 "p1".."p3")도 받고, 인터랙티브 빌더(TTY에서 플래그 없이 `agy pro swarm`, 또는 런처 `[3]`)도 같은 번호 선택으로 진행됩니다. 프로바이더 좌석이 401/403을 받으면 다른 등록 프로바이더로 failover하고, 요약에는 그 hop 과 `degraded` 표시가 남습니다(실예: NW 가 401 "Invalid API key", 좌석은 Charm/qwen3.8-flash 로 완료, 2/2 성공).
+
+생성되는 산출물(`summary.json`, `reconciliation.md`, 좌석별 리포트)은 모두 소유자 전용 권한으로 쓰이고, 키 모양 값이 리포트나 콘솔에 들어가면 앞 5글자 + `****` 로만 표시됩니다(뒤쪽 부분은 절대 노출 안 함).
+
 ### 추가되는 기능
 
 | 기능 | 명령 |

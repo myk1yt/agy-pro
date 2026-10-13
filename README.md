@@ -443,6 +443,32 @@ agy pro fanout --seats "native:gemini-3.8-flash-high,nw/glm-5.3-flash"   # hybri
 agy pro settings                         # full-screen settings panel (TUI)
 ```
 
+### Hybrid swarm: native and external models in one run
+
+One swarm mixes Antigravity's own (native) models with your registered external providers, and every seat runs as its own agent. Verified live on 2026-10-13 with two seats (one native, one external): both answered, and when the external provider returned HTTP 401 the seat failed over to another registered provider and the run still completed 2/2.
+
+```bash
+# 1. Everything you can assign: native models plus registered providers
+agy pro models --all
+#   [ 1] gemini-3.8-flash-high     Gemini 3.8 Flash (High)          [native]
+#   [11] glm-5.3-flash-flex        tools, vision, thinking(default) [NW]
+#   [13] glm-5.3-flash             tools, vision, thinking(default) [Charm]
+
+# 2. Dry-run first: prints the exact fanout command, runs nothing
+agy pro swarm --template code-review --seats "1,13" --dry-run
+#   agy pro fanout --task review --seats native:gemini-3.8-flash-high,Charm/glm-5.3-flash \
+#     --root . --timeout 120 --tools read,search --prompt "..." --json
+
+# 3. Run it: each seat is one agent; artifacts land in ./reports/fanout/<timestamp>/
+#    (--timeout 305 pins the native seat's agy --print-timeout at 300s)
+agy pro fanout --task review --seats "native:gemini-3.8-flash-high,NW/glm-5.3-flash-flex" \
+  --root . --timeout 305 --tools read --prompt "Review the auth flow" --json
+```
+
+Seat grammar: `native:<model-id>` for Antigravity's own models, `<provider>/<model-id>` for a registered external provider, comma-separated. `agy pro swarm --seats` also takes numbered picks from the inventory above ("1,13", "2-4", presets "p1".."p3"), and the interactive builder (`agy pro swarm` with no flags on a TTY, or launcher `[3]`) walks the same choices by number. A provider seat that answers 401/403 fails over to another registered provider, and the summary records the hop plus a `degraded` flag instead of failing the run (live example: NW returned 401 "Invalid API key", the seat completed on Charm/qwen3.8-flash, 2/2 seats done).
+
+Every generated artifact (`summary.json`, `reconciliation.md`, per-seat reports) is written owner-only, and any key-shaped value that rides into a report or the console renders as the first 5 characters plus `****`, never a suffix.
+
 ### What it adds
 
 | Capability | Command |
