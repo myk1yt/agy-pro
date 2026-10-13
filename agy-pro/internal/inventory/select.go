@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"agypro/internal/providers"
 )
 
 // maxSeats caps a selection (contract §2.7).
@@ -21,9 +23,13 @@ const maxSeats = 40
 //
 // Errors: "invalid selection token %q", "seat number %d out of range (1-%d)",
 // "selection exceeds 40 seats", "range %q is inverted".
+//
+// The offending token is echoed through providers.MaskOperand (E7/B2): a
+// misdirected key paste in the selection line must not survive into the
+// error; conventional tokens (numbers, presets, benign junk) stay readable.
 func ParseSelection(input string, inv *Inventory) ([]Entry, error) {
 	if inv == nil {
-		return nil, fmt.Errorf("invalid selection token %q", strings.TrimSpace(input))
+		return nil, fmt.Errorf("invalid selection token %q", providers.MaskOperand(strings.TrimSpace(input)))
 	}
 	trimmed := strings.TrimSpace(input)
 	if trimmed == "" {
@@ -71,14 +77,14 @@ func resolveToken(tok string, inv *Inventory) ([]Entry, error) {
 		case "p1", "p2", "p3":
 			return resolvePreset(lower, inv)
 		default:
-			return nil, fmt.Errorf("invalid selection token %q", tok)
+			return nil, fmt.Errorf("invalid selection token %q", providers.MaskOperand(tok))
 		}
 	}
 	if i := strings.IndexByte(tok, '-'); i >= 0 {
 		// Range: number "-" number.
 		rest := strings.TrimSpace(tok[i+1:])
 		if rest == "" {
-			return nil, fmt.Errorf("invalid selection token %q", tok)
+			return nil, fmt.Errorf("invalid selection token %q", providers.MaskOperand(tok))
 		}
 		startNum, err1 := parseSeatNumber(tok[:i], tok, inv)
 		endNum, err2 := parseSeatNumber(rest, tok, inv)
@@ -89,7 +95,7 @@ func resolveToken(tok string, inv *Inventory) ([]Entry, error) {
 			return nil, err2
 		}
 		if startNum > endNum {
-			return nil, fmt.Errorf("range %q is inverted", tok)
+			return nil, fmt.Errorf("range %q is inverted", providers.MaskOperand(tok))
 		}
 		var out []Entry
 		for n := startNum; n <= endNum; n++ {
@@ -113,7 +119,7 @@ func resolveToken(tok string, inv *Inventory) ([]Entry, error) {
 func parseSeatNumber(tok, full string, inv *Inventory) (int, error) {
 	n, err := strconv.Atoi(strings.TrimSpace(tok))
 	if err != nil || n < 1 {
-		return 0, fmt.Errorf("invalid selection token %q", full)
+		return 0, fmt.Errorf("invalid selection token %q", providers.MaskOperand(full))
 	}
 	if n > len(inv.Entries) {
 		return 0, fmt.Errorf("seat number %d out of range (1-%d)", n, len(inv.Entries))
@@ -162,7 +168,7 @@ func resolvePreset(id string, inv *Inventory) ([]Entry, error) {
 		}
 		return append(out, rotateFamilies(external, 2)...), nil
 	default:
-		return nil, fmt.Errorf("invalid selection token %q", id)
+		return nil, fmt.Errorf("invalid selection token %q", providers.MaskOperand(id))
 	}
 }
 

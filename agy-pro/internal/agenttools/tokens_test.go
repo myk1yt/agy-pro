@@ -45,7 +45,7 @@ func TestParseToolTokensClosedSet(t *testing.T) {
 	}
 }
 
-// TestParseToolTokens_MasksKeyOperand (B2, tokens.go:45): a misdirected
+// TestParseToolTokens_MasksKeyOperand (B2): a misdirected
 // run_command that pastes a key into --tools must not write the full key into
 // the session transcript — only the first 5 characters. Benign unknown tokens
 // stay readable (`unknown tool "nowrite"` is a real CLI assertion downstream).
@@ -68,5 +68,40 @@ func TestParseToolTokens_MasksKeyOperand(t *testing.T) {
 	_, err = ParseToolTokens("read,search,nowrite")
 	if err == nil || !strings.Contains(err.Error(), `"nowrite"`) {
 		t.Errorf("benign token must stay readable, got %v", err)
+	}
+}
+
+// TestParseToolTokens_MasksOriginalCaseOperand (E9): the error mask is derived
+// from the ORIGINAL-case token, not the case-folded copy. A case-folded AIza
+// token loses its credential-shape prefix and, when it carries -/_ separators,
+// also fails the contiguous-run heuristic — so masking the folded copy echoed
+// the key (folded) instead of a mask.
+func TestParseToolTokens_MasksOriginalCaseOperand(t *testing.T) {
+	// AIza + exactly 35 chars of [0-9A-Za-z_-]: the Google key shape in
+	// credentialShapeRe, with a separator to defeat the contiguous-run pass.
+	const aiza = "AIzaSyA-b1c2d3e4f5g6h7i8j9k0l1m2n3o4p5q"
+	_, err := ParseToolTokens("read," + aiza)
+	if err == nil {
+		t.Fatal("AIza-shaped tool token accepted")
+	}
+	if !strings.Contains(err.Error(), `"AIzaS****"`) {
+		t.Errorf("error must carry the original-case mask AIzaS****, got %q", err)
+	}
+	if strings.Contains(err.Error(), "azias") {
+		t.Errorf("error must not echo the case-folded copy: %q", err)
+	}
+	runes := []rune(aiza)
+	for n := 6; n <= len(runes); n++ {
+		for i := 0; i+n <= len(runes); i++ {
+			if frag := string(runes[i : i+n]); strings.Contains(err.Error(), frag) {
+				t.Fatalf("error leaks %d runes of the key: %q in %q", n, frag, err)
+			}
+		}
+	}
+	// Benign mixed-case unknown tokens keep their readable form (no masking of
+	// ordinary operands — the fold for membership stays).
+	_, err = ParseToolTokens("NOWRITE")
+	if err == nil || !strings.Contains(err.Error(), `"NOWRITE"`) {
+		t.Errorf("benign mixed-case token must stay readable, got %v", err)
 	}
 }

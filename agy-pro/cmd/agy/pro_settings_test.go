@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -382,6 +383,91 @@ func TestRunSettingsCmd_KeyEchoMasked(t *testing.T) {
 			if strings.Contains(errw, planted) {
 				t.Errorf("args %v echoes the planted key raw:\n%s", args, errw)
 			}
+		}
+	})
+}
+
+// TestRunSettingsCmd_RollbackKeysErrorMasked (E5): the settings doctor
+// rollback path forwards the raw ReadFile error, which re-embeds the backup
+// dir / resolved file; a key-shaped --rollback-keys operand must be redacted
+// from the printed error, benign paths stay readable.
+func TestRunSettingsCmd_RollbackKeysErrorMasked(t *testing.T) {
+	failRollback := func() {
+		t.Helper()
+		prev := newSettingsCore
+		newSettingsCore = func() *settings.Core {
+			return settings.NewCore(settings.Deps{
+				RollbackKeys: func(dir string) error {
+					return fmt.Errorf("open %s: The system cannot find the file specified.", providers.ResolveBackupFile(dir))
+				},
+			})
+		}
+		t.Cleanup(func() { newSettingsCore = prev })
+	}
+
+	t.Run("bare base64 plant (live repro shape)", func(t *testing.T) {
+		failRollback()
+		const plant = "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"
+		code, _, errw := runSettings(t, []string{"doctor", "rollback-keys", plant}, "")
+		if code != 1 {
+			t.Fatalf("exit = %d; want 1 (stderr=%s)", code, errw)
+		}
+		if strings.Contains(errw, plant) {
+			t.Errorf("settings rollback error leaks the planted operand raw:\n%s", errw)
+		}
+		if !strings.Contains(errw, "[REDACTED]") {
+			t.Errorf("settings rollback error missing the redaction:\n%s", errw)
+		}
+	})
+
+	t.Run("sk- plant directory", func(t *testing.T) {
+		failRollback()
+		dir := filepath.Join(t.TempDir(), "sk-ant-api03-PLANT0123456789abcdef")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		code, _, errw := runSettings(t, []string{"doctor", "rollback-keys", dir}, "")
+		if code != 1 {
+			t.Fatalf("exit = %d; want 1", code)
+		}
+		if strings.Contains(errw, "sk-ant-api03-PLANT0123456789abcdef") {
+			t.Errorf("settings rollback error leaks the planted dir raw:\n%s", errw)
+		}
+		if !strings.Contains(errw, "[REDACTED]") {
+			t.Errorf("settings rollback error missing the redaction:\n%s", errw)
+		}
+	})
+
+	t.Run("AKIA plant directory", func(t *testing.T) {
+		failRollback()
+		dir := filepath.Join(t.TempDir(), "AKIAIOSFODNN7EXAMPLE")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		code, _, errw := runSettings(t, []string{"doctor", "rollback-keys", dir}, "")
+		if code != 1 {
+			t.Fatalf("exit = %d; want 1", code)
+		}
+		if strings.Contains(errw, "AKIAIOSFODNN7EXAMPLE") {
+			t.Errorf("settings rollback error leaks the planted dir raw:\n%s", errw)
+		}
+		if !strings.Contains(errw, "[REDACTED]") {
+			t.Errorf("settings rollback error missing the redaction:\n%s", errw)
+		}
+	})
+
+	t.Run("benign path stays readable", func(t *testing.T) {
+		failRollback()
+		dir := t.TempDir()
+		code, _, errw := runSettings(t, []string{"doctor", "rollback-keys", dir}, "")
+		if code != 1 {
+			t.Fatalf("exit = %d; want 1", code)
+		}
+		if !strings.Contains(errw, filepath.Join(dir, "registry-keys.v2.json")) {
+			t.Errorf("benign rollback path must stay readable:\n%s", errw)
+		}
+		if strings.Contains(errw, "[REDACTED]") {
+			t.Errorf("benign rollback error must not be redacted:\n%s", errw)
 		}
 	})
 }

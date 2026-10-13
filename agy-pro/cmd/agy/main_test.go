@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -854,4 +855,213 @@ func TestProHelpAndStatusHaveNoCommunityBanner(t *testing.T) {
 			t.Errorf("agy pro %s output leaks the community banner:\n%s", name, out)
 		}
 	}
+}
+
+// captureStderr runs fn and returns everything it wrote to os.Stderr.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	fn()
+	w.Close()
+	os.Stderr = old
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+	r.Close()
+	return buf.String()
+}
+
+// stubDoctorExit captures the doctorExit seam (os.Exit) for tests that drive
+// the doctor failure paths.
+func stubDoctorExit(t *testing.T) *int {
+	t.Helper()
+	old := doctorExit
+	t.Cleanup(func() { doctorExit = old })
+	code := 0
+	doctorExit = func(c int) { code = c }
+	return &code
+}
+
+// TestPrintConfiguredProvidersMasksKeyShapedMissingEnv (E8): the
+// `Missing (%s)` composite embeds the registry env name; a key-shaped env
+// (misdirected paste) must render masked INSIDE the composite, because
+// whole-string classification on the composite never fires. Benign env names
+// stay readable.
+func TestPrintConfiguredProvidersMasksKeyShapedMissingEnv(t *testing.T) {
+	const benignEnv = "E8_BENIGN_MISSING_ENV"
+	cases := []struct{ plant, mask string }{
+		{"sk-ant-api03-PLANT0123456789abcdef", "sk-an****"},
+		{"AKIAIOSFODNN7EXAMPLE", "AKIAI****"},
+		{"wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY", "wJalr****"},
+	}
+	reg := &providers.Registry{Providers: []providers.Provider{
+		{Name: "benign", BaseURL: "https://benign.example/v1", APIKeyEnv: benignEnv},
+	}}
+	for _, tc := range cases {
+		reg.Providers = append(reg.Providers, providers.Provider{
+			Name: "p-" + tc.mask, BaseURL: "https://p.example/v1", APIKeyEnv: tc.plant,
+		})
+	}
+	out := captureStdout(t, func() { printConfiguredProvidersAndModels(reg) })
+	if !strings.Contains(out, "Missing ("+benignEnv+")") {
+		t.Errorf("benign missing env must stay readable:\n%s", out)
+	}
+	for _, tc := range cases {
+		if strings.Contains(out, tc.plant) {
+			t.Errorf("status output leaks the planted env %q raw:\n%s", tc.plant, out)
+		}
+		if !strings.Contains(out, "Missing ("+tc.mask+")") {
+			t.Errorf("status output missing masked composite Missing (%s):\n%s", tc.mask, out)
+		}
+	}
+}
+
+// TestRunDoctorFixKeysMasksFailureTailAndNote (E6): the --fix-keys failure
+// tail and the entry note line echo registry-derived env/variant names; a
+// key-shaped env must reach both masked, benign shapes readable.
+func TestRunDoctorFixKeysMasksFailureTailAndNote(t *testing.T) {
+	t.Setenv(paths.EnvAgyProHome, filepath.Join(t.TempDir(), "home"))
+	writeTestRegistry(t)
+	const plantEnv = "sk-ant-api03-PLANT0123456789abcdef"
+
+	oldResolve, oldRepair := resolveRepairTargets, repairedWindowsKeyNames
+	t.Cleanup(func() { resolveRepairTargets, repairedWindowsKeyNames = oldResolve, oldRepair })
+	resolveRepairTargets = func(*providers.Registry, string) ([]string, error) {
+		return []string{plantEnv}, nil
+	}
+	repairedWindowsKeyNames = func(*providers.Registry, providers.RepairOptions) (*providers.RepairReport, error) {
+		return &providers.RepairReport{
+			Failed: 1,
+			Entries: []providers.RepairEntry{{
+				Provider: "fix", Env: plantEnv,
+				VariantName: "\ufeff" + plantEnv,
+				Action:      providers.RepairActionRewrite,
+				Note:        "clean name rewritten, but removing the BOM variant failed: remove \ufeff" + plantEnv + ": access denied",
+			}},
+		}, fmt.Errorf("%s: access denied (aggregate)", plantEnv)
+	}
+
+	exit := stubDoctorExit(t)
+	var out, errOut string
+	// runDoctorFixKeys writes to both streams in one call; nest the captures.
+	errOut = captureStderr(t, func() {
+		out = captureStdout(t, func() { runDoctorFixKeys("all") })
+	})
+	if *exit != 1 {
+		t.Fatalf("doctor exit = %d; want 1", *exit)
+	}
+	combined := out + errOut
+	if strings.Contains(combined, plantEnv) || strings.Contains(combined, "\ufeff"+plantEnv) {
+		t.Errorf("fix-keys output leaks the planted env raw:\nstdout=%s\nstderr=%s", out, errOut)
+	}
+	if !strings.Contains(combined, "Key repair finished with errors: [REDACTED]: access denied (aggregate)") {
+		t.Errorf("failure tail must redact the seeded env:\nstderr=%s", errOut)
+	}
+	if !strings.Contains(combined, "[FIXED] fix (sk-an****)") {
+		t.Errorf("entry line must carry the masked env:\nstdout=%s", out)
+	}
+	if !strings.Contains(combined, "note: clean name rewritten, but removing the BOM variant failed: remove [REDACTED]: access denied") {
+		t.Errorf("note line must redact the seeded variant name:\nstdout=%s", out)
+	}
+}
+
+// TestRunDoctorRollbackMasksPlantedBackupPath (E5): the --rollback-keys
+// operand and the forwarded ReadFile error re-embed the raw backup path; a
+// key-shaped operand must render masked on the "Backup file:" line and be
+// redacted out of the failure tail, while benign paths stay readable.
+func TestRunDoctorRollbackMasksPlantedBackupPath(t *testing.T) {
+	oldRollback := rollbackKeyNames
+	t.Cleanup(func() { rollbackKeyNames = oldRollback })
+	rollbackKeyNames = func(backupPath string, opts providers.RepairOptions) error {
+		return fmt.Errorf("open %s: The system cannot find the file specified.", backupPath)
+	}
+
+	t.Run("bare base64 plant (live repro shape)", func(t *testing.T) {
+		const plant = "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"
+		exit := stubDoctorExit(t)
+		var out, errOut string
+		errOut = captureStderr(t, func() {
+			out = captureStdout(t, func() { runDoctorRollback(plant) })
+		})
+		if *exit != 1 {
+			t.Fatalf("exit = %d; want 1", *exit)
+		}
+		if !strings.Contains(out, "Backup file: wJalr****") {
+			t.Errorf("backup-file line must render the mask:\nstdout=%s", out)
+		}
+		if strings.Contains(out, plant) || strings.Contains(errOut, plant) {
+			t.Errorf("rollback output leaks the planted operand raw:\nstdout=%s\nstderr=%s", out, errOut)
+		}
+		if !strings.Contains(errOut, "Rollback failed: open [REDACTED]:") {
+			t.Errorf("failure tail must redact the seeded path:\nstderr=%s", errOut)
+		}
+	})
+
+	t.Run("directory target with sk- plant", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "sk-ant-api03-PLANT0123456789abcdef")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		exit := stubDoctorExit(t)
+		var out, errOut string
+		errOut = captureStderr(t, func() {
+			out = captureStdout(t, func() { runDoctorRollback(dir) })
+		})
+		if *exit != 1 {
+			t.Fatalf("exit = %d; want 1", *exit)
+		}
+		if strings.Contains(out, "sk-ant-api03-PLANT0123456789abcdef") || strings.Contains(errOut, "sk-ant-api03-PLANT0123456789abcdef") {
+			t.Errorf("rollback output leaks the planted dir raw:\nstdout=%s\nstderr=%s", out, errOut)
+		}
+		if !strings.Contains(out, "Backup file:") || !strings.Contains(out, "[REDACTED]") {
+			t.Errorf("backup-file line must mask the planted dir:\nstdout=%s", out)
+		}
+	})
+
+	t.Run("directory target with AKIA plant", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "AKIAIOSFODNN7EXAMPLE")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		exit := stubDoctorExit(t)
+		var out, errOut string
+		errOut = captureStderr(t, func() {
+			out = captureStdout(t, func() { runDoctorRollback(dir) })
+		})
+		if *exit != 1 {
+			t.Fatalf("exit = %d; want 1", *exit)
+		}
+		if strings.Contains(out, "AKIAIOSFODNN7EXAMPLE") || strings.Contains(errOut, "AKIAIOSFODNN7EXAMPLE") {
+			t.Errorf("rollback output leaks the planted dir raw:\nstdout=%s\nstderr=%s", out, errOut)
+		}
+		if !strings.Contains(out, "Backup file:") || !strings.Contains(out, "[REDACTED]") {
+			t.Errorf("backup-file line must mask the planted dir:\nstdout=%s", out)
+		}
+	})
+
+	t.Run("benign path stays readable", func(t *testing.T) {
+		dir := t.TempDir()
+		exit := stubDoctorExit(t)
+		var out, errOut string
+		errOut = captureStderr(t, func() {
+			out = captureStdout(t, func() { runDoctorRollback(dir) })
+		})
+		if *exit != 1 {
+			t.Fatalf("exit = %d; want 1", *exit)
+		}
+		wantFile := filepath.Join(dir, "registry-keys.v2.json")
+		if !strings.Contains(out, wantFile) {
+			t.Errorf("benign backup path must stay readable:\nstdout=%s", out)
+		}
+		if !strings.Contains(errOut, wantFile) {
+			t.Errorf("benign failure tail must stay readable:\nstderr=%s", errOut)
+		}
+		if strings.Contains(out, "[REDACTED]") || strings.Contains(errOut, "[REDACTED]") {
+			t.Errorf("benign rollback output must not be redacted:\nstdout=%s\nstderr=%s", out, errOut)
+		}
+	})
 }

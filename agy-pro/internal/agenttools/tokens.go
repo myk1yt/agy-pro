@@ -31,8 +31,9 @@ var toolTokenSet = []string{"read", "search", "write", "exec"}
 func ParseToolTokens(spec string) (string, error) {
 	seen := map[string]bool{}
 	var out []string
-	for _, tok := range strings.Split(spec, ",") {
-		tok = strings.TrimSpace(strings.ToLower(tok))
+	for _, raw := range strings.Split(spec, ",") {
+		operand := strings.TrimSpace(raw)
+		tok := strings.TrimSpace(strings.ToLower(operand))
 		if tok == "" {
 			continue
 		}
@@ -46,7 +47,11 @@ func ParseToolTokens(spec string) (string, error) {
 		if !known {
 			// B2/U8: the operand may be a misdirected key paste; mask it so no
 			// key value beyond the first 5 characters ever reaches a transcript.
-			return "", fmt.Errorf("unknown tool %q in --tools (want read,search,write,exec)", providers.MaskOperand(tok))
+			// MaskOperand runs on the ORIGINAL-case token (E9): the case-folded
+			// copy destroys shape prefixes such as AIza and its -/_ separators
+			// break the contiguous-run heuristic, so the folded copy can echo
+			// raw or folded instead of as a mask.
+			return "", fmt.Errorf("unknown tool %q in --tools (want read,search,write,exec)", providers.MaskOperand(operand))
 		}
 		if !seen[tok] {
 			seen[tok] = true

@@ -404,7 +404,10 @@ func printConfiguredProvidersAndModels(reg *providers.Registry) {
 		if p.APIKeyEnv == "" {
 			keyStatus = "Not Required"
 		} else if p.KeyValue() == "" {
-			keyStatus = fmt.Sprintf("Missing (%s)", p.APIKeyEnv)
+			// E8: mask INSIDE the composite — the whole-string classification
+			// on "Missing (<env>)" always fails, so a key-shaped env name from
+			// the user-editable registry would echo raw.
+			keyStatus = fmt.Sprintf("Missing (%s)", providers.MaskOperand(p.APIKeyEnv))
 		}
 
 		// D3: registry-driven display slots echo user-editable JSON fields; a
@@ -745,12 +748,12 @@ func runDoctorFixKeys(target string) {
 	reg, err := providers.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[agy-pro] Providers registry not loaded: %v\n", err)
-		os.Exit(1)
+		doctorExit(1)
 	}
 	names, err := resolveRepairTargets(reg, target)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[agy-pro] Cannot resolve repair targets: %v\n", err)
-		os.Exit(1)
+		doctorExit(1)
 	}
 	// D3: env names resolve from the user-editable registry; mask for display
 	// only (the repair call below still receives the raw names).
@@ -763,31 +766,37 @@ func runDoctorFixKeys(target string) {
 	report, repairErr := repairedWindowsKeyNames(reg, providers.RepairOptions{EnvNames: names})
 	if report == nil {
 		fmt.Fprintf(os.Stderr, "[agy-pro] Key repair failed: %v\n", repairErr)
-		os.Exit(1)
+		doctorExit(1)
 	}
 	printRepairReport(report)
 	if repairErr != nil {
-		fmt.Fprintf(os.Stderr, "[agy-pro] Key repair finished with errors: %v\n", repairErr)
-		os.Exit(1)
+		// E6: the aggregate error embeds registry-derived env names; redact it
+		// seeded with the raw target names so a key-shaped name (misdirected
+		// paste in the registry) cannot survive the failure tail.
+		fmt.Fprintf(os.Stderr, "[agy-pro] Key repair finished with errors: %s\n", maskOperandSentence(repairErr.Error(), names...))
+		doctorExit(1)
 	}
 }
 
 // printRepairReport renders the --fix-keys entries. Provider, env and variant
 // names resolve from the user-editable registry (D3): masked for display, with
 // MaskOperand keeping benign names readable. e.MaskedValue is already a mask.
+// Notes can embed wrapped store errors that repeat the raw env/variant name
+// (E6), so they are redacted seeded with those names.
 func printRepairReport(report *providers.RepairReport) {
 	for _, e := range report.Entries {
 		provider, env, variant := providers.MaskOperand(e.Provider), providers.MaskOperand(e.Env), providers.MaskOperand(e.VariantName)
+		note := maskOperandSentence(e.Note, e.Env, e.VariantName)
 		switch e.Action {
 		case providers.RepairActionRewrite:
 			fmt.Printf("[FIXED] %s (%s): clean name <- %s (mask %s)\n", provider, env, variant, e.MaskedValue)
 		case providers.RepairActionRemoveVariant:
 			fmt.Printf("[FIXED] %s (%s): removed BOM variant %s\n", provider, env, variant)
 		default:
-			fmt.Printf("[SKIP]  %s (%s): %s\n", provider, env, providers.MaskOperand(e.Note))
+			fmt.Printf("[SKIP]  %s (%s): %s\n", provider, env, note)
 		}
 		if e.Action != "" && e.Note != "" {
-			fmt.Printf("        note: %s\n", e.Note)
+			fmt.Printf("        note: %s\n", note)
 		}
 	}
 	fmt.Printf("Repaired: %d | Skipped: %d | Failed: %d\n", report.Repaired, report.Skipped, report.Failed)
@@ -808,10 +817,14 @@ func runDoctorRollback(target string) {
 	fmt.Println("===========================================================")
 
 	file := providers.ResolveBackupFile(target)
-	fmt.Printf("Backup file: %s\n", file)
+	// E5: the target is an untrusted CLI operand — a misdirected paste puts a
+	// key in the --rollback-keys slot, and the resolved path re-embeds it.
+	fmt.Printf("Backup file: %s\n", providers.MaskOperand(file))
 	if err := rollbackKeyNames(file, providers.RepairOptions{}); err != nil {
-		fmt.Fprintf(os.Stderr, "[agy-pro] Rollback failed: %v\n", err)
-		os.Exit(1)
+		// The forwarded error (os.ReadFile's *fs.PathError) re-embeds the raw
+		// path; redact seeded with the raw target and resolved file.
+		fmt.Fprintf(os.Stderr, "[agy-pro] Rollback failed: %s\n", maskOperandSentence(err.Error(), target, file))
+		doctorExit(1)
 	}
 	fmt.Println("[SUCCESS] Registry key names restored from backup.")
 }

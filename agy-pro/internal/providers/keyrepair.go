@@ -282,14 +282,18 @@ func RepairWindowsKeyNames(reg *Registry, opts RepairOptions) (*RepairReport, er
 			report.Failed++
 			entry.Note = fmt.Sprintf("rewrite failed: %v", err)
 			report.Entries = append(report.Entries, entry)
-			applyErrs = append(applyErrs, fmt.Errorf("%s: %w", p.env, err))
+			// E6: the env name resolves from the user-editable registry and a
+			// misdirected paste can make it key-shaped; mask the prefix (the
+			// CLI's fix-keys tail additionally redacts the wrapped error with
+			// a redactor seeded with the target names).
+			applyErrs = append(applyErrs, fmt.Errorf("%s: %w", MaskOperand(p.env), err))
 			continue
 		}
 		entry.Action = RepairActionRewrite
 		if p.deleteVariant {
 			if err := store.Delete(EnvRootUser, p.variant.Name); err != nil {
 				entry.Note = fmt.Sprintf("clean name rewritten, but removing the BOM variant failed: %v", err)
-				applyErrs = append(applyErrs, fmt.Errorf("%s: remove variant: %w", p.env, err))
+				applyErrs = append(applyErrs, fmt.Errorf("%s: remove variant: %w", MaskOperand(p.env), err))
 			} else {
 				report.Entries = append(report.Entries, RepairEntry{
 					Provider:    p.provider,

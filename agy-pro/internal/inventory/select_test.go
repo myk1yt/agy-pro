@@ -310,3 +310,41 @@ func TestParseSelectionPresetLexerDisjointness(t *testing.T) {
 		}
 	}
 }
+
+// TestParseSelectionMasksKeyShapedTokens (E7/B2): the offending selection
+// token is echoed in the error; a misdirected key paste (sk-, AWS AKIA, opaque
+// base64) must come back masked, while conventional benign tokens keep the
+// readable form the existing error tests assert.
+func TestParseSelectionMasksKeyShapedTokens(t *testing.T) {
+	inv := buildInventory(t)
+	cases := []struct{ plant, mask string }{
+		{"sk-ant-api03-PLANT0123456789abcdef", "sk-an****"},
+		{"AKIAIOSFODNN7EXAMPLE", "AKIAI****"},
+		{"wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY", "wJalr****"}, // opaque base64 run
+		{"pAKIAIOSFODNN7EXAMPLE", "pAKIA****"},                  // p-prefixed plant hits the preset branch
+		{"1-AKIAIOSFODNN7EXAMPLE", "1-[REDACTED]"},              // AKIA inside a range-shaped token
+	}
+	for _, tc := range cases {
+		_, err := ParseSelection(tc.plant, inv)
+		if err == nil {
+			t.Errorf("ParseSelection(%q) succeeded; want invalid-token error", tc.plant)
+			continue
+		}
+		if !strings.Contains(err.Error(), tc.mask) {
+			t.Errorf("ParseSelection(%q) error missing mask %q: %v", tc.plant, tc.mask, err)
+		}
+		runes := []rune(tc.plant)
+		for n := 6; n <= len(runes); n++ {
+			for i := 0; i+n <= len(runes); i++ {
+				if frag := string(runes[i : i+n]); strings.Contains(err.Error(), frag) {
+					t.Fatalf("ParseSelection(%q) error leaks %d runes: %q in %q", tc.plant, n, frag, err)
+				}
+			}
+		}
+	}
+	// Nil-inventory branch echoes the input too; a plant must be masked there.
+	_, err := ParseSelection("sk-ant-api03-PLANT0123456789abcdef", nil)
+	if err == nil || !strings.Contains(err.Error(), "sk-an****") || strings.Contains(err.Error(), "PLANT0123456789abcdef") {
+		t.Errorf("nil-inventory branch must mask a key-shaped token, got %v", err)
+	}
+}

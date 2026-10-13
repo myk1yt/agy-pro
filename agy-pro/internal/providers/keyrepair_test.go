@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -673,4 +674,91 @@ func TestWriteRepairBackup_SameSecondGetsUniqueDir(t *testing.T) {
 			t.Errorf("backup %s missing: %v", p, err)
 		}
 	}
+}
+
+// failingSetStore fails every Set (the rewrite) while Get/Names/Delete behave.
+type failingSetStore struct{ *mockEnvStore }
+
+func (f *failingSetStore) Set(root, name, value string) error {
+	return fmt.Errorf("access is denied (test)")
+}
+
+// failingDeleteStore fails every Delete (the BOM variant removal).
+type failingDeleteStore struct{ *mockEnvStore }
+
+func (f *failingDeleteStore) Delete(root, name string) error {
+	return fmt.Errorf("access is denied (test)")
+}
+
+// TestRepairWindowsKeyNames_AggregateErrorMasksKeyShapedEnv (E6): the
+// aggregate repair errors embed the env name; a key-shaped env (misdirected
+// paste in the user-editable registry) must reach the CLI tail masked, for
+// both the rewrite-failure and the remove-variant-failure branches.
+func TestRepairWindowsKeyNames_AggregateErrorMasksKeyShapedEnv(t *testing.T) {
+	useFakeProtector(t)
+
+	t.Run("rewrite failure masks the env prefix", func(t *testing.T) {
+		const skPlant = "sk-ant-api03-PLANT0123456789abcdef"
+		store := newMockEnvStore()
+		store.data[EnvRootUser] = map[string]string{
+			"\ufeff" + skPlant: "sk-real-nw-valid-key-0001", // BOM variant probes VALID
+		}
+		report, err := RepairWindowsKeyNames(&Registry{Providers: []Provider{
+			{Name: "acme", BaseURL: "https://acme.example/v1", APIKeyEnv: skPlant},
+		}}, RepairOptions{
+			EnvNames:  []string{skPlant},
+			Store:     &failingSetStore{store},
+			Probe:     repairProbe,
+			BackupDir: filepath.Join(t.TempDir(), "backups"),
+		})
+		if report == nil || report.Failed != 1 {
+			t.Fatalf("report = %+v, err = %v; want one failed rewrite", report, err)
+		}
+		if err == nil {
+			t.Fatal("want an aggregate error from the failed rewrite")
+		}
+		if !strings.Contains(err.Error(), "sk-an****") {
+			t.Errorf("aggregate error must carry the masked env prefix, got %q", err)
+		}
+		if strings.Contains(err.Error(), skPlant) {
+			t.Errorf("aggregate error leaks the planted env raw: %q", err)
+		}
+		for _, e := range report.Entries {
+			if strings.Contains(e.Note, skPlant) {
+				t.Errorf("entry note leaks the planted env raw: %q", e.Note)
+			}
+		}
+	})
+
+	t.Run("remove-variant failure masks the env prefix", func(t *testing.T) {
+		const akiaPlant = "AKIAIOSFODNN7EXAMPLE"
+		store := newMockEnvStore()
+		store.data[EnvRootUser] = map[string]string{
+			akiaPlant:            "mock-nw-key-999",           // clean present, probe INVALID
+			"\ufeff" + akiaPlant: "sk-real-nw-valid-key-0001", // variant probes VALID
+		}
+		report, err := RepairWindowsKeyNames(&Registry{Providers: []Provider{
+			{Name: "awsish", BaseURL: "https://aws.example/v1", APIKeyEnv: akiaPlant},
+		}}, RepairOptions{
+			EnvNames:  []string{akiaPlant},
+			Store:     &failingDeleteStore{store},
+			Probe:     repairProbe,
+			BackupDir: filepath.Join(t.TempDir(), "backups"),
+		})
+		t.Cleanup(func() { _ = os.Unsetenv(akiaPlant) })
+		// The remove-variant branch counts the rewrite as Repaired; only the
+		// Set failure increments Failed.
+		if report == nil || report.Repaired != 1 || report.Failed != 0 {
+			t.Fatalf("report = %+v, err = %v; want one repaired rewrite with a failed remove", report, err)
+		}
+		if err == nil {
+			t.Fatal("want an aggregate error from the failed variant removal")
+		}
+		if !strings.Contains(err.Error(), "AKIAI****: remove variant") {
+			t.Errorf("aggregate error must carry the masked env prefix, got %q", err)
+		}
+		if strings.Contains(err.Error(), akiaPlant) {
+			t.Errorf("aggregate error leaks the planted env raw: %q", err)
+		}
+	})
 }

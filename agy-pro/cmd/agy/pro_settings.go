@@ -274,7 +274,10 @@ func settingsDoctorCmd(core *settings.Core, args []string, out, errw io.Writer) 
 			return 2
 		}
 		if err := core.DoctorRollbackKeys(args[1]); err != nil {
-			fmt.Fprintf(errw, "[agy-pro] %v\n", err)
+			// E5: the forwarded rollback error re-embeds the raw backup dir /
+			// resolved file from the operand; redact seeded with both so a
+			// key-shaped --rollback-keys value cannot echo.
+			fmt.Fprintf(errw, "[agy-pro] %s\n", maskOperandSentence(err.Error(), args[1], providers.ResolveBackupFile(args[1])))
 			return 1
 		}
 		fmt.Fprintln(out, "[SUCCESS] registry key names restored from backup")

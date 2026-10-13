@@ -11,6 +11,7 @@ import (
 
 	"agypro/internal/fanout"
 	"agypro/internal/inventory"
+	"agypro/internal/providers"
 )
 
 // RunFanout executes one fanout CLI invocation (contract U3: delegate via
@@ -69,8 +70,11 @@ func RenderSummary(out io.Writer, seats []fanout.SeatResult, useANSI bool) {
 		fmt.Fprintln(out, header)
 	}
 	for _, s := range seats {
+		// E8: registry-derived model IDs are echoed here too; mask key-shaped
+		// ones for display consistency with `status`/`models` (benign IDs
+		// readable).
 		fmt.Fprintf(out, "%d | %s | %s | %s\n",
-			s.SeatID, kindOf(s), s.FinalTarget.Model.ID, verdictOf(s))
+			s.SeatID, kindOf(s), providers.MaskOperand(s.FinalTarget.Model.ID), verdictOf(s))
 	}
 }
 
@@ -182,7 +186,9 @@ func (b *Builder) pickTemplate(r *bufio.Reader, out io.Writer) (Template, bool) 
 		} else if t, found := FindTemplate(choice); found {
 			return t, true
 		}
-		fmt.Fprintf(b.ErrW, "invalid template %q: enter 1-%d or a template id\n", choice, len(templates))
+		// E7/B2: the raw TTY line may be a misdirected key paste; mask it in
+		// the error (benign tokens stay readable).
+		fmt.Fprintf(b.ErrW, "invalid template %q: enter 1-%d or a template id\n", providers.MaskOperand(choice), len(templates))
 	}
 }
 
@@ -344,7 +350,9 @@ func RenderSeatList(out io.Writer, inv *inventory.Inventory) {
 		if inventory.IsK3Excluded(e.ModelID) {
 			suffix += "      " + k3Marker
 		}
-		fmt.Fprintf(out, "%s %-*s  %-*s  [%s]%s\n", num, idW, e.ModelID, midW, seatMidColumn(e), e.Group, suffix)
+		// E8: registry-derived model ID — mask key-shaped ones, keep benign
+		// IDs readable (display consistency with `status`/`models`).
+		fmt.Fprintf(out, "%s %-*s  %-*s  [%s]%s\n", num, idW, providers.MaskOperand(e.ModelID), midW, seatMidColumn(e), e.Group, suffix)
 	}
 }
 
