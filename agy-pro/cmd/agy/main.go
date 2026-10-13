@@ -749,11 +749,13 @@ func runDoctorFixKeys(target string) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[agy-pro] Providers registry not loaded: %v\n", err)
 		doctorExit(1)
+		return
 	}
 	names, err := resolveRepairTargets(reg, target)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[agy-pro] Cannot resolve repair targets: %v\n", err)
 		doctorExit(1)
+		return
 	}
 	// D3: env names resolve from the user-editable registry; mask for display
 	// only (the repair call below still receives the raw names).
@@ -765,8 +767,12 @@ func runDoctorFixKeys(target string) {
 
 	report, repairErr := repairedWindowsKeyNames(reg, providers.RepairOptions{EnvNames: names})
 	if report == nil {
-		fmt.Fprintf(os.Stderr, "[agy-pro] Key repair failed: %v\n", repairErr)
+		// F7: the nil-report failure tail echoes the raw repair error (a
+		// composite that embeds registry-derived env names); redact it seeded
+		// with the raw target names, same rule as the E6 aggregate tail below.
+		fmt.Fprintf(os.Stderr, "[agy-pro] Key repair failed: %s\n", maskOperandSentence(fmt.Sprint(repairErr), names...))
 		doctorExit(1)
+		return
 	}
 	printRepairReport(report)
 	if repairErr != nil {
@@ -775,6 +781,7 @@ func runDoctorFixKeys(target string) {
 		// paste in the registry) cannot survive the failure tail.
 		fmt.Fprintf(os.Stderr, "[agy-pro] Key repair finished with errors: %s\n", maskOperandSentence(repairErr.Error(), names...))
 		doctorExit(1)
+		return
 	}
 }
 
@@ -825,6 +832,7 @@ func runDoctorRollback(target string) {
 		// path; redact seeded with the raw target and resolved file.
 		fmt.Fprintf(os.Stderr, "[agy-pro] Rollback failed: %s\n", maskOperandSentence(err.Error(), target, file))
 		doctorExit(1)
+		return
 	}
 	fmt.Println("[SUCCESS] Registry key names restored from backup.")
 }

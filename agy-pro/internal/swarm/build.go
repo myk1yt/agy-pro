@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"agypro/internal/inventory"
+	"agypro/internal/providers"
 )
 
 // BuildFanoutArgs builds the exact `agy pro fanout` argument vector for a
@@ -81,10 +82,13 @@ func QuotaNote(kind string) string {
 // k3Marker is the exact pool-policy suffix rendered for k3 entries.
 const k3Marker = "excluded (pool policy)"
 
-// SeatLine renders one selected seat row (provenance + quota note).
+// SeatLine renders one selected seat row (provenance + quota note). E8/F-beta:
+// Spec and ModelID come from the user-editable registry, so key-shaped ones
+// render masked inside the row (display consistency with the summary table and
+// the seat list), while benign specs stay readable.
 func SeatLine(num int, e inventory.Entry) string {
-	return fmt.Sprintf("seat %d  [%s]  %s  %s  (%s)",
-		num, e.Kind, e.Spec, displayName(e), QuotaNote(e.Kind))
+	return providers.MaskSentence(fmt.Sprintf("seat %d  [%s]  %s  %s  (%s)",
+		num, e.Kind, e.Spec, displayName(e), QuotaNote(e.Kind)), e.Spec, e.ModelID)
 }
 
 func displayName(e inventory.Entry) string {

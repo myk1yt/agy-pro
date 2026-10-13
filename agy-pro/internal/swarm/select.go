@@ -8,6 +8,7 @@ import (
 
 	"agypro/internal/fanout"
 	"agypro/internal/inventory"
+	"agypro/internal/providers"
 )
 
 // PresetNominal is the frozen seat count of preset id (contract §2.7):
@@ -80,7 +81,10 @@ func splitSelTokens(input string) []string {
 //     degrades to "all available" with a printed warning (never an error).
 func ResolveSeats(input string, inv *inventory.Inventory, warnw io.Writer) ([]inventory.Entry, error) {
 	if inv == nil {
-		return nil, fmt.Errorf("invalid selection token %q", strings.TrimSpace(input))
+		// F7: the nil-inventory error echoes the raw selection line; seed the
+		// masker with it (providers.SeedEligible) so a pasted key in the
+		// selection slot cannot survive the error text.
+		return nil, fmt.Errorf("%s", providers.MaskSentence(fmt.Sprintf("invalid selection token %q", strings.TrimSpace(input)), input))
 	}
 	if err := rejectExplicitK3(input, inv); err != nil {
 		return nil, err
@@ -93,7 +97,10 @@ func ResolveSeats(input string, inv *inventory.Inventory, warnw io.Writer) ([]in
 	for _, e := range entries {
 		if inventory.IsK3Excluded(e.ModelID) {
 			if warnw != nil {
-				fmt.Fprintf(warnw, "skipped seat %d (%s): %s\n", e.Number, e.Spec, k3Marker)
+				// F7: Spec/ModelID come from the user-editable registry; mask
+				// key-shaped ones inside the warning (benign specs readable),
+				// same rule as the builder's seat-list column.
+				fmt.Fprintln(warnw, providers.MaskSentence(fmt.Sprintf("skipped seat %d (%s): %s", e.Number, e.Spec, k3Marker), e.Spec, e.ModelID))
 			}
 			continue
 		}
@@ -127,7 +134,10 @@ func rejectExplicitK3(input string, inv *inventory.Inventory) error {
 			}
 			e := inv.Entries[n-1]
 			if inventory.IsK3Excluded(e.ModelID) {
-				return fmt.Errorf("seat %d (%s) is %s: k3 models are excluded from swarm auto-seating; pick another entry", e.Number, e.Spec, k3Marker)
+				// F7: the rejection sentence embeds the registry-derived spec;
+				// seed the masker with it so a key-shaped model ID cannot
+				// survive the error (benign specs readable).
+				return fmt.Errorf("%s", providers.MaskSentence(fmt.Sprintf("seat %d (%s) is %s: k3 models are excluded from swarm auto-seating; pick another entry", e.Number, e.Spec, k3Marker), e.Spec, e.ModelID))
 			}
 		}
 	}

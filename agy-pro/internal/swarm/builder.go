@@ -186,9 +186,12 @@ func (b *Builder) pickTemplate(r *bufio.Reader, out io.Writer) (Template, bool) 
 		} else if t, found := FindTemplate(choice); found {
 			return t, true
 		}
-		// E7/B2: the raw TTY line may be a misdirected key paste; mask it in
-		// the error (benign tokens stay readable).
-		fmt.Fprintf(b.ErrW, "invalid template %q: enter 1-%d or a template id\n", providers.MaskOperand(choice), len(templates))
+		// E7/B2: the raw TTY line may be a misdirected key paste. The composite
+		// error routes through providers.MaskSentence seeded with the raw line
+		// (providers.SeedEligible), so a decorated plant ("native:<aws>",
+		// "1-<aws>", a non-eyJ JWT) is masked wherever the sentence echoes it
+		// while benign tokens stay readable.
+		fmt.Fprintln(b.ErrW, providers.MaskSentence(fmt.Sprintf("invalid template %q: enter 1-%d or a template id", choice, len(templates)), choice))
 	}
 }
 
@@ -225,7 +228,12 @@ func (b *Builder) pickSeats(r *bufio.Reader, out io.Writer) ([]inventory.Entry, 
 		}
 		seats, err := ResolveSeats(choice, inv, b.ErrW)
 		if err != nil {
-			fmt.Fprintf(b.ErrW, "%v\n", err)
+			// F5: inventory selection errors quote the offending token; seed
+			// the masker with the raw line AND each §2.7 token so the quoted
+			// token is masked even when the line carries several tokens
+			// (providers.SeedEligible decides, benign tokens stay readable).
+			seeds := append([]string{choice}, splitSelTokens(choice)...)
+			fmt.Fprintln(b.ErrW, providers.MaskSentence(err.Error(), seeds...))
 			continue
 		}
 		if len(seats) == 0 {

@@ -1065,3 +1065,40 @@ func TestRunDoctorRollbackMasksPlantedBackupPath(t *testing.T) {
 		}
 	})
 }
+
+// F-beta F7: the nil-report "Key repair failed" tail echoes the raw repair
+// error (a composite embedding registry-derived env names); a key-shaped name
+// must render masked, and the branch must RETURN instead of falling through to
+// printRepairReport(nil) under the doctorExit test seam.
+func TestRunDoctorFixKeysNilReportMasksAndReturns(t *testing.T) {
+	const plant = "sk-ant-api03-PLANT0123456789abcdef"
+	t.Setenv(paths.EnvAgyProHome, filepath.Join(t.TempDir(), "home"))
+	writeTestRegistry(t)
+
+	oldResolve, oldRepair := resolveRepairTargets, repairedWindowsKeyNames
+	t.Cleanup(func() { resolveRepairTargets, repairedWindowsKeyNames = oldResolve, oldRepair })
+	resolveRepairTargets = func(*providers.Registry, string) ([]string, error) {
+		return []string{plant}, nil
+	}
+	repairedWindowsKeyNames = func(*providers.Registry, providers.RepairOptions) (*providers.RepairReport, error) {
+		return nil, fmt.Errorf("repair crashed for %s", plant)
+	}
+
+	exit := stubDoctorExit(t)
+	var out, errOut string
+	errOut = captureStderr(t, func() {
+		out = captureStdout(t, func() { runDoctorFixKeys("all") })
+	})
+	if *exit != 1 {
+		t.Fatalf("exit = %d; want 1", *exit)
+	}
+	if strings.Contains(errOut, plant) {
+		t.Errorf("nil-report failure tail echoes the planted env raw:\n%s", errOut)
+	}
+	if !strings.Contains(errOut, "[REDACTED]") {
+		t.Errorf("nil-report failure tail missing the mask:\n%s", errOut)
+	}
+	if strings.Contains(out, "Repaired:") {
+		t.Errorf("nil-report branch fell through to printRepairReport:\n%s", out)
+	}
+}

@@ -454,3 +454,21 @@ func TestRunSwarmCmdToolsTaskFlagsReachFanoutArgs(t *testing.T) {
 		t.Errorf("dry-run command must carry the --task override: %q", got)
 	}
 }
+
+func TestResolveFlagSeatsMasksDecoratedTokenInMultiTokenLine(t *testing.T) {
+	t.Setenv("AGY_PRO_HOME", t.TempDir())
+	defer withStubSwarmInventory(t, swarmFixtureInventory(t), nil)()
+
+	plant := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	var outBuf, errBuf strings.Builder
+	_, code := resolveFlagSeats("1,native:"+plant, &outBuf, &errBuf)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 (invalid token)", code)
+	}
+	if strings.Contains(errBuf.String(), plant) {
+		t.Errorf("multi-token --seats error leaked the decorated plant: %q", errBuf.String())
+	}
+	if !strings.Contains(errBuf.String(), "wJalr****") && !strings.Contains(errBuf.String(), "[REDACTED]") {
+		t.Errorf("multi-token --seats error must render the plant masked: %q", errBuf.String())
+	}
+}

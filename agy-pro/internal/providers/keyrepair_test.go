@@ -762,3 +762,74 @@ func TestRepairWindowsKeyNames_AggregateErrorMasksKeyShapedEnv(t *testing.T) {
 		}
 	})
 }
+
+// F-beta F7: the rollback refusal sentences echo backup-file-derived entry
+// names (S-9 untrusted input); a crafted file planting a credential in the
+// name slot must not survive the error text, benign names stay readable.
+func TestRollbackRefusalErrorsMaskPlantedEntryNames(t *testing.T) {
+	store := newMockEnvStore()
+	opts := RepairOptions{Store: store, Probe: repairProbe}
+
+	t.Run("root refusal masks the planted name", func(t *testing.T) {
+		const skPlant = "sk-ant-api03-PLANT0123456789abcdef"
+		path := writeCraftedBackup(t, `{"version":2,"tool":"`+repairToolName+`","entries":[
+			{"root":"machine","name":"`+skPlant+`","existed":true,"value":"Qw=="}]}`)
+		err := RollbackWindowsKeyNames(path, opts)
+		if err == nil {
+			t.Fatal("machine-root backup was applied; expected refusal")
+		}
+		if strings.Contains(err.Error(), skPlant) {
+			t.Errorf("root refusal echoes the planted name raw: %v", err)
+		}
+		if !strings.Contains(err.Error(), "[REDACTED]") || !strings.Contains(err.Error(), "is not allowed on rollback") {
+			t.Errorf("root refusal missing the mask or wording: %v", err)
+		}
+	})
+
+	t.Run("shape refusal masks the planted name", func(t *testing.T) {
+		const skPlant = "sk-ant-api03-PLANT0123456789abcdef"
+		path := writeCraftedBackup(t, `{"version":2,"tool":"`+repairToolName+`","entries":[
+			{"root":"user","name":"`+skPlant+`","existed":true,"value":"Qw=="}]}`)
+		err := RollbackWindowsKeyNames(path, opts)
+		if err == nil {
+			t.Fatal("key-shaped non-credential name was applied; expected refusal")
+		}
+		if strings.Contains(err.Error(), skPlant) {
+			t.Errorf("shape refusal echoes the planted name raw: %v", err)
+		}
+		if !strings.Contains(err.Error(), `entry "[REDACTED]"`) || !strings.Contains(err.Error(), "does not look like an API key variable") {
+			t.Errorf("shape refusal missing the mask or wording: %v", err)
+		}
+	})
+
+	t.Run("decode refusal masks the planted name", func(t *testing.T) {
+		const plant = "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"
+		path := writeCraftedBackup(t, `{"version":2,"tool":"`+repairToolName+`","entries":[
+			{"root":"user","name":"`+plant+`","existed":true,"value":"!!!not-base64!!!"}]}`)
+		err := RollbackWindowsKeyNames(path, opts)
+		if err == nil {
+			t.Fatal("invalid base64 value must refuse the backup")
+		}
+		if strings.Contains(err.Error(), plant) {
+			t.Errorf("decode refusal echoes the planted name raw: %v", err)
+		}
+		if !strings.Contains(err.Error(), "[REDACTED]") || !strings.Contains(err.Error(), "backup value is not valid base64") {
+			t.Errorf("decode refusal missing the mask or wording: %v", err)
+		}
+	})
+
+	t.Run("benign names stay readable", func(t *testing.T) {
+		path := writeCraftedBackup(t, `{"version":2,"tool":"`+repairToolName+`","entries":[
+			{"root":"user","name":"W6_OK_KEY","existed":true,"value":"!!!not-base64!!!"}]}`)
+		err := RollbackWindowsKeyNames(path, opts)
+		if err == nil {
+			t.Fatal("invalid base64 value must refuse the backup")
+		}
+		if !strings.Contains(err.Error(), `entry "W6_OK_KEY"`) {
+			t.Errorf("benign entry name must stay readable: %v", err)
+		}
+		if strings.Contains(err.Error(), "[REDACTED]") {
+			t.Errorf("benign refusal must not be redacted: %v", err)
+		}
+	})
+}

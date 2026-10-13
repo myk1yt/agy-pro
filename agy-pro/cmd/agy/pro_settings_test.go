@@ -471,3 +471,39 @@ func TestRunSettingsCmd_RollbackKeysErrorMasked(t *testing.T) {
 		}
 	})
 }
+
+// F-beta F7: the `settings doctor fix-keys` tail echoes the aggregate error
+// unmasked before this batch; a decorated key-shaped target (whole-string
+// classification cannot see it) must render masked in the tail, benign
+// targets readable.
+func TestRunSettingsCmd_FixKeysErrorMasked(t *testing.T) {
+	const (
+		awsPlant = "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"
+		redact   = "[REDACTED]"
+	)
+
+	t.Run("decorated target masked in the tail", func(t *testing.T) {
+		installSettingsCore(t) // empty registry: the target resolves to an error echoing the raw token
+		code, _, errw := runSettings(t, []string{"doctor", "fix-keys", "native:" + awsPlant}, "")
+		if code != 1 {
+			t.Fatalf("fix-keys exit = %d; want 1\nstderr=%s", code, errw)
+		}
+		if strings.Contains(errw, awsPlant) {
+			t.Errorf("fix-keys tail echoes the planted key raw:\n%s", errw)
+		}
+		if !strings.Contains(errw, redact) {
+			t.Errorf("fix-keys tail missing the mask:\n%s", errw)
+		}
+	})
+
+	t.Run("benign target stays readable", func(t *testing.T) {
+		installSettingsCore(t)
+		code, _, errw := runSettings(t, []string{"doctor", "fix-keys", "nope"}, "")
+		if code != 1 {
+			t.Fatalf("fix-keys exit = %d; want 1\nstderr=%s", code, errw)
+		}
+		if !strings.Contains(errw, `"nope" matches no provider name or known API key variable`) {
+			t.Errorf("benign fix-keys tail must stay readable:\n%s", errw)
+		}
+	})
+}

@@ -272,6 +272,20 @@ func runSwarmNonInteractive(in io.Reader, out, errw io.Writer, fv swarmFlagValue
 // selection resolves against the combined inventory; explicit seat specs are
 // the power-user fallback (validated by fanout.ParseSeatSpecs). Returns a
 // non-negative process exit code on failure.
+// seatSeedOperands returns the redactor seeds for a --seats value: the whole
+// value plus each comma-separated token, because selection and seat-spec
+// errors quote individual tokens ("invalid selection token \"native:<plant>\"")
+// while a whole-value seed would not match them.
+func seatSeedOperands(seatsVal string) []string {
+	ops := []string{seatsVal}
+	for _, tok := range strings.Split(seatsVal, ",") {
+		if t := strings.TrimSpace(tok); t != "" {
+			ops = append(ops, t)
+		}
+	}
+	return ops
+}
+
 func resolveFlagSeats(seatsVal string, out, errw io.Writer) ([]inventory.Entry, int) {
 	if swarm.IsSelectionInput(seatsVal) {
 		inv, err := loadSwarmInventory(context.Background())
@@ -282,10 +296,12 @@ func resolveFlagSeats(seatsVal string, out, errw io.Writer) ([]inventory.Entry, 
 		entries, err := swarm.ResolveSeats(seatsVal, inv, out)
 		if err != nil {
 			// C2/D1: selection errors embed the raw token; a misdirected paste
-			// in the --seats slot must not reach stderr unmasked. Seed with the
-			// raw --seats value (and its inner secret-shaped runs) so the
-			// planted secret is masked wherever the sentence echoes it.
-			fmt.Fprintf(errw, "Error: %v\n", maskOperandSentence(err.Error(), seatsVal))
+			// in the --seats slot must not reach stderr unmasked. The error
+			// text routes through providers.MaskSentence (maskOperandSentence),
+			// which seeds the redactor with the raw --seats value when
+			// providers.SeedEligible says it may seed, so the planted secret is
+			// masked wherever the sentence echoes it.
+			fmt.Fprintf(errw, "Error: %v\n", maskOperandSentence(err.Error(), seatSeedOperands(seatsVal)...))
 			return nil, 2
 		}
 		if len(entries) == 0 {
@@ -298,7 +314,7 @@ func resolveFlagSeats(seatsVal string, out, errw io.Writer) ([]inventory.Entry, 
 	if err != nil {
 		// C2/D1: seat-spec errors quote the raw token; seed with the raw
 		// --seats value so the planted secret is masked wherever it appears.
-		fmt.Fprintf(errw, "Error: %v\n", maskOperandSentence(err.Error(), seatsVal))
+		fmt.Fprintf(errw, "Error: %v\n", maskOperandSentence(err.Error(), seatSeedOperands(seatsVal)...))
 		return nil, 2
 	}
 	entries := swarm.EntriesFromSeatSpecs(specs)

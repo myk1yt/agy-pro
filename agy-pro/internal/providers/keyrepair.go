@@ -615,14 +615,18 @@ func validateBackupEntry(e keyBackupEntry) error {
 	if name == "" {
 		return errors.New("backup entry with empty name")
 	}
+	// F7: the refusal sentences echo backup-file-derived names (S-9 untrusted
+	// input); a crafted file can plant a credential in the name slot, so every
+	// echo routes through MaskSentence seeded with the raw + normalized name.
+	// Benign names stay readable.
 	if e.Root != EnvRootUser && e.Root != EnvRootProcess {
-		return fmt.Errorf("entry %q: root %q is not allowed on rollback (only %q and %q)", name, e.Root, EnvRootUser, EnvRootProcess)
+		return errors.New(MaskSentence(fmt.Sprintf("entry %q: root %q is not allowed on rollback (only %q and %q)", name, e.Root, EnvRootUser, EnvRootProcess), e.Name, name))
 	}
 	if rollbackDeniedNames[strings.ToLower(name)] {
-		return fmt.Errorf("entry %q: name is on the rollback deny-list (PATH/NODE_OPTIONS-class variables are never restored)", name)
+		return errors.New(MaskSentence(fmt.Sprintf("entry %q: name is on the rollback deny-list (PATH/NODE_OPTIONS-class variables are never restored)", name), e.Name, name))
 	}
 	if !keyNameShape.MatchString(name) {
-		return fmt.Errorf("entry %q: name does not look like an API key variable (want KEY/TOKEN/SECRET/PASSWORD/CREDENTIAL in the name)", name)
+		return errors.New(MaskSentence(fmt.Sprintf("entry %q: name does not look like an API key variable (want KEY/TOKEN/SECRET/PASSWORD/CREDENTIAL in the name)", name), e.Name, name))
 	}
 	return nil
 }
@@ -693,7 +697,11 @@ func RollbackWindowsKeyNames(backupPath string, opts RepairOptions) error {
 		}
 		v, err := decodeBackupValue(backup.Version, e.Value)
 		if err != nil {
-			return fmt.Errorf("refusing backup %s: entry %q: %w", file, normalizeEnvName(e.Name), err)
+			// F7: the decode refusal echoes the backup-file-derived entry
+			// name; mask it seeded with the raw + normalized name while the
+			// %w chain to the decode error stays intact.
+			name := normalizeEnvName(e.Name)
+			return fmt.Errorf("%s: %w", MaskSentence(fmt.Sprintf("refusing backup %s: entry %q", file, name), e.Name, name), err)
 		}
 		values[i] = v
 	}

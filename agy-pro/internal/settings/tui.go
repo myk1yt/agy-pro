@@ -2,11 +2,13 @@ package settings
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 
+	"agypro/internal/providers"
 	"agypro/internal/swarm"
 )
 
@@ -63,7 +65,10 @@ type TUI struct {
 
 type pendingConfirm struct {
 	item Item
-	run  func() error
+	// operands are the prompted values the run's forwarded error may echo
+	// (the rollback backup dir, a provider name); they seed the frame mask.
+	operands []string
+	run      func() error
 }
 
 type choiceState struct {
@@ -210,7 +215,10 @@ func (t *TUI) Step(k Key) bool {
 			p := t.pending
 			t.pending = nil
 			if err := p.run(); err != nil {
-				t.message = "error: " + err.Error()
+				// F6: the forwarded op error is a composite sentence a library
+				// call built from raw prompt input (the rollback backup-dir
+				// PathError); mask it seeded with the prompted values.
+				t.setMaskedError("error: "+err.Error(), p.operands...)
 			} else {
 				t.message = "[SUCCESS] " + p.item.Label
 			}
@@ -309,11 +317,11 @@ func (t *TUI) applyChoice(value string) {
 		return
 	}
 	if cs.item.Danger {
-		t.pending = &pendingConfirm{item: cs.item, run: func() error { return run(value) }}
+		t.pending = &pendingConfirm{item: cs.item, operands: []string{value}, run: func() error { return run(value) }}
 		return
 	}
 	if err := run(value); err != nil {
-		t.message = "error: " + err.Error()
+		t.setMaskedError("error: "+err.Error(), value)
 	} else {
 		t.message = "[SUCCESS] " + cs.item.Label + " = " + value
 	}
@@ -337,7 +345,7 @@ func (t *TUI) activate(it Item) {
 	case it.ID == "mode.backups":
 		paths, err := t.core.ModeBackups()
 		if err != nil {
-			t.message = "error: " + err.Error()
+			t.setMaskedError("error: " + err.Error())
 			return
 		}
 		t.result = nil
@@ -350,7 +358,7 @@ func (t *TUI) activate(it Item) {
 	case it.ID == "mode.status":
 		var b strings.Builder
 		if err := t.core.ModeStatus(&b); err != nil {
-			t.message = "error: " + err.Error()
+			t.setMaskedError("error: " + err.Error())
 			return
 		}
 		t.result = splitLines("     ", b.String())
@@ -364,13 +372,14 @@ func (t *TUI) activate(it Item) {
 		t.runPrompt("provider name", func(s string) error { return t.core.ProviderTest(s) })
 	case it.ID == "providers.rename":
 		t.runPrompt("current provider name", func(old string) error {
-			return t.promptLine("new provider name", func(neu string) error {
+			_, err := t.promptLine("new provider name", func(neu string) error {
 				return t.core.ProviderRename(old, neu)
 			})
+			return err
 		})
 	case it.ID == "providers.delete":
 		t.runPrompt("provider name to delete (registry entry only)", func(s string) error {
-			t.pending = &pendingConfirm{item: it, run: func() error { return t.core.ProviderDelete(s) }}
+			t.pending = &pendingConfirm{item: it, operands: []string{s}, run: func() error { return t.core.ProviderDelete(s) }}
 			return nil
 		})
 	case it.ID == "doctor.diagnose":
@@ -378,24 +387,32 @@ func (t *TUI) activate(it Item) {
 		err := t.core.DoctorDiagnose(&b, false)
 		t.result = splitLines("     ", b.String())
 		if err != nil {
-			t.message = "doctor: " + err.Error()
+			t.setMaskedError("doctor: " + err.Error())
 		} else {
 			t.message = "[SUCCESS] doctor finished"
 		}
 	case it.ID == "doctor.fix_keys":
 		t.runPrompt("fix-keys target (all | provider list)", func(s string) error {
-			t.pending = &pendingConfirm{item: it, run: func() error { return t.core.DoctorFixKeys(s) }}
+			t.pending = &pendingConfirm{item: it, operands: []string{s}, run: func() error { return t.core.DoctorFixKeys(s) }}
 			return nil
 		})
 	case it.ID == "doctor.rollback_keys":
 		t.runPrompt("backup dir printed by fix-keys", func(s string) error {
-			t.pending = &pendingConfirm{item: it, run: func() error { return t.core.DoctorRollbackKeys(s) }}
+			// F6: the rollback error (the raw os.ReadFile PathError from the
+			// repair stack) re-embeds the resolved backup file; seed the frame
+			// mask with the prompted dir and the resolved file, matching the
+			// CLI rollback tails (cmd/agy E5).
+			t.pending = &pendingConfirm{
+				item:     it,
+				operands: []string{s, providers.ResolveBackupFile(s)},
+				run:      func() error { return t.core.DoctorRollbackKeys(s) },
+			}
 			return nil
 		})
 	case it.ID == "swarm.presets":
 		presets, err := t.core.SwarmPresets()
 		if err != nil {
-			t.message = "error: " + err.Error()
+			t.setMaskedError("error: " + err.Error())
 			return
 		}
 		t.result = nil
@@ -407,7 +424,7 @@ func (t *TUI) activate(it Item) {
 		}
 	case it.ID == "swarm.save_preset":
 		t.runPrompt("preset name", func(name string) error {
-			return t.promptLine("numbers (e.g. 1,3,19,23)", func(nums string) error {
+			_, err := t.promptLine("numbers (e.g. 1,3,19,23)", func(nums string) error {
 				presets, err := t.core.SwarmPresets()
 				if err != nil {
 					return err
@@ -415,6 +432,7 @@ func (t *TUI) activate(it Item) {
 				presets = append(presets, swarm.SavedPreset{Name: name, Numbers: nums})
 				return t.core.SwarmSavePresets(presets)
 			})
+			return err
 		})
 	case it.ReadOnly:
 		t.message = "read-only: " + it.Note
@@ -426,12 +444,14 @@ func (t *TUI) activate(it Item) {
 // runPrompt reads one text line, runs fn, and records the outcome message.
 // When fn only arms the danger y/n gate (delete / fix-keys / rollback), the
 // message is "confirm to proceed" — [SUCCESS] is stamped only by the confirm
-// runner once the gate resolves (B8).
+// runner once the gate resolves (B8). A failing fn's error is masked seeded
+// with the prompted value (F6): the error may be a composite the library built
+// from that value.
 func (t *TUI) runPrompt(prompt string, fn func(string) error) {
-	err := t.promptLine(prompt, fn)
+	input, err := t.promptLine(prompt, fn)
 	switch {
 	case err != nil:
-		t.message = "error: " + err.Error()
+		t.setMaskedError("error: "+err.Error(), input)
 	case t.pending != nil:
 		t.message = "confirm to proceed — " + prompt
 	default:
@@ -441,17 +461,36 @@ func (t *TUI) runPrompt(prompt string, fn func(string) error) {
 }
 
 // promptLine reads one text line and runs fn with it (rename/delete/etc).
-func (t *TUI) promptLine(prompt string, fn func(string) error) error {
+// Returns the prompted value together with fn's outcome so callers can seed
+// the frame mask with it; a failing fn's error is already masked seeded with
+// the value it was handed.
+func (t *TUI) promptLine(prompt string, fn func(string) error) (string, error) {
 	if t.lines == nil {
 		t.message = "text input unavailable (non-interactive); use the matching `agy pro settings` verb"
-		return nil
+		return "", nil
 	}
 	fmt.Fprintf(t.out, "  %s: ", prompt)
 	s, ok := t.lines.ReadLine()
 	if !ok {
-		return fmt.Errorf("input closed")
+		return s, fmt.Errorf("input closed")
 	}
-	return fn(s)
+	if err := fn(s); err != nil {
+		// F6: a composite error (a PathError embedding the JSON path, a
+		// rename conflict echoing the new name) must not carry a pasted key
+		// into the frame; benign values stay readable.
+		return s, errors.New(providers.MaskSentence(err.Error(), s))
+	}
+	return s, nil
+}
+
+// setMaskedError records an error message for the next frame. Forwarded
+// core/doctor errors are composite sentences a library call built from raw
+// prompt input (the rollback backup-dir PathError, a rename conflict), so
+// every prompted operand in scope seeds providers.MaskSentence; with no
+// eligible seed the sentence still passes the generic credential patterns and
+// benign values stay readable (F6 / U8).
+func (t *TUI) setMaskedError(msg string, operands ...string) {
+	t.message = providers.MaskSentence(msg, operands...)
 }
 
 func (t *TUI) addJSON(path string) error {
