@@ -143,8 +143,19 @@ func rejectExplicitK3(input string, inv *inventory.Inventory) error {
 // a prompt-injected exec turning into an OOM kill.
 const maxSelectionRange = 4096
 
+// maxSeatNumber bounds every ENDPOINT of a range token (C4). Real inventories
+// cap at 40 rows (inventory.ParseSelection), so a larger number can never
+// select a seat - but accepting MaxInt64 endpoints made the A8 width check
+// pass on an equal pair (`end-start` = 0) and then hung the expansion loop:
+// `n++` past math.MaxInt64 wraps instead of exceeding `end`, so
+// `9223372036854775807-9223372036854775807` appended forever. Comparing each
+// endpoint against this bound BEFORE the `end-start` subtraction keeps both
+// the width check and the loop overflow-free.
+const maxSeatNumber = 2147483647 // math.MaxInt32
+
 // tokenNumbers expands one number or range token to its seat numbers. Range
-// expansion is bounded by maxSelectionRange BEFORE anything is allocated (A8).
+// expansion is bounded by maxSelectionRange BEFORE anything is allocated (A8)
+// and both endpoints are bounded by maxSeatNumber before the subtraction (C4).
 func tokenNumbers(tok string) ([]int, error) {
 	if i := strings.IndexByte(tok, '-'); i >= 0 {
 		start, err1 := strconv.Atoi(strings.TrimSpace(tok[:i]))
@@ -154,6 +165,13 @@ func tokenNumbers(tok string) ([]int, error) {
 		}
 		if start > end {
 			return nil, fmt.Errorf("range %q is inverted", tok)
+		}
+		// C4: overflow-safe endpoint bound, checked BEFORE end-start. The
+		// error text does not surface from rejectExplicitK3 (ParseSelection
+		// reports the out-of-range seat to the user), so it only needs to be
+		// distinct from the too-wide rejection.
+		if start < 1 || end > maxSeatNumber {
+			return nil, fmt.Errorf("range %q exceeds the seat-number bound (%d)", tok, maxSeatNumber)
 		}
 		// A8: reject (not truncate) an over-wide range. A truncated range
 		// would silently select the wrong seats; an error names the problem.
@@ -189,6 +207,8 @@ func WarnK3Specs(entries []inventory.Entry, warnw io.Writer) {
 
 // expectedSeats computes the nominal seat count of a selection line (sum of
 // preset nominals plus explicit numbers/ranges). Only presets can under-deliver.
+// Range endpoints outside the C4 seat-number bound count as a single token:
+// ParseSelection rejects them, so they can never under-deliver a preset.
 func expectedSeats(input string) int {
 	total := 0
 	for _, tok := range splitSelTokens(input) {
@@ -199,7 +219,9 @@ func expectedSeats(input string) int {
 		if i := strings.IndexByte(tok, '-'); i >= 0 {
 			start, err1 := strconv.Atoi(strings.TrimSpace(tok[:i]))
 			end, err2 := strconv.Atoi(strings.TrimSpace(tok[i+1:]))
-			if err1 == nil && err2 == nil && end >= start {
+			// C4: same endpoint bound as tokenNumbers, so the
+			// `end-start+1` sum cannot overflow either.
+			if err1 == nil && err2 == nil && end >= start && start >= 1 && end <= maxSeatNumber {
 				total += end - start + 1
 				continue
 			}

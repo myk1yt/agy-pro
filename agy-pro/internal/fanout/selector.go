@@ -35,7 +35,7 @@ func SelectTargets(reg *providers.Registry, state *FanoutState, n int, explicitM
 			}
 			target, err := reg.FindTarget(spec)
 			if err != nil {
-				return nil, fmt.Errorf("failed to resolve model %q: %w", spec, err)
+				return nil, fmt.Errorf("failed to resolve model %q: %w", providers.MaskOperand(spec), err)
 			}
 			selected = append(selected, target)
 		}

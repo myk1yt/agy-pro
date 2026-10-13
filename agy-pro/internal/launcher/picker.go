@@ -125,7 +125,7 @@ var spawnRealAgy = func(name string, args ...string) *exec.Cmd {
 // buildBatchCmdLine / escapeCmdToken / setRawCmdLine — copied here verbatim
 // because those helpers are unexported and internal/fanout is outside this
 // change's edit scope). Go os/exec cannot spawn batch files directly; the
-// wrap is cmd.exe /d /s /c with a hand-escaped raw command line.
+// wrap is cmd.exe /d /v:off /s /c with a hand-escaped raw command line.
 func executeForcedNative(realAgyPath, modelID string, stdin io.Reader, reg *providers.Registry) (int, error) {
 	args := []string{"--model", modelID}
 	var cmd *exec.Cmd
@@ -169,17 +169,19 @@ func isBatchScript(bin string) bool {
 	return false
 }
 
-// buildBatchCmdLine renders `cmd.exe /d /s /c "<bin> <args...>"` with every
-// token escaped for the two cmd parse passes plus the target's
+// buildBatchCmdLine renders `cmd.exe /d /v:off /s /c "<bin> <args...>"` with
+// every token escaped for the two cmd parse passes plus the target's
 // CommandLineToArgvW tokenizer. Copied from internal/fanout/native_seat.go
 // (B9); escaping validated empirically by the fanout .cmd round-trip test.
+// /v:off pins delayed expansion off (A11) so a `!` in any token survives
+// byte-for-byte.
 func buildBatchCmdLine(bin string, args []string) string {
 	parts := make([]string, 0, len(args)+1)
 	parts = append(parts, escapeCmdToken(bin))
 	for _, a := range args {
 		parts = append(parts, escapeCmdToken(a))
 	}
-	return `cmd.exe /d /s /c "` + strings.Join(parts, " ") + `"`
+	return `cmd.exe /d /v:off /s /c "` + strings.Join(parts, " ") + `"`
 }
 
 // escapeCmdToken escapes one argument for a raw cmd.exe /d /s /c line so the
@@ -200,6 +202,11 @@ func buildBatchCmdLine(bin string, args []string) string {
 //   - `%` is never safe inside cmd quotes (variable expansion ignores
 //     quotes): step out, emit `^%` (percent is not re-expanded after batch
 //     %* substitution, so one caret survives both passes), step back in.
+//
+// A11: a pending backslash run is ALWAYS flushed doubled before an emitted
+// quote (the `"` of the step-out, the `\"` of a literal quote and the closing
+// quote). Flushing it single lets the target's CommandLineToArgvW read `\"` as
+// an escaped literal quote, which re-frames the argument.
 //
 // Newlines must never reach this function on the argv path: multi-line
 // prompts on .cmd/.bat targets force ViaStdin (F-Dc).
@@ -225,10 +232,16 @@ func escapeCmdToken(a string) string {
 			b.WriteString(`\"`)
 			cmdIn = !cmdIn
 		case '%':
-			flushBS(false)
+			// A11: the step-out quote is an emitted quote, so a pending
+			// backslash run must be flushed DOUBLED in front of it — flushing
+			// it single lets the target's CommandLineToArgvW read `\"` as an
+			// escaped literal quote and re-frame the argument. Outside cmd
+			// quotes `^%` emits NO quote, so the run stays literal.
 			if cmdIn {
+				flushBS(true)
 				b.WriteString(`"^%"`)
 			} else {
+				flushBS(false)
 				b.WriteString(`^%`)
 			}
 		case '&', '|', '<', '>', '(', ')':

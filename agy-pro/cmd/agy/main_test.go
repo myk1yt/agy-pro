@@ -713,6 +713,15 @@ func TestProDispatchHelperProcess(t *testing.T) {
 	case "unknown-subcommand":
 		os.Args = []string{"agy-test", "pro", "bogus-subcommand"}
 		main()
+	case "config-bad-profile":
+		// C2 sweep: the invalid-profile operand is a planted key; the child
+		// must exit 1 with the operand masked on stderr.
+		os.Args = []string{"agy-test", "pro", "config", "default-profile", maskSweepKey}
+		main()
+	case "pro-unknown-subcommand":
+		// C2 sweep: a planted key pasted into the `pro` subcommand slot.
+		os.Args = []string{"agy-test", "pro", maskSweepKey}
+		main()
 	}
 	// Dispatch paths that return instead of exiting (help) fall through and
 	// the child finishes with the test framework's exit code 0.

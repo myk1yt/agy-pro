@@ -278,6 +278,62 @@ func TestSelectionRangeExpansionIsBounded(t *testing.T) {
 	}
 }
 
+// C4 (overflow): MaxInt64 range endpoints passed the A8 width check on an
+// equal pair (`end-start` == 0) and then hung the expansion loop forever -
+// `n++` past math.MaxInt64 wraps instead of exceeding `end`, so
+// `9223372036854775807-9223372036854775807` appended ints without end. Both
+// endpoints are now bounded by maxSeatNumber BEFORE the subtraction, so the
+// pair is a fast error instead of an OOM/hang.
+func TestSelectionRangeEndpointsAreBounded(t *testing.T) {
+	inv := buildInventory(t,
+		[]inventory.NativeModel{{ID: "gemini-3.8-flash-high", DisplayName: "Flash"}},
+		[]providers.Provider{{Name: "nw", Models: []providers.Model{{ID: "glm-5.3-flash"}}}})
+
+	const maxI64 = "9223372036854775807"
+
+	// The helper itself rejects the MaxInt64 pair fast.
+	start := time.Now()
+	if _, err := tokenNumbers(maxI64 + "-" + maxI64); err == nil {
+		t.Fatal("tokenNumbers must reject MaxInt64 range endpoints")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("tokenNumbers(MaxInt64-MaxInt64) took %v; the expansion loop must not run", elapsed)
+	}
+
+	// End to end through ResolveSeats: fast, clean error.
+	start = time.Now()
+	_, err := ResolveSeats(maxI64+"-"+maxI64, inv, io.Discard)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("ResolveSeats must reject the MaxInt64 range")
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("ResolveSeats(MaxInt64-MaxInt64) took %v; must fail fast", elapsed)
+	}
+	if !strings.Contains(err.Error(), "out of range") {
+		t.Errorf("ResolveSeats error = %v; want the out-of-range message", err)
+	}
+
+	// A huge end with a small start is rejected too (no subtract-overflow).
+	if _, err := tokenNumbers("1-" + maxI64); err == nil {
+		t.Error("tokenNumbers must reject a MaxInt64 range end")
+	}
+
+	// expectedSeats no longer sums overflowed widths for such tokens.
+	if got := expectedSeats(maxI64 + "-" + maxI64); got != 1 {
+		t.Errorf("expectedSeats(MaxInt64-MaxInt64) = %d; want 1", got)
+	}
+	if got := expectedSeats("1-" + maxI64); got != 1 {
+		t.Errorf("expectedSeats(1-MaxInt64) = %d; want 1", got)
+	}
+
+	// Benign ranges are unaffected.
+	nums, err := tokenNumbers("1-4096")
+	if err != nil || len(nums) != 4096 {
+		t.Errorf("tokenNumbers(1-4096) = %v, %v; want 4096 numbers", nums, err)
+	}
+}
+
 // --- swarm-state.json round-trip + corrupt-file fallback ---
 
 func TestStoreRoundTripAndCorruptFallback(t *testing.T) {

@@ -120,7 +120,7 @@ func Execute(ctx context.Context, cfg RunConfig) (*SummaryReport, error) {
 			}
 			tgt, terr := reg.FindTarget(spec.ModelID)
 			if terr != nil {
-				return nil, fmt.Errorf("failed to resolve model %q: %w", spec.ModelID, terr)
+				return nil, fmt.Errorf("failed to resolve model %q: %w", providers.MaskOperand(spec.ModelID), terr)
 			}
 			targets = append(targets, tgt)
 			nativeSeats = append(nativeSeats, false)

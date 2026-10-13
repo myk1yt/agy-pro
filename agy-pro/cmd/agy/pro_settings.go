@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"agypro/internal/providers"
 	"agypro/internal/settings"
 )
 
@@ -55,7 +56,8 @@ func runSettingsCmd(args []string, in io.Reader, out, errw io.Writer) int {
 	case "show":
 		asJSON := len(args) > 1 && args[1] == "--json"
 		if len(args) > 1 && !asJSON {
-			fmt.Fprintf(errw, "[agy-pro] unknown show option %q\n%s\n", args[1], proSettingsUsage)
+			// C2: operands echoed in errors can be a misdirected key paste.
+			fmt.Fprintf(errw, "[agy-pro] unknown show option %q\n%s\n", providers.MaskOperand(args[1]), proSettingsUsage)
 			return 2
 		}
 		if err := settings.WriteSnapshot(out, core, asJSON); err != nil {
@@ -72,7 +74,7 @@ func runSettingsCmd(args []string, in io.Reader, out, errw io.Writer) int {
 			fmt.Fprintf(errw, "[agy-pro] %v\n", err)
 			return 1
 		}
-		fmt.Fprintf(out, "[SUCCESS] %s = %s\n", args[1], args[2])
+		fmt.Fprintf(out, "[SUCCESS] %s = %s\n", providers.MaskOperand(args[1]), providers.MaskOperand(args[2]))
 		return 0
 	case "providers":
 		return settingsProvidersCmd(core, args[1:], in, out, errw)
@@ -91,7 +93,7 @@ func runSettingsCmd(args []string, in io.Reader, out, errw io.Writer) int {
 		fmt.Fprintf(out, "agy-pro version %s\n", Version)
 		return 0
 	default:
-		fmt.Fprintf(errw, "[agy-pro] unknown settings subcommand %q\n%s\n", args[0], proSettingsUsage)
+		fmt.Fprintf(errw, "[agy-pro] unknown settings subcommand %q\n%s\n", providers.MaskOperand(args[0]), proSettingsUsage)
 		return 2
 	}
 }
@@ -126,7 +128,8 @@ func settingsProvidersCmd(core *settings.Core, args []string, in io.Reader, out,
 		}
 		data, err := readSettingsSpec(args[1], in)
 		if err != nil {
-			fmt.Fprintf(errw, "[agy-pro] %v\n", err)
+			// C2: os.ReadFile embeds the operand in its error text.
+			fmt.Fprintf(errw, "[agy-pro] %v\n", providers.MaskOperand(err.Error()))
 			return 1
 		}
 		spec, err := settings.ParseProviderSpecJSON(data)
@@ -138,7 +141,7 @@ func settingsProvidersCmd(core *settings.Core, args []string, in io.Reader, out,
 			fmt.Fprintf(errw, "[agy-pro] add-json failed: %v\n", err)
 			return 1
 		}
-		fmt.Fprintf(out, "[SUCCESS] provider %s saved (apiKeyEnv %s — env-var NAME only)\n", spec.Name, spec.APIKeyEnv)
+		fmt.Fprintf(out, "[SUCCESS] provider %s saved (apiKeyEnv %s — env-var NAME only)\n", providers.MaskOperand(spec.Name), providers.MaskOperand(spec.APIKeyEnv))
 		return 0
 	case "add-interactive", "wizard":
 		if err := core.RunWizard(in, out); err != nil {
@@ -155,7 +158,7 @@ func settingsProvidersCmd(core *settings.Core, args []string, in io.Reader, out,
 			fmt.Fprintf(errw, "[agy-pro] %v\n", err)
 			return 1
 		}
-		fmt.Fprintf(out, "[SUCCESS] provider %s key probe ok\n", args[1])
+		fmt.Fprintf(out, "[SUCCESS] provider %s key probe ok\n", providers.MaskOperand(args[1]))
 		return 0
 	case "rename":
 		if len(args) < 3 {
@@ -166,7 +169,7 @@ func settingsProvidersCmd(core *settings.Core, args []string, in io.Reader, out,
 			fmt.Fprintf(errw, "[agy-pro] %v\n", err)
 			return 1
 		}
-		fmt.Fprintf(out, "[SUCCESS] provider %s renamed to %s\n", args[1], args[2])
+		fmt.Fprintf(out, "[SUCCESS] provider %s renamed to %s\n", providers.MaskOperand(args[1]), providers.MaskOperand(args[2]))
 		return 0
 	case "delete":
 		if len(args) < 2 {
@@ -177,10 +180,10 @@ func settingsProvidersCmd(core *settings.Core, args []string, in io.Reader, out,
 			fmt.Fprintf(errw, "[agy-pro] %v\n", err)
 			return 1
 		}
-		fmt.Fprintf(out, "[SUCCESS] provider %s removed from the registry (key values untouched)\n", args[1])
+		fmt.Fprintf(out, "[SUCCESS] provider %s removed from the registry (key values untouched)\n", providers.MaskOperand(args[1]))
 		return 0
 	default:
-		fmt.Fprintf(errw, "[agy-pro] unknown providers subcommand %q\n%s\n", args[0], proSettingsUsage)
+		fmt.Fprintf(errw, "[agy-pro] unknown providers subcommand %q\n%s\n", providers.MaskOperand(args[0]), proSettingsUsage)
 		return 2
 	}
 }
@@ -229,7 +232,7 @@ func settingsModeCmd(core *settings.Core, args []string, out, errw io.Writer) in
 		}
 		return 0
 	default:
-		fmt.Fprintf(errw, "[agy-pro] unknown mode subcommand %q\n%s\n", args[0], proSettingsUsage)
+		fmt.Fprintf(errw, "[agy-pro] unknown mode subcommand %q\n%s\n", providers.MaskOperand(args[0]), proSettingsUsage)
 		return 2
 	}
 }
@@ -275,7 +278,7 @@ func settingsDoctorCmd(core *settings.Core, args []string, out, errw io.Writer) 
 		fmt.Fprintln(out, "[SUCCESS] registry key names restored from backup")
 		return 0
 	default:
-		fmt.Fprintf(errw, "[agy-pro] unknown doctor subcommand %q\n%s\n", args[0], proSettingsUsage)
+		fmt.Fprintf(errw, "[agy-pro] unknown doctor subcommand %q\n%s\n", providers.MaskOperand(args[0]), proSettingsUsage)
 		return 2
 	}
 }

@@ -331,8 +331,9 @@ func TestIsBatchScriptAndBuildBatchCmdLine(t *testing.T) {
 	got := buildBatchCmdLine(`C:\bin\real-agy.cmd`, []string{"--model", "m1"})
 	// cmd /s /c strips the first and last quote of the raw line and takes the
 	// rest verbatim, so the line carries its own outer quotes around the
-	// individually quoted tokens (same shape as the fanout guard).
-	want := `cmd.exe /d /s /c ""C:\bin\real-agy.cmd" "--model" "m1""`
+	// individually quoted tokens (same shape as the fanout guard; A11 adds
+	// /v:off so delayed expansion cannot eat `!` in a token).
+	want := `cmd.exe /d /v:off /s /c ""C:\bin\real-agy.cmd" "--model" "m1""`
 	if got != want {
 		t.Errorf("buildBatchCmdLine = %q; want %q", got, want)
 	}
@@ -361,8 +362,8 @@ func TestEscapeCmdToken_RoundTripShape(t *testing.T) {
 }
 
 // TestExecuteForcedNative_BatchWrapGuard (B9): a .cmd real-agy target is
-// spawned via cmd.exe /d /s /c with a raw, hand-escaped command line — the
-// guard that used to exist only on the native-seat path.
+// spawned via cmd.exe /d /v:off /s /c with a raw, hand-escaped command line —
+// the guard that used to exist only on the native-seat path.
 func TestExecuteForcedNative_BatchWrapGuard(t *testing.T) {
 	batch := filepath.Join(t.TempDir(), "real-agy.cmd")
 	if err := os.WriteFile(batch, []byte("@echo off\r\nexit /b 0\r\n"), 0o755); err != nil {
@@ -405,8 +406,8 @@ func TestExecuteForcedNative_BatchWrapGuard(t *testing.T) {
 		if !strings.Contains(gotCmd.SysProcAttr.CmdLine, "real-agy.cmd") {
 			t.Errorf("raw line must carry the batch target: %q", gotCmd.SysProcAttr.CmdLine)
 		}
-		if !strings.HasPrefix(gotCmd.SysProcAttr.CmdLine, `cmd.exe /d /s /c "`) {
-			t.Errorf("raw line must be the /d /s /c wrap: %q", gotCmd.SysProcAttr.CmdLine)
+		if !strings.HasPrefix(gotCmd.SysProcAttr.CmdLine, `cmd.exe /d /v:off /s /c "`) {
+			t.Errorf("raw line must be the /d /v:off /s /c wrap: %q", gotCmd.SysProcAttr.CmdLine)
 		}
 	} else {
 		if gotName != batch {
@@ -414,6 +415,97 @@ func TestExecuteForcedNative_BatchWrapGuard(t *testing.T) {
 		}
 		if strings.Join(gotArgs, " ") != "--model m1" {
 			t.Errorf("args = %v; want [--model m1]", gotArgs)
+		}
+	}
+}
+
+// TestPickerArgsHelperChild is the fake "real agy" child for the picker's
+// cmd.exe parity round-trip: it dumps its NUL-separated argv and exits 0.
+func TestPickerArgsHelperChild(t *testing.T) {
+	if os.Getenv("GO_WANT_PICKER_ARGS_HELPER") != "1" {
+		return
+	}
+	if p := os.Getenv("AGY_PRO_PICKER_ARGS_DUMP"); p != "" {
+		_ = os.WriteFile(p, []byte(strings.Join(os.Args, "\x00")), 0o644)
+	}
+	os.Exit(0)
+}
+
+// TestEscapeCmdTokenDoublesBackslashesBeforeStepOutQuote (A11 parity with
+// internal/fanout/native_seat_test.go): a pending backslash run is flushed
+// DOUBLED before the `%` step-out quote. The pre-A11 picker copy flushed it
+// single, so `a"\%b` reached the target as a re-framed argument.
+func TestEscapeCmdTokenDoublesBackslashesBeforeStepOutQuote(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{`a\%b`, `"a\\"^%"b"`},
+		{`a\\%b`, `"a\\\\"^%"b"`},
+		// A11 hole rows (identical to fanout's matrix): quote flips cmd parity
+		// out, then `%` emits `^%` with NO quote around it - the pending run
+		// stays literal there, but the step-out quote itself doubles the run.
+		{`a"\%b`, `"a\"\^%b"`},
+		{`back"\%end`, `"back\"\^%end"`},
+		{`q"\\%w`, `"q\"\\^%w"`},
+		{`"\%`, `"\"\^%"`},
+	}
+	for _, tc := range cases {
+		if got := escapeCmdToken(tc.in); got != tc.want {
+			t.Errorf("escapeCmdToken(%q) = %q; want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestCmdWrapPickerParityRows (C1) runs the A11 hole rows through a REAL
+// cmd.exe on the forced-native picker's wrap, mirroring fanout's
+// TestCmdWrap_EscapeMatrixRoundTrip: the token must survive the cmd /c parse,
+// the batch %* re-parse and CommandLineToArgvW byte-for-byte.
+func TestCmdWrapPickerParityRows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip(".cmd wrapping is a Windows-only spawn hazard")
+	}
+	dir := t.TempDir()
+	helper := os.Args[0]
+	body := "@echo off\r\n\"" + helper + "\" -test.run=TestPickerArgsHelperChild -- %*\r\n"
+	stub := filepath.Join(dir, "real-agy.cmd")
+	if err := os.WriteFile(stub, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	argsDump := filepath.Join(dir, "args.bin")
+	t.Setenv("GO_WANT_PICKER_ARGS_HELPER", "1")
+	t.Setenv("AGY_PRO_PICKER_ARGS_DUMP", argsDump)
+
+	cases := []string{
+		`plain`,
+		`with spaces`,
+		`pct 100%`,
+		`pct\%back`, // A11: single backslash before a percent
+		`a"\%b`,     // A11 hole: quote, backslash-run, percent
+		`back"\%end`,
+	}
+	for _, tok := range cases {
+		_ = os.Remove(argsDump)
+		cmd := spawnRealAgy("cmd.exe")
+		setRawCmdLine(cmd, buildBatchCmdLine(stub, []string{"--model", tok}))
+		if err := cmd.Run(); err != nil {
+			t.Errorf("token %q: cmd wrap run error: %v", tok, err)
+			continue
+		}
+		data, err := os.ReadFile(argsDump)
+		if err != nil {
+			t.Fatalf("token %q: helper argv dump missing: %v", tok, err)
+		}
+		var found bool
+		for _, a := range strings.Split(string(data), "\x00") {
+			if a == tok {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("token %q did not survive the picker .cmd argv wrap byte-for-byte:\n got %q", tok, string(data))
 		}
 	}
 }

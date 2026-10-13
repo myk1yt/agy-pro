@@ -279,3 +279,109 @@ func TestRunSettingsCmd_UnknownSubcommand(t *testing.T) {
 		t.Errorf("usage missing from stderr:\n%s", errw)
 	}
 }
+
+// TestRunSettingsCmd_KeyEchoMasked (C2): a key paste in an operand slot the
+// settings command ACCEPTS (rename target, provider name, add-json name) must
+// come back masked on the success line, never raw.
+func TestRunSettingsCmd_KeyEchoMasked(t *testing.T) {
+	const planted = "sk-planted-settings-echo-key-0123456789abcdef"
+	const masked = "sk-pl****"
+
+	t.Run("rename success", func(t *testing.T) {
+		tc := installSettingsCore(t)
+		tc.reg = &providers.Registry{Providers: []providers.Provider{{Name: "acme", BaseURL: "https://acme.example/v1"}}}
+		code, out, errw := runSettings(t, []string{"providers", "rename", "acme", planted}, "")
+		if code != 0 {
+			t.Fatalf("rename exit = %d stderr=%s", code, errw)
+		}
+		if strings.Contains(out, planted) || strings.Contains(errw, planted) {
+			t.Errorf("rename echoes the planted key raw:\nstdout=%s stderr=%s", out, errw)
+		}
+		if !strings.Contains(out, masked) {
+			t.Errorf("rename success line missing the readable mask:\n%s", out)
+		}
+	})
+
+	t.Run("delete success", func(t *testing.T) {
+		tc := installSettingsCore(t)
+		tc.reg = &providers.Registry{Providers: []providers.Provider{{Name: planted}}}
+		code, out, errw := runSettings(t, []string{"providers", "delete", planted}, "")
+		if code != 0 {
+			t.Fatalf("delete exit = %d stderr=%s", code, errw)
+		}
+		if strings.Contains(out, planted) {
+			t.Errorf("delete echoes the planted key raw:\n%s", out)
+		}
+		if !strings.Contains(out, masked) {
+			t.Errorf("delete success line missing the readable mask:\n%s", out)
+		}
+	})
+
+	t.Run("test success", func(t *testing.T) {
+		tc := installSettingsCore(t)
+		tc.reg = &providers.Registry{Providers: []providers.Provider{{Name: planted, APIKeyEnv: "PLANT_KEY"}}}
+		tc.audits = []providers.KeyAudit{{
+			Provider: planted, Env: "PLANT_KEY", Resolved: true,
+			Probe: providers.KeyProbeResult{Status: providers.ProbeValid},
+		}}
+		code, out, errw := runSettings(t, []string{"providers", "test", planted}, "")
+		if code != 0 {
+			t.Fatalf("test exit = %d stderr=%s", code, errw)
+		}
+		if strings.Contains(out, planted) {
+			t.Errorf("test echoes the planted key raw:\n%s", out)
+		}
+		if !strings.Contains(out, masked) {
+			t.Errorf("test success line missing the readable mask:\n%s", out)
+		}
+	})
+
+	t.Run("add-json success", func(t *testing.T) {
+		installSettingsCore(t)
+		specPath := filepath.Join(t.TempDir(), "spec.json")
+		spec := `{"name":"` + planted + `","baseURL":"https://acme.example/v1","apiKeyEnv":"ACME_KEY","models":[{"id":"m1"}]}`
+		if err := os.WriteFile(specPath, []byte(spec), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		code, out, errw := runSettings(t, []string{"providers", "add-json", specPath}, "")
+		if code != 0 {
+			t.Fatalf("add-json exit = %d stderr=%s", code, errw)
+		}
+		if strings.Contains(out, planted) {
+			t.Errorf("add-json echoes the planted key raw:\n%s", out)
+		}
+		if !strings.Contains(out, masked) || !strings.Contains(out, "ACME_KEY") {
+			t.Errorf("add-json success line must mask the name and keep the env NAME readable:\n%s", out)
+		}
+	})
+
+	t.Run("unreadable add-json path", func(t *testing.T) {
+		installSettingsCore(t)
+		code, _, errw := runSettings(t, []string{"providers", "add-json", planted}, "")
+		if code != 1 {
+			t.Fatalf("add-json exit = %d; want 1", code)
+		}
+		if strings.Contains(errw, planted) {
+			t.Errorf("read failure echoes the planted key raw (os.ReadFile embeds the path):\n%s", errw)
+		}
+	})
+
+	t.Run("unknown subcommands", func(t *testing.T) {
+		installSettingsCore(t)
+		for _, args := range [][]string{
+			{planted},
+			{"show", planted},
+			{"providers", planted},
+			{"mode", planted},
+			{"doctor", planted},
+		} {
+			code, _, errw := runSettings(t, args, "")
+			if code != 2 {
+				t.Errorf("args %v exit = %d; want 2", args, code)
+			}
+			if strings.Contains(errw, planted) {
+				t.Errorf("args %v echoes the planted key raw:\n%s", args, errw)
+			}
+		}
+	})
+}

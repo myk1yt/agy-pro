@@ -135,7 +135,7 @@ func (r *Registry) FindTarget(spec string) (Target, error) {
 		}
 	}
 
-	return Target{}, fmt.Errorf("model %q not found in registry", spec)
+	return Target{}, fmt.Errorf("model %q not found in registry", MaskOperand(spec))
 }
 
 // FindAlternatesForModel finds other providers offering the exact same modelID.

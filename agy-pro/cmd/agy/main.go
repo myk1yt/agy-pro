@@ -78,7 +78,7 @@ func handleProCommand(args []string) {
 	case "help", "--help", "-h":
 		printProHelp()
 	default:
-		fmt.Fprintf(os.Stderr, "[agy-pro] Unknown subcommand: %q\n\n", subcommand)
+		fmt.Fprintf(os.Stderr, "[agy-pro] Unknown subcommand: %q\n\n", providers.MaskOperand(subcommand))
 		printProHelp()
 		os.Exit(1)
 	}
@@ -160,9 +160,11 @@ func runMode(args []string) {
 }
 
 // invalidModeArgMessage renders the `agy pro mode` usage error. The hint lists
-// every accepted mode argument, including the newer `status` and `list`.
+// every accepted mode argument, including the newer `status` and `list`. The
+// operand is masked (C2): a misdirected key paste in the mode slot must not be
+// echoed into stderr.
 func invalidModeArgMessage(sub string) string {
-	return fmt.Sprintf("[agy-pro] Invalid mode argument: %q (use 'full', 'clean', 'restore', 'status', or 'list')\n", sub)
+	return fmt.Sprintf("[agy-pro] Invalid mode argument: %q (use 'full', 'clean', 'restore', 'status', or 'list')\n", providers.MaskOperand(sub))
 }
 
 // configUsage is the shared usage line for `agy pro config` (help text and
@@ -251,7 +253,7 @@ func runConfig(args []string) {
 		}
 		profile := strings.ToLower(strings.TrimSpace(args[1]))
 		if !mode.ValidProfile(profile) {
-			fmt.Fprintf(os.Stderr, "[agy-pro] Invalid default profile: %q (use 'prompt', 'native', or 'gateway')\n", args[1])
+			fmt.Fprintf(os.Stderr, "[agy-pro] Invalid default profile: %q (use 'prompt', 'native', or 'gateway')\n", providers.MaskOperand(args[1]))
 			os.Exit(1)
 		}
 		st, err := mode.LoadState()
@@ -304,7 +306,7 @@ func runConfig(args []string) {
 		}
 
 	default:
-		fmt.Fprintf(os.Stderr, "[agy-pro] Unknown config subcommand: %q\n\n", sub)
+		fmt.Fprintf(os.Stderr, "[agy-pro] Unknown config subcommand: %q\n\n", providers.MaskOperand(sub))
 		fmt.Fprintln(os.Stderr, configUsage)
 		os.Exit(1)
 	}

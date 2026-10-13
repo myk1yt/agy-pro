@@ -210,7 +210,7 @@ func runSwarmNonInteractive(in io.Reader, out, errw io.Writer, fv swarmFlagValue
 
 	tmpl, ok := swarm.FindTemplate(fv.template)
 	if !ok {
-		fmt.Fprintf(errw, "Error: unknown template %q (want code-review|security-audit|custom)\n", fv.template)
+		fmt.Fprintf(errw, "Error: unknown template %q (want code-review|security-audit|custom)\n", providers.MaskOperand(fv.template))
 		fmt.Fprintln(errw, proSwarmUsage)
 		return 2
 	}
@@ -227,7 +227,8 @@ func runSwarmNonInteractive(in io.Reader, out, errw io.Writer, fv swarmFlagValue
 	if fv.promptFile != "" {
 		data, err := readPromptSource(in, fv.promptFile)
 		if err != nil {
-			fmt.Fprintf(errw, "Error reading prompt file %s: %v\n", fv.promptFile, err)
+			// C2: os.ReadFile embeds the operand path in its error text.
+			fmt.Fprintf(errw, "Error reading prompt file %s: %v\n", providers.MaskOperand(fv.promptFile), providers.MaskOperand(err.Error()))
 			return 1
 		}
 		prompt = data
@@ -276,7 +277,9 @@ func resolveFlagSeats(seatsVal string, out, errw io.Writer) ([]inventory.Entry, 
 		}
 		entries, err := swarm.ResolveSeats(seatsVal, inv, out)
 		if err != nil {
-			fmt.Fprintf(errw, "Error: %v\n", err)
+			// C2: selection errors embed the raw token; a misdirected paste in
+			// the --seats slot must not reach stderr unmasked.
+			fmt.Fprintf(errw, "Error: %v\n", providers.MaskOperand(err.Error()))
 			return nil, 2
 		}
 		if len(entries) == 0 {
@@ -287,7 +290,7 @@ func resolveFlagSeats(seatsVal string, out, errw io.Writer) ([]inventory.Entry, 
 	}
 	specs, err := fanout.ParseSeatSpecs(seatsVal)
 	if err != nil {
-		fmt.Fprintf(errw, "Error: %v\n", err)
+		fmt.Fprintf(errw, "Error: %v\n", providers.MaskOperand(err.Error()))
 		return nil, 2
 	}
 	entries := swarm.EntriesFromSeatSpecs(specs)
