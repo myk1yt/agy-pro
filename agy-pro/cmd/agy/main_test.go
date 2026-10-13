@@ -1125,3 +1125,27 @@ func TestRunDoctorFixKeysMasksResolveErrorTokens(t *testing.T) {
 		t.Errorf("doctor fix-keys resolve error must render the plant masked: %q", errOut)
 	}
 }
+
+func TestRunDoctorRollbackMasksDecoratedPlant(t *testing.T) {
+	oldRollback := rollbackKeyNames
+	t.Cleanup(func() { rollbackKeyNames = oldRollback })
+	rollbackKeyNames = func(backupPath string, opts providers.RepairOptions) error {
+		return fmt.Errorf("open %s: The system cannot find the file specified.", backupPath)
+	}
+	plant := "native:wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	exit := stubDoctorExit(t)
+	var out, errOut string
+	errOut = captureStderr(t, func() {
+		out = captureStdout(t, func() { runDoctorRollback(plant) })
+	})
+	if *exit != 1 {
+		t.Fatalf("exit = %d; want 1", *exit)
+	}
+	if strings.Contains(out, plant) || strings.Contains(errOut, plant) {
+		t.Errorf("rollback output leaks the decorated plant raw:\nstdout=%s\nstderr=%s", out, errOut)
+	}
+	masked := strings.Contains(out, "wJalr****") || strings.Contains(out, "[REDACTED]")
+	if !strings.Contains(out, "Backup file:") || !masked {
+		t.Errorf("backup-file line must mask the decorated plant:\nstdout=%s", out)
+	}
+}

@@ -149,8 +149,8 @@ func Reconcile(task, root, outDir string, nRequested int, seats []*SeatResult) (
 
 		seatFile := filepath.Join(outDir, fmt.Sprintf("seat-%d-%s-%s.md",
 			seat.SeatID,
-			sanitizeFilename(seat.FinalTarget.Provider.Name),
-			sanitizeFilename(seat.FinalTarget.Model.ID),
+			sanitizeFilename(providers.MaskOperand(seat.FinalTarget.Provider.Name)),
+			sanitizeFilename(providers.MaskOperand(seat.FinalTarget.Model.ID)),
 		))
 
 		seatMarkdown := formatSeatReport(ts, task, seat, redact)
@@ -195,10 +195,14 @@ func Reconcile(task, root, outDir string, nRequested int, seats []*SeatResult) (
 			continue
 		}
 		// S-7: the summary is a shareable artifact; redact the error snippets
-		// on the way out.
+		// on the way out. H3: registry-derived provider/model ids are masked
+		// too, so the machine summary and the --json stdout cannot carry
+		// key-shaped ids raw (the console banner masks the same fields).
 		copySeat := *s
 		copySeat.Error = redact(copySeat.Error)
 		copySeat.Content = redact(copySeat.Content)
+		copySeat.FinalTarget.Provider.Name = providers.MaskOperand(copySeat.FinalTarget.Provider.Name)
+		copySeat.FinalTarget.Model.ID = providers.MaskOperand(copySeat.FinalTarget.Model.ID)
 		for i := range copySeat.Failovers {
 			copySeat.Failovers[i].Reason = redact(copySeat.Failovers[i].Reason)
 		}
@@ -238,10 +242,10 @@ func formatSeatReport(ts, task string, seat *SeatResult, redact func(string) str
 	sb.WriteString("| Field | Value |\n")
 	sb.WriteString("|---|---|\n")
 	sb.WriteString(fmt.Sprintf("| Task | `%s` |\n", task))
-	sb.WriteString(fmt.Sprintf("| Provider | `%s` |\n", seat.FinalTarget.Provider.Name))
+	sb.WriteString(fmt.Sprintf("| Provider | `%s` |\n", providers.MaskOperand(seat.FinalTarget.Provider.Name)))
 	sb.WriteString(fmt.Sprintf("| Kind | %s |\n", seatKindLabel(seat.Kind)))
 	sb.WriteString(fmt.Sprintf("| Quota/Cost | %s |\n", seatQuotaNote(seat.Kind)))
-	sb.WriteString(fmt.Sprintf("| Model | `%s` (family: `%s`) |\n", seat.FinalTarget.Model.ID, seat.FinalTarget.Model.FamilyName()))
+	sb.WriteString(fmt.Sprintf("| Model | `%s` (family: `%s`) |\n", providers.MaskOperand(seat.FinalTarget.Model.ID), providers.MaskOperand(seat.FinalTarget.Model.FamilyName())))
 	sb.WriteString(fmt.Sprintf("| Status | `%s` |\n", seat.Status))
 	sb.WriteString(fmt.Sprintf("| Degraded | `%v` |\n", seat.Degraded))
 	sb.WriteString(fmt.Sprintf("| Duration | `%d ms` |\n", seat.DurationMs))

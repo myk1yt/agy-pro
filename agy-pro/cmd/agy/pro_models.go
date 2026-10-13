@@ -72,6 +72,10 @@ func runModelsCmdTo(args []string, out, errw io.Writer) int {
 	if *asJSON {
 		enc := json.NewEncoder(out)
 		enc.SetIndent("", "  ")
+		for i := range inv.Entries {
+			inv.Entries[i].ModelID = providers.MaskOperand(inv.Entries[i].ModelID)
+			inv.Entries[i].Spec = providers.MaskOperand(inv.Entries[i].Spec)
+		}
 		if err := enc.Encode(inv.Entries); err != nil {
 			fmt.Fprintf(errw, "model inventory error: %v\n", err)
 			return 1

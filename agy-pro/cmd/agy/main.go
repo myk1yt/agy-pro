@@ -198,7 +198,13 @@ func parseBridgeToolsSpec(spec string) (string, error) {
 	if trimmed == mode.BridgeToolsNone {
 		return mode.BridgeToolsNone, nil
 	}
-	return agenttools.ParseToolTokens(trimmed)
+	// H6: the parser echoes the (lower-cased) token; seed the error with the
+	// ORIGINAL operand so a misdirected paste cannot survive case-folding.
+	toks, err := agenttools.ParseToolTokens(trimmed)
+	if err != nil {
+		return "", errors.New(maskOperandSentence(err.Error(), spec))
+	}
+	return toks, nil
 }
 
 // describeBridgeTools renders the tools behind an allow-list for CLI output.
@@ -827,10 +833,16 @@ func runDoctorRollback(target string) {
 	fmt.Println("===========================================================")
 
 	file := providers.ResolveBackupFile(target)
-	// E5/G4: the target is an untrusted CLI operand — a misdirected paste puts
-	// a key in the --rollback-keys slot, and the resolved path re-embeds it
-	// (also in decorated form, which MaskOperand alone cannot classify).
-	fmt.Printf("Backup file: %s\n", maskOperandSentence(file))
+	// E5/G4/H1: the target is an untrusted CLI operand — a misdirected paste
+	// puts a key in the --rollback-keys slot, and the resolved path re-embeds
+	// it (also in decorated form, which MaskOperand alone cannot classify).
+	// Plain classifier first (first-5+**** rendering); the seeded sentence
+	// masker only when the classifier cannot classify the decorated form.
+	backupLine := providers.MaskOperand(file)
+	if backupLine == file {
+		backupLine = maskOperandSentence(file, append(providers.FlagSeedOperands(target), file)...)
+	}
+	fmt.Printf("Backup file: %s\n", backupLine)
 	if err := rollbackKeyNames(file, providers.RepairOptions{}); err != nil {
 		// The forwarded error (os.ReadFile's *fs.PathError) re-embeds the raw
 		// path; redact seeded with the raw target (plus per-token forms) and

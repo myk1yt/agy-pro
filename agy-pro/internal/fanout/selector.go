@@ -53,7 +53,11 @@ func SelectTargets(reg *providers.Registry, state *FanoutState, n int, explicitM
 			return nil, fmt.Errorf("no enabled models found in registry")
 		}
 		unset := reg.UnsetEnvNames()
-		return nil, fmt.Errorf("no models available with valid API keys (unset env vars: %s)", strings.Join(unset, ", "))
+		masked := make([]string, len(unset))
+		for i, name := range unset {
+			masked[i] = providers.MaskOperand(name)
+		}
+		return nil, fmt.Errorf("no models available with valid API keys (unset env vars: %s)", strings.Join(masked, ", "))
 	}
 
 	// F-C: apply the pool-policy exclusion to AUTO-seating candidates before

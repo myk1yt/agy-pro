@@ -393,7 +393,9 @@ func (t *TUI) activate(it Item) {
 		}
 	case it.ID == "doctor.fix_keys":
 		t.runPrompt("fix-keys target (all | provider list)", func(s string) error {
-			t.pending = &pendingConfirm{item: it, operands: []string{s}, run: func() error { return t.core.DoctorFixKeys(s) }}
+			// H4: seed per-token forms like the CLI twin (a multi-token target
+			// quotes individual tokens in the aggregate error).
+			t.pending = &pendingConfirm{item: it, operands: providers.FlagSeedOperands(s), run: func() error { return t.core.DoctorFixKeys(s) }}
 			return nil
 		})
 	case it.ID == "doctor.rollback_keys":

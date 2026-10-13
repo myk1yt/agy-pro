@@ -166,12 +166,14 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 	fmt.Fprintf(out, "  Reconciliation:      %s\n", providers.MaskOperand(filepath.Join(cfg.OutDir, "reconciliation.md")))
 	fmt.Fprintf(out, "  Machine Summary:     %s\n", providers.MaskOperand(filepath.Join(cfg.OutDir, "summary.json")))
 	for _, seat := range summary.Seats {
-		// G6: banner seat-report lines echo registry-derived provider/model
-		// names; mask key-shaped ones (benign names readable).
+		// G6/H2: banner seat-report lines echo registry-derived provider/model
+		// names; mask FIRST, then sanitize (sanitizing first breaks the
+		// contiguous-run classifier and leaks key-shaped ids). Benign names
+		// stay readable.
 		fmt.Fprintf(out, "  Seat %d Report:       seat-%d-%s-%s.md\n",
 			seat.SeatID, seat.SeatID,
-			providers.MaskOperand(sanitizeFilename(seat.FinalTarget.Provider.Name)),
-			providers.MaskOperand(sanitizeFilename(seat.FinalTarget.Model.ID)),
+			sanitizeFilename(providers.MaskOperand(seat.FinalTarget.Provider.Name)),
+			sanitizeFilename(providers.MaskOperand(seat.FinalTarget.Model.ID)),
 		)
 	}
 

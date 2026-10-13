@@ -56,15 +56,19 @@ func BuildFanoutArgs(t Template, seats []inventory.Entry, root, prompt string, t
 // FormatCommand renders a fanout argument vector as the equivalent
 // `agy pro fanout ...` command line (preview, copy, --dry-run). Arguments that
 // contain whitespace or quotes are double-quoted with inner quotes escaped.
+// H5: each rendered argument passes through MaskOperand, so a key-shaped spec
+// or prompt pasted into a flag slot cannot be echoed verbatim on the preview,
+// copy and dry-run paths (benign arguments render unchanged).
 func FormatCommand(args []string) string {
 	var b strings.Builder
 	b.WriteString("agy pro fanout")
 	for _, a := range args {
 		b.WriteByte(' ')
-		if strings.ContainsAny(a, " \t\"") {
-			b.WriteString(strconv.Quote(a))
+		masked := providers.MaskOperand(a)
+		if strings.ContainsAny(masked, " \t\"") {
+			b.WriteString(strconv.Quote(masked))
 		} else {
-			b.WriteString(a)
+			b.WriteString(masked)
 		}
 	}
 	return b.String()

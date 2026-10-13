@@ -159,7 +159,13 @@ func ParseBridgeToolsSpec(spec string) (string, error) {
 	if trimmed == mode.BridgeToolsNone {
 		return mode.BridgeToolsNone, nil
 	}
-	return agenttools.ParseToolTokens(trimmed)
+	// H6: the parser echoes the (lower-cased) token; seed the error with the
+	// ORIGINAL operand so a misdirected paste cannot survive case-folding.
+	toks, err := agenttools.ParseToolTokens(trimmed)
+	if err != nil {
+		return "", errors.New(providers.MaskSentence(err.Error(), spec))
+	}
+	return toks, nil
 }
 
 // ModeSwitch switches the profile mode (full|clean) via the existing atomic

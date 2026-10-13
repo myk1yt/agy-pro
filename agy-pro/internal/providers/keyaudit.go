@@ -225,12 +225,16 @@ func squashOperand(s string) string {
 }
 
 // identifierSegmented reports whether operand is an identifier-class token:
-// six or more separator-free segments (meta-llama/Meta-Llama-3.1-70B-Instruct-
-// Turbo is nine). Real secrets are one opaque core with at most a slash or two
-// of decoration (native:<aws>/x is five), so the segment count separates the
-// classes where length and case cannot (r6 over-mask).
+// four or more separator-free segments, none of which is a long opaque run
+// (16+ runes). Qwen/Qwen2.5-72B-Instruct (5 segments, longest 8) and
+// meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo (9 segments, longest 7) are
+// identifiers; a 16+ rune segment means a decorated secret
+// (native:<aws>/x, 1-2-3-4-5-native:<aws>, wJalr+XU/tnF/.../bPxRfiCYEXAMPLEKEY),
+// which must still seed. Real secrets are one opaque core with at most a slash
+// or two of decoration, so the combination separates the classes where length
+// and case cannot.
 func identifierSegmented(operand string) bool {
-	n := 0
+	n, longest := 0, 0
 	for _, seg := range strings.FieldsFunc(operand, func(r rune) bool {
 		switch r {
 		case '/', ':', '+', '=', '.', '_', '-', ' ', '\t':
@@ -238,11 +242,15 @@ func identifierSegmented(operand string) bool {
 		}
 		return false
 	}) {
-		if seg != "" {
-			n++
+		if seg == "" {
+			continue
+		}
+		n++
+		if l := len([]rune(seg)); l > longest {
+			longest = l
 		}
 	}
-	return n >= 6
+	return n >= 4 && longest < 16
 }
 
 // SeedEligible reports whether operand may seed the composite-error redactor

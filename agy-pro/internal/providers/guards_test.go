@@ -669,3 +669,27 @@ func TestSeedEligible_IdentifierSegmentedReadable(t *testing.T) {
 		}
 	}
 }
+
+func TestIdentifierSegmented_ContentAware(t *testing.T) {
+	// H7: real 4-5 segment org-slash IDs stay readable; a decorated secret
+	// whose segments include a 16+ rune opaque run must still seed.
+	readable := []string{
+		"Qwen/Qwen2.5-72B-Instruct",
+		"mistralai/Mistral-7B-Instruct",
+		"meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
+	}
+	for _, id := range readable {
+		if SeedEligible(id) {
+			t.Errorf("SeedEligible(%q) = true; want false (identifier class stays readable)", id)
+		}
+	}
+	seeds := []string{
+		"native:wJalr+XU/tnF/EMI/K7M/DENG/bPxRfiCYEXAMPLEKEY",
+		"1-2-3-4-5-native:wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+	}
+	for _, s := range seeds {
+		if !SeedEligible(s) {
+			t.Errorf("SeedEligible(%q) = false; want true (decorated secret with long segment must seed)", s)
+		}
+	}
+}
