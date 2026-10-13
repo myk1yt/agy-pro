@@ -1144,7 +1144,7 @@ func TestRunDoctorRollbackMasksDecoratedPlant(t *testing.T) {
 	if strings.Contains(out, plant) || strings.Contains(errOut, plant) {
 		t.Errorf("rollback output leaks the decorated plant raw:\nstdout=%s\nstderr=%s", out, errOut)
 	}
-	masked := strings.Contains(out, "wJalr****") || strings.Contains(out, "[REDACTED]")
+	masked := strings.Contains(out, "****")
 	if !strings.Contains(out, "Backup file:") || !masked {
 		t.Errorf("backup-file line must mask the decorated plant:\nstdout=%s", out)
 	}

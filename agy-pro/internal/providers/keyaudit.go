@@ -145,7 +145,11 @@ func MaskOperand(s string) string {
 	if s == "" {
 		return s
 	}
-	if operandLooksSecret(s) {
+	// I3: the decorated-secret and JWT classes are the single authority in
+	// decoratedSecretShaped/isJWTShapedOperand; folding them in here makes
+	// every display sink (banner, report bodies, JSON, preview) mask decorated
+	// operands while locations and identifier-class model IDs stay readable.
+	if operandLooksSecret(s) || isJWTShapedOperand(strings.TrimSpace(s)) || decoratedSecretShaped(s) {
 		return MaskSecret(s)
 	}
 	return NewRedactor()(s)
@@ -253,6 +257,23 @@ func identifierSegmented(operand string) bool {
 	return n >= 4 && longest < 16
 }
 
+// decoratedSecretShaped reports the decorated-secret class: not location-shaped,
+// not identifier-class, carrying at most one interior space (the whitespace-
+// decorated form "native: <aws>"; a sentence carries many and must never be
+// classified here), and its separator-stripped squash reaches the floor with an
+// uppercase letter. It is the ONE decorated-class authority, shared by
+// SeedEligible (sentence seeding) and MaskOperand (display masking).
+func decoratedSecretShaped(operand string) bool {
+	if isLocationShaped(operand) || identifierSegmented(operand) {
+		return false
+	}
+	if strings.Count(operand, " ") > 1 || strings.ContainsAny(operand, "\t\n") {
+		return false
+	}
+	sq := squashOperand(operand)
+	return len([]rune(sq)) >= decoratedSecretFloorRunes && strings.IndexFunc(sq, unicode.IsUpper) >= 0
+}
+
 // SeedEligible reports whether operand may seed the composite-error redactor
 // (MaskSentence). A composite error is a sentence a library call built from a
 // raw CLI operand (*fs.PathError wraps the path into the sentence, seat-spec
@@ -262,15 +283,13 @@ func identifierSegmented(operand string) bool {
 // seed-eligibility rule, shared by the cmd/agy wrapper and internal/fanout. An
 // operand seeds when it is NOT location-shaped AND any of:
 //
-//   - the canonical classifier already masks it (MaskOperand(operand) !=
-//     operand): sk-/AKIA/ASIA/eyJ shapes, 16+ rune contiguous base64 runs
-//     (D7), isLikelyAPIKey verdicts;
+//   - the canonical classifier masks it (operandLooksSecret or the generic
+//     redactor patterns): sk-/AKIA/ASIA shapes, 16+ rune contiguous base64
+//     runs (D7), isLikelyAPIKey verdicts;
 //   - the whole trimmed operand is a 3-segment JWT (isJWTShapedOperand),
 //     covering headers the classifier cannot see;
-//   - it is not an identifier-class token (six or more separator-free
-//     segments) and its squash exceeds decoratedSecretFloorRunes runes and
-//     carries an uppercase letter: the decorated-operand class whose
-//     separators defeat the contiguous-run heuristic.
+//   - it is a decorated secret (decoratedSecretShaped): the separator-carrying
+//     class whose squash defeats the contiguous-run heuristic.
 //
 // Location-shaped operands (a URL scheme, an absolute path, or a leading
 // ./ ../ .\ ..\ marker) never seed: spawn errors must name the binary, and
@@ -279,17 +298,16 @@ func SeedEligible(operand string) bool {
 	if operand == "" || isLocationShaped(operand) {
 		return false
 	}
-	if MaskOperand(operand) != operand {
+	if operandLooksSecret(operand) {
+		return true
+	}
+	if NewRedactor()(operand) != operand {
 		return true
 	}
 	if isJWTShapedOperand(strings.TrimSpace(operand)) {
 		return true
 	}
-	if identifierSegmented(operand) {
-		return false
-	}
-	sq := squashOperand(operand)
-	return len([]rune(sq)) >= decoratedSecretFloorRunes && strings.IndexFunc(sq, unicode.IsUpper) >= 0
+	return decoratedSecretShaped(operand)
 }
 
 // FlagSeedOperands returns the redactor seeds for multi-token flag values:

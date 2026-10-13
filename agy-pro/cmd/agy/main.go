@@ -191,18 +191,19 @@ var bridgeToolLabels = []struct{ token, tools string }{
 // token set (read,search,write,exec) canonicalized by agenttools, or the
 // literal "none" that disables the loop. Fail-closed: anything else errors.
 func parseBridgeToolsSpec(spec string) (string, error) {
-	trimmed := strings.ToLower(strings.TrimSpace(spec))
-	if trimmed == "" {
-		return "", fmt.Errorf("empty bridge-tools value (want read,search,write,exec or none)")
-	}
-	if trimmed == mode.BridgeToolsNone {
+	raw := strings.TrimSpace(spec)
+	if strings.ToLower(raw) == mode.BridgeToolsNone {
 		return mode.BridgeToolsNone, nil
 	}
-	// H6: the parser echoes the (lower-cased) token; seed the error with the
-	// ORIGINAL operand so a misdirected paste cannot survive case-folding.
-	toks, err := agenttools.ParseToolTokens(trimmed)
+	if raw == "" {
+		return "", fmt.Errorf("empty bridge-tools value (want read,search,write,exec or none)")
+	}
+	// I1: the parser echoes the token; pass the ORIGINAL-case operand so the
+	// error quotes it verbatim and the seeded redactor can match (pre-folding
+	// made the original-case seed inert against the case-folded echo).
+	toks, err := agenttools.ParseToolTokens(raw)
 	if err != nil {
-		return "", errors.New(maskOperandSentence(err.Error(), spec))
+		return "", errors.New(maskOperandSentence(err.Error(), providers.FlagSeedOperands(raw)...))
 	}
 	return toks, nil
 }

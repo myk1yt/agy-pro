@@ -322,7 +322,7 @@ func TestParseSelectionMasksKeyShapedTokens(t *testing.T) {
 		{"AKIAIOSFODNN7EXAMPLE", "AKIAI****"},
 		{"wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY", "wJalr****"}, // opaque base64 run
 		{"pAKIAIOSFODNN7EXAMPLE", "pAKIA****"},                  // p-prefixed plant hits the preset branch
-		{"1-AKIAIOSFODNN7EXAMPLE", "1-[REDACTED]"},              // AKIA inside a range-shaped token
+		{"1-AKIAIOSFODNN7EXAMPLE", "1-AKI****"},                // AKIA inside a range-shaped token
 	}
 	for _, tc := range cases {
 		_, err := ParseSelection(tc.plant, inv)

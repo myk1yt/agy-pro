@@ -152,18 +152,19 @@ func (c *Core) Set(key, value string) error {
 // `agy pro config bridge-tools` (main.go parseBridgeToolsSpec): the closed
 // token set, or "none".
 func ParseBridgeToolsSpec(spec string) (string, error) {
-	trimmed := strings.ToLower(strings.TrimSpace(spec))
-	if trimmed == "" {
-		return "", errors.New("empty bridge-tools value (want read,search,write,exec or none)")
-	}
-	if trimmed == mode.BridgeToolsNone {
+	raw := strings.TrimSpace(spec)
+	if strings.ToLower(raw) == mode.BridgeToolsNone {
 		return mode.BridgeToolsNone, nil
 	}
-	// H6: the parser echoes the (lower-cased) token; seed the error with the
-	// ORIGINAL operand so a misdirected paste cannot survive case-folding.
-	toks, err := agenttools.ParseToolTokens(trimmed)
+	if raw == "" {
+		return "", errors.New("empty bridge-tools value (want read,search,write,exec or none)")
+	}
+	// I1: the parser echoes the token; pass the ORIGINAL-case operand so the
+	// error quotes it verbatim and the seeded redactor can match (pre-folding
+	// made the original-case seed inert against the case-folded echo).
+	toks, err := agenttools.ParseToolTokens(raw)
 	if err != nil {
-		return "", errors.New(providers.MaskSentence(err.Error(), spec))
+		return "", errors.New(providers.MaskSentence(err.Error(), providers.FlagSeedOperands(raw)...))
 	}
 	return toks, nil
 }

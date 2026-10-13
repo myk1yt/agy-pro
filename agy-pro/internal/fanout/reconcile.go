@@ -160,7 +160,7 @@ func Reconcile(task, root, outDir string, nRequested int, seats []*SeatResult) (
 
 		// R2-2: seat content can quote raw keys, so the extraction input is
 		// redacted too - findings land in the shareable summary.json.
-		findings := parseFindings(seat.SeatID, seat.FinalTarget.Provider.Name, seat.FinalTarget.Model.ID, redact(seat.Content))
+		findings := parseFindings(seat.SeatID, providers.MaskOperand(seat.FinalTarget.Provider.Name), providers.MaskOperand(seat.FinalTarget.Model.ID), redact(seat.Content))
 		allFindings = append(allFindings, findings...)
 	}
 
@@ -178,7 +178,9 @@ func Reconcile(task, root, outDir string, nRequested int, seats []*SeatResult) (
 	}
 
 	summary := &SummaryReport{
-		Task:           task,
+		// I4: the task string is user input; mask key-shaped values so a
+		// misdirected paste cannot ride into the machine summary raw.
+		Task:           providers.MaskOperand(task),
 		Timestamp:      ts,
 		Root:           root,
 		NRequested:     nRequested,
@@ -195,16 +197,23 @@ func Reconcile(task, root, outDir string, nRequested int, seats []*SeatResult) (
 			continue
 		}
 		// S-7: the summary is a shareable artifact; redact the error snippets
-		// on the way out. H3: registry-derived provider/model ids are masked
-		// too, so the machine summary and the --json stdout cannot carry
-		// key-shaped ids raw (the console banner masks the same fields).
+		// on the way out. H3/I4: registry-derived provider/model ids are masked
+		// too (initial and final targets plus failover hops), so the machine
+		// summary and the --json stdout cannot carry key-shaped ids raw (the
+		// console banner masks the same fields).
 		copySeat := *s
 		copySeat.Error = redact(copySeat.Error)
 		copySeat.Content = redact(copySeat.Content)
+		copySeat.InitialTarget.Provider.Name = providers.MaskOperand(copySeat.InitialTarget.Provider.Name)
+		copySeat.InitialTarget.Model.ID = providers.MaskOperand(copySeat.InitialTarget.Model.ID)
 		copySeat.FinalTarget.Provider.Name = providers.MaskOperand(copySeat.FinalTarget.Provider.Name)
 		copySeat.FinalTarget.Model.ID = providers.MaskOperand(copySeat.FinalTarget.Model.ID)
 		for i := range copySeat.Failovers {
 			copySeat.Failovers[i].Reason = redact(copySeat.Failovers[i].Reason)
+			copySeat.Failovers[i].FromProv = providers.MaskOperand(copySeat.Failovers[i].FromProv)
+			copySeat.Failovers[i].FromMod = providers.MaskOperand(copySeat.Failovers[i].FromMod)
+			copySeat.Failovers[i].ToProv = providers.MaskOperand(copySeat.Failovers[i].ToProv)
+			copySeat.Failovers[i].ToMod = providers.MaskOperand(copySeat.Failovers[i].ToMod)
 		}
 		summary.Seats = append(summary.Seats, copySeat)
 	}
@@ -241,7 +250,7 @@ func formatSeatReport(ts, task string, seat *SeatResult, redact func(string) str
 	sb.WriteString(fmt.Sprintf("# Seat %d Audit Report\n\n", seat.SeatID))
 	sb.WriteString("| Field | Value |\n")
 	sb.WriteString("|---|---|\n")
-	sb.WriteString(fmt.Sprintf("| Task | `%s` |\n", task))
+	sb.WriteString(fmt.Sprintf("| Task | `%s` |\n", providers.MaskOperand(task)))
 	sb.WriteString(fmt.Sprintf("| Provider | `%s` |\n", providers.MaskOperand(seat.FinalTarget.Provider.Name)))
 	sb.WriteString(fmt.Sprintf("| Kind | %s |\n", seatKindLabel(seat.Kind)))
 	sb.WriteString(fmt.Sprintf("| Quota/Cost | %s |\n", seatQuotaNote(seat.Kind)))
@@ -257,7 +266,9 @@ func formatSeatReport(ts, task string, seat *SeatResult, redact func(string) str
 			if i > 0 {
 				sb.WriteString("; ")
 			}
-			sb.WriteString(fmt.Sprintf("Step %d (%s/%s -> %s/%s: %s)", f.Step, f.FromProv, f.FromMod, f.ToProv, f.ToMod, redact(f.Reason)))
+			sb.WriteString(fmt.Sprintf("Step %d (%s/%s -> %s/%s: %s)", f.Step,
+				providers.MaskOperand(f.FromProv), providers.MaskOperand(f.FromMod),
+				providers.MaskOperand(f.ToProv), providers.MaskOperand(f.ToMod), redact(f.Reason)))
 		}
 		sb.WriteString(" |\n")
 	}
@@ -576,8 +587,10 @@ func seatQuotaNote(k SeatKind) string {
 }
 
 func sanitizeFilename(s string) string {
-	s = strings.ReplaceAll(s, "/", "-")
-	s = strings.ReplaceAll(s, "\\", "-")
-	s = strings.ReplaceAll(s, ":", "-")
+	// I2: mask rendering introduces `****`; Windows rejects `* ? " < > |` in
+	// filenames, so strip them alongside the path separators.
+	for _, bad := range []string{"/", "\\", ":", "*", "?", "\"", "<", ">", "|"} {
+		s = strings.ReplaceAll(s, bad, "-")
+	}
 	return s
 }

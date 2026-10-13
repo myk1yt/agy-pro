@@ -72,9 +72,15 @@ func runModelsCmdTo(args []string, out, errw io.Writer) int {
 	if *asJSON {
 		enc := json.NewEncoder(out)
 		enc.SetIndent("", "  ")
+		// I4: mask every registry-derived display field, not just ModelID/Spec
+		// (DisplayName re-embeds the native model id; Group is the provider
+		// name; Family is registry-derived).
 		for i := range inv.Entries {
 			inv.Entries[i].ModelID = providers.MaskOperand(inv.Entries[i].ModelID)
 			inv.Entries[i].Spec = providers.MaskOperand(inv.Entries[i].Spec)
+			inv.Entries[i].DisplayName = providers.MaskOperand(inv.Entries[i].DisplayName)
+			inv.Entries[i].Group = providers.MaskOperand(inv.Entries[i].Group)
+			inv.Entries[i].Family = providers.MaskOperand(inv.Entries[i].Family)
 		}
 		if err := enc.Encode(inv.Entries); err != nil {
 			fmt.Fprintf(errw, "model inventory error: %v\n", err)

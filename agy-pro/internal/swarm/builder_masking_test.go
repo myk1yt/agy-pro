@@ -102,12 +102,13 @@ func TestBuilderMasksPlantedTTYTokens(t *testing.T) {
 		// ([REDACTED]); sk-/AKIA shapes are already masked at the inventory
 		// error source (first-5 + ****) and the builder pass keeps that form.
 		cases := []struct{ plant, mask string }{
-			{nativeP, `invalid selection token "` + redactedMk + `"`},
-			{rangeP, `invalid selection token "` + redactedMk + `"`},
-			// The ASIA twin is caught by the generic redactor already at the
-			// inventory error source, leaving only the benign "1-" prefix.
-			{asiaP, `invalid selection token "1-` + redactedMk + `"`},
-			{jwtPlant, `invalid selection token "` + redactedMk + `"`},
+			// I3: the decorated class renders through the canonical first-5
+			// mask (the U8 rule) at the inventory error source; the seeded
+			// builder pass keeps that form.
+			{nativeP, `invalid selection token "nativ****"`},
+			{rangeP, `invalid selection token "1-wJa****"`},
+			{asiaP, `invalid selection token "1-ASI****"`},
+			{jwtPlant, `invalid selection token "aaaaa****"`},
 			{skPlant, `invalid selection token "` + skMask + `"`},
 			{akiaPlant, `invalid selection token "` + akiaMask + `"`},
 		}

@@ -388,11 +388,11 @@ func TestFanoutPlantedKeySweep(t *testing.T) {
 			// is raw (the classifier keeps the decorated form readable), so the
 			// composite sentence must be seeded by the shared rule.
 			name: "tools 1-<AWS> plant", args: []string{"--tools", "1-" + awsPlant},
-			wantCode: 2, want: "[REDACTED]",
+			wantCode: 2, want: "1-wJa****",
 		},
 		{
 			name: "tools 1-<ASIA> plant", args: []string{"--tools", "1-" + asiaPlant},
-			wantCode: 2, want: "[REDACTED]",
+			wantCode: 2, want: "1-ASI****",
 		},
 		{
 			// D8: the stdlib invalid-value echo for -timeout routes through the

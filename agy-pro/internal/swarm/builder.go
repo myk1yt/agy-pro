@@ -260,7 +260,12 @@ func (b *Builder) printBudgetAndPreview(out io.Writer, spec RunSpec) {
 		prompt = "(template default)"
 	}
 	if len(prompt) > 60 {
-		prompt = prompt[:57] + "..."
+		// I5: mask before truncation so a key-shaped prompt cannot ride into
+		// the preview frame raw (byte-slicing can also split a rune).
+		prompt = providers.MaskSentence(prompt, prompt)
+		if len(prompt) > 60 {
+			prompt = prompt[:57] + "..."
+		}
 	}
 	fmt.Fprintf(out, "  4. prompt   %s\n", prompt)
 	fmt.Fprintln(out, "=== preview ===")
