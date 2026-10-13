@@ -48,3 +48,8 @@
 - U7 delivered: `launcher.CommunityBanner` ("Visit https://www.reddit.com/r/GoogleAntigravityCLI/! A space for antigravity-cli users. Remember r/GoogleAntigravityCLI"), interactive launcher startup only; never in -p/piped/machine output. U8 delivered: `providers.MaskSecret` = first 5 runes + `****` (breaking rewrite of the old prefix6/suffix4 display), applied to wizard input, confirmations, provider lists, settings panels, errors, logs.
 - Out of scope (noted, unchanged): `rules-conflicts.md` and `profiles/**` still describe the full-stack profile's governance with "VP Arbiter" wording; contract ruled these out of scope (they describe profile governance, not fanout output).
 - Open item (user quota gated): one LIVE mixed swarm (A1) run is part of U5 verification; in-session `/model` XOR remains a binary constraint (combined visibility lives at the agy-pro layer).
+
+## 2026-10-12 — Pool change (user, late session)
+- Charm family EXCLUDED from the subagent pool for the rest of this session (credits exhausted): all Charm/* aliases. k3 family remains excluded; Google/gemini-3.8-flash remains excluded (standing); Charm/qwen3.8-max was already banned earlier (cost).
+- Consequence for review swarms: the fixed cross-check seat (Charm/qwen3.8-flash) is DROPPED per the pool-change rule. Reviewer/audit swarms run 3 instances (primary + 2 drawn from the remaining routine pool: MiMo/mimo-v2.6-flash, NW/glm-5.3-flash-flex, NW/deepseek-v4.1-flash-flex). User to be notified in the final report.
+- User is away and authorized autonomous completion: proceed to the end, fix gaps as found, local commits only, NO GitHub push.
