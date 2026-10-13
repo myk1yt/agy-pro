@@ -1055,7 +1055,7 @@ func TestMaskRegistryValue(t *testing.T) {
 	// The fifth enumerated shape's tail is DOTTED ("example.com/<key>"): the
 	// slash-and-dot decoration makes identifierSegmented see 5 segments, but
 	// the longest ("bPxRfiCYEXAMPLEKEY", 18 runes) clears the 16-rune floor,
-	// so the segment is NOT identifier-class and seedShaped's squash (49
+	// so the segment is NOT identifier-class and seedShaped's squash (48
 	// runes, uppercase) fires. The render is therefore first-5 of the tail,
 	// "examp****" — the dotted host prefix, not the key, fills the mask
 	// window; no key rune beyond the window survives.

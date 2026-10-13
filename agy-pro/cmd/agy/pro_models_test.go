@@ -184,6 +184,11 @@ func TestRunModelsCmdJSONMasksLocationShapedKeyShapedFamily(t *testing.T) {
 	for _, tc := range []struct{ name, familyPlant, wantFamily string }{
 		{"relative-marker decorated secret", "./wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY", "wJalr****"},
 		{"relative-marker decorated JWT", "./abcdefghij.klmnopqrst.uvwxyz012345", "abcde****"},
+		// Batch O: the doubly-decorated sub-shape (a secret behind a
+		// mid-string scheme that itself carries a marker) pinned at the
+		// sink too — registrySegmentLooksSecret classifies the stripped
+		// segment, and without it the plant serializes raw.
+		{"mid-scheme marker-decorated secret", "note https://./wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY", "./wJa****"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			reg := &providers.Registry{Providers: []providers.Provider{{
