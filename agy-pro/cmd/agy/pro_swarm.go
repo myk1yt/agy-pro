@@ -40,6 +40,9 @@ Non-interactive (any option below present; zero prompts):
   --root DIR          workspace root (default ".")
   --prompt TEXT       user prompt (default: template scaffold)
   --prompt-file PATH  prompt file, or '-' for stdin
+  --tools SPEC        allowed tools: read,search,write,exec (default: the
+                      template's tools)
+  --task NAME         fanout task type (default: the template's task)
   --timeout SECONDS   swarm timeout (default 120)
   --dry-run           print the equivalent "agy pro fanout" command and exit 0
 
@@ -95,6 +98,8 @@ func runSwarmCmd(args []string, in io.Reader, out, errw io.Writer) int {
 		rootFlag     = fs.String("root", ".", "workspace root directory")
 		promptFlag   = fs.String("prompt", "", "inline user prompt text")
 		promptFile   = fs.String("prompt-file", "", "path to prompt file, or '-' for stdin")
+		toolsFlag    = fs.String("tools", "", "allowed tools: read,search,write,exec (default: the template's tools)")
+		taskFlag     = fs.String("task", "", "fanout task type (default: the template's task)")
 		timeoutFlag  = fs.Int("timeout", 0, "swarm execution timeout in seconds (default 120)")
 		dryRunFlag   = fs.Bool("dry-run", false, "print the equivalent agy pro fanout command and exit 0")
 	)
@@ -114,7 +119,7 @@ func runSwarmCmd(args []string, in io.Reader, out, errw io.Writer) int {
 	setFlags := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
-		case "template", "seats", "root", "prompt", "prompt-file", "timeout", "dry-run":
+		case "template", "seats", "root", "prompt", "prompt-file", "tools", "task", "timeout", "dry-run":
 			setFlags[f.Name] = true
 		}
 	})
@@ -127,6 +132,8 @@ func runSwarmCmd(args []string, in io.Reader, out, errw io.Writer) int {
 			root:       *rootFlag,
 			prompt:     *promptFlag,
 			promptFile: *promptFile,
+			tools:      *toolsFlag,
+			task:       *taskFlag,
 			timeout:    *timeoutFlag,
 			timeoutSet: setFlags["timeout"],
 			dryRun:     *dryRunFlag,
@@ -178,6 +185,8 @@ type swarmFlagValues struct {
 	root       string
 	prompt     string
 	promptFile string
+	tools      string
+	task       string
 	timeout    int
 	timeoutSet bool
 	dryRun     bool
@@ -205,6 +214,9 @@ func runSwarmNonInteractive(in io.Reader, out, errw io.Writer, fv swarmFlagValue
 		fmt.Fprintln(errw, proSwarmUsage)
 		return 2
 	}
+	// A2 follow-up: layer the --task/--tools flag equivalents of the
+	// interactive builder's edits onto the template (empty = keep default).
+	tmpl = swarm.SwarmFlags{Tools: fv.tools, Task: fv.task}.ApplyToTemplate(tmpl)
 
 	seats, code := resolveFlagSeats(fv.seats, out, errw)
 	if code >= 0 {

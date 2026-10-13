@@ -426,3 +426,31 @@ func TestRunSwarmCmdAnsiOnlyOnTTY(t *testing.T) {
 		t.Errorf("TTY output should decorate the summary header with ANSI: %q", outBuf.String())
 	}
 }
+
+func TestRunSwarmCmdToolsTaskFlagsReachFanoutArgs(t *testing.T) {
+	t.Setenv("AGY_PRO_HOME", t.TempDir())
+	defer withStubSwarmInventory(t, swarmFixtureInventory(t), nil)()
+	defer withTTY(t, true)()
+	ran := false
+	defer stubFanoutRun(t, cannedSummary(), nil, &ran)()
+
+	var outBuf, errBuf strings.Builder
+	code := runSwarmCmd([]string{
+		"--dry-run",
+		"--template", "code-review",
+		"--seats", "native:gemini-3.8-flash-high,nw/glm-5.3-flash-flex",
+		"--tools", "read,search",
+		"--task", "review",
+	}, strings.NewReader("MUST-NOT-BE-READ\n"), &outBuf, &errBuf)
+
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, errBuf.String())
+	}
+	got := outBuf.String()
+	if !strings.Contains(got, "--tools read,search") {
+		t.Errorf("dry-run command must carry the --tools override: %q", got)
+	}
+	if !strings.Contains(got, "--task review") {
+		t.Errorf("dry-run command must carry the --task override: %q", got)
+	}
+}
