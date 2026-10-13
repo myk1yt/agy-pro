@@ -128,8 +128,10 @@ func settingsProvidersCmd(core *settings.Core, args []string, in io.Reader, out,
 		}
 		data, err := readSettingsSpec(args[1], in)
 		if err != nil {
-			// C2: os.ReadFile embeds the operand in its error text.
-			fmt.Fprintf(errw, "[agy-pro] %v\n", providers.MaskOperand(err.Error()))
+			// C2/D1: os.ReadFile embeds the operand in its error text; the
+			// redactor is seeded with the raw operand so a planted key is
+			// masked wherever it appears in the composite sentence.
+			fmt.Fprintf(errw, "[agy-pro] %v\n", maskOperandSentence(err.Error(), args[1]))
 			return 1
 		}
 		spec, err := settings.ParseProviderSpecJSON(data)

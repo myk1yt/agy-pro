@@ -722,6 +722,19 @@ func TestProDispatchHelperProcess(t *testing.T) {
 		// C2 sweep: a planted key pasted into the `pro` subcommand slot.
 		os.Args = []string{"agy-test", "pro", maskSweepKey}
 		main()
+	case "pro-unknown-subcommand-akia":
+		// D2 sweep: an AKIA key pasted into the `pro` subcommand slot; the
+		// ORIGINAL-CASE argument must be masked (AKIA/ASIA class).
+		os.Args = []string{"agy-test", "pro", sweepAKIAKey}
+		main()
+	case "config-unknown-subcommand-akia":
+		// D2 sweep: an AKIA key pasted into the `config` subcommand slot.
+		os.Args = []string{"agy-test", "pro", "config", sweepAKIAKey}
+		main()
+	case "mode-bad-arg-akia":
+		// D2 sweep: an AKIA key pasted into the `mode` argument slot.
+		os.Args = []string{"agy-test", "pro", "mode", sweepAKIAKey}
+		main()
 	}
 	// Dispatch paths that return instead of exiting (help) fall through and
 	// the child finishes with the test framework's exit code 0.

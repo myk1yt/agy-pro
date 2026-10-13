@@ -289,3 +289,102 @@ func TestBuildRunConfigSeatsOverrideNAndFlagSurface(t *testing.T) {
 		t.Errorf("legacy models path = N:%d models:%v; want N:4 [prov/m1 prov/m2]", cfg.N, cfg.Models)
 	}
 }
+
+// Planted-key sweep for the fanout CLI surface (D1/D3 class, mirrors cmd/agy's
+// TestWrapperPlantedKeySweep): prompt-file errors, seat-spec token errors and
+// tool-token errors must never echo a planted key raw, while benign operands
+// stay readable. sk- plants are caught by the generic credential patterns, the
+// AWS-secret-shaped plant (contiguous base64 with "/") by the operand-seeded
+// redactor, including through the case-folding tool-token parser.
+func TestFanoutPlantedKeySweep(t *testing.T) {
+	t.Setenv(paths.EnvAgyProHome, t.TempDir())
+
+	const (
+		skPlant  = "sk-planted-c2-sweep-key-0123456789abcdef"
+		skMask   = "sk-pl****"
+		awsPlant = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+		awsMask  = "wJalr****"
+	)
+
+	type site struct {
+		name     string
+		args     []string
+		wantCode int
+		want     string // substring that must survive (mask or benign text)
+		wantNot  string // substring that must not appear ("" = unchecked)
+	}
+	sites := []site{
+		{
+			name: "prompt-file sk- plant", args: []string{"--prompt-file", skPlant},
+			wantCode: 1, want: skMask,
+		},
+		{
+			name: "prompt-file AWS plant", args: []string{"--prompt-file", awsPlant},
+			wantCode: 1, want: awsMask,
+		},
+		{
+			name: "prompt-file benign path stays readable", args: []string{"--prompt-file", "./prompts/missing.md"},
+			wantCode: 1, want: "./prompts/missing.md", wantNot: "[REDACTED]",
+		},
+		{
+			name: "seats native sk- plant", args: []string{"--seats", "native:" + skPlant + "/x"},
+			wantCode: 2, want: "[REDACTED]",
+		},
+		{
+			name: "seats native AWS plant", args: []string{"--seats", "native:" + awsPlant + "/x"},
+			wantCode: 2, want: "[REDACTED]",
+		},
+		{
+			name: "seats benign token error stays readable", args: []string{"--seats", "native:"},
+			wantCode: 2, want: `"native:" prefix requires a model id`, wantNot: "[REDACTED]",
+		},
+		{
+			// agenttools.ParseToolTokens masks the unknown token itself (B2/U8);
+			// the CLI must not un-mask or duplicate it.
+			name: "tools sk- plant", args: []string{"--tools", "read," + skPlant},
+			wantCode: 2, want: skMask,
+		},
+		{
+			name: "tools AWS plant (case-folded echo)", args: []string{"--tools", "read," + awsPlant},
+			wantCode: 2, want: "wjalr****",
+		},
+		{
+			name: "tools benign token error stays readable", args: []string{"--tools", "read,nowrite"},
+			wantCode: 2, want: `unknown tool "nowrite"`, wantNot: "[REDACTED]",
+		},
+		{
+			// D8: the stdlib invalid-value echo for -timeout routes through the
+			// echo-line redactor (quoted segment) and the generic pass.
+			name: "timeout sk- plant", args: []string{"-prompt", "x", "-timeout", skPlant},
+			wantCode: 2, want: skMask,
+		},
+		{
+			name: "timeout AWS plant", args: []string{"-prompt", "x", "-timeout", awsPlant},
+			wantCode: 2, want: awsMask,
+		},
+		{
+			name: "timeout benign value stays readable", args: []string{"-prompt", "x", "-timeout", "abc"},
+			wantCode: 2, want: `invalid value "abc"`,
+		},
+	}
+	for _, s := range sites {
+		t.Run(s.name, func(t *testing.T) {
+			var out, errw bytes.Buffer
+			code := Run(s.args, nil, &out, &errw)
+			if code != s.wantCode {
+				t.Fatalf("exit code = %d; want %d\nstdout:\n%s\nstderr:\n%s", code, s.wantCode, out.String(), errw.String())
+			}
+			for _, plant := range []string{skPlant, awsPlant} {
+				if strings.Contains(out.String(), plant) || strings.Contains(errw.String(), plant) {
+					t.Errorf("fanout output leaks the planted key:\nstdout:\n%s\nstderr:\n%s", out.String(), errw.String())
+				}
+			}
+			if !strings.Contains(out.String()+errw.String(), s.want) {
+				t.Errorf("output missing %q:\nstdout:\n%s\nstderr:\n%s", s.want, out.String(), errw.String())
+			}
+			if s.wantNot != "" && strings.Contains(out.String()+errw.String(), s.wantNot) {
+				t.Errorf("output must not contain %q:\nstdout:\n%s\nstderr:\n%s", s.wantNot, out.String(), errw.String())
+			}
+		})
+	}
+}

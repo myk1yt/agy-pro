@@ -1,6 +1,7 @@
 package fanout
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"agypro/internal/agenttools"
@@ -24,7 +26,9 @@ var executeEngine = Execute
 // Run executes the fanout CLI command with standard exit codes.
 func Run(args []string, in io.Reader, out, errw io.Writer) int {
 	flags := flag.NewFlagSet("fanout", flag.ContinueOnError)
-	flags.SetOutput(errw)
+	// D8: stdlib flag output routes through the echo-line redactor so parse
+	// errors cannot echo a planted operand.
+	flags.SetOutput(&maskedFlagWriter{w: errw})
 
 	var (
 		taskFlag       = flags.String("task", "review", "Task type: review|security|plan-audit|research|ideas|custom")
@@ -75,7 +79,10 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 		} else {
 			data, err := os.ReadFile(*promptFileFlag)
 			if err != nil {
-				fmt.Fprintf(errw, "Error reading prompt file %s: %v\n", *promptFileFlag, err)
+				// C2/D3: os.ReadFile embeds the operand path in its error
+				// text; mask both the slot and the composite sentence.
+				fmt.Fprintf(errw, "Error reading prompt file %s: %v\n",
+					providers.MaskOperand(*promptFileFlag), maskOperandSentence(err.Error(), *promptFileFlag))
 				return 1
 			}
 			promptText = string(data)
@@ -98,7 +105,10 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 		out:       *outFlag,
 	}, promptText)
 	if err != nil {
-		fmt.Fprintf(errw, "Error: %v\n", err)
+		// C2/D3: usage errors quote raw tokens from --seats/--tools (seat-spec
+		// and tool-token validators). Seed the redactor with the raw flag
+		// values so a planted secret is masked wherever the sentence echoes it.
+		fmt.Fprintf(errw, "Error: %v\n", maskOperandSentence(err.Error(), *seatsFlag, *toolsFlag))
 		return 2
 	}
 
@@ -250,4 +260,95 @@ func resolveMaxNative(flagVal int) int {
 // importing fanout. Signature and error wording are unchanged.
 func ParseToolTokens(spec string) (string, error) {
 	return agenttools.ParseToolTokens(spec)
+}
+
+// operandRunRe matches an opaque base64-alphabet run inside a larger operand
+// (mirrors cmd/agy's composite-error helper; the fanout CLI is a separate
+// package). The 16-rune floor mirrors the operand classifier's
+// contiguousSecretRun threshold (D7), so ordinary tokens never produce seeds.
+var operandRunRe = regexp.MustCompile(`[A-Za-z0-9+/=]{16,}`)
+
+// isLocationShaped mirrors the operand classifier's location rule: URLs,
+// absolute paths, and leading ./ ../ .\ ..\ markers name a location rather
+// than carrying a value. Such operands are readable by policy, so their inner
+// base64 runs (ordinary path segments contain "/") must not become seeds.
+func isLocationShaped(s string) bool {
+	if strings.Contains(s, "://") {
+		return true
+	}
+	if filepath.IsAbs(s) {
+		return true
+	}
+	for _, p := range []string{"./", "../", `.\`, `..\`} {
+		if strings.HasPrefix(s, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// maskOperandSentence renders an error message that may embed raw CLI
+// operands (D1/D3 composite-error class). MaskOperand alone cannot mask a
+// secret embedded in a full sentence (the sentence never classifies
+// secret-shaped), so the redactor is seeded with every operand that
+// MaskOperand masks, each 16+ rune base64 run inside non-location operands,
+// and the lowercase twin of every seed (token parsers may case-fold the
+// echo). With no seed the message falls back to plain MaskOperand, keeping
+// benign operands readable.
+func maskOperandSentence(msg string, operands ...string) string {
+	seen := map[string]bool{}
+	var seeds []string
+	addSeed := func(s string) {
+		if s != "" && !seen[s] {
+			seen[s] = true
+			seeds = append(seeds, s)
+		}
+	}
+	for _, op := range operands {
+		if op == "" {
+			continue
+		}
+		if providers.MaskOperand(op) != op {
+			addSeed(op)
+			addSeed(strings.ToLower(op))
+		}
+		if isLocationShaped(op) {
+			continue
+		}
+		for _, run := range operandRunRe.FindAllString(op, -1) {
+			addSeed(run)
+			addSeed(strings.ToLower(run))
+		}
+	}
+	if len(seeds) == 0 {
+		return providers.MaskOperand(msg)
+	}
+	return providers.NewRedactor(seeds...)(msg)
+}
+
+// maskedFlagWriter is the flag.FlagSet output sink (D8, mirrors cmd/agy's
+// writer): stdlib parse errors echo the raw operand — `invalid value "sk-..."
+// for flag -timeout` — and undefined flag names unquoted. Every complete line
+// passes through providers.RedactEchoLine (quoted segments) and then
+// providers.MaskOperand (generic credential patterns catch unquoted sk-/AKIA
+// runs) before it reaches stderr. Benign lines are unchanged by both passes.
+type maskedFlagWriter struct {
+	w    io.Writer
+	tail []byte
+}
+
+func (m *maskedFlagWriter) Write(p []byte) (int, error) {
+	m.tail = append(m.tail, p...)
+	for {
+		i := bytes.IndexByte(m.tail, '\n')
+		if i < 0 {
+			break
+		}
+		line := strings.TrimSuffix(string(m.tail[:i]), "\r")
+		m.tail = m.tail[i+1:]
+		if _, err := fmt.Fprintln(m.w, providers.MaskOperand(providers.RedactEchoLine(line))); err != nil {
+			return len(p), err
+		}
+	}
+	return len(p), nil
 }

@@ -43,7 +43,9 @@ func runModelsCmd(args []string) int {
 // contract), so out is only consulted for --all/--json.
 func runModelsCmdTo(args []string, out, errw io.Writer) int {
 	fs := flag.NewFlagSet("models", flag.ContinueOnError)
-	fs.SetOutput(errw)
+	// D8: stdlib flag output routes through the echo-line redactor so parse
+	// errors cannot echo a planted operand.
+	fs.SetOutput(&maskedFlagWriter{w: errw})
 	all := fs.Bool("all", false, "show the combined native + external model inventory")
 	asJSON := fs.Bool("json", false, "dump the combined inventory entries as JSON")
 	fs.Usage = func() { fmt.Fprintln(errw, proModelsUsage) }

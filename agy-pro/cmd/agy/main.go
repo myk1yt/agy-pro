@@ -78,7 +78,11 @@ func handleProCommand(args []string) {
 	case "help", "--help", "-h":
 		printProHelp()
 	default:
-		fmt.Fprintf(os.Stderr, "[agy-pro] Unknown subcommand: %q\n\n", providers.MaskOperand(subcommand))
+		// D2: mask the ORIGINAL-CASE argument. The switch matches on the
+		// case-folded copy, but masking that copy never fires the
+		// uppercase-anchored AKIA/ASIA credential class
+		// (`agy pro AKIAIOSFODNN7EXAMPLE` used to echo case-folded).
+		fmt.Fprintf(os.Stderr, "[agy-pro] Unknown subcommand: %q\n\n", providers.MaskOperand(args[0]))
 		printProHelp()
 		os.Exit(1)
 	}
@@ -154,17 +158,19 @@ func runMode(args []string) {
 			os.Exit(1)
 		}
 	default:
-		fmt.Fprint(os.Stderr, invalidModeArgMessage(sub))
+		// D2: pass the ORIGINAL-CASE argument; the case-folded copy is only
+		// the switch key and must not be the masked echo source.
+		fmt.Fprint(os.Stderr, invalidModeArgMessage(args[0]))
 		os.Exit(1)
 	}
 }
 
 // invalidModeArgMessage renders the `agy pro mode` usage error. The hint lists
 // every accepted mode argument, including the newer `status` and `list`. The
-// operand is masked (C2): a misdirected key paste in the mode slot must not be
-// echoed into stderr.
-func invalidModeArgMessage(sub string) string {
-	return fmt.Sprintf("[agy-pro] Invalid mode argument: %q (use 'full', 'clean', 'restore', 'status', or 'list')\n", providers.MaskOperand(sub))
+// operand is masked in its original case (C2/D2): masking a lowercased copy
+// never fires the uppercase-anchored AKIA/ASIA credential class.
+func invalidModeArgMessage(operand string) string {
+	return fmt.Sprintf("[agy-pro] Invalid mode argument: %q (use 'full', 'clean', 'restore', 'status', or 'list')\n", providers.MaskOperand(operand))
 }
 
 // configUsage is the shared usage line for `agy pro config` (help text and
@@ -306,7 +312,9 @@ func runConfig(args []string) {
 		}
 
 	default:
-		fmt.Fprintf(os.Stderr, "[agy-pro] Unknown config subcommand: %q\n\n", providers.MaskOperand(sub))
+		// D2: mask the ORIGINAL-CASE argument (the lowercased copy is only the
+		// switch key; masking it never fires the AKIA/ASIA class).
+		fmt.Fprintf(os.Stderr, "[agy-pro] Unknown config subcommand: %q\n\n", providers.MaskOperand(args[0]))
 		fmt.Fprintln(os.Stderr, configUsage)
 		os.Exit(1)
 	}
@@ -399,7 +407,12 @@ func printConfiguredProvidersAndModels(reg *providers.Registry) {
 			keyStatus = fmt.Sprintf("Missing (%s)", p.APIKeyEnv)
 		}
 
-		fmt.Printf("[%d] %s (%s) [API Key: %s]\n", i+1, p.Name, p.BaseURL, keyStatus)
+		// D3: registry-driven display slots echo user-editable JSON fields; a
+		// misdirected paste can land a key-shaped value in a provider name,
+		// baseURL, env name, or model id. MaskOperand keeps benign values
+		// readable and masks credential-shaped ones.
+		fmt.Printf("[%d] %s (%s) [API Key: %s]\n", i+1,
+			providers.MaskOperand(p.Name), providers.MaskOperand(p.BaseURL), providers.MaskOperand(keyStatus))
 
 		if len(p.Models) == 0 {
 			fmt.Println("    (No models configured)")
@@ -411,8 +424,8 @@ func printConfiguredProvidersAndModels(reg *providers.Registry) {
 			maxOutDisplay := formatTokenCount(m.MaxOutputTokens)
 
 			fmt.Printf("    - %-*s  [Family: %-*s | Context: %s | MaxOutput: %s | Capabilities: %s]\n",
-				maxIDLen, providers.DisplayName(m.ID, p.Name),
-				maxFamilyLen, m.FamilyName(),
+				maxIDLen, providers.MaskOperand(providers.DisplayName(m.ID, p.Name)),
+				maxFamilyLen, providers.MaskOperand(m.FamilyName()),
 				ctxDisplay, maxOutDisplay, m.CapabilitySummary())
 		}
 	}
@@ -521,7 +534,9 @@ func parseDoctorArgs(args []string) (doctorArgs, error) {
 			}
 			out.action = doctorRollbackKeys
 		default:
-			return out, fmt.Errorf("unknown doctor option %q", a)
+			// D3: the unknown option is an operand echo slot; mask the
+			// original-case argument before it lands in the error text.
+			return out, fmt.Errorf("unknown doctor option %q", providers.MaskOperand(a))
 		}
 	}
 	return out, nil
@@ -686,8 +701,9 @@ func printKeyAudits(audits []providers.KeyAudit) bool {
 			marker = "[SKIP]"
 			verdict = "SKIP"
 		}
+		// D3: the provider/env names come from the user-editable registry.
 		fmt.Printf("%s key %s (%s): %s | source: %s | mask: %s\n",
-			marker, a.Provider, a.Env, verdict, keySourceLabel(a), keyMaskLabel(a))
+			marker, providers.MaskOperand(a.Provider), providers.MaskOperand(a.Env), verdict, keySourceLabel(a), keyMaskLabel(a))
 		if a.Conflict {
 			fmt.Printf("       conflict: clean name and BOM variant both present with different values (try `agy pro doctor --fix-keys`)\n")
 		}
@@ -736,7 +752,13 @@ func runDoctorFixKeys(target string) {
 		fmt.Fprintf(os.Stderr, "[agy-pro] Cannot resolve repair targets: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("Targets: %s\n", strings.Join(names, ", "))
+	// D3: env names resolve from the user-editable registry; mask for display
+	// only (the repair call below still receives the raw names).
+	maskedNames := make([]string, len(names))
+	for i, n := range names {
+		maskedNames[i] = providers.MaskOperand(n)
+	}
+	fmt.Printf("Targets: %s\n", strings.Join(maskedNames, ", "))
 
 	report, repairErr := repairedWindowsKeyNames(reg, providers.RepairOptions{EnvNames: names})
 	if report == nil {
@@ -750,15 +772,19 @@ func runDoctorFixKeys(target string) {
 	}
 }
 
+// printRepairReport renders the --fix-keys entries. Provider, env and variant
+// names resolve from the user-editable registry (D3): masked for display, with
+// MaskOperand keeping benign names readable. e.MaskedValue is already a mask.
 func printRepairReport(report *providers.RepairReport) {
 	for _, e := range report.Entries {
+		provider, env, variant := providers.MaskOperand(e.Provider), providers.MaskOperand(e.Env), providers.MaskOperand(e.VariantName)
 		switch e.Action {
 		case providers.RepairActionRewrite:
-			fmt.Printf("[FIXED] %s (%s): clean name <- %s (mask %s)\n", e.Provider, e.Env, e.VariantName, e.MaskedValue)
+			fmt.Printf("[FIXED] %s (%s): clean name <- %s (mask %s)\n", provider, env, variant, e.MaskedValue)
 		case providers.RepairActionRemoveVariant:
-			fmt.Printf("[FIXED] %s (%s): removed BOM variant %s\n", e.Provider, e.Env, e.VariantName)
+			fmt.Printf("[FIXED] %s (%s): removed BOM variant %s\n", provider, env, variant)
 		default:
-			fmt.Printf("[SKIP]  %s (%s): %s\n", e.Provider, e.Env, e.Note)
+			fmt.Printf("[SKIP]  %s (%s): %s\n", provider, env, providers.MaskOperand(e.Note))
 		}
 		if e.Action != "" && e.Note != "" {
 			fmt.Printf("        note: %s\n", e.Note)

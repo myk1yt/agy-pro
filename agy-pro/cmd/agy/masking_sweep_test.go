@@ -22,6 +22,14 @@ import (
 const (
 	maskSweepKey    = "sk-planted-c2-sweep-key-0123456789abcdef"
 	maskSweepMasked = "sk-pl****"
+
+	// D1/D2/D3 delta fixtures: an AWS-secret-shaped key (the live PoC shape,
+	// contiguous base64 with "/") and an AWS access key id (AKIA, the
+	// uppercase class that original-case masking restores).
+	sweepAWSKey   = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	sweepAWSMask  = "wJalr****"
+	sweepAKIAKey  = "AKIAIOSFODNN7EXAMPLE"
+	sweepAKIAMask = "AKIAI****"
 )
 
 // TestWrapperPlantedKeySweep drives every in-process wrapper echo site with a
@@ -57,6 +65,10 @@ func TestWrapperPlantedKeySweep(t *testing.T) {
 			installSettingsCore(t)
 			return runSettings(t, []string{"providers", "add-json", maskSweepKey}, "")
 		}},
+		{"settings add-json unreadable AWS-shaped operand path", func() (int, string, string) {
+			installSettingsCore(t)
+			return runSettings(t, []string{"providers", "add-json", sweepAWSKey}, "")
+		}},
 		{"settings set rejects key-shaped value", func() (int, string, string) {
 			installSettingsCore(t)
 			return runSettings(t, []string{"set", "default-profile", maskSweepKey}, "")
@@ -77,6 +89,30 @@ func TestWrapperPlantedKeySweep(t *testing.T) {
 		{"mode invalid argument message", func() (int, string, string) {
 			return 0, invalidModeArgMessage(maskSweepKey), ""
 		}},
+		{"mode invalid argument AKIA plant (D2 original case)", func() (int, string, string) {
+			return 0, "", invalidModeArgMessage(sweepAKIAKey)
+		}},
+		{"doctor unknown option sk- plant", func() (int, string, string) {
+			_, err := parseDoctorArgs([]string{"--" + maskSweepKey})
+			if err == nil {
+				t.Fatal("expected unknown-option error")
+			}
+			return 2, "", err.Error()
+		}},
+		{"doctor unknown option AKIA plant", func() (int, string, string) {
+			_, err := parseDoctorArgs([]string{sweepAKIAKey})
+			if err == nil {
+				t.Fatal("expected unknown-option error")
+			}
+			return 2, "", err.Error()
+		}},
+		{"doctor unknown option AWS-secret plant", func() (int, string, string) {
+			_, err := parseDoctorArgs([]string{sweepAWSKey})
+			if err == nil {
+				t.Fatal("expected unknown-option error")
+			}
+			return 2, "", err.Error()
+		}},
 		// --- cmd/agy/pro_swarm.go error paths -----------------------------------
 		{"swarm unknown template", func() (int, string, string) {
 			var out, errw strings.Builder
@@ -90,10 +126,24 @@ func TestWrapperPlantedKeySweep(t *testing.T) {
 				strings.NewReader(""), &out, &errw)
 			return code, out.String(), errw.String()
 		}},
+		{"swarm prompt-file unreadable AWS-shaped operand path", func() (int, string, string) {
+			defer withStubSwarmInventory(t, swarmFixtureInventory(t), nil)()
+			var out, errw strings.Builder
+			code := runSwarmCmd([]string{"--template", "code-review", "--seats", "p1", "--prompt-file", sweepAWSKey},
+				strings.NewReader(""), &out, &errw)
+			return code, out.String(), errw.String()
+		}},
 		{"swarm seats invalid selection token", func() (int, string, string) {
 			defer withStubSwarmInventory(t, swarmFixtureInventory(t), nil)()
 			var out, errw strings.Builder
 			code := runSwarmCmd([]string{"--template", "code-review", "--seats", "1-" + maskSweepKey},
+				strings.NewReader(""), &out, &errw)
+			return code, out.String(), errw.String()
+		}},
+		{"swarm seats selection token AWS plant", func() (int, string, string) {
+			defer withStubSwarmInventory(t, swarmFixtureInventory(t), nil)()
+			var out, errw strings.Builder
+			code := runSwarmCmd([]string{"--template", "code-review", "--seats", "1-" + sweepAWSKey},
 				strings.NewReader(""), &out, &errw)
 			return code, out.String(), errw.String()
 		}},
@@ -104,6 +154,13 @@ func TestWrapperPlantedKeySweep(t *testing.T) {
 				strings.NewReader(""), &out, &errw)
 			return code, out.String(), errw.String()
 		}},
+		{"swarm seats native id AWS plant with slash", func() (int, string, string) {
+			defer withStubSwarmInventory(t, swarmFixtureInventory(t), nil)()
+			var out, errw strings.Builder
+			code := runSwarmCmd([]string{"--template", "code-review", "--seats", "native:" + sweepAWSKey + "/x"},
+				strings.NewReader(""), &out, &errw)
+			return code, out.String(), errw.String()
+		}},
 	}
 	for _, s := range sites {
 		t.Run(s.name, func(t *testing.T) {
@@ -111,6 +168,12 @@ func TestWrapperPlantedKeySweep(t *testing.T) {
 			for _, src := range []struct{ name, body string }{{"stdout", out}, {"stderr", errw}} {
 				if strings.Contains(src.body, maskSweepKey) {
 					t.Errorf("exit=%d %s prints the planted key raw:\n%s", code, src.name, src.body)
+				}
+				if strings.Contains(src.body, sweepAWSKey) {
+					t.Errorf("exit=%d %s prints the planted AWS-shaped key raw:\n%s", code, src.name, src.body)
+				}
+				if strings.Contains(src.body, sweepAKIAKey) {
+					t.Errorf("exit=%d %s prints the planted AKIA key raw:\n%s", code, src.name, src.body)
 				}
 			}
 		})
@@ -199,12 +262,18 @@ func TestWrapperPlantedKeySweepSuccessPaths(t *testing.T) {
 // captured stderr is masked.
 func TestWrapperPlantedKeySweepSubprocess(t *testing.T) {
 	cases := []struct {
-		name     string
-		dispatch string
-		wantCode int
+		name       string
+		dispatch   string
+		wantCode   int
+		maskedWant string
 	}{
-		{"config invalid default profile", "config-bad-profile", 1},
-		{"pro unknown subcommand", "pro-unknown-subcommand", 1},
+		{"config invalid default profile", "config-bad-profile", 1, maskSweepMasked},
+		{"pro unknown subcommand", "pro-unknown-subcommand", 1, maskSweepMasked},
+		// D2: the mask must fire on the ORIGINAL-CASE operand; the
+		// case-folded copy never matches the uppercase-anchored AKIA class.
+		{"pro unknown subcommand AKIA plant", "pro-unknown-subcommand-akia", 1, sweepAKIAMask},
+		{"config unknown subcommand AKIA plant", "config-unknown-subcommand-akia", 1, sweepAKIAMask},
+		{"mode invalid argument AKIA plant", "mode-bad-arg-akia", 1, sweepAKIAMask},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -212,11 +281,13 @@ func TestWrapperPlantedKeySweepSubprocess(t *testing.T) {
 			if code != tc.wantCode {
 				t.Fatalf("exit = %d; want %d\nstderr:\n%s", code, tc.wantCode, stderr)
 			}
-			if strings.Contains(stderr, maskSweepKey) {
-				t.Errorf("stderr prints the planted key raw:\n%s", stderr)
+			for _, plant := range []string{maskSweepKey, sweepAKIAKey} {
+				if strings.Contains(stderr, plant) {
+					t.Errorf("stderr prints the planted key %q raw:\n%s", plant, stderr)
+				}
 			}
-			if !strings.Contains(stderr, maskSweepMasked) {
-				t.Errorf("stderr should carry the readable mask:\n%s", stderr)
+			if !strings.Contains(stderr, tc.maskedWant) {
+				t.Errorf("stderr should carry the readable mask %q:\n%s", tc.maskedWant, stderr)
 			}
 		})
 	}

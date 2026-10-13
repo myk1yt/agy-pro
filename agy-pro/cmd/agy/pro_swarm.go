@@ -91,7 +91,9 @@ var outIsTTY = func(out io.Writer) bool {
 // code (0 ok/copy/cancel, 1 run failure, 2 flag/usage/input error).
 func runSwarmCmd(args []string, in io.Reader, out, errw io.Writer) int {
 	fs := flag.NewFlagSet("swarm", flag.ContinueOnError)
-	fs.SetOutput(errw)
+	// D8: stdlib flag output routes through the echo-line redactor so parse
+	// errors cannot echo a planted operand.
+	fs.SetOutput(&maskedFlagWriter{w: errw})
 	var (
 		templateFlag = fs.String("template", "", "swarm template: code-review|security-audit|custom")
 		seatsFlag    = fs.String("seats", "", "seat selection: numbered ('1,3,5', '2-4', 'p1'..'p3') or explicit specs")
@@ -227,8 +229,10 @@ func runSwarmNonInteractive(in io.Reader, out, errw io.Writer, fv swarmFlagValue
 	if fv.promptFile != "" {
 		data, err := readPromptSource(in, fv.promptFile)
 		if err != nil {
-			// C2: os.ReadFile embeds the operand path in its error text.
-			fmt.Fprintf(errw, "Error reading prompt file %s: %v\n", providers.MaskOperand(fv.promptFile), providers.MaskOperand(err.Error()))
+			// C2/D1: os.ReadFile embeds the operand path in its error text;
+			// seed the redactor with the raw operand so the planted secret is
+			// masked wherever it appears in the composite sentence.
+			fmt.Fprintf(errw, "Error reading prompt file %s: %v\n", providers.MaskOperand(fv.promptFile), maskOperandSentence(err.Error(), fv.promptFile))
 			return 1
 		}
 		prompt = data
@@ -277,9 +281,11 @@ func resolveFlagSeats(seatsVal string, out, errw io.Writer) ([]inventory.Entry, 
 		}
 		entries, err := swarm.ResolveSeats(seatsVal, inv, out)
 		if err != nil {
-			// C2: selection errors embed the raw token; a misdirected paste in
-			// the --seats slot must not reach stderr unmasked.
-			fmt.Fprintf(errw, "Error: %v\n", providers.MaskOperand(err.Error()))
+			// C2/D1: selection errors embed the raw token; a misdirected paste
+			// in the --seats slot must not reach stderr unmasked. Seed with the
+			// raw --seats value (and its inner secret-shaped runs) so the
+			// planted secret is masked wherever the sentence echoes it.
+			fmt.Fprintf(errw, "Error: %v\n", maskOperandSentence(err.Error(), seatsVal))
 			return nil, 2
 		}
 		if len(entries) == 0 {
@@ -290,7 +296,9 @@ func resolveFlagSeats(seatsVal string, out, errw io.Writer) ([]inventory.Entry, 
 	}
 	specs, err := fanout.ParseSeatSpecs(seatsVal)
 	if err != nil {
-		fmt.Fprintf(errw, "Error: %v\n", providers.MaskOperand(err.Error()))
+		// C2/D1: seat-spec errors quote the raw token; seed with the raw
+		// --seats value so the planted secret is masked wherever it appears.
+		fmt.Fprintf(errw, "Error: %v\n", maskOperandSentence(err.Error(), seatsVal))
 		return nil, 2
 	}
 	entries := swarm.EntriesFromSeatSpecs(specs)
