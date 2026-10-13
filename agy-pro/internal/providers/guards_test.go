@@ -198,11 +198,110 @@ func TestMaskOperand_U8(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// D1-helper — RedactEchoLine masks secret-shaped quoted segments inside a
+// larger sentence (stdlib flag errors embed the bad value in quotes).
+// ---------------------------------------------------------------------------
+
+// TestRedactEchoLine_MasksQuotedSecrets: a flag error line such as
+// `invalid value "sk-..." for flag -timeout` must have its quoted segment
+// masked through MaskOperand while the surrounding sentence is untouched.
+func TestRedactEchoLine_MasksQuotedSecrets(t *testing.T) {
+	sk := "sk-flagleak-0123456789abcdef"
+	line := `invalid value "` + sk + `" for flag -timeout`
+	got := RedactEchoLine(line)
+	want := `invalid value "sk-fl****" for flag -timeout`
+	if got != want {
+		t.Errorf("RedactEchoLine(sk plant) = %q; want %q", got, want)
+	}
+	assertNoLeak(t, got, sk)
+
+	// AWS-shaped plant (contiguous run, no known prefix) inside quotes.
+	aws := "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"
+	line = `invalid value "` + aws + `" for flag -model`
+	got = RedactEchoLine(line)
+	want = `invalid value "wJalr****" for flag -model`
+	if got != want {
+		t.Errorf("RedactEchoLine(AWS plant) = %q; want %q", got, want)
+	}
+	assertNoLeak(t, got, aws)
+
+	// Multiple quoted segments on one line: each is masked independently.
+	got = RedactEchoLine(`flags "` + sk + `" and "` + aws + `" rejected`)
+	if strings.Contains(got, sk) || strings.Contains(got, aws) {
+		t.Errorf("RedactEchoLine leaks a plant: %q", got)
+	}
+	if !strings.Contains(got, `"sk-fl****"`) || !strings.Contains(got, `"wJalr****"`) {
+		t.Errorf("RedactEchoLine did not mask both segments: %q", got)
+	}
+}
+
+// TestRedactEchoLine_BenignLinesUnchanged: usage text, flag values, and
+// quoted benign operands must come back byte-identical.
+func TestRedactEchoLine_BenignLinesUnchanged(t *testing.T) {
+	for _, benign := range []string{
+		"usage: agy [flags]",
+		"--tools read,search",
+		`invalid value "abc" for flag -timeout`,
+		`provider "my-provider" not found`,
+		"no quotes at all",
+		"",
+	} {
+		if got := RedactEchoLine(benign); got != benign {
+			t.Errorf("RedactEchoLine(%q) = %q; want unchanged", benign, got)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// D3-tail — the probe-skip Detail echoes the apiKeyEnv name, so a
+// credential parked in that slot (legacy registry) must render masked.
+// ---------------------------------------------------------------------------
+
+// TestAuditProviderKeys_UnresolvedDetailMasksKeyShapedEnv: an unresolved
+// provider's skip Detail names the env variable it looked for. A legacy
+// registry can hold a credential in the apiKeyEnv slot, so that name routes
+// through MaskOperand (first 5 + ****); a conventional env name stays
+// readable, and no probe runs for an unresolved key.
+func TestAuditProviderKeys_UnresolvedDetailMasksKeyShapedEnv(t *testing.T) {
+	store := newMockEnvStore()
+	akia := "AKIAIOSFODNN7EXAMPLE"
+	reg := &Registry{Providers: []Provider{
+		{Name: "legacy", BaseURL: "https://legacy.example/v1", APIKeyEnv: akia},
+		{Name: "clean", BaseURL: "https://clean.example/v1", APIKeyEnv: "CLEAN_API_KEY"},
+	}}
+	audits := AuditProviderKeys(reg, AuditOptions{
+		Probe: func(baseURL, apiKey string) KeyProbeResult {
+			t.Error("probe must not run for an unresolved key")
+			return KeyProbeResult{}
+		},
+		Store: store,
+	})
+	if len(audits) != 2 {
+		t.Fatalf("expected 2 audits, got %d", len(audits))
+	}
+	legacy := audits[0]
+	if legacy.Probe.Status != ProbeSkipped {
+		t.Fatalf("legacy probe = %+v; want skipped", legacy.Probe)
+	}
+	assertNoLeak(t, legacy.Probe.Detail, akia)
+	if want := "no usable key found for " + MaskOperand(akia); legacy.Probe.Detail != want {
+		t.Errorf("skip detail = %q; want %q", legacy.Probe.Detail, want)
+	}
+	clean := audits[1]
+	if !strings.Contains(clean.Probe.Detail, "CLEAN_API_KEY") {
+		t.Errorf("conventional env name must stay readable in the skip detail: %q", clean.Probe.Detail)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // C3 — MaskOperand heuristic carve-outs (security re-review, arbiter-ruled
 // FIX): the path/URL exemption used to exempt ANY string containing "/" or
 // "\", so AWS-secret-shaped values (about half of real AWS secrets carry "/")
 // echoed in full; and the length mask used to catch every >=20/24-rune token,
-// mangling benign model IDs such as claude-3-5-sonnet-20241022.
+// mangling benign model IDs such as claude-3-5-sonnet-20241022. D7 then
+// lowered the contiguous-run threshold to the AKIA-class length of 16 runes
+// and moved it ahead of the env-name/provider-name exemptions, so a 16-23
+// rune bare-alnum credential (ABCDEFGHIJKLMNOPQRST) no longer prints raw.
 // ---------------------------------------------------------------------------
 
 // TestMaskOperand_C3_AWSSecretWithSlashMasked: a "/" alone must no longer read
@@ -281,25 +380,33 @@ func TestMaskOperand_C3_LocationsStayReadable(t *testing.T) {
 	}
 }
 
-// TestMaskOperand_C3_BoundaryLengths: the length mask fires at 20 runes for
-// contiguous secret-shaped runs (19 stays readable); the short
-// provider/model-token exemption covers <24, so the alnum boundary is 24;
-// separator-carrying tokens never hit the length mask at any length.
+// TestMaskOperand_C3_BoundaryLengths: the contiguous-run mask fires at 16
+// runes (D7, AKIA-class length): a 15-rune contiguous run stays readable, a
+// 16-rune one is masked — including the bare UPPER alnum shape that used to
+// pass as an env-var name (the live `providers test
+// ABCDEFGHIJKLMNOPQRST` class). Separator-carrying tokens (model IDs, env
+// names, paths) never hit the length mask at any length.
 func TestMaskOperand_C3_BoundaryLengths(t *testing.T) {
-	if got := MaskOperand("abcdefghij1234567/8"); got != "abcdefghij1234567/8" {
-		t.Errorf("19-rune contiguous run = %q; want unchanged", got)
+	if got := MaskOperand("abcdefghij12345"); got != "abcdefghij12345" {
+		t.Errorf("15-rune contiguous run = %q; want unchanged", got)
 	}
-	secret20 := "abcdefghij12345678/9"
-	if got := MaskOperand(secret20); got != "abcde****" {
-		t.Errorf("20-rune contiguous run = %q; want %q", got, "abcde****")
+	secret16 := "abcdefghij123456"
+	if got := MaskOperand(secret16); got != "abcde****" {
+		t.Errorf("16-rune contiguous run = %q; want %q", got, "abcde****")
 	}
-	assertNoLeak(t, MaskOperand(secret20), secret20)
+	assertNoLeak(t, MaskOperand(secret16), secret16)
 
-	if got := MaskOperand("abcdefghij1234567890123"); got != "abcdefghij1234567890123" {
-		t.Errorf("23-rune alnum token = %q; want unchanged", got)
+	// The D7 live class: a bare UPPER alnum run that reads as an env-var name
+	// but is an access-key-ID-length credential.
+	upper := "ABCDEFGHIJKLMNOPQRST"
+	if got := MaskOperand(upper); got != "ABCDE****" {
+		t.Errorf("20-rune UPPER alnum run = %q; want %q", got, "ABCDE****")
 	}
-	if got := MaskOperand("abcdefghij12345678901234"); got != "abcde****" {
-		t.Errorf("24-rune alnum run = %q; want %q", got, "abcde****")
+	assertNoLeak(t, MaskOperand(upper), upper)
+
+	// The former 20-24 alnum readable window is gone: 23 runes masks now.
+	if got := MaskOperand("abcdefghij1234567890123"); got != "abcde****" {
+		t.Errorf("23-rune alnum run = %q; want %q", got, "abcde****")
 	}
 
 	long := "claude-3-5-sonnet-20241022-with-a-very-long-suffix-indeed"

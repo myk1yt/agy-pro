@@ -16,8 +16,11 @@ import (
 func TestPrintPathsNeverEmitRawKeys(t *testing.T) {
 	printCall := regexp.MustCompile(`fmt\.(Fprint|Fprintf|Fprintln|Print|Printf|Println)`)
 	// Identifiers that hold raw key VALUES (as opposed to env-var NAMES).
-	rawValueID := regexp.MustCompile(`\b(keyValue|keyInput|newKey|existingVal|envVal|planted|apiKey)\b`)
-	allowed := regexp.MustCompile(`MaskSecret|Redactor|redact|REDACTED|redactProbeDetail`)
+	// args[ covers operand echoes at the cmd/agy wrapper dispatch layer.
+	rawValueID := regexp.MustCompile(`\b(keyValue|keyInput|newKey|existingVal|envVal|planted|apiKey)\b|args\[`)
+	// allowed lists the maskers a print line may route a raw identifier
+	// through: the providers maskers plus the cmd/agy sentence maskers.
+	allowed := regexp.MustCompile(`MaskSecret|MaskOperand|RedactEchoLine|Redactor|redact|REDACTED|redactProbeDetail|maskOperandSentence|invalidModeArgMessage`)
 
 	roots := []string{
 		".",
@@ -54,6 +57,15 @@ func TestPrintPathsNeverEmitRawKeys(t *testing.T) {
 					continue
 				}
 				if strings.Contains(line, "KeyValue()") || strings.Contains(line, "KeyValueWithOrigin") {
+					continue
+				}
+				// `agy pro settings mode switch` echoes an operand that
+				// mode.Switch has already constrained to the {full, clean}
+				// enum (mode.go:276-286); the invalid path masks via
+				// MaskSecret (mode.go:284). Exempt exactly that SUCCESS line
+				// — if the mode operand ever becomes free-form, wrap it in
+				// providers.MaskOperand and drop this exemption.
+				if strings.Contains(line, "mode switched to") {
 					continue
 				}
 				t.Errorf("%s:%d: print line touches a raw key identifier without MaskSecret/Redactor:\n  %s", name, i+1, strings.TrimSpace(line))

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -136,7 +137,9 @@ func MaskSecret(secret string) string {
 // ./-prefixed paths) — keep their readable form so errors stay actionable, but
 // still pass through the generic redactor so pattern-shaped secrets (bearer
 // tokens, sk- IDs, AWS key IDs, PEM blocks) embedded in them cannot survive
-// into a session transcript.
+// into a session transcript. One uninterrupted base64 run of 16+ runes
+// (AKIA-class length, D7) is always treated as credential material, even when
+// its charset also reads as an env-var or provider name.
 func MaskOperand(s string) string {
 	if s == "" {
 		return s
@@ -147,12 +150,30 @@ func MaskOperand(s string) string {
 	return NewRedactor()(s)
 }
 
+// quotedSegmentRe matches one double-quoted segment inside a larger line. Go's
+// flag package quotes the offending value in its errors, so a pasted key
+// surfaces between quotes in an otherwise benign sentence.
+var quotedSegmentRe = regexp.MustCompile(`"[^"]*"`)
+
+// RedactEchoLine masks secret-shaped QUOTED segments inside a larger sentence
+// (D1-helper) and returns the line otherwise unchanged. Stdlib flag errors
+// embed the bad value in quotes — `invalid value "sk-..." for flag -timeout` —
+// so flag-set output routes through this before printing: each quoted
+// segment's content passes through MaskOperand (U8: first 5 runes + **** for
+// credential shapes, benign tokens unchanged), while the surrounding sentence
+// (flag names, usage text) is left exactly as-is.
+func RedactEchoLine(s string) string {
+	return quotedSegmentRe.ReplaceAllStringFunc(s, func(q string) string {
+		return `"` + MaskOperand(q[1:len(q)-1]) + `"`
+	})
+}
+
 // operandLooksSecret decides whether an echoed operand is plausibly credential
 // material. Unlike isLikelyAPIKey (which must reject hyphenated strings in the
 // apiKeyEnv slot because env names never carry hyphens), this keeps ordinary
 // hyphenated tokens ("my-provider", "native-seat-concurrency", model IDs like
 // "claude-3-5-sonnet-20241022") and location strings readable while still
-// catching real key shapes and opaque contiguous runs (C3).
+// catching real key shapes and opaque contiguous runs (C3, D7).
 func operandLooksSecret(s string) bool {
 	t := strings.TrimSpace(s)
 	if t == "" {
@@ -172,11 +193,6 @@ func operandLooksSecret(s string) bool {
 			return true
 		}
 	}
-	// Conventional environment-variable names (UPPER_SNAKE) stay readable;
-	// the credential-shape pass above already caught look-alikes.
-	if envNameRe.MatchString(t) && strings.ToUpper(t) == t {
-		return false
-	}
 	// LOCATION-shaped strings stay readable (spawn errors must name the
 	// binary): a URL scheme, an absolute path, or a leading ./ ../ .\ ..\ .
 	// A bare "/" or "\" anywhere does NOT exempt (C3): roughly half of real
@@ -186,16 +202,29 @@ func operandLooksSecret(s string) bool {
 	if isLocationShaped(t) {
 		return false
 	}
+	// Length heuristic, narrowed to CONTIGUOUS secret-shaped runs (C3) and
+	// lowered to the AKIA-class length of 16 runes (D7): one uninterrupted
+	// base64 run of 16+ runes is an opaque credential (AWS secret keys, most
+	// carrying "/" or "+"; bare alnum access-key IDs such as
+	// ABCDEFGHIJKLMNOPQRST), never a name. The check runs BEFORE the env-name
+	// and provider-name exemptions below because both charsets also admit
+	// bare alnum runs — the old >=20 threshold let a 16-23 rune credential
+	// print raw (`providers test ABCDEFGHIJKLMNOPQRST`). 15 runes stays
+	// readable.
+	if len(t) >= 16 && contiguousSecretRun(t) {
+		return true
+	}
+	// Conventional environment-variable names (UPPER_SNAKE) stay readable;
+	// the credential-shape pass above already caught look-alikes, and real env
+	// names carry "_" separators so they never reach the contiguous-run test.
+	if envNameRe.MatchString(t) && strings.ToUpper(t) == t {
+		return false
+	}
 	// Short provider/model-style tokens stay readable.
 	if len(t) < 24 && providerNameRe.MatchString(t) {
 		return false
 	}
-	// Length heuristic, narrowed to CONTIGUOUS secret-shaped runs (C3): opaque
-	// credentials (AWS secret keys, most carrying "/" or "+") are one
-	// uninterrupted base64 run, while separator-carrying tokens (model IDs,
-	// dotted versions, multi-word operands) stay readable so error text and
-	// the wizard's copy-paste completion hints survive.
-	return len(t) >= 20 && contiguousSecretRun(t)
+	return false
 }
 
 // isLocationShaped reports whether s names a location rather than carrying a
@@ -323,7 +352,10 @@ func AuditProviderKeys(reg *Registry, opts AuditOptions) []KeyAudit {
 		}
 		a.Conflict = a.ExactPresent && a.VariantPresent && candidateValuesDiffer(cands)
 		if !a.Resolved {
-			a.Probe = KeyProbeResult{Status: ProbeSkipped, Detail: "no usable key found for " + p.APIKeyEnv}
+			// The apiKeyEnv NAME is echoed here; a legacy registry can hold a
+			// credential in that slot, so it routes through MaskOperand like
+			// every other echo (C5/N2 class, D3-tail).
+			a.Probe = KeyProbeResult{Status: ProbeSkipped, Detail: "no usable key found for " + MaskOperand(p.APIKeyEnv)}
 		} else {
 			a.Probe = probe(p.BaseURL, val)
 		}

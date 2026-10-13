@@ -145,11 +145,11 @@ func TestView_MasksKeyShapedEnvName(t *testing.T) {
 // C5 — the doctor line must never echo a key-shaped env NAME raw.
 // ---------------------------------------------------------------------------
 
-// TestPrintKeyAuditLine_MasksKeyShapedEnv (C5/U8, security finding N2): a
+// TestPrintKeyAuditLine_MasksKeyShapedEnv (C5/U8, security finding N2, D4): a
 // legacy registry can hold a credential in the apiKeyEnv slot (an AWS key ID
-// here). Every doctor branch must render that name through
-// providers.MaskOperand (first 5 + ****), never raw, while a conventional
-// env name stays readable.
+// here), and the same legacy state can park one in the provider NAME slot.
+// Every doctor branch must render both names through providers.MaskOperand
+// (first 5 + ****), never raw, while conventional names stay readable.
 func TestPrintKeyAuditLine_MasksKeyShapedEnv(t *testing.T) {
 	akia := "AKIAIOSFODNN7EXAMPLE"
 	cases := []providers.KeyAudit{
@@ -167,11 +167,29 @@ func TestPrintKeyAuditLine_MasksKeyShapedEnv(t *testing.T) {
 			t.Errorf("doctor line lacks the masked env name %q: %q", providers.MaskOperand(akia), line)
 		}
 	}
-	// Conventional env names stay readable (no UX regression).
+	// D4: the provider NAME gets the same treatment (same legacy-registry
+	// class, opposite slot).
+	for _, a := range cases {
+		a.Provider, a.Env = akia, "GEMINI_API_KEY"
+		var buf bytes.Buffer
+		printKeyAuditLine(&buf, a)
+		line := buf.String()
+		assertNoLeak(t, line, akia)
+		if !strings.Contains(line, providers.MaskOperand(akia)) {
+			t.Errorf("doctor line lacks the masked provider name %q: %q", providers.MaskOperand(akia), line)
+		}
+		if !strings.Contains(line, "GEMINI_API_KEY") {
+			t.Errorf("conventional env name must stay readable: %q", line)
+		}
+	}
+	// Conventional names stay readable (no UX regression).
 	var buf bytes.Buffer
 	printKeyAuditLine(&buf, providers.KeyAudit{Provider: "p5", Env: "GEMINI_API_KEY", Resolved: true, MaskedHint: "AIza****", Probe: providers.KeyProbeResult{Status: providers.ProbeValid}})
 	if !strings.Contains(buf.String(), "GEMINI_API_KEY") {
 		t.Errorf("conventional env name must stay readable: %q", buf.String())
+	}
+	if !strings.Contains(buf.String(), "p5") {
+		t.Errorf("conventional provider name must stay readable: %q", buf.String())
 	}
 }
 
