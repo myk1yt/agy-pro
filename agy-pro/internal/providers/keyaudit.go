@@ -224,6 +224,27 @@ func squashOperand(s string) string {
 	}, s)
 }
 
+// identifierSegmented reports whether operand is an identifier-class token:
+// six or more separator-free segments (meta-llama/Meta-Llama-3.1-70B-Instruct-
+// Turbo is nine). Real secrets are one opaque core with at most a slash or two
+// of decoration (native:<aws>/x is five), so the segment count separates the
+// classes where length and case cannot (r6 over-mask).
+func identifierSegmented(operand string) bool {
+	n := 0
+	for _, seg := range strings.FieldsFunc(operand, func(r rune) bool {
+		switch r {
+		case '/', ':', '+', '=', '.', '_', '-', ' ', '\t':
+			return true
+		}
+		return false
+	}) {
+		if seg != "" {
+			n++
+		}
+	}
+	return n >= 6
+}
+
 // SeedEligible reports whether operand may seed the composite-error redactor
 // (MaskSentence). A composite error is a sentence a library call built from a
 // raw CLI operand (*fs.PathError wraps the path into the sentence, seat-spec
@@ -238,9 +259,10 @@ func squashOperand(s string) string {
 //     (D7), isLikelyAPIKey verdicts;
 //   - the whole trimmed operand is a 3-segment JWT (isJWTShapedOperand),
 //     covering headers the classifier cannot see;
-//   - its squash exceeds decoratedSecretFloorRunes runes and carries an
-//     uppercase letter: the decorated-operand class whose separators defeat
-//     the contiguous-run heuristic.
+//   - it is not an identifier-class token (six or more separator-free
+//     segments) and its squash exceeds decoratedSecretFloorRunes runes and
+//     carries an uppercase letter: the decorated-operand class whose
+//     separators defeat the contiguous-run heuristic.
 //
 // Location-shaped operands (a URL scheme, an absolute path, or a leading
 // ./ ../ .\ ..\ marker) never seed: spawn errors must name the binary, and
@@ -255,8 +277,39 @@ func SeedEligible(operand string) bool {
 	if isJWTShapedOperand(strings.TrimSpace(operand)) {
 		return true
 	}
+	if identifierSegmented(operand) {
+		return false
+	}
 	sq := squashOperand(operand)
 	return len([]rune(sq)) >= decoratedSecretFloorRunes && strings.IndexFunc(sq, unicode.IsUpper) >= 0
+}
+
+// FlagSeedOperands returns the redactor seeds for multi-token flag values:
+// each whole value plus its comma/space/semicolon-separated tokens. Validators
+// quote individual tokens ("seat 2: \"native:<plant>\""), and a whole-value
+// seed is not a substring of that sentence, so the token forms must seed too
+// (the r6 fanout/doctor multi-token gap).
+func FlagSeedOperands(values ...string) []string {
+	seen := map[string]bool{}
+	var ops []string
+	add := func(s string) {
+		if s != "" && !seen[s] {
+			seen[s] = true
+			ops = append(ops, s)
+		}
+	}
+	for _, v := range values {
+		if v == "" {
+			continue
+		}
+		add(v)
+		for _, tok := range strings.FieldsFunc(v, func(r rune) bool {
+			return r == ',' || r == ' ' || r == ';' || r == '\t'
+		}) {
+			add(tok)
+		}
+	}
+	return ops
 }
 
 // MaskSentence renders an error or status message that may embed raw CLI

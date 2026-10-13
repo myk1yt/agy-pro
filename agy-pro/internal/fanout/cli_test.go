@@ -350,6 +350,18 @@ func TestFanoutPlantedKeySweep(t *testing.T) {
 			wantCode: 2, want: "[REDACTED]",
 		},
 		{
+			// G1: multi-token --seats — the seat-spec validator quotes the
+			// INDIVIDUAL token, so the whole-value seed cannot match the
+			// sentence; per-token seeds (providers.FlagSeedOperands) close it
+			// (r6 CONFIRMED across 5 reviewer instances).
+			name: "seats multi-token native AWS plant", args: []string{"--seats", "1,native:" + awsPlant},
+			wantCode: 2, want: "[REDACTED]",
+		},
+		{
+			name: "seats multi-token 1-<AWS> plant", args: []string{"--seats", "1,1-" + awsPlant},
+			wantCode: 1, wantNot: awsPlant,
+		},
+		{
 			name: "seats benign token error stays readable", args: []string{"--seats", "native:"},
 			wantCode: 2, want: `"native:" prefix requires a model id`, wantNot: "[REDACTED]",
 		},

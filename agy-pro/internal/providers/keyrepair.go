@@ -682,7 +682,7 @@ func RollbackWindowsKeyNames(backupPath string, opts RepairOptions) error {
 		return fmt.Errorf("parsing backup %s: %w", file, err)
 	}
 	if backup.Tool != repairToolName {
-		return fmt.Errorf("backup %s was not written by %s (tool=%q); refusing to apply", file, repairToolName, backup.Tool)
+		return fmt.Errorf("backup %s was not written by %s (tool=%q); refusing to apply", MaskOperand(file), repairToolName, MaskOperand(backup.Tool))
 	}
 	if len(backup.Entries) == 0 {
 		return fmt.Errorf("backup %s records no entries", file)
@@ -714,18 +714,18 @@ func RollbackWindowsKeyNames(backupPath string, opts RepairOptions) error {
 		case EnvRootProcess:
 			if e.Existed {
 				if err := os.Setenv(e.Name, value); err != nil {
-					errs = append(errs, fmt.Errorf("process env %s: %w", e.Name, err))
+					errs = append(errs, fmt.Errorf("process env %s: %w", MaskOperand(e.Name), err))
 				}
 			} else if err := os.Unsetenv(e.Name); err != nil {
-				errs = append(errs, fmt.Errorf("process env %s: %w", e.Name, err))
+				errs = append(errs, fmt.Errorf("process env %s: %w", MaskOperand(e.Name), err))
 			}
 		case EnvRootUser:
 			if e.Existed {
 				if err := store.Set(e.Root, e.Name, value); err != nil {
-					errs = append(errs, fmt.Errorf("%s\\%s: %w", e.Root, e.Name, err))
+					errs = append(errs, fmt.Errorf("%s\\%s: %w", e.Root, MaskOperand(e.Name), err))
 				}
 			} else if err := store.Delete(e.Root, e.Name); err != nil {
-				errs = append(errs, fmt.Errorf("%s\\%s: %w", e.Root, e.Name, err))
+				errs = append(errs, fmt.Errorf("%s\\%s: %w", e.Root, MaskOperand(e.Name), err))
 			}
 		default:
 			errs = append(errs, fmt.Errorf("backup entry with unknown root %q", e.Root))

@@ -53,3 +53,7 @@
 - Charm family EXCLUDED from the subagent pool for the rest of this session (credits exhausted): all Charm/* aliases. k3 family remains excluded; Google/gemini-3.8-flash remains excluded (standing); Charm/qwen3.8-max was already banned earlier (cost).
 - Consequence for review swarms: the fixed cross-check seat (Charm/qwen3.8-flash) is DROPPED per the pool-change rule. Reviewer/audit swarms run 3 instances (primary + 2 drawn from the remaining routine pool: MiMo/mimo-v2.6-flash, NW/glm-5.3-flash-flex, NW/deepseek-v4.1-flash-flex). User to be notified in the final report.
 - User is away and authorized autonomous completion: proceed to the end, fix gaps as found, local commits only, NO GitHub push.
+
+## 2026-10-12 — Pool restored: Charm back (user)
+- Charm family is BACK in the subagent pool (user: "이제부터 charm을 pool에 넣고 써도 괜찮아"). Still excluded: k3 family, Charm/qwen3.8-max (cost), Google/gemini-3.8-flash (standing). Usable Charm seats: Charm/qwen3.8-flash (also the fixed cross-check seat again), Charm/glm-5.3-flash, Charm/deepseek-v4.1-flash.
+- Consequence: the reviewer swarm format returns to primary + fixed Charm/qwen3.8-flash + 2 drawn from the routine pool (draw candidates: NW/glm-5.3-flash-flex, NW/deepseek-v4.1-flash-flex, Charm/glm-5.3-flash, Charm/deepseek-v4.1-flash; mimo-family aliases stay out of draws as the default seat's family).

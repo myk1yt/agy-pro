@@ -627,3 +627,45 @@ func TestMaskSentence_NoSeedFallbackAppliesGenericPatterns(t *testing.T) {
 		t.Errorf("fallback must still mask generic credential patterns:\n%s", got)
 	}
 }
+
+func TestFlagSeedOperands_WholePlusTokens(t *testing.T) {
+	got := FlagSeedOperands("1,native:abc", "read search")
+	want := []string{"1,native:abc", "1", "native:abc", "read search", "read", "search"}
+	if len(got) != len(want) {
+		t.Fatalf("FlagSeedOperands = %q; want %q", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("FlagSeedOperands[%d] = %q; want %q", i, got[i], want[i])
+		}
+	}
+	if ops := FlagSeedOperands("", "x"); len(ops) != 1 || ops[0] != "x" {
+		t.Errorf("FlagSeedOperands with empty value = %q; want [x]", ops)
+	}
+}
+
+func TestSeedEligible_IdentifierSegmentedReadable(t *testing.T) {
+	// r6: the shipped preset model ID is separator-dense; the squash branch
+	// must not seed it ( SeatLine/selection errors would render [REDACTED]).
+	readable := []string{
+		"meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
+		"native:anthropic/claude-sonnet-4-5/x",
+	}
+	for _, id := range readable {
+		if SeedEligible(id) {
+			t.Errorf("SeedEligible(%q) = true; want false (identifier class stays readable)", id)
+		}
+	}
+	// Opaque secrets (few separators) still seed.
+	seeds := []string{
+		"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+		"native:wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+		"native: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+		"1-ASIAIOSFODNN7EXAMPLE",
+	}
+	for _, s := range seeds {
+		if !SeedEligible(s) {
+			t.Errorf("SeedEligible(%q) = false; want true (decorated secret must seed)", s)
+		}
+	}
+}

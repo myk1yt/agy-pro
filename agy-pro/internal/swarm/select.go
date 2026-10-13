@@ -210,7 +210,11 @@ func WarnK3Specs(entries []inventory.Entry, warnw io.Writer) {
 	}
 	for i, e := range entries {
 		if inventory.IsK3Excluded(e.ModelID) {
-			fmt.Fprintf(warnw, "warning: seat %d (%s) is %s; explicit pick honored (pool policy covers auto-seating only)\n", i+1, e.Spec, k3Marker)
+			// G6: e.Spec comes from the user-editable registry / pasted specs;
+			// mask key-shaped ones (benign specs readable).
+			fmt.Fprintln(warnw, providers.MaskSentence(fmt.Sprintf(
+				"warning: seat %d (%s) is %s; explicit pick honored (pool policy covers auto-seating only)",
+				i+1, e.Spec, k3Marker), e.Spec, e.ModelID))
 		}
 	}
 }

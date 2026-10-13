@@ -264,10 +264,11 @@ func settingsDoctorCmd(core *settings.Core, args []string, out, errw io.Writer) 
 			}
 		}
 		if err != nil {
-			// F7: the fix-keys tail echoes the aggregate error, which embeds
-			// registry-derived env names; redact it seeded with the raw target
-			// operand (same rule as the `agy pro doctor` E6 tail).
-			fmt.Fprintf(errw, "[agy-pro] fix-keys finished with errors: %s\n", maskOperandSentence(err.Error(), target))
+			// F7/G3: the fix-keys tail echoes the aggregate error, which embeds
+			// registry-derived env names and quotes individual target tokens;
+			// redact seeded with the raw target plus its token forms (same rule
+			// as the `agy pro doctor` G2 tail).
+			fmt.Fprintf(errw, "[agy-pro] fix-keys finished with errors: %s\n", maskOperandSentence(err.Error(), providers.FlagSeedOperands(target)...))
 			return 1
 		}
 		return 0

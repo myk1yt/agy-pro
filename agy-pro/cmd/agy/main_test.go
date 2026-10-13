@@ -1102,3 +1102,26 @@ func TestRunDoctorFixKeysNilReportMasksAndReturns(t *testing.T) {
 		t.Errorf("nil-report branch fell through to printRepairReport:\n%s", out)
 	}
 }
+
+func TestRunDoctorFixKeysMasksResolveErrorTokens(t *testing.T) {
+	t.Setenv(paths.EnvAgyProHome, filepath.Join(t.TempDir(), "home"))
+	writeTestRegistry(t)
+
+	oldResolve := resolveRepairTargets
+	t.Cleanup(func() { resolveRepairTargets = oldResolve })
+	oldExit := doctorExit
+	t.Cleanup(func() { doctorExit = oldExit })
+	doctorExit = func(int) {}
+	plant := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	resolveRepairTargets = func(r *providers.Registry, arg string) ([]string, error) {
+		return nil, fmt.Errorf("cannot resolve %q", "native:"+plant)
+	}
+
+	errOut := captureStderr(t, func() { runDoctorFixKeys("1,native:" + plant) })
+	if strings.Contains(errOut, plant) {
+		t.Errorf("doctor fix-keys resolve error leaked the decorated plant: %q", errOut)
+	}
+	if !strings.Contains(errOut, "wJalr****") && !strings.Contains(errOut, "[REDACTED]") {
+		t.Errorf("doctor fix-keys resolve error must render the plant masked: %q", errOut)
+	}
+}

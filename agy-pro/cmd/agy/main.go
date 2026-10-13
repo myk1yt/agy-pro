@@ -753,7 +753,10 @@ func runDoctorFixKeys(target string) {
 	}
 	names, err := resolveRepairTargets(reg, target)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[agy-pro] Cannot resolve repair targets: %v\n", err)
+		// G2: the resolve error quotes individual target tokens; seed with the
+		// whole target plus its comma/space/semicolon tokens so a misdirected
+		// paste in the --fix-keys slot cannot reach stderr raw.
+		fmt.Fprintf(os.Stderr, "[agy-pro] Cannot resolve repair targets: %v\n", maskOperandSentence(err.Error(), providers.FlagSeedOperands(target)...))
 		doctorExit(1)
 		return
 	}
@@ -824,13 +827,15 @@ func runDoctorRollback(target string) {
 	fmt.Println("===========================================================")
 
 	file := providers.ResolveBackupFile(target)
-	// E5: the target is an untrusted CLI operand — a misdirected paste puts a
-	// key in the --rollback-keys slot, and the resolved path re-embeds it.
-	fmt.Printf("Backup file: %s\n", providers.MaskOperand(file))
+	// E5/G4: the target is an untrusted CLI operand — a misdirected paste puts
+	// a key in the --rollback-keys slot, and the resolved path re-embeds it
+	// (also in decorated form, which MaskOperand alone cannot classify).
+	fmt.Printf("Backup file: %s\n", maskOperandSentence(file))
 	if err := rollbackKeyNames(file, providers.RepairOptions{}); err != nil {
 		// The forwarded error (os.ReadFile's *fs.PathError) re-embeds the raw
-		// path; redact seeded with the raw target and resolved file.
-		fmt.Fprintf(os.Stderr, "[agy-pro] Rollback failed: %s\n", maskOperandSentence(err.Error(), target, file))
+		// path; redact seeded with the raw target (plus per-token forms) and
+		// the resolved file.
+		fmt.Fprintf(os.Stderr, "[agy-pro] Rollback failed: %s\n", maskOperandSentence(err.Error(), append(providers.FlagSeedOperands(target), file)...))
 		doctorExit(1)
 		return
 	}

@@ -119,7 +119,7 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 		// C2/D3: usage errors quote raw tokens from --seats/--tools (seat-spec
 		// and tool-token validators). Seed the redactor with the raw flag
 		// values so a planted secret is masked wherever the sentence echoes it.
-		fmt.Fprintf(errw, "Error: %v\n", maskOperandSentence(err.Error(), *seatsFlag, *toolsFlag))
+		fmt.Fprintf(errw, "Error: %v\n", maskOperandSentence(err.Error(), providers.FlagSeedOperands(*seatsFlag, *toolsFlag)...))
 		return 2
 	}
 
@@ -132,7 +132,7 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 		// --seats/--models values are seeded too, so a secret in a spec that
 		// passes validation but fails to resolve (e.g. a pasted key used as a
 		// provider token) cannot reach stderr through the engine error.
-		fmt.Fprintf(errw, "Fanout error: %v\n", maskOperandSentence(err.Error(), *seatsFlag, *modelsFlag))
+		fmt.Fprintf(errw, "Fanout error: %v\n", maskOperandSentence(err.Error(), providers.FlagSeedOperands(*seatsFlag, *modelsFlag)...))
 		return 1
 	}
 
@@ -166,10 +166,12 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 	fmt.Fprintf(out, "  Reconciliation:      %s\n", providers.MaskOperand(filepath.Join(cfg.OutDir, "reconciliation.md")))
 	fmt.Fprintf(out, "  Machine Summary:     %s\n", providers.MaskOperand(filepath.Join(cfg.OutDir, "summary.json")))
 	for _, seat := range summary.Seats {
+		// G6: banner seat-report lines echo registry-derived provider/model
+		// names; mask key-shaped ones (benign names readable).
 		fmt.Fprintf(out, "  Seat %d Report:       seat-%d-%s-%s.md\n",
 			seat.SeatID, seat.SeatID,
-			sanitizeFilename(seat.FinalTarget.Provider.Name),
-			sanitizeFilename(seat.FinalTarget.Model.ID),
+			providers.MaskOperand(sanitizeFilename(seat.FinalTarget.Provider.Name)),
+			providers.MaskOperand(sanitizeFilename(seat.FinalTarget.Model.ID)),
 		)
 	}
 

@@ -268,24 +268,18 @@ func runSwarmNonInteractive(in io.Reader, out, errw io.Writer, fv swarmFlagValue
 	return swarm.Execute(spec, in, out, errw, outIsTTY(out))
 }
 
+// seatSeedOperands returns the redactor seeds for a --seats value: the whole
+// value plus each comma/space/semicolon-separated token, because selection and
+// seat-spec errors quote individual tokens ("invalid selection token
+// \"native:<plant>\"") while a whole-value seed would not match them.
+func seatSeedOperands(seatsVal string) []string {
+	return providers.FlagSeedOperands(seatsVal)
+}
+
 // resolveFlagSeats turns a --seats value into builder entries. Numbered
 // selection resolves against the combined inventory; explicit seat specs are
 // the power-user fallback (validated by fanout.ParseSeatSpecs). Returns a
 // non-negative process exit code on failure.
-// seatSeedOperands returns the redactor seeds for a --seats value: the whole
-// value plus each comma-separated token, because selection and seat-spec
-// errors quote individual tokens ("invalid selection token \"native:<plant>\"")
-// while a whole-value seed would not match them.
-func seatSeedOperands(seatsVal string) []string {
-	ops := []string{seatsVal}
-	for _, tok := range strings.Split(seatsVal, ",") {
-		if t := strings.TrimSpace(tok); t != "" {
-			ops = append(ops, t)
-		}
-	}
-	return ops
-}
-
 func resolveFlagSeats(seatsVal string, out, errw io.Writer) ([]inventory.Entry, int) {
 	if swarm.IsSelectionInput(seatsVal) {
 		inv, err := loadSwarmInventory(context.Background())

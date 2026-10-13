@@ -181,7 +181,9 @@ func (inv *Inventory) RenderNumbered(out io.Writer) {
 		if e.KeyMissing {
 			suffix = "      (key missing)"
 		}
-		fmt.Fprintf(out, "%s %-*s  %-*s  [%s]%s\n", num, idW, e.ModelID, midW, midColumn(e), e.Group, suffix)
+		// G6: registry-derived model ID — mask key-shaped ones, keep benign
+		// IDs readable (display consistency with the seat list and summary).
+		fmt.Fprintf(out, "%s %-*s  %-*s  [%s]%s\n", num, idW, providers.MaskOperand(e.ModelID), midW, midColumn(e), e.Group, suffix)
 	}
 }
 
