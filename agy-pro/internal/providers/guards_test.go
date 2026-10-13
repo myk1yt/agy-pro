@@ -894,6 +894,10 @@ func TestMaskFamilyName(t *testing.T) {
 		// Batch-N addendum: the mirror head check — a secret-shaped segment
 		// BEFORE the first "://" with a benign tail masks the family.
 		{"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY://x", "wJalr****"},
+		// Batch O (round-6 M-1): the segment behind the mid-string "://"
+		// carries its own marker; the stripped segment classifies secret and
+		// the family masks (render = MaskSecret of the raw segment).
+		{"note https://./wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "./wJa****"},
 	} {
 		got := MaskFamilyName(Model{ID: "m", Family: tc.family})
 		if got != tc.want {
@@ -1036,12 +1040,29 @@ func TestMaskRegistryValue(t *testing.T) {
 	for _, v := range []string{
 		"note https://wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
 		"note https://wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY",
+		// The remaining enumerated shapes of the round-5 P1 class, pinned as
+		// direct rows (batch O): a two-word sentence head, and a value that
+		// opens with the bare "://" separator (the head is empty, so the tail
+		// check owns it).
+		"x y://wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+		"://wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
 	} {
 		if got := MaskRegistryValue(v); got != "wJalr****" {
 			t.Errorf("MaskRegistryValue(%q) = %q; want wJalr**** (non-leading scheme + secret tail)", v, got)
 		}
 		assertNoLeak(t, MaskRegistryValue(v), v)
 	}
+	// The fifth enumerated shape's tail is DOTTED ("example.com/<key>"): the
+	// slash-and-dot decoration makes identifierSegmented see 5 segments, but
+	// the longest ("bPxRfiCYEXAMPLEKEY", 18 runes) clears the 16-rune floor,
+	// so the segment is NOT identifier-class and seedShaped's squash (49
+	// runes, uppercase) fires. The render is therefore first-5 of the tail,
+	// "examp****" — the dotted host prefix, not the key, fills the mask
+	// window; no key rune beyond the window survives.
+	if got := MaskRegistryValue("see https://example.com/wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"); got != "examp****" {
+		t.Errorf("MaskRegistryValue(dotted tail) = %q; want examp**** (seedShaped path)", got)
+	}
+	assertNoLeak(t, MaskRegistryValue("see https://example.com/wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"), "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
 	// The same rule covers a scheme that survives the leading strip (a
 	// doubled scheme leaves a mid-string "://" in the core) with a JWT
 	// behind it, and a marker-decorated sentence whose tail is the secret.
@@ -1079,6 +1100,27 @@ func TestMaskRegistryValue(t *testing.T) {
 			t.Errorf("MaskRegistryValue(%q) = %q; want wJalr**** (tail path)", v, got)
 		}
 		assertNoLeak(t, MaskRegistryValue(v), v)
+	}
+	// Batch O (round-6 M-1): a segment behind a mid-string "://" can itself
+	// carry a location marker, and the marker location-exempts the RAW
+	// segment while its stripped core is the bare secret — the doubly
+	// decorated sub-shape rode raw at every sink (it rendered wJalr**** at
+	// cc6a5e4, whose stripper both cut at the last "://" and iteratively
+	// stripped markers). Each "://" segment is now classified BOTH raw and
+	// marker-stripped, so these mask. The render stays MaskSecret of the RAW
+	// segment: the marker characters occupy the first-5 mask window and no
+	// key rune beyond it survives ("note https:///<key>" masked on Windows
+	// through the raw contiguous-run arm before; the stripped arm makes the
+	// render identical on Linux, closing the platform split).
+	for _, tc := range []struct{ v, want string }{
+		{"note https://./wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "./wJa****"},
+		{"note https:///wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "/wJal****"},
+		{"https://x/https://C:\\wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "C:\\wJ****"},
+	} {
+		if got := MaskRegistryValue(tc.v); got != tc.want {
+			t.Errorf("MaskRegistryValue(%q) = %q; want %q (marker-decorated \"://\" segment)", tc.v, got, tc.want)
+		}
+		assertNoLeak(t, MaskRegistryValue(tc.v), tc.v)
 	}
 	// Batch-N LOW hardening: a scheme-only value strips to an empty core and
 	// was echoed whole; when the stripped scheme segment is itself
@@ -1283,6 +1325,9 @@ func TestMaskModelForReport_LocationShapedEffortMasked(t *testing.T) {
 		// classified the same way, so the "<key>://x" shape masks in both
 		// report paths too.
 		{"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY://x", "wJalr****"},
+		// Batch O (round-6 M-1): the marker-decorated segment sub-shape masks
+		// in both report paths too (stripped-segment classification).
+		{"note https://./wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "./wJa****"},
 	} {
 		got := MaskModelForReport(Model{ID: "m", Family: tc.plant, Capabilities: Capabilities{SupportsThinking: true, ReasoningEffort: tc.plant}})
 		if got.Family != tc.want {

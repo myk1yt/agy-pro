@@ -1515,6 +1515,9 @@ func TestCapabilitySummary(t *testing.T) {
 		// Batch-N addendum: the mirror head check — a secret-shaped segment
 		// before the first "://" with a benign tail masks at the composition.
 		{Capabilities{SupportsThinking: true, ReasoningEffort: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY://x"}, "thinking(wJalr****)"},
+		// Batch O (round-6 M-1): the marker-decorated segment sub-shape masks
+		// at the composition (stripped-segment classification).
+		{Capabilities{SupportsThinking: true, ReasoningEffort: "note https://./wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"}, "thinking(./wJa****)"},
 		// Batch-N LOW: a secret-shaped scheme-only value masks at the
 		// composition; a benign one ("https://") renders unchanged.
 		{Capabilities{SupportsThinking: true, ReasoningEffort: "abcdefghijklmnop://"}, "thinking(abcde****)"},

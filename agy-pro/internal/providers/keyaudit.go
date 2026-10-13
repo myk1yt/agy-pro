@@ -185,8 +185,9 @@ func MaskFamilyName(m Model) string {
 
 // MaskRegistryValue is the registry-slot display authority (batch L, closes
 // F-1 and M1; batch M, closes the round-4 P1; batch N + addendum, closes the
-// round-5 P1 — both "://" segments, tail and head — and the scheme-only LOW):
-// it renders a registry-persisted display value (explicit family, reasoning
+// round-5 P1 — both "://" segments, tail and head — and the scheme-only LOW;
+// batch O closes the round-6 M-1 marker-decorated segment sub-shape): it
+// renders a registry-persisted display value (explicit family, reasoning
 // effort) at every display sink (models --json, status banner,
 // RenderNumbered, the wizard model list). A registry slot is never a
 // legitimate path and carries no readability requirement, so unlike a CLI
@@ -221,6 +222,13 @@ func MaskFamilyName(m Model) string {
 //   - the mirror rule closes the sixth shape of the same class: the segment
 //     BEFORE the first "://" is classified the same way, so a secret-shaped
 //     head with a benign tail ("<key>://x") masks too (batch N addendum);
+//   - each "://" segment is classified BOTH raw and marker-stripped
+//     (batch O, the round-6 M-1): a segment can itself carry a location
+//     marker ("note https://./<key>" — the tail "./<key>" is location-exempt
+//     as a whole, its stripped core is the bare secret), so the registry-slot
+//     rule "a slot is never a legitimate path" applies to segments too. The
+//     render stays MaskSecret of the raw segment; the rendered value is never
+//     stripped;
 //   - else render the marker-stripped core, so a benign location-shaped value
 //     ("./gemini" -> "gemini", a leading-URL-scheme value) stays readable.
 //
@@ -261,7 +269,7 @@ func MaskRegistryValue(s string) string {
 	// the mask decision only; never render it — the render stays the batch-M
 	// form (identity, or first-5+**** of the tail).
 	if i := strings.LastIndex(core, "://"); i >= 0 {
-		if tail := strings.TrimSpace(core[i+len("://"):]); tail != "" && registryCoreLooksSecret(tail) {
+		if tail := strings.TrimSpace(core[i+len("://"):]); tail != "" && registrySegmentLooksSecret(tail) {
 			return MaskSecret(tail)
 		}
 	}
@@ -271,7 +279,7 @@ func MaskRegistryValue(s string) string {
 	// it rendered masked-by-elision at cc6a5e4). Same contract: classify the
 	// head for the mask decision only; never render it.
 	if i := strings.Index(core, "://"); i >= 0 {
-		if head := strings.TrimSpace(core[:i]); head != "" && registryCoreLooksSecret(head) {
+		if head := strings.TrimSpace(core[:i]); head != "" && registrySegmentLooksSecret(head) {
 			return MaskSecret(head)
 		}
 	}
@@ -289,6 +297,22 @@ func MaskRegistryValue(s string) string {
 func registryCoreLooksSecret(core string) bool {
 	return operandLooksSecret(core) || seedShaped(core) ||
 		isJWTShapedOperand(strings.TrimSpace(core)) || NewRedactor()(core) != core
+}
+
+// registrySegmentLooksSecret classifies one "://" segment (tail or head) for
+// the mask decision: the RAW segment and its marker-stripped form
+// (stripLocationMarkers), because a segment can itself carry a location
+// marker. "note https://./<key>" has the tail "./<key>", whose leading marker
+// location-exempts every whole-segment classifier while its stripped core is
+// the bare secret (the round-6 M-1 sub-shape; the same decoration blinded the
+// raw arm on "note https:///<key>" only on Linux, a platform split the
+// stripped arm closes). Either form secret-shaped masks; the render stays
+// MaskSecret of the RAW segment (the rendered value is never stripped).
+func registrySegmentLooksSecret(segment string) bool {
+	if registryCoreLooksSecret(segment) {
+		return true
+	}
+	return registryCoreLooksSecret(stripLocationMarkers(segment))
 }
 
 // leadingSchemeRe matches a URL scheme at the START of a value ("https://",
