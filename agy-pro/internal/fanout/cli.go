@@ -92,8 +92,22 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 			if err != nil {
 				// C2/D3: os.ReadFile embeds the operand path in its error
 				// text; mask both the slot and the composite sentence.
+				// S2 residual (a): the whole-string classifier is narrow by
+				// design (a multi-word path must stay readable so spawn errors
+				// name the file), so a >=2-space or tab-decorated path with an
+				// embedded bare secret classified as benign and echoed raw at
+				// the slot while the sentence beside it was masked. The slot
+				// therefore keeps the classifier first (single-token and benign
+				// paths render byte-identical to before) and only when the
+				// classifier left the operand unchanged does it route through
+				// the seeded sentence masker with the per-token seeds, matching
+				// the cmd/agy pro_swarm.go precedent.
+				pathSlot := providers.MaskOperand(*promptFileFlag)
+				if pathSlot == *promptFileFlag {
+					pathSlot = maskOperandSentence(*promptFileFlag, providers.FlagSeedOperands(*promptFileFlag)...)
+				}
 				fmt.Fprintf(errw, "Error reading prompt file %s: %v\n",
-					providers.MaskOperand(*promptFileFlag), maskOperandSentence(err.Error(), *promptFileFlag))
+					pathSlot, maskOperandSentence(err.Error(), *promptFileFlag))
 				return 1
 			}
 			promptText = string(data)

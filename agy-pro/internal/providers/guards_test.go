@@ -693,3 +693,302 @@ func TestIdentifierSegmented_ContentAware(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// C5/S2 — the seed class stays WIDE, the display class stays NARROW. The
+// batch-I display narrowing (at most one interior space) leaked into
+// SeedEligible's final branch, so a composite error that embeds a multi-word
+// operand (a library wraps the raw CLI operand into the sentence) no longer
+// seeded and whole-line sinks echoed the secret raw. seedShaped restores the
+// pre-diff wide core; decoratedSecretShaped keeps the display narrowing.
+// ---------------------------------------------------------------------------
+
+// TestSeedShaped_WideCore_DisplayNarrowing pins the core/narrowing split:
+// a >=2-space or tab/newline-carrying operand SEEDS (pre-diff parity) but
+// never renders wholly masked (the display class rejects it).
+func TestSeedShaped_WideCore_DisplayNarrowing(t *testing.T) {
+	secret := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	wide := []string{
+		"here is the key " + secret,
+		"the key is " + secret + " and it failed",
+		"native: " + secret + " (seat 1, retry)",
+		"native:\t" + secret,
+		"native:\n" + secret,
+	}
+	for _, op := range wide {
+		if !seedShaped(op) {
+			t.Errorf("seedShaped(%.30q...) = false; want true (wide seed core)", op)
+		}
+		if !SeedEligible(op) {
+			t.Errorf("SeedEligible(%.30q...) = false; want true (wide seed class, pre-diff parity)", op)
+		}
+		if decoratedSecretShaped(op) {
+			t.Errorf("decoratedSecretShaped(%.30q...) = true; want false (display narrowing: a sentence must never render wholly masked)", op)
+		}
+	}
+	// The whitespace-decorated single-space form stays in BOTH classes.
+	single := "native: " + secret
+	if !seedShaped(single) || !decoratedSecretShaped(single) {
+		t.Errorf("single-space decorated form must be in both classes: seed=%v display=%v",
+			seedShaped(single), decoratedSecretShaped(single))
+	}
+	// MaskOperand keeps the multi-word sentence readable (display narrow)
+	// while MaskSentence masks the embedded secret (seed wide).
+	multi := "here is the key " + secret
+	if got := MaskOperand(multi); got != multi {
+		t.Errorf("MaskOperand(multi-word sentence) = %q; want unchanged (display class stays narrow)", got)
+	}
+	got := MaskSentence("error: "+multi+" (seat 1)", multi)
+	assertNoLeak(t, got, secret)
+	if !strings.Contains(got, "[REDACTED]") {
+		t.Errorf("multi-word operand must seed the composite masker:\n%s", got)
+	}
+	if !strings.Contains(got, "error:") || !strings.Contains(got, "(seat 1)") {
+		t.Errorf("sentence wording lost:\n%s", got)
+	}
+}
+
+// TestSeedEligible_WideClass_PinnedTable is the C5/S2 acceptance table: the
+// wide seed class (>=2 interior spaces, embedded bare secret) seeds;
+// identifier-class model IDs and location-shaped operands never do.
+func TestSeedEligible_WideClass_PinnedTable(t *testing.T) {
+	secret := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	for _, op := range []string{
+		"here is the key " + secret,
+		"invalid selection token \"" + secret + "\" rejected by the parser",
+		"please export THE_KEY=" + secret + " before running",
+	} {
+		if !SeedEligible(op) {
+			t.Errorf("SeedEligible(%.30q...) = false; want true (multi-word operand with an embedded bare secret)", op)
+		}
+	}
+	for _, op := range []string{
+		"meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
+		"Qwen/Qwen2.5-72B-Instruct",
+		"native:anthropic/claude-sonnet-4-5/x",
+		"https://host/path",
+		`C:\Users\test\bin`,
+		"./relative/path",
+		"../parent/path",
+	} {
+		if SeedEligible(op) {
+			t.Errorf("SeedEligible(%q) = true; want false (identifier/location class stays out of the wide rule)", op)
+		}
+	}
+}
+
+// TestSeedEligible_WideClass_ShortWordSentenceStaysOut pins the identifier
+// guard the wide rule must not defeat: a sentence whose every segment is
+// short is identifier-class and stays out of the seed rule (pre-diff
+// parity), so ordinary composite errors never arm the redactor.
+func TestSeedEligible_WideClass_ShortWordSentenceStaysOut(t *testing.T) {
+	op := "the quick brown fox jumps over the lazy dog AB"
+	if !identifierSegmented(op) {
+		t.Skip("fixture no longer exercises the identifier guard")
+	}
+	if SeedEligible(op) {
+		t.Errorf("SeedEligible(%q) = true; want false (all-short-word sentence is identifier-class)", op)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// S6 — FlagSeedOperands must split on newline/CR too: a value pasted with a
+// trailing newline must still yield the bare token as a seed, because sinks
+// echo the token without the newline.
+// ---------------------------------------------------------------------------
+
+func TestFlagSeedOperands_NewlineDecoratedValue(t *testing.T) {
+	secret := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	want := "native:" + secret
+	for _, v := range []string{
+		want + "\n",
+		want + "\r\n",
+		"1," + want + "\n",
+	} {
+		seeds := FlagSeedOperands(v)
+		found := false
+		for _, s := range seeds {
+			if s == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("FlagSeedOperands(%.20q...) = %q; want the bare token %q", v, seeds, want)
+		}
+	}
+	// A sink that echoes the bare token (no trailing newline) must mask.
+	msg := "seat spec \"native:" + secret + "\" rejected"
+	got := MaskSentence(msg, FlagSeedOperands(want+"\n")...)
+	assertNoLeak(t, got, secret)
+	if !strings.Contains(got, "[REDACTED]") {
+		t.Errorf("newline-decorated seed must mask the bare echo:\n%s", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// C2 — MaskFamilyName: the case-preserved explicit family feeds the
+// uppercase-requiring decorated class; the folded FamilyName() rode a
+// lowercase-shaped secret raw.
+// ---------------------------------------------------------------------------
+
+func TestMaskFamilyName(t *testing.T) {
+	// Key-shaped explicit families render first-5+**** (mixed case AND
+	// all-lowercase forms).
+	keyShaped := []struct{ family, want string }{
+		{"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "wJalr****"},
+		{"wjalrxutnfemi/k7mdeng/bpxrficyexamplekey", "wjalr****"},
+		{"sk-familyplant-0123456789abcdef", "sk-fa****"},
+	}
+	for _, tc := range keyShaped {
+		got := MaskFamilyName(Model{ID: "some-model", Family: tc.family})
+		if got != tc.want {
+			t.Errorf("MaskFamilyName(key-shaped family) = %q; want %q", got, tc.want)
+		}
+		assertNoLeak(t, got, tc.family)
+	}
+	// Benign explicit families keep their readable form (case included).
+	for _, family := range []string{"gemini", "glm", "Gemini", "GLM"} {
+		if got := MaskFamilyName(Model{ID: "m", Family: family}); got != family {
+			t.Errorf("MaskFamilyName(%q) = %q; want unchanged", family, got)
+		}
+	}
+	// Id-inferred families stay readable.
+	for _, tc := range []struct{ id, want string }{
+		{"gemini-2.5-flash", "gemini"},
+		{"Qwen/Qwen2.5-72B-Instruct", "qwen"},
+	} {
+		if got := MaskFamilyName(Model{ID: tc.id}); got != tc.want {
+			t.Errorf("MaskFamilyName(id %q) = %q; want %q", tc.id, got, tc.want)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// S4 — whole-object report masking: a nested Target.Provider/Model
+// serialized into summary.json or --json must not leak a key-shaped value
+// in any string field, while benign values stay readable.
+// ---------------------------------------------------------------------------
+
+func TestMaskProviderForReport_KeyShapedMasked(t *testing.T) {
+	keyName := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	p := Provider{
+		Name:      keyName,
+		BaseURL:   "https://legacy.example/v1",
+		APIKeyEnv: "AKIAIOSFODNN7EXAMPLE",
+		Models: []Model{{
+			ID:     "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY",
+			Family: "native:" + keyName,
+			Tags:   []string{"tools", "sk-tagplant-0123456789abcdef"},
+			Capabilities: Capabilities{
+				SupportsTools:   true,
+				ReasoningEffort: "high",
+				AllowedTools:    []string{"read_file", "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"},
+			},
+		}},
+	}
+	got := MaskProviderForReport(p)
+	if got.Name != "wJalr****" {
+		t.Errorf("Name = %q; want wJalr****", got.Name)
+	}
+	if got.APIKeyEnv != "AKIAI****" {
+		t.Errorf("APIKeyEnv = %q; want AKIAI****", got.APIKeyEnv)
+	}
+	if got.BaseURL != p.BaseURL {
+		t.Errorf("BaseURL = %q; want unchanged (https URLs stay readable)", got.BaseURL)
+	}
+	m := got.Models[0]
+	if m.ID != "wJalr****" {
+		t.Errorf("Model.ID = %q; want wJalr****", m.ID)
+	}
+	if m.Family != "nativ****" {
+		t.Errorf("Model.Family = %q; want nativ**** (case-preserved family feeds the decorated class)", m.Family)
+	}
+	if m.Tags[0] != "tools" || m.Tags[1] != "sk-ta****" {
+		t.Errorf("Tags = %q; want [tools sk-ta****]", m.Tags)
+	}
+	if m.Capabilities.AllowedTools[0] != "read_file" || m.Capabilities.AllowedTools[1] != "wJalr****" {
+		t.Errorf("AllowedTools = %q; want [read_file wJalr****]", m.Capabilities.AllowedTools)
+	}
+	if m.Capabilities.ReasoningEffort != "high" {
+		t.Errorf("ReasoningEffort = %q; want unchanged", m.Capabilities.ReasoningEffort)
+	}
+	// The caller's registry value is not mutated.
+	if p.Name != keyName || p.APIKeyEnv != "AKIAIOSFODNN7EXAMPLE" {
+		t.Errorf("MaskProviderForReport mutated the input provider: %+v", p)
+	}
+	if p.Models[0].ID != "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY" || p.Models[0].Tags[1] != "sk-tagplant-0123456789abcdef" {
+		t.Errorf("MaskProviderForReport mutated the input model: %+v", p.Models[0])
+	}
+}
+
+func TestMaskProviderForReport_BenignUnchanged(t *testing.T) {
+	p := Provider{
+		Name:      "google",
+		BaseURL:   "https://api.openai.com/v1",
+		APIKeyEnv: "OPENAI_API_KEY",
+		Models: []Model{{
+			ID:           "gemini-2.5-flash",
+			Tags:         []string{"general", "tools"},
+			Capabilities: Capabilities{ReasoningEffort: "high", AllowedTools: []string{"read_file", "list_dir"}},
+		}},
+	}
+	got := MaskProviderForReport(p)
+	if got.Name != "google" || got.BaseURL != p.BaseURL || got.APIKeyEnv != "OPENAI_API_KEY" {
+		t.Errorf("benign provider fields changed: %+v", got)
+	}
+	m := got.Models[0]
+	if m.ID != "gemini-2.5-flash" || m.Family != "gemini" {
+		t.Errorf("benign model id/family changed: %+v", m)
+	}
+	if m.Tags[0] != "general" || m.Tags[1] != "tools" {
+		t.Errorf("benign tags changed: %q", m.Tags)
+	}
+	if m.Capabilities.AllowedTools[0] != "read_file" || m.Capabilities.ReasoningEffort != "high" {
+		t.Errorf("benign capability fields changed: %+v", m.Capabilities)
+	}
+	// An empty provider round-trips with a nil model slice.
+	empty := MaskProviderForReport(Provider{})
+	if empty.Name != "" || empty.Models != nil {
+		t.Errorf("empty provider = %+v; want zero value", empty)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// C6 — the decorated class over-masks benign >=21-squash mixed-case display
+// values. EVALUATED, NOT NARROWED (report: coder-report-fix-j.md): the squash
+// merges separators, so a benign filename and a real secret both present as
+// one long run and no run-length condition separates them; the hard
+// constraint (unmasked only when no >=16-rune alphanumeric run survives)
+// already bars "MyReport2024FINALV2.pdf" (19-rune run
+// "MyReport2024FINALV2"), and the remaining eligible shape
+// ("Qwen3.8FlashMaxOutputX") shares no structure with the secret class that
+// a documented pattern could admit without also admitting camel-case-spelled
+// base64 fragments. The over-mask is display-only and fails safe, so it
+// stands as an accepted trade-off. Pinned here so any future narrowing must
+// redo the evaluation.
+// ---------------------------------------------------------------------------
+
+func TestDecoratedClass_BenignOverMaskTradeOffPinned(t *testing.T) {
+	// Over-mask direction (accepted): benign >=21-squash mixed-case values
+	// render first-5+****.
+	for _, benign := range []string{"MyReport2024FINALV2.pdf", "Qwen3.8FlashMaxOutputX"} {
+		if got := MaskOperand(benign); got != MaskSecret(benign) {
+			t.Errorf("MaskOperand(%q) = %q; want the documented over-mask %q (C6 accepted trade-off)", benign, got, MaskSecret(benign))
+		}
+	}
+	// No-over-mask direction: the 20-rune filename floor and the identifier
+	// class keep benign values readable in both the seed and display rules.
+	for _, benign := range []string{
+		"MyReport2024FINAL.pdf",
+		"claude-3.5.sonnet",
+		"config.dev.override",
+		"meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
+	} {
+		if SeedEligible(benign) {
+			t.Errorf("SeedEligible(%q) = true; want false (below-floor/identifier benign)", benign)
+		}
+		if got := MaskOperand(benign); got != benign {
+			t.Errorf("MaskOperand(%q) = %q; want unchanged", benign, got)
+		}
+	}
+}

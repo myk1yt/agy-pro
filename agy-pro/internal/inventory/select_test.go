@@ -268,6 +268,40 @@ func TestPresetRotationUsesDeclaredFamily(t *testing.T) {
 	}
 }
 
+// C2 companion: Entry.Family is carried case-preserved, and the rotation
+// re-folds it (entryFamily), so a mixed-case declared family still collides
+// with its lowercase twin and fanout's folded family matching is unchanged.
+// The existing TestPresetRotationUsesDeclaredFamily fixtures are lowercase,
+// so they needed no update; this pins the mixed-case side.
+func TestPresetRotationFoldsCasePreservedFamily(t *testing.T) {
+	reg := &providers.Registry{Providers: []providers.Provider{
+		{Name: "alpha", Models: []providers.Model{{ID: "foo-1", Family: "Shared"}}},
+		{Name: "beta", Models: []providers.Model{{ID: "bar-1", Family: "shared"}}},
+	}}
+	inv, err := Load(context.Background(), reg, &stubFetcher{models: nil})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inv.Entries[0].Family != "Shared" {
+		t.Fatalf("Entry.Family = %q; want case-preserved Shared", inv.Entries[0].Family)
+	}
+	if got := entryFamily(inv.Entries[0]); got != "shared" {
+		t.Errorf("entryFamily(case-preserved family) = %q; want the folded shared", got)
+	}
+	// p2 over two same-family entries: the fold makes "Shared" and "shared"
+	// ONE family, so rotation seats foo-1 and the fill pass adds bar-1.
+	p2, err := ParseSelection("p2", inv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p2) != 2 {
+		t.Fatalf("p2 = %d entries, want 2 (one rotation seat + one same-family fill)", len(p2))
+	}
+	if entryFamily(p2[0]) != "shared" || entryFamily(p2[1]) != "shared" {
+		t.Errorf("rotation families = %q/%q; want shared/shared (case-folded)", entryFamily(p2[0]), entryFamily(p2[1]))
+	}
+}
+
 // A7: native rows carry InferFamily(id) - the same inference the native seat
 // target uses - so a native entry's rotation family matches fanout's.
 func TestEntryFamilyForNativeRows(t *testing.T) {
@@ -322,7 +356,7 @@ func TestParseSelectionMasksKeyShapedTokens(t *testing.T) {
 		{"AKIAIOSFODNN7EXAMPLE", "AKIAI****"},
 		{"wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY", "wJalr****"}, // opaque base64 run
 		{"pAKIAIOSFODNN7EXAMPLE", "pAKIA****"},                  // p-prefixed plant hits the preset branch
-		{"1-AKIAIOSFODNN7EXAMPLE", "1-AKI****"},                // AKIA inside a range-shaped token
+		{"1-AKIAIOSFODNN7EXAMPLE", "1-AKI****"},                 // AKIA inside a range-shaped token
 	}
 	for _, tc := range cases {
 		_, err := ParseSelection(tc.plant, inv)

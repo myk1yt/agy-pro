@@ -481,7 +481,7 @@ func TestRunSettingsCmd_FixKeysErrorMasked(t *testing.T) {
 		awsPlant = "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"
 		// I3: the decorated class now renders through the canonical first-5
 		// mask (the U8 rule) instead of the seeded whole-string [REDACTED].
-		redact   = "nativ****"
+		redact = "nativ****"
 	)
 
 	t.Run("decorated target masked in the tail", func(t *testing.T) {

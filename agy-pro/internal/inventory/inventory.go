@@ -24,12 +24,17 @@ type Entry struct {
 	Capabilities string // provider: Model.CapabilitySummary(); native: "" (unknown - do not fabricate)
 	Spec         string // canonical seat token: "native:<id>" or "<provider>/<id>"
 	KeyMissing   bool   // provider entry whose APIKeyEnv name is set but resolves empty
-	// Family is the family the fanout engine will use for this entry:
-	// Model.FamilyName() (explicit registry family, else the id prefix) for
-	// provider rows, InferFamily(id) for native rows. Carrying it here is what
-	// keeps preset family rotation aligned with fanout's own rotation - the
-	// id-prefix inference used before A7 ignored a registry-declared family
-	// and could double-seat one declared family in a "family-rotated" preset.
+	// Family is the family the fanout engine will use for this entry: the
+	// explicit registry family CASE-PRESERVED (C2: display sinks mask
+	// through the uppercase-requiring decorated class, so the folded
+	// FamilyName() would ride a lowercase-shaped secret raw), else
+	// FamilyName() (the id-prefix inference) for provider rows,
+	// InferFamily(id) for native rows. Rotation consumers re-fold with
+	// entryFamily (strings.ToLower), so the case never reaches fanout's
+	// family matching. Carrying it here is what keeps preset family
+	// rotation aligned with fanout's own rotation - the id-prefix inference
+	// used before A7 ignored a registry-declared family and could
+	// double-seat one declared family in a "family-rotated" preset.
 	Family string
 }
 
@@ -113,10 +118,14 @@ func Load(ctx context.Context, reg *providers.Registry, nf NativeFetcher) (*Inve
 					Capabilities: m.CapabilitySummary(),
 					Spec:         p.Name + "/" + m.ID,
 					KeyMissing:   keyMissing,
-					// A7: FamilyName() honors an explicit registry family
+					// A7: familyForEntry honors an explicit registry family
 					// before falling back to the id prefix, exactly like the
 					// provider target the fanout engine builds for this row.
-					Family: m.FamilyName(),
+					// C2: the explicit family is carried CASE-PRESERVED so
+					// display sinks (models --json) can mask a key-shaped
+					// family through the uppercase-requiring decorated
+					// class; entryFamily re-folds for rotation.
+					Family: familyForEntry(m),
 				})
 			}
 		}
@@ -126,6 +135,17 @@ func Load(ctx context.Context, reg *providers.Registry, nf NativeFetcher) (*Inve
 		inv.Entries[i].Number = i + 1
 	}
 	return inv, nil
+}
+
+// familyForEntry is the family an inventory entry carries: the explicit
+// registry family, case-preserved (C2), else the folded FamilyName()
+// (explicit or id-inferred). Rotation consumers re-fold through entryFamily,
+// so the case change never reaches fanout's family matching.
+func familyForEntry(m providers.Model) string {
+	if f := strings.TrimSpace(m.Family); f != "" {
+		return f
+	}
+	return m.FamilyName()
 }
 
 // Groups returns entries grouped for display in fixed order: [native] first,
@@ -183,8 +203,22 @@ func (inv *Inventory) RenderNumbered(out io.Writer) {
 		}
 		// G6: registry-derived model ID — mask key-shaped ones, keep benign
 		// IDs readable (display consistency with the seat list and summary).
-		fmt.Fprintf(out, "%s %-*s  %-*s  [%s]%s\n", num, idW, providers.MaskOperand(e.ModelID), midW, midColumn(e), e.Group, suffix)
+		// S5: the same mask covers the native display name (maskMidColumn)
+		// and the group column (the provider name); the capability text of a
+		// provider row is flag-derived and never carries a registry value.
+		fmt.Fprintf(out, "%s %-*s  %-*s  [%s]%s\n", num, idW, providers.MaskOperand(e.ModelID), midW, maskMidColumn(e), providers.MaskOperand(e.Group), suffix)
 	}
+}
+
+// maskMidColumn renders the middle column with its display text masked (S5):
+// the native display name comes from the `agy models` catalog and can carry
+// a key-shaped value, so it routes through MaskOperand; provider capability
+// text is flag-derived ("tools, vision") and stays readable.
+func maskMidColumn(e Entry) string {
+	if e.Kind == "native" {
+		return providers.MaskOperand(e.DisplayName)
+	}
+	return e.Capabilities
 }
 
 // midColumn picks the rendered middle column for one entry: the capability

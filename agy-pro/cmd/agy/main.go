@@ -435,7 +435,7 @@ func printConfiguredProvidersAndModels(reg *providers.Registry) {
 
 			fmt.Printf("    - %-*s  [Family: %-*s | Context: %s | MaxOutput: %s | Capabilities: %s]\n",
 				maxIDLen, providers.MaskOperand(providers.DisplayName(m.ID, p.Name)),
-				maxFamilyLen, providers.MaskOperand(m.FamilyName()),
+				maxFamilyLen, providers.MaskFamilyName(m),
 				ctxDisplay, maxOutDisplay, m.CapabilitySummary())
 		}
 	}

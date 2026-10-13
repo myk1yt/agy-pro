@@ -231,8 +231,18 @@ func runSwarmNonInteractive(in io.Reader, out, errw io.Writer, fv swarmFlagValue
 		if err != nil {
 			// C2/D1: os.ReadFile embeds the operand path in its error text;
 			// seed the redactor with the raw operand so the planted secret is
-			// masked wherever it appears in the composite sentence.
-			fmt.Fprintf(errw, "Error reading prompt file %s: %v\n", providers.MaskOperand(fv.promptFile), maskOperandSentence(err.Error(), fv.promptFile))
+			// masked wherever it appears in the composite sentence. S2: the
+			// operand slot keeps the whole-string classifier first (single-
+			// token and benign paths render exactly as before); a multi-word
+			// or tab-decorated path defeats that classifier, so the slot then
+			// routes through the seeded sentence masker with the per-token
+			// seeds (the wide SeedEligible core) instead of echoing the path
+			// raw.
+			pathSlot := providers.MaskOperand(fv.promptFile)
+			if pathSlot == fv.promptFile {
+				pathSlot = maskOperandSentence(fv.promptFile, providers.FlagSeedOperands(fv.promptFile)...)
+			}
+			fmt.Fprintf(errw, "Error reading prompt file %s: %v\n", pathSlot, maskOperandSentence(err.Error(), fv.promptFile))
 			return 1
 		}
 		prompt = data

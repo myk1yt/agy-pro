@@ -8,6 +8,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"agypro/internal/fanout"
 	"agypro/internal/inventory"
@@ -259,13 +260,17 @@ func (b *Builder) printBudgetAndPreview(out io.Writer, spec RunSpec) {
 	if prompt == "" {
 		prompt = "(template default)"
 	}
-	if len(prompt) > 60 {
-		// I5: mask before truncation so a key-shaped prompt cannot ride into
-		// the preview frame raw (byte-slicing can also split a rune).
-		prompt = providers.MaskSentence(prompt, prompt)
-		if len(prompt) > 60 {
-			prompt = prompt[:57] + "..."
-		}
+	// I5/C1/S3: mask before any truncation so a key-shaped prompt cannot ride
+	// into the preview frame raw at ANY length (the old >60-byte gate left a
+	// <=60-byte key verbatim at this slot). The seeds are the whole prompt plus
+	// each comma/space/semicolon-separated token (providers.FlagSeedOperands),
+	// so a multi-word prompt with an embedded bare key masks per token while
+	// benign wording stays readable (providers.SeedEligible decides).
+	prompt = providers.MaskSentence(prompt, append([]string{prompt}, providers.FlagSeedOperands(prompt)...)...)
+	if utf8.RuneCountInString(prompt) > 60 {
+		// Truncate on the RUNE boundary: the old prompt[:57] byte-slice could
+		// split a multi-byte rune and render U+FFFD.
+		prompt = string([]rune(prompt)[:57]) + "..."
 	}
 	fmt.Fprintf(out, "  4. prompt   %s\n", prompt)
 	fmt.Fprintln(out, "=== preview ===")
@@ -365,7 +370,9 @@ func RenderSeatList(out io.Writer, inv *inventory.Inventory) {
 		}
 		// E8: registry-derived model ID — mask key-shaped ones, keep benign
 		// IDs readable (display consistency with `status`/`models`).
-		fmt.Fprintf(out, "%s %-*s  %-*s  [%s]%s\n", num, idW, providers.MaskOperand(e.ModelID), midW, seatMidColumn(e), e.Group, suffix)
+		// S5: the same mask covers the mid column (native DisplayName) and the
+		// group column (the provider name), mirroring inventory.RenderNumbered.
+		fmt.Fprintf(out, "%s %-*s  %-*s  [%s]%s\n", num, idW, providers.MaskOperand(e.ModelID), midW, providers.MaskOperand(seatMidColumn(e)), providers.MaskOperand(e.Group), suffix)
 	}
 }
 

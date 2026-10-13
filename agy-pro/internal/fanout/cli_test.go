@@ -383,10 +383,11 @@ func TestFanoutPlantedKeySweep(t *testing.T) {
 			wantCode: 2, want: `unknown tool "nowrite"`, wantNot: "[REDACTED]",
 		},
 		{
-			// F-alpha: the uppercase-only decorated class (r5 N2). A
-			// "1-<aws>" / "1-<ASIA>" token is an unknown tool whose source echo
-			// is raw (the classifier keeps the decorated form readable), so the
-			// composite sentence must be seeded by the shared rule.
+			// F-alpha (r5 N2): the decorated class carries an uppercase letter
+			// (mixed case counts), so the classifier itself now masks the
+			// decorated form with the U8 first-5 rendering - which is exactly
+			// what this row pins - and the shared seed rule keeps the composite
+			// sentence masked as well.
 			name: "tools 1-<AWS> plant", args: []string{"--tools", "1-" + awsPlant},
 			wantCode: 2, want: "1-wJa****",
 		},
@@ -473,6 +474,125 @@ func TestFanoutPlantedKeySweep(t *testing.T) {
 	}
 }
 
+// S2: the cli.go:96 whole-line seed site. A prompt-file operand carrying two or
+// more interior spaces is exactly the class the wide seed core restored: the
+// old display-side space gate made such an operand seed-INELIGIBLE, so the
+// composite os.ReadFile error echoed the embedded secret raw where the pre-diff
+// build showed [REDACTED]. Pinned at Run() level with a >=2-space operand (a
+// single-space operand was seed-eligible even under the old gate, so it cannot
+// cover the restored class).
+func TestFanoutPromptFileMultiWordOperandSeedsCompositeError(t *testing.T) {
+	t.Setenv(paths.EnvAgyProHome, t.TempDir())
+	awsPlant := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	// Two interior spaces: the space-gate boundary the wide seed core covers.
+	operand := "my docs/" + awsPlant + " notes"
+
+	var out, errw bytes.Buffer
+	if code := Run([]string{"-prompt-file", operand}, nil, &out, &errw); code != 1 {
+		t.Fatalf("exit = %d; want 1\nstdout:\n%s\nstderr:\n%s", code, out.String(), errw.String())
+	}
+	if strings.Contains(out.String(), awsPlant) || strings.Contains(errw.String(), awsPlant) {
+		t.Errorf("multi-word prompt-file operand leaks the planted secret:\nstdout:\n%s\nstderr:\n%s", out.String(), errw.String())
+	}
+	// The composite sentence sink specifically: os.ReadFile's *PathError always
+	// opens with "open ", so this pins the sentence echo and not the slot.
+	if !strings.Contains(errw.String(), "open [REDACTED]") {
+		t.Errorf("the composite prompt-file error should mask the secret in the sentence:\n%s", errw.String())
+	}
+	if !strings.Contains(errw.String(), "[REDACTED]") {
+		t.Errorf("the composite prompt-file error should carry the redaction marker:\n%s", errw.String())
+	}
+
+	// The other side of the rule: a benign multi-word path seeds nothing and
+	// must stay readable, so the wide seed class cannot start masking ordinary
+	// paths.
+	var out2, errw2 bytes.Buffer
+	if code := Run([]string{"-prompt-file", "my notes and more/missing.md"}, nil, &out2, &errw2); code != 1 {
+		t.Fatalf("exit = %d; want 1\nstderr:\n%s", code, errw2.String())
+	}
+	if !strings.Contains(errw2.String(), "my notes and more/missing.md") {
+		t.Errorf("benign multi-word path must stay readable:\n%s", errw2.String())
+	}
+	if strings.Contains(errw2.String(), "[REDACTED]") {
+		t.Errorf("benign multi-word path must not be redacted:\n%s", errw2.String())
+	}
+}
+
+// S2 residual (a): the operand SLOT of the same prompt-file error line. The
+// whole-string classifier is deliberately narrow (a multi-word path must stay
+// readable so a spawn error can name the file), so a >=2-space or tab-decorated
+// path with an embedded bare secret classified as benign and echoed RAW at the
+// slot while the composite sentence beside it was masked. The slot now keeps
+// the classifier first and only falls through to the seeded sentence masker
+// when the classifier left the operand unchanged (the cmd/agy pro_swarm.go
+// precedent). This pins both directions: the multi-word/tab class masks, and
+// every single-token / one-space / benign path renders byte-identical.
+func TestFanoutPromptFileSlotMasksMultiWordOperand(t *testing.T) {
+	t.Setenv(paths.EnvAgyProHome, t.TempDir())
+	awsPlant := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+
+	// slot renders the first-5 rendering of the operand, exactly as the writer
+	// prints it: "Error reading prompt file <slot>: <os error>".
+	slotOf := func(stderr string) string {
+		const prefix = "Error reading prompt file "
+		i := strings.Index(stderr, prefix)
+		if i < 0 {
+			return ""
+		}
+		rest := stderr[i+len(prefix):]
+		if j := strings.Index(rest, ": "); j >= 0 {
+			return rest[:j]
+		}
+		return rest
+	}
+	run := func(arg string) (int, string) {
+		var out, errw bytes.Buffer
+		code := Run([]string{"-prompt-file", arg}, nil, &out, &errw)
+		return code, errw.String()
+	}
+
+	// The class that used to leak: >=2 interior spaces and a tab.
+	for _, arg := range []string{
+		"my docs/" + awsPlant + " notes",
+		"a b c/" + awsPlant,
+		"my\tdocs/" + awsPlant,
+	} {
+		code, stderr := run(arg)
+		if code != 1 {
+			t.Fatalf("exit = %d; want 1 for %q\nstderr:\n%s", code, arg, stderr)
+		}
+		if strings.Contains(stderr, awsPlant) {
+			t.Errorf("operand slot leaks the planted secret for %q:\n%s", arg, stderr)
+		}
+		if slot := slotOf(stderr); slot != "[REDACTED]" {
+			t.Errorf("operand slot = %q; want [REDACTED] for %q\nstderr:\n%s", slot, arg, stderr)
+		}
+	}
+
+	// Byte-identical renderings: the classifier still owns every operand it
+	// could already see, so this fix must not change a single byte of them.
+	for _, tc := range []struct {
+		arg  string
+		want string
+	}{
+		{awsPlant, "wJalr****"},                          // single token
+		{"a b/" + awsPlant, "a b/w****"},                 // one interior space
+		{"./prompts/missing.md", "./prompts/missing.md"}, // benign, location-shaped
+		{"my notes/missing.md", "my notes/missing.md"},   // benign multi-word, no secret
+	} {
+		code, stderr := run(tc.arg)
+		if code != 1 {
+			t.Fatalf("exit = %d; want 1 for %q\nstderr:\n%s", code, tc.arg, stderr)
+		}
+		if slot := slotOf(stderr); slot != tc.want {
+			t.Errorf("operand slot = %q; want %q (unchanged) for %q\nstderr:\n%s", slot, tc.want, tc.arg, stderr)
+		}
+		if strings.Contains(stderr, "[REDACTED]") && tc.arg == "./prompts/missing.md" {
+			t.Errorf("benign path must not be redacted:\n%s", stderr)
+		}
+	}
+}
+
 // E2: composite-error seeding follows the ONE shared rule
 // (providers.SeedEligible / providers.MaskSentence, F-alpha) and mirrors
 // cmd/agy's TestE2SeedEligibilityWholeOperandOnly. The old run extractor
@@ -552,7 +672,7 @@ func TestE2SeedEligibilityWholeOperandOnly(t *testing.T) {
 	}
 
 	// F-alpha regression pins (r5 N2): decorated operands whose inner run is
-	// NOT mixed-case-plus-digit used to print raw. The uppercase-only class
+	// NOT mixed-case-plus-digit used to print raw. The uppercase-letter class
 	// (ASIA id, bare upper run) and the whitespace-decorated AWS secret seed
 	// through the shared squash rule now.
 	for _, op := range []string{

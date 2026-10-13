@@ -472,3 +472,61 @@ func TestResolveFlagSeatsMasksDecoratedTokenInMultiTokenLine(t *testing.T) {
 		t.Errorf("multi-token --seats error must render the plant masked: %q", errBuf.String())
 	}
 }
+
+// S2: the --prompt-file read failure is a whole-line sink (os.ReadFile wraps
+// the path into the composite sentence). A multi-word or tab-decorated operand
+// defeats the whole-string classifier, so the operand slot routes through the
+// seeded sentence masker with the per-token seeds (the wide SeedEligible core
+// restored in phase 1): the planted secret is masked in BOTH slots. Under the
+// batch-I narrow seed rule the operand did not seed and the composite echoed
+// the secret raw.
+func TestRunSwarmCmdPromptFileErrorMasksMultiWordOperand(t *testing.T) {
+	plant := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	for _, tc := range []struct {
+		name string
+		path string
+	}{
+		{"multi-word path", "swarm notes " + plant + " prompt.txt"},
+		{"tab-decorated path", "swarm\tnotes " + plant + " prompt.txt"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("AGY_PRO_HOME", t.TempDir())
+			defer withStubSwarmInventory(t, swarmFixtureInventory(t), nil)()
+			var outBuf, errBuf strings.Builder
+			code := runSwarmCmd([]string{"--template", "code-review", "--seats", "p1", "--prompt-file", tc.path},
+				strings.NewReader(""), &outBuf, &errBuf)
+			if code != 1 {
+				t.Fatalf("exit = %d, want 1\nstderr:\n%s", code, errBuf.String())
+			}
+			if strings.Contains(errBuf.String(), plant) {
+				t.Errorf("prompt-file error leaked the decorated plant:\n%s", errBuf.String())
+			}
+			for _, want := range []string{"Error reading prompt file", "[REDACTED]"} {
+				if !strings.Contains(errBuf.String(), want) {
+					t.Errorf("prompt-file error missing %q:\n%s", want, errBuf.String())
+				}
+			}
+		})
+	}
+}
+
+// S2 counterpart: the seeded fallback must not touch a benign multi-word path.
+// No token is seed-eligible, so the slot keeps the whole-string classifier's
+// readable rendering and no redaction marker appears.
+func TestRunSwarmCmdPromptFileErrorBenignMultiWordPathReadable(t *testing.T) {
+	t.Setenv("AGY_PRO_HOME", t.TempDir())
+	defer withStubSwarmInventory(t, swarmFixtureInventory(t), nil)()
+	const path = "my prompts missing.md"
+	var outBuf, errBuf strings.Builder
+	code := runSwarmCmd([]string{"--template", "code-review", "--seats", "p1", "--prompt-file", path},
+		strings.NewReader(""), &outBuf, &errBuf)
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1\nstderr:\n%s", code, errBuf.String())
+	}
+	if !strings.Contains(errBuf.String(), path) {
+		t.Errorf("benign multi-word path must stay readable:\n%s", errBuf.String())
+	}
+	if strings.Contains(errBuf.String(), "[REDACTED]") {
+		t.Errorf("benign operand must not trigger any redaction:\n%s", errBuf.String())
+	}
+}

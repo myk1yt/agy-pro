@@ -444,7 +444,7 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 			ctxDisplay = fmt.Sprintf("%dM", m.ContextLength/1048576)
 		}
 		fmt.Fprintf(out, "  %d. %-32s [family: %s, context: %s, capabilities: %s]\n",
-			i+1, DisplayName(MaskOperand(m.ID), provLabel), m.FamilyName(), ctxDisplay, m.CapabilitySummary())
+			i+1, DisplayName(MaskOperand(m.ID), provLabel), MaskFamilyName(m), ctxDisplay, m.CapabilitySummary())
 	}
 	fmt.Fprintln(out, "===========================================================")
 	fmt.Fprintln(out, "Ready to use! The gateway bridge activates whenever an external model is targeted:")

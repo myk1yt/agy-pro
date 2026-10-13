@@ -204,10 +204,11 @@ func availableExternal(inv *Inventory) []Entry {
 // same-family fill so a single-family registry still yields a full preset.
 //
 // A7: the family of an entry is Entry.Family - the SAME value the fanout
-// engine derives from the registry (Model.FamilyName()). Inferring it from the
-// id prefix here instead let a registry-declared family be double-seated: two
-// ids with different prefixes but one declared family looked like two distinct
-// families to this rotation while fanout's own rotation saw one.
+// engine derives from the registry (Model.FamilyName(), carried
+// case-preserved since C2). Inferring it from the id prefix here instead let
+// a registry-declared family be double-seated: two ids with different
+// prefixes but one declared family looked like two distinct families to this
+// rotation while fanout's own rotation saw one.
 func rotateFamilies(candidates []Entry, n int) []Entry {
 	if n <= 0 || len(candidates) == 0 {
 		return nil
@@ -246,8 +247,10 @@ func rotateFamilies(candidates []Entry, n int) []Entry {
 }
 
 // entryFamily returns the rotation family of one entry: the carried Family
-// (the registry's FamilyName, or the native InferFamily) and, for entries built
-// by callers that predate the field, the id-prefix inference as a fallback.
+// re-folded to lowercase (the registry's explicit family case-preserved by
+// C2, or the native InferFamily) and, for entries built by callers that
+// predate the field, the id-prefix inference as a fallback. The re-fold is
+// what keeps rotation aligned with fanout's own folded family matching.
 func entryFamily(e Entry) string {
 	if f := strings.TrimSpace(e.Family); f != "" {
 		return strings.ToLower(f)

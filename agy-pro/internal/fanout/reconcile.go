@@ -35,29 +35,29 @@ type Finding struct {
 
 // ConsolidatedIssue groups matching findings across seats.
 type ConsolidatedIssue struct {
-	ID             string          `json:"id"`
-	Status         ConsensusStatus `json:"status"`
-	Severity       string          `json:"severity"`
-	Title          string          `json:"title"`
-	Description    string          `json:"description"`
-	Locations      []string        `json:"locations,omitempty"`
-	ReportingSeats []int           `json:"reporting_seats"`
-	ReportingModels []string       `json:"reporting_models"`
-	Findings       []Finding       `json:"findings"`
+	ID              string          `json:"id"`
+	Status          ConsensusStatus `json:"status"`
+	Severity        string          `json:"severity"`
+	Title           string          `json:"title"`
+	Description     string          `json:"description"`
+	Locations       []string        `json:"locations,omitempty"`
+	ReportingSeats  []int           `json:"reporting_seats"`
+	ReportingModels []string        `json:"reporting_models"`
+	Findings        []Finding       `json:"findings"`
 }
 
 // SummaryReport is the machine-readable summary.json.
 type SummaryReport struct {
-	Task          string              `json:"task"`
-	Timestamp     string              `json:"timestamp"`
-	Root          string              `json:"root"`
-	NRequested    int                 `json:"n_requested"`
-	NCompleted    int                 `json:"n_completed"`
-	Degraded      bool                `json:"degraded"`
-	Seats         []SeatResult        `json:"seats"`
-	Issues        []ConsolidatedIssue `json:"issues"`
-	ConfirmedCount int                `json:"confirmed_count"`
-	DisputedCount  int                `json:"disputed_count"`
+	Task           string              `json:"task"`
+	Timestamp      string              `json:"timestamp"`
+	Root           string              `json:"root"`
+	NRequested     int                 `json:"n_requested"`
+	NCompleted     int                 `json:"n_completed"`
+	Degraded       bool                `json:"degraded"`
+	Seats          []SeatResult        `json:"seats"`
+	Issues         []ConsolidatedIssue `json:"issues"`
+	ConfirmedCount int                 `json:"confirmed_count"`
+	DisputedCount  int                 `json:"disputed_count"`
 	// UntrustedData fences the untrusted content this artifact carries (A12):
 	// seat answers and workspace quotes arrive here verbatim, and the main
 	// agent reads this file. Additive key; older readers ignore it.
@@ -178,9 +178,13 @@ func Reconcile(task, root, outDir string, nRequested int, seats []*SeatResult) (
 	}
 
 	summary := &SummaryReport{
-		// I4: the task string is user input; mask key-shaped values so a
-		// misdirected paste cannot ride into the machine summary raw.
-		Task:           providers.MaskOperand(task),
+		// I4/S1: the task string is user input and is usually a whole sentence,
+		// which whole-string MaskOperand cannot classify as secret-shaped, so an
+		// embedded bare secret rode into the machine summary raw. MaskSentence
+		// seeds the redactor with the task plus its per-token forms
+		// (FlagSeedOperands), so the secret is masked wherever the sentence
+		// echoes it; a benign task seeds nothing and stays readable.
+		Task:           providers.MaskSentence(task, providers.FlagSeedOperands(task)...),
 		Timestamp:      ts,
 		Root:           root,
 		NRequested:     nRequested,
@@ -197,17 +201,21 @@ func Reconcile(task, root, outDir string, nRequested int, seats []*SeatResult) (
 			continue
 		}
 		// S-7: the summary is a shareable artifact; redact the error snippets
-		// on the way out. H3/I4: registry-derived provider/model ids are masked
-		// too (initial and final targets plus failover hops), so the machine
-		// summary and the --json stdout cannot carry key-shaped ids raw (the
-		// console banner masks the same fields).
+		// on the way out. H3/I4/S4: the whole Target is masked through the
+		// shared report helpers (not just Name/ID) so the machine summary and
+		// the --json stdout cannot carry a key-shaped apiKeyEnv, baseURL, model
+		// id or family raw; the failover hops are masked per field.
+		// C7: the shallow struct copy aliases the caller's Failovers backing
+		// array, so copy the hops before masking them - the per-hop writes used
+		// to land in the caller's slice. A nil slice stays nil (omitempty).
 		copySeat := *s
+		copySeat.Failovers = append([]FailoverRecord(nil), s.Failovers...)
 		copySeat.Error = redact(copySeat.Error)
 		copySeat.Content = redact(copySeat.Content)
-		copySeat.InitialTarget.Provider.Name = providers.MaskOperand(copySeat.InitialTarget.Provider.Name)
-		copySeat.InitialTarget.Model.ID = providers.MaskOperand(copySeat.InitialTarget.Model.ID)
-		copySeat.FinalTarget.Provider.Name = providers.MaskOperand(copySeat.FinalTarget.Provider.Name)
-		copySeat.FinalTarget.Model.ID = providers.MaskOperand(copySeat.FinalTarget.Model.ID)
+		copySeat.InitialTarget.Provider = providers.MaskProviderForReport(s.InitialTarget.Provider)
+		copySeat.InitialTarget.Model = providers.MaskModelForReport(s.InitialTarget.Model)
+		copySeat.FinalTarget.Provider = providers.MaskProviderForReport(s.FinalTarget.Provider)
+		copySeat.FinalTarget.Model = providers.MaskModelForReport(s.FinalTarget.Model)
 		for i := range copySeat.Failovers {
 			copySeat.Failovers[i].Reason = redact(copySeat.Failovers[i].Reason)
 			copySeat.Failovers[i].FromProv = providers.MaskOperand(copySeat.Failovers[i].FromProv)
@@ -250,11 +258,18 @@ func formatSeatReport(ts, task string, seat *SeatResult, redact func(string) str
 	sb.WriteString(fmt.Sprintf("# Seat %d Audit Report\n\n", seat.SeatID))
 	sb.WriteString("| Field | Value |\n")
 	sb.WriteString("|---|---|\n")
-	sb.WriteString(fmt.Sprintf("| Task | `%s` |\n", providers.MaskOperand(task)))
+	// I4/S1: the task is user input and usually a whole sentence, so the
+	// same MaskSentence seeding as summary.json applies here - a bare secret
+	// embedded in the task cannot survive into the seat report.
+	sb.WriteString(fmt.Sprintf("| Task | `%s` |\n", providers.MaskSentence(task, providers.FlagSeedOperands(task)...)))
 	sb.WriteString(fmt.Sprintf("| Provider | `%s` |\n", providers.MaskOperand(seat.FinalTarget.Provider.Name)))
 	sb.WriteString(fmt.Sprintf("| Kind | %s |\n", seatKindLabel(seat.Kind)))
 	sb.WriteString(fmt.Sprintf("| Quota/Cost | %s |\n", seatQuotaNote(seat.Kind)))
-	sb.WriteString(fmt.Sprintf("| Model | `%s` (family: `%s`) |\n", providers.MaskOperand(seat.FinalTarget.Model.ID), providers.MaskOperand(seat.FinalTarget.Model.FamilyName())))
+	// C2: the family renders through the case-preserving display authority
+	// (MaskFamilyName). MaskOperand(Model.FamilyName()) folded the family to
+	// lowercase first, which destroyed the uppercase letter the decorated class
+	// requires, so a key-shaped family pasted into the registry rode raw.
+	sb.WriteString(fmt.Sprintf("| Model | `%s` (family: `%s`) |\n", providers.MaskOperand(seat.FinalTarget.Model.ID), providers.MaskFamilyName(seat.FinalTarget.Model)))
 	sb.WriteString(fmt.Sprintf("| Status | `%s` |\n", seat.Status))
 	sb.WriteString(fmt.Sprintf("| Degraded | `%v` |\n", seat.Degraded))
 	sb.WriteString(fmt.Sprintf("| Duration | `%d ms` |\n", seat.DurationMs))

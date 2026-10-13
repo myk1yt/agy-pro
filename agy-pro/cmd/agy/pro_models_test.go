@@ -114,6 +114,59 @@ func TestRunModelsCmdJSONDumpsEntries(t *testing.T) {
 	}
 }
 
+// C2 end-to-end: `models --json` must mask a key-shaped family. The combined
+// inventory carries the explicit registry family CASE-PRESERVED (phase 1), and
+// the decorated display class requires an uppercase letter, so the pre-fix
+// pipeline (FamilyName() folded before the mask at the JSON sink) let a
+// lowercase-shaped family pasted into the registry family slot ride raw into
+// the dump. The seam drives the real inventory.Load so the registry -> entry
+// -> mask chain runs, not just the render step. The plant is
+// separator-decorated (hyphens): its folded form is neither a contiguous
+// base64 run nor identifier-class, so only the preserved case can fire the
+// decorated class.
+func TestRunModelsCmdJSONMasksKeyShapedFamily(t *testing.T) {
+	const familyPlant = "wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY"
+	const familyPlantMask = "wJalr****"
+	reg := &providers.Registry{Providers: []providers.Provider{{
+		Name:    "nw",
+		BaseURL: "https://api.example/v1",
+		Models: []providers.Model{
+			{ID: "glm-5.3-flash-flex", Family: familyPlant},
+			{ID: "qwen3.8-flash", Family: "Qwen"},
+		},
+	}}}
+	old := loadModelsInventory
+	loadModelsInventory = func(ctx context.Context) (*inventory.Inventory, error) {
+		return inventory.Load(ctx, reg, nil)
+	}
+	t.Cleanup(func() { loadModelsInventory = old })
+
+	var out, errw strings.Builder
+	code := runModelsCmdTo([]string{"--json"}, &out, &errw)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, errw.String())
+	}
+	got := out.String()
+	if strings.Contains(got, familyPlant) {
+		t.Errorf("models --json leaks the key-shaped family raw:\n%s", got)
+	}
+	var entries []inventory.Entry
+	if err := json.Unmarshal([]byte(got), &entries); err != nil {
+		t.Fatalf("json decode: %v\n%s", err, got)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("json entries = %d, want 2", len(entries))
+	}
+	if entries[0].Family != familyPlantMask {
+		t.Errorf("key-shaped family = %q, want %q", entries[0].Family, familyPlantMask)
+	}
+	// The case-preserved family keeps its case; the pre-fix folded rendering
+	// would have printed "qwen".
+	if entries[1].Family != "Qwen" {
+		t.Errorf("benign family = %q, want the case-preserved %q", entries[1].Family, "Qwen")
+	}
+}
+
 func TestRunModelsCmdUnknownFlagUsageExit2(t *testing.T) {
 	for _, args := range [][]string{{"--nope"}, {"extra-positional"}, {"--all", "trailing"}} {
 		var out, errw strings.Builder

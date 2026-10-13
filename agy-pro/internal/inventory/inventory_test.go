@@ -263,6 +263,86 @@ func TestRenderNumberedFormat(t *testing.T) {
 	}
 }
 
+// C2: Entry.Family carries the CASE-PRESERVING explicit registry family so
+// the models --json display sink can mask a key-shaped family through the
+// uppercase-requiring decorated class (the folded FamilyName() rode a
+// lowercase-shaped secret raw). Rotation re-folds (entryFamily), so fanout
+// alignment is unchanged; id-inferred rows are unaffected.
+func TestLoadCarriesCasePreservedFamily(t *testing.T) {
+	// A separator-carrying mixed-case family: the contiguous-run rule cannot
+	// see it (the ":" breaks the run), so only the case-preserved decorated
+	// class catches it. This is the exact C2 leak shape.
+	keyFamily := "Native:wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	reg := &providers.Registry{Providers: []providers.Provider{{
+		Name: "acme", Models: []providers.Model{
+			{ID: "m1", Family: "Gemini"},
+			{ID: "m2", Family: keyFamily},
+			{ID: "m3"},
+		},
+	}}}
+	inv, err := Load(context.Background(), reg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inv.Entries[0].Family != "Gemini" {
+		t.Errorf("Entry.Family = %q; want the case-preserved explicit family %q", inv.Entries[0].Family, "Gemini")
+	}
+	if inv.Entries[2].Family != "m" {
+		t.Errorf("id-inferred family = %q; want m (providers.InferFamily)", inv.Entries[2].Family)
+	}
+	// Rotation folds the carried family: a mixed-case family still collides
+	// with its lowercase twin, so fanout alignment is unchanged.
+	if got := entryFamily(inv.Entries[0]); got != "gemini" {
+		t.Errorf("entryFamily(case-preserved family) = %q; want the folded gemini", got)
+	}
+	// The models --json sink masks Entry.Family through MaskOperand; the
+	// case-preserved feed is what lets the decorated class catch it (the
+	// folded form rode raw).
+	masked := providers.MaskOperand(inv.Entries[1].Family)
+	if masked != "Nativ****" {
+		t.Errorf("MaskOperand(key-shaped family) = %q; want Nativ**** (C2 display fix)", masked)
+	}
+	if strings.Contains(masked, "wJalrXUtnFEMI") {
+		t.Errorf("masked family still carries the secret core: %q", masked)
+	}
+	// A benign family survives the same seam readable.
+	if got := providers.MaskOperand(inv.Entries[0].Family); got != "Gemini" {
+		t.Errorf("MaskOperand(benign family) = %q; want unchanged", got)
+	}
+}
+
+// S5: RenderNumbered masks the Group (provider name) and the native
+// DisplayName column through MaskOperand; the benign model ID of the same
+// row stays readable (the pinned format test above keeps its fixtures).
+func TestRenderNumberedMasksKeyShapedDisplayFields(t *testing.T) {
+	keyGroup := "AKIAIOSFODNN7EXAMPLE"
+	keyDisplay := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	reg := &providers.Registry{Providers: []providers.Provider{{
+		Name:   keyGroup,
+		Models: []providers.Model{{ID: "gemini-2.5-flash"}},
+	}}}
+	native := []NativeModel{{ID: "gpt-oss-120b-medium", DisplayName: keyDisplay}}
+	inv, err := Load(context.Background(), reg, &stubFetcher{models: native})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf strings.Builder
+	inv.RenderNumbered(&buf)
+	out := buf.String()
+	if strings.Contains(out, keyGroup) || strings.Contains(out, keyDisplay) {
+		t.Errorf("render leaks a key-shaped Group/DisplayName:\n%s", out)
+	}
+	if !strings.Contains(out, "[AKIAI****]") {
+		t.Errorf("key-shaped provider name (Group) not masked:\n%s", out)
+	}
+	if !strings.Contains(out, "wJalr****") {
+		t.Errorf("key-shaped native DisplayName not masked:\n%s", out)
+	}
+	if !strings.Contains(out, "gemini-2.5-flash") {
+		t.Errorf("benign model ID must stay readable:\n%s", out)
+	}
+}
+
 func TestIsK3ExcludedDelegationTable(t *testing.T) {
 	cases := []struct {
 		id   string

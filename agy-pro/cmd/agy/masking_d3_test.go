@@ -54,6 +54,48 @@ func TestD3StatusModelsSlotsMasked(t *testing.T) {
 	}
 }
 
+// C2: the banner family slot masks the CASE-PRESERVED explicit registry
+// family. Masking the folded FamilyName() instead destroyed the uppercase
+// letter the decorated class requires, so a key-shaped family pasted into the
+// registry family slot rode raw; MaskFamilyName keeps the case and masks. The
+// plant is separator-decorated (hyphens), so its folded form is neither a
+// contiguous base64 run nor identifier-class: only the preserved case can
+// fire the decorated class.
+func TestBannerFamilySlotMasksKeyShapedFamily(t *testing.T) {
+	const familyPlant = "wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY"
+	const familyPlantMask = "wJalr****"
+	reg := &providers.Registry{Providers: []providers.Provider{{
+		Name:      "nw",
+		BaseURL:   "https://api.example/v1",
+		APIKeyEnv: "NW_API_KEY",
+		Models:    []providers.Model{{ID: "glm-5.3-flash-flex", Family: familyPlant}},
+	}}}
+	out := captureStdout(t, func() { printConfiguredProvidersAndModels(reg) })
+	if strings.Contains(out, familyPlant) {
+		t.Errorf("banner family slot leaks the key-shaped family raw:\n%s", out)
+	}
+	if !strings.Contains(out, "Family: "+familyPlantMask) {
+		t.Errorf("banner family slot must render the plant as %q:\n%s", familyPlantMask, out)
+	}
+
+	// Benign families stay readable, and an explicit mixed-case family keeps
+	// its case (the folded rendering would have printed "gemini").
+	benign := &providers.Registry{Providers: []providers.Provider{{
+		Name:    "google",
+		BaseURL: "https://api.example/v1",
+		Models: []providers.Model{
+			{ID: "gemini-2.5-flash", Family: "Gemini"},
+			{ID: "glm-5.3-flash-flex"},
+		},
+	}}}
+	out = captureStdout(t, func() { printConfiguredProvidersAndModels(benign) })
+	for _, want := range []string{"Family: Gemini", "Family: glm"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("benign banner family output lost %q:\n%s", want, out)
+		}
+	}
+}
+
 // D1: the composite-error sites seed the redactor with the raw operand, so a
 // planted key is masked wherever it appears in the sentence while the operand
 // slot keeps its readable mask.

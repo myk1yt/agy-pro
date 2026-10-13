@@ -1144,8 +1144,10 @@ func TestRunDoctorRollbackMasksDecoratedPlant(t *testing.T) {
 	if strings.Contains(out, plant) || strings.Contains(errOut, plant) {
 		t.Errorf("rollback output leaks the decorated plant raw:\nstdout=%s\nstderr=%s", out, errOut)
 	}
-	masked := strings.Contains(out, "****")
-	if !strings.Contains(out, "Backup file:") || !masked {
-		t.Errorf("backup-file line must mask the decorated plant:\nstdout=%s", out)
+	// C3: the rendering is deterministic (U8 first-5 mask of the whole
+	// operand), so the assertion pins it exactly instead of a bare "****"
+	// that any short benign token would also satisfy.
+	if !strings.Contains(out, "Backup file: nativ****") {
+		t.Errorf("backup-file line must mask the decorated plant as nativ****:\nstdout=%s", out)
 	}
 }

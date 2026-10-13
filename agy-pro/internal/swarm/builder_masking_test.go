@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"agypro/internal/fanout"
 	"agypro/internal/inventory"
@@ -11,12 +12,15 @@ import (
 )
 
 // Plants shared by the E7/E8 masking tests: a Claude-style key, an AWS access
-// key ID, and the first-5 masks MaskSecret renders for them.
+// key ID, an AWS secret access key, and the first-5 masks MaskSecret renders
+// for them.
 const (
 	skPlant   = "sk-ant-api03-PLANT0123456789abcdef"
 	skMask    = "sk-an****"
 	akiaPlant = "AKIAIOSFODNN7EXAMPLE"
 	akiaMask  = "AKIAI****"
+	awsPlant  = "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"
+	awsMask   = "wJalr****"
 )
 
 // TestRenderSummaryAndSeatListMaskKeyShapedModelIDs (E8): the summary table
@@ -65,8 +69,11 @@ func TestRenderSummaryAndSeatListMaskKeyShapedModelIDs(t *testing.T) {
 // TTY lines in its invalid-template / invalid-selection errors; a misdirected
 // key paste must come back masked, benign tokens readable. F5 adds the
 // decorated class that whole-string classification cannot see ("native:<aws>",
-// "1-<aws>", "1-<asia>", a non-eyJ JWT): those mask via the seeded sentence
-// pass (providers.MaskSentence) and render as [REDACTED].
+// "1-<aws>", "1-<asia>", a non-eyJ JWT). The two echo sites mask through
+// different passes: the template error seeds providers.MaskSentence with the
+// raw line and renders [REDACTED], while the seat-selection error is already
+// masked at the inventory source to the canonical first-5 form (the U8 rule)
+// and the builder's seeded pass keeps that form.
 func TestBuilderMasksPlantedTTYTokens(t *testing.T) {
 	const (
 		awsPlant   = "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"
@@ -98,9 +105,10 @@ func TestBuilderMasksPlantedTTYTokens(t *testing.T) {
 	})
 
 	t.Run("invalid seat selection token", func(t *testing.T) {
-		// Decorated plants are masked by the builder's seeded sentence pass
-		// ([REDACTED]); sk-/AKIA shapes are already masked at the inventory
-		// error source (first-5 + ****) and the builder pass keeps that form.
+		// Every plant renders through the canonical first-5 mask (the U8 rule)
+		// at the inventory error source; the builder's seeded sentence pass
+		// keeps that form (I3), so the expectations below pin first-5 masks
+		// rather than [REDACTED].
 		cases := []struct{ plant, mask string }{
 			// I3: the decorated class renders through the canonical first-5
 			// mask (the U8 rule) at the inventory error source; the seeded
@@ -234,4 +242,192 @@ func TestResolveSeatsAndSeatLineMaskRegistryDerivedPlants(t *testing.T) {
 			t.Errorf("benign seat spec must stay readable: %s", benign)
 		}
 	})
+}
+
+// --- C1/S3/C4: the step-4 prompt slot (builder.go printBudgetAndPreview) ---
+
+// builderInv is the standard 2-entry fixture (native + provider) the prompt
+// tests drive the builder with.
+func builderInv(t *testing.T) *inventory.Inventory {
+	t.Helper()
+	return buildInventory(t,
+		[]inventory.NativeModel{{ID: "gemini-3.8-flash-high", DisplayName: "Flash"}},
+		[]providers.Provider{{Name: "nw", Models: []providers.Model{{ID: "glm-5.3-flash"}}}})
+}
+
+// lastPromptSlotLine returns the last rendered "  4. prompt   ..." line (the
+// slot is re-rendered after every edit, so the last one carries the edit).
+func lastPromptSlotLine(t *testing.T, out string) string {
+	t.Helper()
+	last := ""
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "  4. prompt   ") {
+			last = line
+		}
+	}
+	if last == "" {
+		t.Fatalf("no step-4 prompt slot rendered:\n%s", out)
+	}
+	return last
+}
+
+// runBuilderToPrompt drives the builder to the budget loop, pastes prompt at
+// edit choice "4", then cancels; it returns stdout.
+func runBuilderToPrompt(t *testing.T, inv *inventory.Inventory, prompt string) string {
+	t.Helper()
+	var out, errOut bytes.Buffer
+	b := &Builder{In: strings.NewReader("1\n1\n4\n" + prompt + "\nq\n"), Out: &out, ErrW: &errOut, Inv: inv}
+	if code := b.Run(); code != 0 {
+		t.Fatalf("builder exit = %d; want 0 (cancel)\nstdout:\n%s\nstderr:\n%s", code, out.String(), errOut.String())
+	}
+	return out.String()
+}
+
+// TestBuilderPromptSlotMasksShortBareKey (C1): the mask used to sit inside the
+// `len(prompt) > 60` branch, so a <=60-byte key-shaped prompt pasted at edit
+// choice "4" printed raw at slot 4. The mask is now unconditional.
+func TestBuilderPromptSlotMasksShortBareKey(t *testing.T) {
+	out := runBuilderToPrompt(t, builderInv(t), skPlant)
+	if strings.Contains(out, skPlant) {
+		t.Errorf("builder echoes the planted key raw somewhere in stdout:\n%s", out)
+	}
+	slot := lastPromptSlotLine(t, out)
+	if !strings.Contains(slot, "[REDACTED]") {
+		t.Errorf("step-4 slot must render the seeded mask, got %q", slot)
+	}
+}
+
+// TestBuilderPromptSlotMasksLongMultiWordPrompt (C1/S3/C4): a >60-byte
+// multi-word prompt with an embedded bare key renders masked at slot 4 and on
+// the command preview line. The seed set is the whole prompt plus each
+// whitespace-separated token (providers.FlagSeedOperands); the per-token seed
+// is what masks when the whole prompt is not itself seed-eligible (a
+// location-shaped prompt never seeds as a whole).
+func TestBuilderPromptSlotMasksLongMultiWordPrompt(t *testing.T) {
+	t.Run("bare key in a sentence", func(t *testing.T) {
+		prompt := "please review the attached diff and check sk-ant-api03-PLANT0123456789abcdef before merging upstream"
+		if len(prompt) <= 60 {
+			t.Fatalf("test prompt must exceed 60 bytes, got %d", len(prompt))
+		}
+		out := runBuilderToPrompt(t, builderInv(t), prompt)
+		slot := lastPromptSlotLine(t, out)
+		if strings.Contains(slot, skPlant) {
+			t.Errorf("step-4 slot echoes the planted key raw: %q", slot)
+		}
+		if !strings.Contains(slot, "[REDACTED]") {
+			t.Errorf("step-4 slot missing the mask: %q", slot)
+		}
+		// The command preview line masks per argument (FormatCommand ->
+		// MaskOperand -> generic redactor), so the key must not survive there
+		// either.
+		if strings.Contains(out, skPlant) {
+			t.Errorf("preview line echoes the planted key raw:\n%s", out)
+		}
+	})
+
+	t.Run("per-token seed: bare key in a location-shaped sentence", func(t *testing.T) {
+		// The "://" makes the whole prompt location-shaped, so it can never
+		// seed as a whole; only the FlagSeedOperands token seeds, which is
+		// exactly the multi-token gap those seeds exist for.
+		prompt := "compare https://api.example.com/v1/spec with " + awsPlant + " and report differences"
+		if len(prompt) <= 60 {
+			t.Fatalf("test prompt must exceed 60 bytes, got %d", len(prompt))
+		}
+		out := runBuilderToPrompt(t, builderInv(t), prompt)
+		slot := lastPromptSlotLine(t, out)
+		if strings.Contains(slot, awsPlant) {
+			t.Errorf("step-4 slot echoes the planted key raw: %q", slot)
+		}
+		if !strings.Contains(slot, "[REDACTED]") {
+			t.Errorf("step-4 slot missing the per-token mask: %q", slot)
+		}
+		if !strings.Contains(slot, "compare https://api.example.com/v1/spec with") {
+			t.Errorf("benign prompt wording must stay readable: %q", slot)
+		}
+		// The command preview line masks per argument via MaskOperand
+		// (FormatCommand H5); a sentence-shaped prompt carrying an
+		// unrecognized bare secret there is the gate-acknowledged residual
+		// (code-reviewer-final-report.md non-goals), outside this batch.
+	})
+}
+
+// TestBuilderPromptSlotTruncatesOnRuneBoundary (S3): the old prompt[:57]
+// byte-slice split a multi-byte rune and rendered U+FFFD; truncation now cuts
+// on the rune boundary.
+func TestBuilderPromptSlotTruncatesOnRuneBoundary(t *testing.T) {
+	prompt := "请 review " + strings.Repeat("这个仓库的安全问题并报告发现", 5)
+	if len(prompt) <= 60 || utf8.RuneCountInString(prompt) <= 60 {
+		t.Fatalf("prompt must exceed 60 bytes and 60 runes: bytes=%d runes=%d", len(prompt), utf8.RuneCountInString(prompt))
+	}
+	if utf8.ValidString(prompt[:57]) {
+		t.Fatalf("test prompt must carry a rune straddling byte 57 (the old byte-slice cut cleanly)")
+	}
+	out := runBuilderToPrompt(t, builderInv(t), prompt)
+	slot := lastPromptSlotLine(t, out)
+	if strings.Contains(slot, "\uFFFD") {
+		t.Errorf("step-4 slot renders a replacement char (rune split): %q", slot)
+	}
+	if !utf8.ValidString(slot) {
+		t.Errorf("step-4 slot is not valid UTF-8: %q", slot)
+	}
+	if !strings.HasSuffix(slot, "...") {
+		t.Errorf("step-4 slot must be truncated with an ellipsis: %q", slot)
+	}
+	if !strings.Contains(slot, "这个仓库") {
+		t.Errorf("truncated prompt lost its multi-byte content: %q", slot)
+	}
+}
+
+// TestRenderSeatListMasksKeyShapedGroupAndDisplayName (S5): the seat list
+// echoes the registry-derived group (provider name) and the native display
+// name; key-shaped ones render masked while benign IDs stay readable.
+func TestRenderSeatListMasksKeyShapedGroupAndDisplayName(t *testing.T) {
+	const (
+		keyGroup   = "AKIAIOSFODNN7EXAMPLE"
+		keyDisplay = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	)
+	inv := buildInventory(t,
+		[]inventory.NativeModel{
+			{ID: "gemini-3.8-flash-high", DisplayName: keyDisplay},
+			{ID: "glm-5.3-flash", DisplayName: "Flash"},
+		},
+		[]providers.Provider{{Name: keyGroup, Models: []providers.Model{{ID: "gemini-2.5-flash"}}}})
+	var buf bytes.Buffer
+	RenderSeatList(&buf, inv)
+	out := buf.String()
+	if strings.Contains(out, keyGroup) || strings.Contains(out, keyDisplay) {
+		t.Errorf("seat list leaks a key-shaped Group/DisplayName:\n%s", out)
+	}
+	if !strings.Contains(out, "[AKIAI****]") {
+		t.Errorf("key-shaped provider name (Group) not masked:\n%s", out)
+	}
+	if !strings.Contains(out, "wJalr****") {
+		t.Errorf("key-shaped native DisplayName not masked:\n%s", out)
+	}
+	if !strings.Contains(out, "gemini-3.8-flash-high") || !strings.Contains(out, "Flash") {
+		t.Errorf("benign model IDs and display names must stay readable:\n%s", out)
+	}
+}
+
+// TestPickTemplateMasksMultiWordLineWithEmbeddedSecret (C5/S2): the invalid
+// -template echo is a whole-line seed site (builder.go:194). With the wide
+// seed class a multi-word misdirected paste embedding a bare secret is
+// SeedEligible, so the quoted line renders [REDACTED] while the surrounding
+// wording stays readable.
+func TestPickTemplateMasksMultiWordLineWithEmbeddedSecret(t *testing.T) {
+	const line = "here is the key " + awsPlant
+	var out, errOut bytes.Buffer
+	b := &Builder{In: strings.NewReader(line + "\n"), Out: &out, ErrW: &errOut, Inv: builderInv(t)}
+	if code := b.Run(); code != 2 {
+		t.Fatalf("builder exit = %d; want 2 (input failure)\nstdout:\n%s\nstderr:\n%s", code, out.String(), errOut.String())
+	}
+	if strings.Contains(errOut.String(), awsPlant) {
+		t.Errorf("template error echoes the planted key raw:\n%s", errOut.String())
+	}
+	if !strings.Contains(errOut.String(), `invalid template "[REDACTED]"`) {
+		t.Errorf("template error missing the whole-line seed mask:\n%s", errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "enter 1-") {
+		t.Errorf("template error lost its actionable wording:\n%s", errOut.String())
+	}
 }

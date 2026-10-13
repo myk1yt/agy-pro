@@ -620,6 +620,71 @@ func TestInteractiveSetupWizard_PastedRawKeyAbsorption(t *testing.T) {
 	}
 }
 
+// TestInteractiveSetupWizard_FamilyDisplayMasksKeyShapedFamily is the C2
+// display fix at the wizard summary: the family column routes through
+// MaskFamilyName, so a key-shaped explicit family renders first-5+****
+// (the folded FamilyName() rode it raw) while a benign family stays
+// readable. The registry itself keeps the typed value: the fix is
+// display-only.
+func TestInteractiveSetupWizard_FamilyDisplayMasksKeyShapedFamily(t *testing.T) {
+	tmpDir := t.TempDir()
+	provPath := filepath.Join(tmpDir, "providers.json")
+	t.Setenv(EnvProviders, provPath)
+	t.Setenv("MYCUSTOMVENDOR_API_KEY", "")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"choices":[{"message":{"content":"pong"}}]}`))
+	}))
+	defer server.Close()
+
+	keyFamily := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	// Unknown provider (no presets): name, URL, key, then two custom models.
+	// The first declares a key-shaped family, the second a benign one.
+	input := strings.Join([]string{
+		"mycustomvendor",
+		server.URL + "/v1",
+		"mock-dummy-key-789",
+		"custom-model-x",
+		keyFamily,
+		"", "", "N", "N", "N", // ctx, maxout, tools, thinking, vision
+		"y",
+		"custom-model-2",
+		"gemini",
+		"", "", "N", "N", "N",
+		"N",
+	}, "\n") + "\n"
+
+	in := strings.NewReader(input)
+	out := &bytes.Buffer{}
+	if err := InteractiveSetupWizard(in, out); err != nil {
+		t.Fatalf("wizard returned error: %v\nOutput: %s", err, out.String())
+	}
+
+	if !strings.Contains(out.String(), "[family: wJalr****") {
+		t.Errorf("key-shaped family must render first-5+**** in the summary:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "wJalrXUtnFEMI") {
+		t.Errorf("summary leaks the key-shaped family raw:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "[family: gemini") {
+		t.Errorf("benign family must stay readable in the summary:\n%s", out.String())
+	}
+
+	// The registry keeps the typed value verbatim (display-only fix).
+	reg, err := LoadFrom(provPath)
+	if err != nil {
+		t.Fatalf("failed to load saved providers: %v", err)
+	}
+	if len(reg.Providers) != 1 || len(reg.Providers[0].Models) != 2 {
+		t.Fatalf("unexpected saved registry: %+v", reg.Providers)
+	}
+	if reg.Providers[0].Models[0].Family != keyFamily {
+		t.Errorf("registry family = %q; want the typed value %q (display-only fix)", reg.Providers[0].Models[0].Family, keyFamily)
+	}
+}
+
 func TestDeriveTags(t *testing.T) {
 	// Base capability: only "general"
 	t1 := DeriveTags(Capabilities{})

@@ -145,14 +145,80 @@ func MaskOperand(s string) string {
 	if s == "" {
 		return s
 	}
-	// I3: the decorated-secret and JWT classes are the single authority in
-	// decoratedSecretShaped/isJWTShapedOperand; folding them in here makes
-	// every display sink (banner, report bodies, JSON, preview) mask decorated
-	// operands while locations and identifier-class model IDs stay readable.
+	// I3: the decorated-secret and JWT classes are the single DISPLAY
+	// authority in decoratedSecretShaped/isJWTShapedOperand; folding them in
+	// here makes every display sink (banner, report bodies, JSON, preview)
+	// mask decorated operands while locations and identifier-class model IDs
+	// stay readable. Seeding keeps the wider core (seedShaped): a composite
+	// error embeds multi-word operands that must never render raw.
 	if operandLooksSecret(s) || isJWTShapedOperand(strings.TrimSpace(s)) || decoratedSecretShaped(s) {
 		return MaskSecret(s)
 	}
 	return NewRedactor()(s)
+}
+
+// MaskFamilyName renders a model's family for display (C2). An explicit
+// registry family is CASE-PRESERVED and masked through MaskOperand, so a
+// key-shaped value pasted into the family slot renders first-5+****: the
+// decorated class requires an uppercase letter, which the folded
+// FamilyName() would have destroyed and let a lowercase-shaped secret ride
+// raw. With no explicit family the id-inferred FamilyName() is masked
+// instead (the id itself can carry a key-shaped token). Benign families
+// ("gemini", "glm") keep their readable form.
+func MaskFamilyName(m Model) string {
+	if strings.TrimSpace(m.Family) != "" {
+		return MaskOperand(m.Family)
+	}
+	return MaskOperand(m.FamilyName())
+}
+
+// MaskProviderForReport renders a Provider for a report/JSON sink (S4):
+// every string field that can carry a registry value (Name, APIKeyEnv,
+// BaseURL, and every Model string field) routes through the operand masker,
+// so a nested Target.Provider serialized into summary.json or --json output
+// cannot leak a key-shaped value while benign names, env-var names, URLs,
+// and model IDs stay readable. The input is not mutated.
+func MaskProviderForReport(p Provider) Provider {
+	out := p
+	out.Name = MaskOperand(p.Name)
+	out.BaseURL = MaskOperand(p.BaseURL)
+	out.APIKeyEnv = MaskOperand(p.APIKeyEnv)
+	if p.Models != nil {
+		out.Models = make([]Model, len(p.Models))
+		for i, m := range p.Models {
+			out.Models[i] = MaskModelForReport(m)
+		}
+	}
+	return out
+}
+
+// MaskModelForReport renders one Model for a report/JSON sink (S4): the ID
+// through MaskOperand, the family through MaskFamilyName (case-preserved so
+// a key-shaped explicit family still catches the decorated class), and every
+// other registry-controlled string field (tags, allowed tools, reasoning
+// effort) through MaskOperand. Benign values are unchanged; the input is
+// not mutated.
+func MaskModelForReport(m Model) Model {
+	out := m
+	out.ID = MaskOperand(m.ID)
+	out.Family = MaskFamilyName(m)
+	out.Tags = maskStringSliceForReport(m.Tags)
+	out.Capabilities.AllowedTools = maskStringSliceForReport(m.Capabilities.AllowedTools)
+	out.Capabilities.ReasoningEffort = MaskOperand(m.Capabilities.ReasoningEffort)
+	return out
+}
+
+// maskStringSliceForReport masks each element of a registry-controlled
+// string slice for a report sink; a nil slice stays nil.
+func maskStringSliceForReport(in []string) []string {
+	if in == nil {
+		return nil
+	}
+	out := make([]string, len(in))
+	for i, s := range in {
+		out[i] = MaskOperand(s)
+	}
+	return out
 }
 
 // quotedSegmentRe matches one double-quoted segment inside a larger line. Go's
@@ -257,21 +323,34 @@ func identifierSegmented(operand string) bool {
 	return n >= 4 && longest < 16
 }
 
-// decoratedSecretShaped reports the decorated-secret class: not location-shaped,
-// not identifier-class, carrying at most one interior space (the whitespace-
-// decorated form "native: <aws>"; a sentence carries many and must never be
-// classified here), and its separator-stripped squash reaches the floor with an
-// uppercase letter. It is the ONE decorated-class authority, shared by
-// SeedEligible (sentence seeding) and MaskOperand (display masking).
-func decoratedSecretShaped(operand string) bool {
+// seedShaped is the shared CORE of the decorated-secret class: not
+// location-shaped, not identifier-class, and its separator-stripped squash
+// reaches the floor with an uppercase letter. It deliberately carries NO
+// whitespace gate: a composite error is a sentence a library call built
+// around a raw CLI operand, so the operand can span many words, and every
+// echo of it inside that sentence must still be masked. The display side
+// narrows this core through decoratedSecretShaped; MaskOperand never routes
+// through the core directly.
+func seedShaped(operand string) bool {
 	if isLocationShaped(operand) || identifierSegmented(operand) {
-		return false
-	}
-	if strings.Count(operand, " ") > 1 || strings.ContainsAny(operand, "\t\n") {
 		return false
 	}
 	sq := squashOperand(operand)
 	return len([]rune(sq)) >= decoratedSecretFloorRunes && strings.IndexFunc(sq, unicode.IsUpper) >= 0
+}
+
+// decoratedSecretShaped is the DISPLAY narrowing of the decorated-secret
+// class and the one display-side authority: the seedShaped core plus at
+// most one interior space and no tab/newline (the whitespace-decorated form
+// "native: <aws>"; a sentence carries many and must never render wholly
+// masked). Every display sink (MaskOperand, banners, report bodies, JSON,
+// previews) masks through this function, while seeding uses the wide core so
+// a composite sentence still masks the operand wherever it echoes it.
+func decoratedSecretShaped(operand string) bool {
+	if !seedShaped(operand) {
+		return false
+	}
+	return strings.Count(operand, " ") <= 1 && !strings.ContainsAny(operand, "\t\n")
 }
 
 // SeedEligible reports whether operand may seed the composite-error redactor
@@ -288,8 +367,12 @@ func decoratedSecretShaped(operand string) bool {
 //     runs (D7), isLikelyAPIKey verdicts;
 //   - the whole trimmed operand is a 3-segment JWT (isJWTShapedOperand),
 //     covering headers the classifier cannot see;
-//   - it is a decorated secret (decoratedSecretShaped): the separator-carrying
-//     class whose squash defeats the contiguous-run heuristic.
+//   - it is a decorated secret (seedShaped): the separator-carrying class
+//     whose squash defeats the contiguous-run heuristic. The seed core is
+//     deliberately WIDER than the display class (decoratedSecretShaped): a
+//     composite error embeds multi-word operands, so the whitespace gate
+//     that keeps a sentence from rendering wholly masked must not narrow
+//     what seeds.
 //
 // Location-shaped operands (a URL scheme, an absolute path, or a leading
 // ./ ../ .\ ..\ marker) never seed: spawn errors must name the binary, and
@@ -307,14 +390,16 @@ func SeedEligible(operand string) bool {
 	if isJWTShapedOperand(strings.TrimSpace(operand)) {
 		return true
 	}
-	return decoratedSecretShaped(operand)
+	return seedShaped(operand)
 }
 
 // FlagSeedOperands returns the redactor seeds for multi-token flag values:
-// each whole value plus its comma/space/semicolon-separated tokens. Validators
-// quote individual tokens ("seat 2: \"native:<plant>\""), and a whole-value
-// seed is not a substring of that sentence, so the token forms must seed too
-// (the r6 fanout/doctor multi-token gap).
+// each whole value plus its comma/space/semicolon-separated tokens (newlines
+// and carriage returns split too, so a value pasted with a trailing newline
+// still yields the bare token as a seed). Validators quote individual tokens
+// ("seat 2: \"native:<plant>\""), and a whole-value seed is not a substring
+// of that sentence, so the token forms must seed too (the r6 fanout/doctor
+// multi-token gap).
 func FlagSeedOperands(values ...string) []string {
 	seen := map[string]bool{}
 	var ops []string
@@ -330,7 +415,7 @@ func FlagSeedOperands(values ...string) []string {
 		}
 		add(v)
 		for _, tok := range strings.FieldsFunc(v, func(r rune) bool {
-			return r == ',' || r == ' ' || r == ';' || r == '\t'
+			return r == ',' || r == ' ' || r == ';' || r == '\t' || r == '\n' || r == '\r'
 		}) {
 			add(tok)
 		}
