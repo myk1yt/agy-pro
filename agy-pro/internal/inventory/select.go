@@ -196,6 +196,12 @@ func availableExternal(inv *Inventory) []Entry {
 // rotateFamilies picks up to n provider entries with distinct families
 // (same fresh-family preference as SelectTargets rotation), falling back to
 // same-family fill so a single-family registry still yields a full preset.
+//
+// A7: the family of an entry is Entry.Family - the SAME value the fanout
+// engine derives from the registry (Model.FamilyName()). Inferring it from the
+// id prefix here instead let a registry-declared family be double-seated: two
+// ids with different prefixes but one declared family looked like two distinct
+// families to this rotation while fanout's own rotation saw one.
 func rotateFamilies(candidates []Entry, n int) []Entry {
 	if n <= 0 || len(candidates) == 0 {
 		return nil
@@ -203,7 +209,7 @@ func rotateFamilies(candidates []Entry, n int) []Entry {
 	seen := make(map[string]bool)
 	var out []Entry
 	for _, e := range candidates {
-		fam := providersFamily(e.ModelID)
+		fam := entryFamily(e)
 		if seen[fam] {
 			continue
 		}
@@ -233,8 +239,20 @@ func rotateFamilies(candidates []Entry, n int) []Entry {
 	return out
 }
 
-// providersFamily mirrors providers.Model.FamilyName() for an inventory entry
-// (explicit family is not carried on Entry; infer from the id).
+// entryFamily returns the rotation family of one entry: the carried Family
+// (the registry's FamilyName, or the native InferFamily) and, for entries built
+// by callers that predate the field, the id-prefix inference as a fallback.
+func entryFamily(e Entry) string {
+	if f := strings.TrimSpace(e.Family); f != "" {
+		return strings.ToLower(f)
+	}
+	return providersFamily(e.ModelID)
+}
+
+// providersFamily mirrors providers.Model.FamilyName() for a bare model id.
+// It is the fallback for entries that carry no explicit Family (callers that
+// build Entry by hand, e.g. swarm.EntriesFromSeatSpecs); inventory.Load fills
+// Family itself (A7).
 func providersFamily(modelID string) string {
 	id := strings.ToLower(modelID)
 	if i := strings.LastIndex(id, "/"); i >= 0 {

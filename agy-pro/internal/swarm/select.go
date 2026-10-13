@@ -134,7 +134,17 @@ func rejectExplicitK3(input string, inv *inventory.Inventory) error {
 	return nil
 }
 
-// tokenNumbers expands one number or range token to its seat numbers.
+// maxSelectionRange is the ceiling on how many seat numbers ONE range token
+// may expand to (A8). The grammar already caps a whole selection at 40 seats
+// (inventory.ParseSelection) and any seat number past the inventory length is
+// out of range, so a wider range can never select anything: expanding it is
+// pure memory-exhaustion surface. `1-2000000000` used to materialize two
+// billion ints inside rejectExplicitK3 - before any bound check ran - which is
+// a prompt-injected exec turning into an OOM kill.
+const maxSelectionRange = 4096
+
+// tokenNumbers expands one number or range token to its seat numbers. Range
+// expansion is bounded by maxSelectionRange BEFORE anything is allocated (A8).
 func tokenNumbers(tok string) ([]int, error) {
 	if i := strings.IndexByte(tok, '-'); i >= 0 {
 		start, err1 := strconv.Atoi(strings.TrimSpace(tok[:i]))
@@ -145,7 +155,12 @@ func tokenNumbers(tok string) ([]int, error) {
 		if start > end {
 			return nil, fmt.Errorf("range %q is inverted", tok)
 		}
-		var out []int
+		// A8: reject (not truncate) an over-wide range. A truncated range
+		// would silently select the wrong seats; an error names the problem.
+		if end-start >= maxSelectionRange {
+			return nil, fmt.Errorf("range %q is too wide: one range may expand at most %d seats", tok, maxSelectionRange)
+		}
+		out := make([]int, 0, end-start+1)
 		for n := start; n <= end; n++ {
 			out = append(out, n)
 		}

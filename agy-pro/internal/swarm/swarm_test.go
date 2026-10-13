@@ -3,11 +3,13 @@ package swarm
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"agypro/internal/fanout"
 	"agypro/internal/inventory"
@@ -217,6 +219,62 @@ func TestRenderSeatListMarksK3(t *testing.T) {
 	}
 	if !strings.Contains(got, "glm-5.3-flash-flex") {
 		t.Errorf("non-k3 rows must render normally:\n%s", got)
+	}
+}
+
+// A8 (security): a range token was expanded BEFORE any bound check ran, so
+// `1-2000000000` materialized two billion ints inside rejectExplicitK3 - a
+// prompt-injected exec turning into an OOM kill before ParseSelection's 40-seat
+// cap or the inventory bounds check could reject it. Expansion is now bounded,
+// and the whole selection fails fast (the caller maps the error to exit 2).
+func TestSelectionRangeExpansionIsBounded(t *testing.T) {
+	inv := buildInventory(t,
+		[]inventory.NativeModel{{ID: "gemini-3.8-flash-high", DisplayName: "Flash"}},
+		[]providers.Provider{{Name: "nw", Models: []providers.Model{{ID: "glm-5.3-flash"}}}})
+
+	// The over-wide range must be rejected by the helper itself, before it
+	// allocates anything.
+	if _, err := tokenNumbers("1-2000000000"); err == nil {
+		t.Fatal("tokenNumbers must reject an over-wide range")
+	} else if !strings.Contains(err.Error(), "too wide") {
+		t.Errorf("tokenNumbers error = %v; want the too-wide rejection", err)
+	}
+	// The cap boundary itself is still accepted (4096 numbers wide).
+	nums, err := tokenNumbers("1-4096")
+	if err != nil {
+		t.Fatalf("a range at the cap must be accepted: %v", err)
+	}
+	if len(nums) != 4096 {
+		t.Errorf("1-4096 expanded to %d numbers; want 4096", len(nums))
+	}
+	if _, err := tokenNumbers("1-4097"); err == nil {
+		t.Error("one past the cap must be rejected")
+	}
+
+	// End to end through ResolveSeats: fast failure, no OOM. The caller
+	// (cmd/agy resolveFlagSeats) maps this error to exit 2.
+	start := time.Now()
+	_, err = ResolveSeats("1-2000000000", inv, io.Discard)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("ResolveSeats must reject the over-wide range")
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("ResolveSeats(1-2000000000) took %v; the range must not be materialized", elapsed)
+	}
+	// The reported error still names the real problem (out of range), so the
+	// user gets an actionable message rather than an internal one.
+	if !strings.Contains(err.Error(), "out of range") {
+		t.Errorf("ResolveSeats error = %v; want the out-of-range message", err)
+	}
+
+	// A normal range still resolves.
+	seats, err := ResolveSeats("1-2", inv, io.Discard)
+	if err != nil {
+		t.Fatalf("ResolveSeats(1-2): %v", err)
+	}
+	if len(seats) != 2 {
+		t.Errorf("1-2 resolved to %d seats; want 2", len(seats))
 	}
 }
 

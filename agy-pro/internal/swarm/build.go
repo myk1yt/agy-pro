@@ -17,6 +17,11 @@ import (
 // --seats ...`); Go's flag parser accepts it identically to the single-dash
 // sketch in the contract signature comment.
 //
+// A2: `--task t.Task` and `--tools t.Tools` are emitted from the template, so
+// the non-interactive --task / --tools overrides (SwarmFlags.ApplyToTemplate)
+// and the interactive builder's edits reach the fanout run through the same
+// two flags.
+//
 // The vector ends in "--json": the builder consumes fanout's machine summary
 // (SummaryReport) to render the console `seat | kind | model | verdict` table,
 // and the preview/dry-run command shown to the user is byte-identical to the

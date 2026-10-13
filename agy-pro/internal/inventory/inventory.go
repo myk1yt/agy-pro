@@ -24,6 +24,13 @@ type Entry struct {
 	Capabilities string // provider: Model.CapabilitySummary(); native: "" (unknown - do not fabricate)
 	Spec         string // canonical seat token: "native:<id>" or "<provider>/<id>"
 	KeyMissing   bool   // provider entry whose APIKeyEnv name is set but resolves empty
+	// Family is the family the fanout engine will use for this entry:
+	// Model.FamilyName() (explicit registry family, else the id prefix) for
+	// provider rows, InferFamily(id) for native rows. Carrying it here is what
+	// keeps preset family rotation aligned with fanout's own rotation - the
+	// id-prefix inference used before A7 ignored a registry-declared family
+	// and could double-seat one declared family in a "family-rotated" preset.
+	Family string
 }
 
 // NativeModel is one row of the real `agy models` catalog.
@@ -74,6 +81,9 @@ func Load(ctx context.Context, reg *providers.Registry, nf NativeFetcher) (*Inve
 			ModelID:     m.ID,
 			DisplayName: m.DisplayName,
 			Spec:        "native:" + m.ID,
+			// A7: the same inference the native seat target uses
+			// (fanout nativeTarget -> providers.InferFamily).
+			Family: providers.InferFamily(m.ID),
 		})
 	}
 
@@ -103,6 +113,10 @@ func Load(ctx context.Context, reg *providers.Registry, nf NativeFetcher) (*Inve
 					Capabilities: m.CapabilitySummary(),
 					Spec:         p.Name + "/" + m.ID,
 					KeyMissing:   keyMissing,
+					// A7: FamilyName() honors an explicit registry family
+					// before falling back to the id prefix, exactly like the
+					// provider target the fanout engine builds for this row.
+					Family: m.FamilyName(),
 				})
 			}
 		}

@@ -173,6 +173,14 @@ func (r *NativeRunner) Run(ctx context.Context, cfg RunConfig, spec SeatSpec, pr
 		} else {
 			// Start failure (binary missing, cmd.exe unavailable, ...)
 			out.SpawnErr = runErr
+			if spawnCtx.Err() != nil {
+				// A5: a seat that queued behind the concurrency semaphore can
+				// find its own backstop already expired when Start runs. That
+				// is a killed seat, not a broken binary: flag the timeout so
+				// nativeSeatResult reports reason=timeout (with degraded)
+				// instead of the "spawn failed" mapping.
+				out.TimedOut = true
+			}
 			return finish()
 		}
 	} else {
@@ -212,16 +220,22 @@ func nativeSeatResult(seatID int, target providers.Target, o NativeOutcome, reda
 	}
 	tail := strings.TrimSpace(redact(o.StderrTail))
 	switch {
-	case o.SpawnErr != nil:
-		res.Status = "failed"
-		res.Error = fmt.Sprintf("native seat spawn failed: %v", redact(o.SpawnErr.Error()))
 	case o.TimedOut:
+		// A5: the timeout mapping wins over the spawn error, because a seat
+		// killed by its own backstop while queued on the semaphore reaches
+		// this function with BOTH flags set.
 		res.Status = "failed"
 		res.Degraded = true
 		res.Error = "reason=timeout native seat exceeded its deadline and was killed"
 		if tail != "" {
 			res.Error += ": " + tail
 		}
+	case o.SpawnErr != nil:
+		// A6: a seat that never started is a degraded seat. The summary and
+		// the console table used to show "Degraded Mode: false" for it.
+		res.Status = "failed"
+		res.Degraded = true
+		res.Error = fmt.Sprintf("native seat spawn failed: %v", redact(o.SpawnErr.Error()))
 	case o.ExitCode != 0:
 		res.Status = "failed"
 		res.Degraded = true
@@ -266,17 +280,21 @@ func isBatchScript(bin string) bool {
 	return false
 }
 
-// buildBatchCmdLine renders `cmd.exe /d /s /c "<bin> <args...>"` with every
-// token escaped for the two cmd parse passes plus the target's
+// buildBatchCmdLine renders `cmd.exe /d /v:off /s /c "<bin> <args...>"` with
+// every token escaped for the two cmd parse passes plus the target's
 // CommandLineToArgvW tokenizer (§2.2.2 F-Dc; escaping validated empirically
 // by the .cmd round-trip test).
+//
+// /v:off pins delayed expansion off (A11): with it on, a `!` inside the seat
+// prompt would be expanded at the target's parse pass, so the prompt text
+// would not survive byte-for-byte.
 func buildBatchCmdLine(bin string, args []string) string {
 	parts := make([]string, 0, len(args)+1)
 	parts = append(parts, escapeCmdToken(bin))
 	for _, a := range args {
 		parts = append(parts, escapeCmdToken(a))
 	}
-	return `cmd.exe /d /s /c "` + strings.Join(parts, " ") + `"`
+	return `cmd.exe /d /v:off /s /c "` + strings.Join(parts, " ") + `"`
 }
 
 // escapeCmdToken escapes one argument for a raw cmd.exe /d /s /c line so the
@@ -296,6 +314,11 @@ func buildBatchCmdLine(bin string, args []string) string {
 //   - `%` is never safe inside cmd quotes (variable expansion ignores
 //     quotes): step out, emit `^%` (percent is not re-expanded after batch
 //     %* substitution, so one caret survives both passes), step back in.
+//
+// A11: a pending backslash run is ALWAYS flushed doubled before an emitted
+// quote (the `"` of the step-out, the `\"` of a literal quote and the closing
+// quote). Flushing it single lets the target's CommandLineToArgvW read `\"` as
+// an escaped literal quote, which re-frames the argument.
 //
 // Newlines must never reach this function on the argv path: multi-line
 // prompts on .cmd/.bat targets force ViaStdin (F-Dc).
@@ -321,10 +344,18 @@ func escapeCmdToken(a string) string {
 			b.WriteString(`\"`)
 			cmdIn = !cmdIn
 		case '%':
-			flushBS(false)
 			if cmdIn {
+				// The step-out quote is an emitted quote: backslashes in
+				// front of it must be doubled (A11), or CommandLineToArgvW
+				// turns them into an escaped literal quote and the argument
+				// re-frames.
+				flushBS(true)
 				b.WriteString(`"^%"`)
 			} else {
+				// Already outside cmd quotes: `^%` emits NO quote, so the
+				// pending run stays literal. Doubling it here (A11 probe)
+				// rewrote `a"\%b` into `a"\\%b` at the target.
+				flushBS(false)
 				b.WriteString(`^%`)
 			}
 		case '&', '|', '<', '>', '(', ')':

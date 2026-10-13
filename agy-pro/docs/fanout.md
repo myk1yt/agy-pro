@@ -216,10 +216,10 @@ Step 3: Mark Seat Degraded (`degraded: true`) & Exclude from Quorum
 ```
 
 **Native seats are exempt from failover.** A native seat is pinned to one model id and has no alternate
-family, so a failure is terminal for that seat: it becomes a failed seat (`reason=quota` when stderr or
-`AGY_ERROR` shows 429 / quota / resource_exhausted, `reason=timeout` on the swarm deadline, otherwise the
-exit code plus a redacted stderr tail) and the swarm continues with the surviving seats. Empty stdout with
-exit 0 is also a failed seat, never a silent hang.
+family, so a failure is terminal for that seat: it becomes a failed seat (`reason=quota` when the stderr tail
+shows 429 / quota / resource_exhausted, an `AGY_ERROR` line on its own does not trigger it; `reason=timeout`
+on the swarm deadline; otherwise the exit code plus a redacted stderr tail) and the swarm continues with the
+surviving seats. Empty stdout with exit 0 is also a failed seat, never a silent hang.
 
 ---
 
@@ -234,7 +234,7 @@ After all seats complete their investigations, the reconciliation engine parses 
 
 ### 7.2 Generated Artifacts
 Under `--out DIR` (default `./reports/fanout/<ts>/`):
-1. `seat-<n>-<kind>-<model>.md`: The complete raw output of seat `n` (provider seats also carry their tool trajectory). Native seats add `| Kind | native |` and a `| Quota/Cost |` row.
+1. `seat-<n>-<provider>-<model>.md`: The complete raw output of seat `n` (provider seats also carry their tool trajectory). The filename segments are the seat's provider name and model id as the writer sanitizes them (`/`, `\` and `:` become `-`), so a native seat is `seat-1-native-gemini-3.8-flash-high.md`, not `seat-1-kind-...`. Native seats add `| Kind | native |` and a `| Quota/Cost |` row.
 2. `summary.json`: Comprehensive machine-readable report with metadata, seat performance, failovers, and issue clusters. Every seat entry carries `kind` (`native` | `provider`).
 3. `reconciliation.md`: Executive synthesis markdown containing:
    - Consensus & Reconciliation Matrix (`Seat 1 (native/gemini-3.8-flash-high)` style provenance) and a `Native Seats: k / m` header

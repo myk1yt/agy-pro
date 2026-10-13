@@ -4,7 +4,9 @@
 // (contract U3, docs/261012_0002_session_hybrid-swarm-model-ux/architect-report.md).
 //
 // Seat assignment is NUMBERED selection only in the happy path (D1). The
-// non-interactive flags remain a power-user/CI fallback (C2).
+// non-interactive flags remain a power-user/CI fallback (C2); flags.go owns
+// that flag surface, including the --tools / --task equivalents of the
+// interactive builder's edits (A2).
 package swarm
 
 import "strings"

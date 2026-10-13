@@ -3,6 +3,7 @@ package fanout
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -14,6 +15,11 @@ import (
 	"agypro/internal/mode"
 	"agypro/internal/providers"
 )
+
+// executeEngine is the engine seam (A3): Run() resolves the whole flag surface
+// into a RunConfig and hands it here. Tests replace it to assert flag binding
+// at Run() level without spawning seats (same idiom as swarm.RunFanout).
+var executeEngine = Execute
 
 // Run executes the fanout CLI command with standard exit codes.
 func Run(args []string, in io.Reader, out, errw io.Writer) int {
@@ -76,76 +82,29 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 		}
 	}
 
-	// 3. Resolve explicit models list
-	var explicitModels []string
-	if *modelsFlag != "" {
-		for _, m := range strings.Split(*modelsFlag, ",") {
-			m = strings.TrimSpace(m)
-			if m != "" {
-				explicitModels = append(explicitModels, m)
-			}
-		}
-	}
-
-	// 3b. Resolve seat specs (--seats) — contract §2.1. --seats and --models
-	// are mutually exclusive (fail-closed, exit 2).
-	var seatSpecs []SeatSpec
-	if *seatsFlag != "" {
-		if *modelsFlag != "" {
-			fmt.Fprintln(errw, "Error: --seats and --models cannot be combined")
-			return 2
-		}
-		specs, err := ParseSeatSpecs(*seatsFlag)
-		if err != nil {
-			fmt.Fprintf(errw, "Error: %v\n", err)
-			return 2
-		}
-		seatSpecs = specs
-	}
-
-	// 4. Construct RunConfig
-	// --tools parsing is fail-closed (S-8): unknown tokens are rejected
-	// instead of being ignored or substring-matched ("nowrite" must never
-	// enable write_file).
-	normalizedTools, err := ParseToolTokens(*toolsFlag)
+	// 3. The remaining flag surface is validated and turned into a RunConfig by
+	// buildRunConfig: the ONE choke point where raw flag values become an
+	// engine-ready config (A1/A3).
+	cfg, err := buildRunConfig(fanoutFlags{
+		task:      *taskFlag,
+		n:         *nFlag,
+		models:    *modelsFlag,
+		seats:     *seatsFlag,
+		maxNative: *maxNativeFlag,
+		root:      *rootFlag,
+		tools:     *toolsFlag,
+		maxTurns:  *maxTurnsFlag,
+		timeout:   *timeoutFlag,
+		out:       *outFlag,
+	}, promptText)
 	if err != nil {
 		fmt.Fprintf(errw, "Error: %v\n", err)
 		return 2
 	}
 
-	// Native-seat concurrency precedence (contract §2.3):
-	// --max-native flag > state.json native_seat_concurrency > default 2.
-	maxNative := *maxNativeFlag
-	if maxNative <= 0 {
-		if st, serr := mode.LoadState(); serr == nil {
-			maxNative = st.EffectiveNativeSeatConcurrency()
-		} else {
-			maxNative = mode.DefaultNativeSeatConcurrency
-		}
-	}
-
-	nSeats := *nFlag
-	if len(seatSpecs) > 0 {
-		nSeats = len(seatSpecs)
-	}
-
-	cfg := RunConfig{
-		Task:                 *taskFlag,
-		Prompt:               promptText,
-		N:                    nSeats,
-		Models:               explicitModels,
-		Seats:                seatSpecs,
-		MaxNativeConcurrency: maxNative,
-		Root:                 *rootFlag,
-		Tools:                normalizedTools,
-		MaxTurns:             *maxTurnsFlag,
-		TimeoutSec:           *timeoutFlag,
-		OutDir:               *outFlag,
-	}
-
 	// 5. Execute Fanout Engine
 	ctx := context.Background()
-	summary, err := Execute(ctx, cfg)
+	summary, err := executeEngine(ctx, cfg)
 	if err != nil {
 		// S-7: provider error snippets may echo credential fragments; the
 		// console line uses the same Redactor path as the reports.
@@ -194,6 +153,96 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 	}
 
 	return 0
+}
+
+// fanoutFlags is the parsed `agy pro fanout` flag surface (minus the prompt
+// text, which Run() resolves from --prompt / --prompt-file / stdin first).
+type fanoutFlags struct {
+	task      string
+	n         int
+	models    string
+	seats     string
+	maxNative int
+	root      string
+	tools     string
+	maxTurns  int
+	timeout   int
+	out       string
+}
+
+// buildRunConfig turns the flag surface into a validated RunConfig. It is the
+// ONE choke point for the flag path (A1/A3):
+//
+//   - --tools is parsed fail-closed (S-8): an unknown token is an error, never
+//     a substring match ("nowrite" must not enable write_file);
+//   - --seats and --models are mutually exclusive (contract §2.1, exit 2);
+//   - the native-seat concurrency is clamped through
+//     mode.ClampNativeSeatConcurrency, the same helper the state.json path
+//     uses, so no flag value can widen the native-seat pool past 8;
+//   - --seats wins over --n for the seat count (the spec list is the truth).
+//
+// A returned error is a usage error: Run() prints it and exits 2.
+func buildRunConfig(f fanoutFlags, promptText string) (RunConfig, error) {
+	var explicitModels []string
+	if f.models != "" {
+		for _, m := range strings.Split(f.models, ",") {
+			m = strings.TrimSpace(m)
+			if m != "" {
+				explicitModels = append(explicitModels, m)
+			}
+		}
+	}
+
+	var seatSpecs []SeatSpec
+	if f.seats != "" {
+		if f.models != "" {
+			return RunConfig{}, errors.New("--seats and --models cannot be combined")
+		}
+		specs, err := ParseSeatSpecs(f.seats)
+		if err != nil {
+			return RunConfig{}, err
+		}
+		seatSpecs = specs
+	}
+
+	normalizedTools, err := ParseToolTokens(f.tools)
+	if err != nil {
+		return RunConfig{}, err
+	}
+
+	nSeats := f.n
+	if len(seatSpecs) > 0 {
+		nSeats = len(seatSpecs)
+	}
+
+	return RunConfig{
+		Task:                 f.task,
+		Prompt:               promptText,
+		N:                    nSeats,
+		Models:               explicitModels,
+		Seats:                seatSpecs,
+		MaxNativeConcurrency: resolveMaxNative(f.maxNative),
+		Root:                 f.root,
+		Tools:                normalizedTools,
+		MaxTurns:             f.maxTurns,
+		TimeoutSec:           f.timeout,
+		OutDir:               f.out,
+	}, nil
+}
+
+// resolveMaxNative applies the native-seat concurrency precedence of contract
+// §2.3 (--max-native flag > state.json native_seat_concurrency > default 2)
+// with the shared 1..8 clamp on every branch (A1): `--max-native 100` binds to
+// 8, `--max-native 0`/negative resolves the state path, and an unreadable
+// state file falls back to the default.
+func resolveMaxNative(flagVal int) int {
+	if flagVal > 0 {
+		return mode.ClampNativeSeatConcurrency(flagVal)
+	}
+	if st, err := mode.LoadState(); err == nil {
+		return st.EffectiveNativeSeatConcurrency()
+	}
+	return mode.DefaultNativeSeatConcurrency
 }
 
 // ParseToolTokens is a thin wrapper over agenttools.ParseToolTokens (R1-9):

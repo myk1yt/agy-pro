@@ -92,14 +92,19 @@ func (r *RealAgyModels) Fetch(ctx context.Context) ([]NativeModel, error) {
 		return nil, fmt.Errorf("agy models fetch exceeded %s: %w", deadline, fetchCtx.Err())
 	}
 	if err != nil {
+		// A9: the stderr tail is printed to the console and lands in
+		// Inventory.NativeErr (which the launcher/settings surfaces render), so
+		// it goes through the same Redactor the fanout CLI uses for provider
+		// error snippets. `agy models` failures can echo credential fragments.
+		redact := providers.NewRedactor()
 		tail := strings.TrimSpace(stderr.String())
 		if len(tail) > 200 {
 			tail = tail[len(tail)-200:]
 		}
 		if tail != "" {
-			return nil, fmt.Errorf("agy models failed: %v: %s", err, tail)
+			return nil, fmt.Errorf("agy models failed: %v: %s", redact(err.Error()), redact(tail))
 		}
-		return nil, fmt.Errorf("agy models failed: %w", err)
+		return nil, fmt.Errorf("agy models failed: %v", redact(err.Error()))
 	}
 
 	models := parseModelsOutput(stdout.String())

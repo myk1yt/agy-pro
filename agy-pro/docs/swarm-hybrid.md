@@ -71,7 +71,7 @@ provider seat whose 3-step failover is exhausted:
 |---|---|
 | exit 0, non-empty stdout | `success`; stdout is the seat answer |
 | exit 0, empty/whitespace stdout | `failed` — `native seat produced empty output` (never a silent hang) |
-| non-zero exit | `failed`, degraded; error carries the exit code plus a redacted stderr tail. `429` / `quota` / `resource_exhausted` in stderr or `AGY_ERROR` prefixes the reason with `reason=quota` |
+| non-zero exit | `failed`, degraded; error carries the exit code plus a redacted stderr tail. `429` / `quota` / `resource_exhausted` in the stderr tail prefixes the reason with `reason=quota` (an `AGY_ERROR` line on its own does NOT trigger it) |
 | swarm deadline reached (process killed) | `failed` — `reason=timeout` |
 | binary missing / spawn failure | `failed` — `native seat spawn failed: <err>`; sibling seats are unaffected |
 
@@ -191,6 +191,9 @@ agy pro models           # unchanged legacy output (providers, models, capabilit
   picker, and the swarm builder.
 - A provider model whose id collides with a native id appears in BOTH groups on purpose: they are different
   seats (subscription quota vs metered API).
+- `models --json` dumps the entry rows only and does NOT carry the native-fetch error. When `agy models`
+  fails, the JSON output simply omits the native group with no marker; run `agy pro models --all` (which
+  prints `[native] unavailable: <err>`) to see the degrade honestly.
 
 ### 3.1 Launcher picker
 
@@ -269,8 +272,11 @@ Every place that displays a key — wizard echo, wizard confirmations, provider 
 `****`** (`sk-pr****`). A value of 5 characters or fewer renders as `****`; no trailing suffix is ever shown.
 
 While typing a key in the setup wizard, the first 5 characters echo normally and every character after that
-echoes as `*` (Windows console; other platforms never echo the raw line). Error messages and logs stay
-value-free: a rejected key-shaped value is reported without embedding it, and free-text leakage is handled by
+echoes as `*` on a Windows console, where the wizard takes echo over. Other platforms have no raw-console
+implementation: the tty line discipline owns echo there, so the terminal shows what it shows and the wizard
+falls back to an ordinary line read (it cannot mask the echo, and this document does not claim otherwise).
+Every other surface stays value-free: the wizard transcript never writes the raw value, confirmations use
+`MaskSecret`, error messages and logs never embed it, and free-text leakage is handled by
 the redactor (`[REDACTED]`).
 
 ---

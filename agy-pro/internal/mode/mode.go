@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"agypro/internal/paths"
+	"agypro/internal/providers"
 	"agypro/profiles"
 )
 
@@ -48,6 +49,27 @@ const BridgeToolsNone = "none"
 // native (real-agy subprocess) fanout seats; excess native seats queue
 // (contract §2.3).
 const DefaultNativeSeatConcurrency = 2
+
+// MaxNativeSeatConcurrency is the upper bound of the native-seat concurrency
+// clamp (contract §2.3). The stored value AND the --max-native flag share it.
+const MaxNativeSeatConcurrency = 8
+
+// ClampNativeSeatConcurrency bounds one native-seat concurrency value to
+// DefaultNativeSeatConcurrency..MaxNativeSeatConcurrency (contract §2.3). It
+// is the ONE shared choke point for every concurrency source: the state.json
+// path (EffectiveNativeSeatConcurrency) and the --max-native flag path both
+// route through it, so an out-of-range value can never widen the native-seat
+// pool (A1: `--max-native 100` binds to 8, `--max-native 0`/negative falls
+// back to the default 2).
+func ClampNativeSeatConcurrency(v int) int {
+	if v <= 0 {
+		return DefaultNativeSeatConcurrency
+	}
+	if v > MaxNativeSeatConcurrency {
+		return MaxNativeSeatConcurrency
+	}
+	return v
+}
 
 // ValidProfile reports whether s names a supported default launch profile.
 func ValidProfile(s string) bool {
@@ -133,20 +155,15 @@ func (s *State) EffectiveBridgeTools() string {
 }
 
 // EffectiveNativeSeatConcurrency returns the stored native-seat concurrency
-// cap, or DefaultNativeSeatConcurrency when the key is missing/invalid, and
-// clamps the result to 1..8 (contract §2.3).
+// cap bounded by the shared clamp (contract §2.3): a missing/invalid key falls
+// back to DefaultNativeSeatConcurrency, and every value is clamped to 1..8 by
+// ClampNativeSeatConcurrency - the same helper the --max-native flag path
+// routes through (A1).
 func (s *State) EffectiveNativeSeatConcurrency() int {
 	if s == nil {
 		return DefaultNativeSeatConcurrency
 	}
-	v := s.NativeSeatConcurrency
-	if v <= 0 {
-		return DefaultNativeSeatConcurrency
-	}
-	if v > 8 {
-		return 8
-	}
-	return v
+	return ClampNativeSeatConcurrency(s.NativeSeatConcurrency)
 }
 
 // LoadState reads the state file. If missing, returns a default state.
@@ -199,6 +216,15 @@ func mergeManagedItems(stored []string) []string {
 	return merged
 }
 
+// stateFilePerm is the mode state.json is written with (A10): owner-only, the
+// same 0600 the swarm preset store and the fanout reports use. The file holds
+// no secrets, but there is no reason for it to be world-readable either.
+const stateFilePerm = 0o600
+
+// atomicWriteFile is the state-writer seam; tests intercept it to assert the
+// requested mode (Windows does not round-trip mode bits through Stat).
+var atomicWriteFile = paths.AtomicWriteFile
+
 // SaveState saves state to ~/.agy-pro/state.json atomically.
 func SaveState(state *State) error {
 	stateFile, err := paths.AgyProStateFile()
@@ -211,7 +237,7 @@ func SaveState(state *State) error {
 		return fmt.Errorf("failed to serialize state: %w", err)
 	}
 
-	return paths.AtomicWriteFile(stateFile, append(data, '\n'), 0o644)
+	return atomicWriteFile(stateFile, append(data, '\n'), stateFilePerm)
 }
 
 // Switch switches the active profile in ~/.gemini/config to targetMode ("full" or "clean").
@@ -241,7 +267,10 @@ func Switch(targetMode string, in io.Reader, out io.Writer) error {
 		case "2", "clean", "default":
 			mode = ModeClean
 		default:
-			return fmt.Errorf("invalid selection: %q (must be 1 or 2)", choice)
+			// A10b: the pasted line is echoed back, so it goes through the
+			// same mask every other key display uses - a secret pasted by
+			// mistake must never be printed raw.
+			return fmt.Errorf("invalid selection: %q (must be 1 or 2)", providers.MaskSecret(choice))
 		}
 	} else {
 		switch mode {
@@ -250,7 +279,9 @@ func Switch(targetMode string, in io.Reader, out io.Writer) error {
 		case "2", "clean", "default":
 			mode = ModeClean
 		default:
-			return fmt.Errorf("unknown mode: %q (supported: full, clean)", mode)
+			// A10b: same masking for the non-interactive spelling, which
+			// echoes the raw argv value.
+			return fmt.Errorf("unknown mode: %q (supported: full, clean)", providers.MaskSecret(mode))
 		}
 	}
 

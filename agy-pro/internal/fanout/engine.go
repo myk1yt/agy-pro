@@ -163,10 +163,12 @@ func Execute(ctx context.Context, cfg RunConfig) (*SummaryReport, error) {
 	// FIFO buffered-channel semaphore bounding concurrent native subprocesses,
 	// and the shared seat prompt (system preset + user text). Provider seats
 	// keep today's unbounded parallel goroutines.
-	nativeCap := cfg.MaxNativeConcurrency
-	if nativeCap <= 0 {
-		nativeCap = mode.DefaultNativeSeatConcurrency
-	}
+	//
+	// A1: the cap goes through mode.ClampNativeSeatConcurrency, the same
+	// choke point the state.json and --max-native paths use, so a config built
+	// outside the CLI (library caller, test, swarm delegation) can never widen
+	// the native-seat pool past 8 either.
+	nativeCap := mode.ClampNativeSeatConcurrency(cfg.MaxNativeConcurrency)
 	nativeSem := make(chan struct{}, nativeCap)
 	nativeRunner := &NativeRunner{
 		Resolver:   cfg.NativeResolver,

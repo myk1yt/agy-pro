@@ -355,6 +355,13 @@ func TestNativeSeat_SpawnFailureDoesNotSinkSiblings(t *testing.T) {
 	if bad == nil || bad.Status != "failed" || !strings.Contains(bad.Error, "native seat spawn failed") {
 		t.Fatalf("spawn-failed seat mapping wrong, got %+v", bad)
 	}
+	// A6: a seat that never started is degraded, and the summary says so.
+	if bad == nil || !bad.Degraded {
+		t.Fatalf("spawn-failed seat must be degraded, got %+v", bad)
+	}
+	if !summary.Degraded {
+		t.Fatalf("summary.Degraded = false; want true when a seat failed to spawn")
+	}
 }
 
 func TestNativeRunner_ResolverErrorFailsSeat(t *testing.T) {
@@ -836,8 +843,240 @@ func writeCmdStub(t *testing.T, dir string) string {
 	return p
 }
 
+// TestCmdWrap_EscapeMatrixRoundTrip (A11, contract §2.2.2 F-Dc) is the fuzz
+// round-trip matrix for escapeCmdToken against a REAL cmd.exe. Every token
+// must reach the target byte-for-byte through the three passes the wrap
+// survives: the cmd /c parse, the batch %* re-parse and the target's own
+// CommandLineToArgvW tokenization.
+//
+// The backslash-before-% rows are the A11 regression: pending backslash runs
+// used to be flushed SINGLE before the step-out quote, so `\%` arrived at the
+// target as an escaped literal quote and re-framed the whole argument.
+func TestCmdWrap_EscapeMatrixRoundTrip(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip(".cmd wrapping is a Windows-only spawn hazard")
+	}
+	dir := t.TempDir()
+	cmdStub := writeCmdStub(t, dir)
+
+	argsDump := filepath.Join(dir, "args.bin")
+	t.Setenv("AGY_PRO_STUB_HELPER", "1")
+	t.Setenv("AGY_PRO_STUB_ARGS_DUMP", argsDump)
+	t.Setenv("AGY_PRO_STUB_STDOUT", "STUB_OK")
+
+	passthrough := func(ctx context.Context, bin string, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, bin, args...)
+	}
+	r := &NativeRunner{Resolver: func() (string, error) { return cmdStub, nil }, Spawn: passthrough}
+
+	// The wrap pins delayed expansion off (A11): with it on, `!` inside the
+	// seat prompt is expanded away and the prompt does not survive.
+	if line := buildBatchCmdLine("bin", []string{"x"}); !strings.HasPrefix(line, `cmd.exe /d /v:off /s /c "`) {
+		t.Errorf("batch wrap = %q; want the cmd.exe /d /v:off /s /c prefix", line)
+	}
+
+	cases := []string{
+		`plain`,
+		`with spaces`,
+		`back\slash`,
+		`trail\`,
+		`trail\\`,
+		`pct 100%`,
+		`pct\%back`,       // A11: single backslash before a percent
+		`pct\\%back`,      // A11: doubled backslash before a percent
+		`pct\\\%back`,     // A11: tripled backslash before a percent
+		`pct%%%%`,         // A11: consecutive percents
+		`quote"mid`,       // literal quote
+		`quote\"mid`,      // escaped quote
+		`back\"quote`,     // A11: backslash before a literal quote
+		`back\\"quote`,    // A11: two backslashes before a literal quote
+		`back\\\"quote`,   // A11: three backslashes before a literal quote
+		`amp & pipe |`,    // cmd metacharacters
+		`lt < gt >`,       // cmd redirection metacharacters
+		`paren (x)`,       // cmd grouping metacharacters
+		`caret ^ here`,    // cmd escape character
+		`%VAR%`,           // percent expansion shape
+		`!delayed!`,       // delayed-expansion shape (needs /v:off)
+		`mix \ & % " ^`,   // everything at once
+		`end\`,            // trailing backslash after metacharacters
+		`a"b%c\d`,         // quote, percent, backslash adjacent
+		`a"\%b`,           // A11 hole: quote, backslash-run, percent (step-out with no quote around it)
+		`back"\%end`,      // A11 hole: same, longer
+		`q"\\%w`,          // A11 hole: doubled backslash before % after a quote
+		`x"\&y`,           // backslash before cmd metachars after a quote
+		`z"\^w`,
+		`p"\!q`,
+		`trail"\`,         // trailing backslash after a literal quote
+		`a"\%b"c`,         // step-out emission followed by a literal quote
+		`"\%`,             // quote first, then backslash-percent
+		`a"\`,
+		`tab	and space`, // whitespace variety
+	}
+	for _, prompt := range cases {
+		_ = os.Remove(argsDump)
+		out := r.Run(context.Background(), RunConfig{Root: dir}, SeatSpec{Kind: SeatKindNative, ModelID: "m"}, prompt, time.Now().Add(30*time.Second))
+		if out.SpawnErr != nil {
+			t.Errorf("prompt %q: cmd wrap spawn error: %v", prompt, out.SpawnErr)
+			continue
+		}
+		if out.ExitCode != 0 {
+			t.Errorf("prompt %q: cmd wrap exit = %d stderr=%s", prompt, out.ExitCode, out.StderrTail)
+			continue
+		}
+		args := argsDumped(t, argsDump)
+		if findArg(args, prompt) < 0 {
+			t.Errorf("prompt %q did not survive the .cmd argv wrap byte-for-byte:\n got %q", prompt, args)
+		}
+	}
+}
+
+// TestEscapeCmdTokenDoublesBackslashesBeforeQuotes (A11) is the
+// platform-independent half of the same fix: a pending backslash run is
+// flushed DOUBLED before every emitted quote (step-out quote, escaped quote,
+// closing quote), because CommandLineToArgvW reads a single `\` before a `"`
+// as an escaped literal quote and re-frames the argument.
+func TestEscapeCmdTokenDoublesBackslashesBeforeQuotes(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{`plain`, `"plain"`},
+		{`a"b`, `"a\"b"`},
+		{`a\`, `"a\\"`},   // trailing run doubled before the closing quote
+		{`a\\`, `"a\\\\"`},
+		{`a\"b`, `"a\\\"b"`}, // run before an escaped quote doubled
+		{`a\%b`, `"a\\"^%"b"`},
+		{`a\\%b`, `"a\\\\"^%"b"`},
+		{`100%`, `"100"^%""`},
+		// A11: after a literal quote flips cmd parity out, `%` emits `^%`
+		// with NO quote around it - the pending run must stay literal
+		// (doubling it rewrites the argument at the target).
+		{`a"\%b`, `"a\"\^%b"`},
+		{`q"\\%w`, `"q\"\\^%w"`},
+		{`back"\%end`, `"back\"\^%end"`},
+		{`"\%`, `"\"\^%"`},
+		{`trail"\`, `"trail\"\\"`}, // trailing run still doubled before the closing quote
+	}
+	for _, tc := range cases {
+		if got := escapeCmdToken(tc.in); got != tc.want {
+			t.Errorf("escapeCmdToken(%q) = %q; want %q", tc.in, got, tc.want)
+		}
+	}
+	// The wrap keeps the hand-escaped tokens behind cmd.exe /d /v:off /s /c
+	// and its own outer quotes.
+	wantWrap := `cmd.exe /d /v:off /s /c ""bin" "arg""`
+	if got := buildBatchCmdLine("bin", []string{"arg"}); got != wantWrap {
+		t.Errorf("buildBatchCmdLine = %q; want %q", got, wantWrap)
+	}
+}
+
+// TestNativeRunner_MultiLineArgvRoundTrip (A4) drives the DEFAULT argv
+// transport (engine.go's ViaStdin: false) with a REAL multi-line prompt. The
+// pre-existing argv test was single-line only, so nothing asserted that the
+// newlines themselves survive the spawn; this is the stub-level round trip
+// (a live true-newline probe through a real agy binary is QA scope).
+func TestNativeRunner_MultiLineArgvRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	argsDump := filepath.Join(dir, "args.bin")
+	prompt := "system preset\n\n## Findings\n- **[HIGH]** line three\n- **[LOW]** with \"quotes\", 100% and \\backslash\nlast line"
+
+	r := &NativeRunner{
+		Resolver: stubResolver(),
+		Spawn: stubSpawn(map[string]string{
+			"AGY_PRO_STUB_ARGS_DUMP": argsDump,
+			"AGY_PRO_STUB_STDOUT":    "OK",
+		}),
+		// ViaStdin stays false on purpose: the argv path is under test.
+	}
+	out := r.Run(context.Background(), RunConfig{Root: dir}, SeatSpec{Kind: SeatKindNative, ModelID: "gemini-3.8-flash-high"}, prompt, time.Now().Add(30*time.Second))
+	if out.SpawnErr != nil {
+		t.Fatalf("spawn error: %v", out.SpawnErr)
+	}
+	if out.ExitCode != 0 {
+		t.Fatalf("exit = %d stderr=%s", out.ExitCode, out.StderrTail)
+	}
+	args := argsDumped(t, argsDump)
+	if findArg(args, prompt) < 0 {
+		t.Fatalf("multi-line prompt did not survive the argv transport:\n got %q\nwant exact %q", args, prompt)
+	}
+	// The newlines must be REAL newlines, not escaped literals.
+	if findArg(args, `\n`) >= 0 || strings.Contains(strings.Join(args, "\x00"), `\n`) {
+		t.Fatalf("argv carries an escaped \\n instead of a real newline: %q", args)
+	}
+	// argv transport: no bare -p marker (that is the ViaStdin spelling) and
+	// the prompt is NOT piped on stdin.
+	if pt := findArg(args, "-p"); pt < 0 || pt+1 >= len(args) || args[pt+1] != prompt {
+		t.Fatalf("argv must carry -p <prompt> verbatim: %q", args)
+	}
+}
+
+// TestNativeRunner_ExpiredSpawnCtxMapsToTimeout (A5): a seat that queued
+// behind the native-seat semaphore can find its own backstop already expired
+// when Start runs. That used to map to "spawn failed"; it is a killed seat, so
+// it must map to reason=timeout (degraded).
+func TestNativeRunner_ExpiredSpawnCtxMapsToTimeout(t *testing.T) {
+	dir := t.TempDir()
+	r := &NativeRunner{
+		Resolver: stubResolver(),
+		Spawn:    stubSpawn(map[string]string{"AGY_PRO_STUB_STDOUT": "never runs"}),
+	}
+	// Parent ctx already expired AND the swarm deadline already in the past:
+	// Start fails with the ctx error, which is NOT an *exec.ExitError.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	out := r.Run(ctx, RunConfig{Root: dir}, SeatSpec{Kind: SeatKindNative, ModelID: "m"}, "p", time.Now().Add(-time.Minute))
+	if !out.TimedOut {
+		t.Fatalf("want TimedOut for an expired spawn ctx, got %+v", out)
+	}
+	res := nativeSeatResult(1, nativeTarget("m"), out, nil)
+	if res.Status != "failed" || !res.Degraded {
+		t.Fatalf("result = %+v; want failed/degraded", res)
+	}
+	if !strings.HasPrefix(res.Error, "reason=timeout") {
+		t.Fatalf("error = %q; want the reason=timeout mapping (not the spawn-failed one)", res.Error)
+	}
+	if strings.Contains(res.Error, "spawn failed") {
+		t.Fatalf("error = %q; the spawn-failed mapping must not win for a killed seat", res.Error)
+	}
+}
+
+// A6: a native seat that never starts is a degraded seat. The summary used to
+// show "Degraded Mode: false" for it because Degraded was only set on the
+// exit-code and timeout branches.
+func TestNativeSeat_SpawnFailureIsDegraded(t *testing.T) {
+	dir := t.TempDir()
+	cfg := RunConfig{
+		Task:   "review",
+		Prompt: "spawn degrade",
+		Seats: []SeatSpec{
+			{Kind: SeatKindNative, Raw: "native:bad-model", ModelID: "bad-model"},
+		},
+		Root:           dir,
+		OutDir:         filepath.Join(dir, "reports"),
+		RegistryPath:   filepath.Join(dir, "missing-providers.json"),
+		TimeoutSec:     15,
+		NativeResolver: stubResolver(),
+		SpawnCommand: func(ctx context.Context, bin string, args ...string) *exec.Cmd {
+			return exec.CommandContext(ctx, filepath.Join(dir, "no-such-agy.exe"), args...)
+		},
+	}
+	summary, err := Execute(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if !summary.Degraded {
+		t.Fatalf("summary.Degraded = false; want true when a seat failed to spawn")
+	}
+	if len(summary.Seats) != 1 || !summary.Seats[0].Degraded {
+		t.Fatalf("spawn-failed seat must be degraded, got %+v", summary.Seats)
+	}
+	if summary.Seats[0].Status != "failed" || !strings.Contains(summary.Seats[0].Error, "native seat spawn failed") {
+		t.Fatalf("seat = %+v; want failed with the spawn-failed mapping", summary.Seats[0])
+	}
+}
+
 // TestCmdWrap_RoundTripBothTransports (F-Dc, contract §2.2.2): prompt bytes
-// must survive the cmd.exe /d /s /c wrap for BOTH transports — single-line
+// must survive the cmd.exe /d /v:off /s /c wrap for BOTH transports — single-line
 // argv (cmd/metacharacter escaping) and multi-line (forced ViaStdin). A
 // multi-line round-trip failure is a hard failure, not a warning.
 //
@@ -897,4 +1136,59 @@ func TestCmdWrap_RoundTripBothTransports(t *testing.T) {
 	if string(got) != multi {
 		t.Fatalf("multi-line prompt did not survive .cmd ViaStdin wrap:\n got %q\nwant exact %q", got, multi)
 	}
+}
+
+// FuzzEscapeCmdTokenCmdRoundTrip (A11) is the fuzz half of the round-trip
+// matrix: every seed - and, under `go test -fuzz`, every generated prompt -
+// must reach the target byte-for-byte through the REAL cmd.exe wrap. The
+// curated corpus in TestCmdWrap_EscapeMatrixRoundTrip is the seed set.
+func FuzzEscapeCmdTokenCmdRoundTrip(f *testing.F) {
+	for _, s := range []string{
+		`plain`,
+		`a"\%b`,
+		`back"\%end`,
+		`q"\%w`,
+		`a"\%b"c`,
+		`"\%`,
+		`trail"\`,
+		`pct\%back`,
+		`pct\%back`,
+		`back\"quote`,
+		`a"b%c\d`,
+		`mix \ & % " ^`,
+		`!delayed!`,
+	} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, prompt string) {
+		if runtime.GOOS != "windows" {
+			t.Skip(".cmd wrapping is a Windows-only spawn hazard")
+		}
+		if len(prompt) > 512 {
+			t.Skip("keep individual prompts bounded")
+		}
+		dir := t.TempDir()
+		cmdStub := writeCmdStub(t, dir)
+		argsDump := filepath.Join(dir, "args.bin")
+		t.Setenv("AGY_PRO_STUB_HELPER", "1")
+		t.Setenv("AGY_PRO_STUB_ARGS_DUMP", argsDump)
+		t.Setenv("AGY_PRO_STUB_STDOUT", "STUB_OK")
+		r := &NativeRunner{
+			Resolver: func() (string, error) { return cmdStub, nil },
+			Spawn: func(ctx context.Context, bin string, args ...string) *exec.Cmd {
+				return exec.CommandContext(ctx, bin, args...)
+			},
+		}
+		out := r.Run(context.Background(), RunConfig{Root: dir}, SeatSpec{Kind: SeatKindNative, ModelID: "m"}, prompt, time.Now().Add(30*time.Second))
+		if out.SpawnErr != nil {
+			t.Fatalf("prompt %q: spawn error: %v", prompt, out.SpawnErr)
+		}
+		if out.ExitCode != 0 {
+			t.Fatalf("prompt %q: exit = %d stderr = %s", prompt, out.ExitCode, out.StderrTail)
+		}
+		args := argsDumped(t, argsDump)
+		if findArg(args, prompt) < 0 {
+			t.Fatalf("prompt %q did not survive the .cmd argv wrap byte-for-byte:\n got %q", prompt, args)
+		}
+	})
 }

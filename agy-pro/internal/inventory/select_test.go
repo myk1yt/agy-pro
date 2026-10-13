@@ -215,6 +215,76 @@ func TestParseSelectionPresetDegradesNeverErrors(t *testing.T) {
 	}
 }
 
+// A7 (contract §2.5/§2.7): preset family rotation must use the family the
+// fanout engine uses (registry Model.FamilyName()). Inferring it from the id
+// prefix let a registry-declared family be double-seated: two ids with
+// different prefixes but one declared family looked like two families here.
+func TestPresetRotationUsesDeclaredFamily(t *testing.T) {
+	reg := &providers.Registry{Providers: []providers.Provider{
+		{Name: "alpha", Models: []providers.Model{
+			{ID: "foo-1", Family: "shared"}, // declared family, unrelated id prefix
+		}},
+		{Name: "beta", Models: []providers.Model{
+			{ID: "bar-1", Family: "shared"}, // same declared family
+		}},
+		{Name: "gamma", Models: []providers.Model{
+			{ID: "baz-1", Family: "other"},
+		}},
+	}}
+	inv, err := Load(context.Background(), reg, &stubFetcher{models: nil})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Every entry carries the family the engine would use.
+	want := map[string]string{"foo-1": "shared", "bar-1": "shared", "baz-1": "other"}
+	for _, e := range inv.Entries {
+		if got := entryFamily(e); got != want[e.ModelID] {
+			t.Errorf("entry %s: family = %q; want %q", e.ModelID, got, want[e.ModelID])
+		}
+		if e.Family != want[e.ModelID] {
+			t.Errorf("entry %s: Entry.Family = %q; want %q (must be carried, not inferred)", e.ModelID, e.Family, want[e.ModelID])
+		}
+	}
+
+	// p2 = 3 family-rotated externals. The rotation pass must seat two
+	// DISTINCT declared families: foo-1 (shared) then baz-1 (other). Before A7
+	// it seated foo-1 then bar-1 - one declared family, two seats.
+	p2, err := ParseSelection("p2", inv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p2) != 3 {
+		t.Fatalf("p2 = %d entries, want 3 (2 rotation + 1 same-family fill)", len(p2))
+	}
+	if entryFamily(p2[0]) == entryFamily(p2[1]) {
+		t.Errorf("rotation double-seated family %q: %+v", entryFamily(p2[0]), p2)
+	}
+	if got := entryFamily(p2[0]) + "," + entryFamily(p2[1]); got != "shared,other" {
+		t.Errorf("rotation families = %q; want shared,other", got)
+	}
+	// The declared family is visible on the entry the caller receives.
+	if p2[0].Family != "shared" || p2[1].Family != "other" {
+		t.Errorf("entries lost their declared family: %q / %q", p2[0].Family, p2[1].Family)
+	}
+}
+
+// A7: native rows carry InferFamily(id) - the same inference the native seat
+// target uses - so a native entry's rotation family matches fanout's.
+func TestEntryFamilyForNativeRows(t *testing.T) {
+	inv, err := Load(context.Background(), nil, &stubFetcher{models: []NativeModel{
+		{ID: "gemini-3.8-flash-high", DisplayName: "Gemini 3.8 Flash (High)"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inv.Entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(inv.Entries))
+	}
+	if inv.Entries[0].Family != "gemini" {
+		t.Errorf("native entry family = %q; want gemini (providers.InferFamily)", inv.Entries[0].Family)
+	}
+}
+
 // Lexer disjointness (F-MISC): a token is a preset-id iff its first rune is
 // p/P - disjoint from number (digit first) and range (digit...).
 func TestParseSelectionPresetLexerDisjointness(t *testing.T) {

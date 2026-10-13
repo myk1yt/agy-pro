@@ -51,6 +51,46 @@ func TestNativeSeatConcurrencyAdditiveKeyRoundTrip(t *testing.T) {
 	}
 }
 
+// A1 (contract §2.3): ClampNativeSeatConcurrency is the ONE shared choke point
+// for every native-seat concurrency source. The state.json path used to carry
+// the 1..8 clamp inline while the --max-native flag path applied none at all;
+// both now route through this helper, so an out-of-range value from either
+// source lands in the same place.
+func TestClampNativeSeatConcurrencySharedChokePoint(t *testing.T) {
+	cases := []struct {
+		in   int
+		want int
+	}{
+		{0, 2},   // 0 = "not set" -> default
+		{-3, 2},  // invalid -> default
+		{1, 1},   // lower clamp bound
+		{2, 2},   // default
+		{8, 8},   // upper clamp bound
+		{9, 8},   // clamped to 8
+		{100, 8}, // the A1 report case: --max-native 100 must bind to 8
+	}
+	for _, c := range cases {
+		if got := ClampNativeSeatConcurrency(c.in); got != c.want {
+			t.Errorf("ClampNativeSeatConcurrency(%d) = %d; want %d", c.in, got, c.want)
+		}
+	}
+	if MaxNativeSeatConcurrency != 8 {
+		t.Errorf("MaxNativeSeatConcurrency = %d; want the contract maximum 8", MaxNativeSeatConcurrency)
+	}
+
+	// The state path delegates to the same helper (no second, drifting clamp).
+	for _, stored := range []int{0, -3, 1, 2, 8, 9, 100} {
+		s := &State{NativeSeatConcurrency: stored}
+		if got, want := s.EffectiveNativeSeatConcurrency(), ClampNativeSeatConcurrency(stored); got != want {
+			t.Errorf("stored %d: EffectiveNativeSeatConcurrency() = %d, clamp = %d (they must agree)", stored, got, want)
+		}
+	}
+	var nilState *State
+	if got := nilState.EffectiveNativeSeatConcurrency(); got != DefaultNativeSeatConcurrency {
+		t.Errorf("nil state -> %d; want the default %d", got, DefaultNativeSeatConcurrency)
+	}
+}
+
 func TestEffectiveNativeSeatConcurrencyClamps(t *testing.T) {
 	cases := []struct {
 		stored int
@@ -69,10 +109,6 @@ func TestEffectiveNativeSeatConcurrencyClamps(t *testing.T) {
 		if got := s.EffectiveNativeSeatConcurrency(); got != c.want {
 			t.Errorf("stored %d -> %d; want %d", c.stored, got, c.want)
 		}
-	}
-	var nilState *State
-	if got := nilState.EffectiveNativeSeatConcurrency(); got != 2 {
-		t.Errorf("nil state -> %d; want 2", got)
 	}
 }
 

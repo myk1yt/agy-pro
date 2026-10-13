@@ -42,6 +42,12 @@ func TestSpawnStubHelperProcess(t *testing.T) {
 	if ms, err := strconv.Atoi(os.Getenv("AGY_PRO_STUB_SLEEP_MS")); err == nil && ms > 0 {
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 	}
+	if s := os.Getenv("AGY_PRO_STUB_STDERR"); s != "" {
+		_, _ = os.Stderr.WriteString(s)
+	}
+	if code, err := strconv.Atoi(os.Getenv("AGY_PRO_STUB_EXIT")); err == nil && code != 0 {
+		os.Exit(code)
+	}
 	_, _ = os.Stdout.WriteString(os.Getenv("AGY_PRO_STUB_STDOUT"))
 	os.Exit(0)
 }
@@ -237,6 +243,54 @@ func TestFetchEmptyOutputIsError(t *testing.T) {
 	f, _ := newStubFetcher(t, "Fetching available models...\nno tabs here\n")
 	if _, err := f.Fetch(context.Background()); err == nil {
 		t.Fatal("empty parseable catalog must error")
+	}
+}
+
+// A9: the `agy models` stderr tail used to be interpolated into the fetch
+// error unredacted. That error text reaches the console AND
+// Inventory.NativeErr (rendered by `agy pro models --all`, the launcher picker
+// and the swarm builder), so a credential fragment echoed by a failing agy
+// build leaked. It now goes through the same Redactor the fanout CLI applies
+// to provider error snippets.
+func TestFetchFailureRedactsStderrTail(t *testing.T) {
+	const planted = "sk-planted-models-stderr-secret-42"
+	t.Setenv("GO_WANT_HELPER_PROCESS", "1")
+	t.Setenv("AGY_PRO_STUB_STDOUT", "")
+	t.Setenv("AGY_PRO_STUB_STDERR", "AGY_ERROR: unauthorized\nAuthorization: Bearer "+planted+"\n")
+	t.Setenv("AGY_PRO_STUB_EXIT", "3")
+	envFile := filepath.Join(t.TempDir(), "child-env.txt")
+	t.Setenv("AGY_PRO_STUB_ENVFILE", envFile)
+	t.Setenv("AGY_PRO_STUB_SLEEP_MS", "")
+
+	f := &RealAgyModels{BinPath: "fake-agy", FetchDeadline: DefaultFetchDeadline, Spawn: spawnStub()}
+	_, err := f.Fetch(context.Background())
+	if err == nil {
+		t.Fatal("a failing `agy models` child must fail the fetch")
+	}
+	if strings.Contains(err.Error(), planted) {
+		t.Errorf("fetch error leaked the credential fragment: %v", err)
+	}
+	if !strings.Contains(err.Error(), "[REDACTED]") {
+		t.Errorf("fetch error = %v; want a [REDACTED] marker", err)
+	}
+	if !strings.Contains(err.Error(), "agy models failed") {
+		t.Errorf("fetch error = %v; want the agy-models-failed wording", err)
+	}
+
+	// The redacted text also survives into Inventory.NativeErr, which the
+	// consumers render.
+	inv, lerr := Load(context.Background(), nil, f)
+	if lerr != nil {
+		t.Fatalf("Load: %v", lerr)
+	}
+	if inv.NativeErr == nil {
+		t.Fatal("NativeErr must record the failed fetch (honest degrade)")
+	}
+	if strings.Contains(inv.NativeErr.Error(), planted) {
+		t.Errorf("Inventory.NativeErr leaked the credential fragment: %v", inv.NativeErr)
+	}
+	if !strings.Contains(inv.NativeErr.Error(), "[REDACTED]") {
+		t.Errorf("Inventory.NativeErr = %v; want a [REDACTED] marker", inv.NativeErr)
 	}
 }
 
