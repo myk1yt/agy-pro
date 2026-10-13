@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -131,10 +132,11 @@ func MaskSecret(secret string) string {
 // message (B2 / U8). A misdirected run_command can carry a pasted key in any
 // operand slot, so credential-looking operands render as MaskSecret (first-5 +
 // **** and never more). Benign operands — conventional env-var names, short
-// provider/model tokens, URLs — keep their readable form so errors stay
-// actionable, but still pass through the generic redactor so pattern-shaped
-// secrets (bearer tokens, sk- IDs, AWS key IDs, PEM blocks) embedded in them
-// cannot survive into a session transcript.
+// provider/model tokens, model IDs, location strings (URLs, absolute or
+// ./-prefixed paths) — keep their readable form so errors stay actionable, but
+// still pass through the generic redactor so pattern-shaped secrets (bearer
+// tokens, sk- IDs, AWS key IDs, PEM blocks) embedded in them cannot survive
+// into a session transcript.
 func MaskOperand(s string) string {
 	if s == "" {
 		return s
@@ -148,8 +150,9 @@ func MaskOperand(s string) string {
 // operandLooksSecret decides whether an echoed operand is plausibly credential
 // material. Unlike isLikelyAPIKey (which must reject hyphenated strings in the
 // apiKeyEnv slot because env names never carry hyphens), this keeps ordinary
-// hyphenated tokens ("my-provider", "native-seat-concurrency") and URLs
-// readable while still catching real key shapes and opaque long tokens.
+// hyphenated tokens ("my-provider", "native-seat-concurrency", model IDs like
+// "claude-3-5-sonnet-20241022") and location strings readable while still
+// catching real key shapes and opaque contiguous runs (C3).
 func operandLooksSecret(s string) bool {
 	t := strings.TrimSpace(s)
 	if t == "" {
@@ -174,18 +177,64 @@ func operandLooksSecret(s string) bool {
 	if envNameRe.MatchString(t) && strings.ToUpper(t) == t {
 		return false
 	}
-	// URLs and file paths stay readable (spawn errors must name the binary);
-	// embedded credential material is pattern-redacted by the NewRedactor pass
-	// in MaskOperand.
-	if strings.Contains(t, "://") || strings.ContainsAny(t, `/\`) {
+	// LOCATION-shaped strings stay readable (spawn errors must name the
+	// binary): a URL scheme, an absolute path, or a leading ./ ../ .\ ..\ .
+	// A bare "/" or "\" anywhere does NOT exempt (C3): roughly half of real
+	// AWS secret access keys contain "/", and the old contains-any exemption
+	// echoed them in full at closed sites such as
+	// `agy pro settings set native-seat-concurrency '<value>'`.
+	if isLocationShaped(t) {
 		return false
 	}
 	// Short provider/model-style tokens stay readable.
 	if len(t) < 24 && providerNameRe.MatchString(t) {
 		return false
 	}
-	// Everything else long or opaque is treated as a secret.
-	return isLikelyAPIKey(t) || len(t) >= 20
+	// Length heuristic, narrowed to CONTIGUOUS secret-shaped runs (C3): opaque
+	// credentials (AWS secret keys, most carrying "/" or "+") are one
+	// uninterrupted base64 run, while separator-carrying tokens (model IDs,
+	// dotted versions, multi-word operands) stay readable so error text and
+	// the wizard's copy-paste completion hints survive.
+	return len(t) >= 20 && contiguousSecretRun(t)
+}
+
+// isLocationShaped reports whether s names a location rather than carrying a
+// value: a URL scheme ("://"), an absolute path (filepath.IsAbs), or a leading
+// ./ ../ .\ ..\ relative marker. A string that merely contains "/" or "\"
+// elsewhere is not a location: AWS secret access keys do (C3).
+func isLocationShaped(s string) bool {
+	if strings.Contains(s, "://") {
+		return true
+	}
+	if filepath.IsAbs(s) {
+		return true
+	}
+	for _, p := range []string{"./", "../", `.\`, `..\`} {
+		if strings.HasPrefix(s, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// contiguousSecretRun reports whether s is one uninterrupted run of the
+// base64 alphabet (A-Za-z0-9+/=) with no "-", "_", or "." separators: the
+// shape of an opaque credential. Separator-carrying tokens (model IDs such as
+// claude-3-5-sonnet-20241022, env-var names, multi-word operands) fail the
+// test and stay readable (C3).
+func contiguousSecretRun(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+		case r == '+', r == '/', r == '=':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // EnvCandidateMasked is the printable view of an EnvCandidate: same location

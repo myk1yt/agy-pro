@@ -91,21 +91,35 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 	// Step 3: API Key & Environment Variable Name
 	defaultEnv := defaultEnvFor(provName)
 	existingVal := os.Getenv(defaultEnv)
+	// C5/U8: a credential-shaped provider name passes the B5 charset and
+	// defaultEnvFor only case-folds it and swaps separators for "_", so the
+	// derived name embeds the pasted key verbatim
+	// ("AKIAIOSFODNN7EXAMPLE" -> "AKIAIOSFODNN7EXAMPLE_API_KEY"). MaskOperand
+	// keeps UPPER_SNAKE names readable by design, so echo sites withhold that
+	// derived name instead of leaking it. A name the user typed as an env
+	// variable still renders through MaskOperand.
+	withholdDerivedEnv := MaskOperand(provName) != provName
+	envEcho := func(env string) string {
+		if withholdDerivedEnv && env == defaultEnv {
+			return "(withheld: derived from a key-shaped name)"
+		}
+		return MaskOperand(env)
+	}
 
 	fmt.Fprintln(out)
 	var keyValue string
 	var apiKeyEnv string = defaultEnv
 
 	if existingVal != "" {
-		fmt.Fprintf(out, "Detected existing environment variable %s.\n", defaultEnv)
-		keyInput, keyErr := promptSecret(reader, out, console, fmt.Sprintf("API Key (press Enter to keep %s, or paste new key)", defaultEnv), "")
+		fmt.Fprintf(out, "Detected existing environment variable %s.\n", envEcho(defaultEnv))
+		keyInput, keyErr := promptSecret(reader, out, console, fmt.Sprintf("API Key (press Enter to keep %s, or paste new key)", envEcho(defaultEnv)), "")
 		if keyErr != nil {
 			// B6: Ctrl+C aborts — never silently keep the existing key.
 			return fmt.Errorf("setup aborted: %w", keyErr)
 		}
 		if keyInput == "" {
 			keyValue = existingVal
-			fmt.Fprintf(out, "Using existing value from %s: %s\n", defaultEnv, MaskSecret(existingVal))
+			fmt.Fprintf(out, "Using existing value from %s: %s\n", envEcho(defaultEnv), MaskSecret(existingVal))
 		} else {
 			keyValue = keyInput
 		}
@@ -113,7 +127,7 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 		if knownProvider && hint.KeyURL != "" {
 			fmt.Fprintf(out, "Get a key at: %s\n", hint.KeyURL)
 		}
-		fmt.Fprintf(out, "Enter API Key for %s (will be stored in environment variable %s):\n", provLabel, defaultEnv)
+		fmt.Fprintf(out, "Enter API Key for %s (will be stored in environment variable %s):\n", provLabel, envEcho(defaultEnv))
 		keyInput, keyErr := promptSecret(reader, out, console, "API Key (sk-... or leave blank to skip)", "")
 		if keyErr != nil {
 			return fmt.Errorf("setup aborted: %w", keyErr)
@@ -126,7 +140,7 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 		if envVal := os.Getenv(keyValue); envVal != "" {
 			apiKeyEnv = keyValue
 			keyValue = envVal
-			fmt.Fprintf(out, "Using environment variable %s (loaded from current session).\n", MaskOperand(apiKeyEnv))
+			fmt.Fprintf(out, "Using environment variable %s (loaded from current session).\n", envEcho(apiKeyEnv))
 		}
 	}
 	// U8: every confirmation of key material shows the canonical mask only.
@@ -143,15 +157,15 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 		_ = os.Setenv(apiKeyEnv, keyValue)
 		if runtime.GOOS == "windows" && !isRunningTests() {
 			if err := persistWindowsUserEnv(apiKeyEnv, keyValue); err != nil {
-				fmt.Fprintf(out, "Warning: could not persist %s to Windows user environment: %v\n", MaskOperand(apiKeyEnv), err)
+				fmt.Fprintf(out, "Warning: could not persist %s to Windows user environment: %v\n", envEcho(apiKeyEnv), err)
 			} else {
-				fmt.Fprintf(out, "✅ Saved %s to Windows User Environment.\n", MaskOperand(apiKeyEnv))
+				fmt.Fprintf(out, "✅ Saved %s to Windows User Environment.\n", envEcho(apiKeyEnv))
 			}
 		} else if runtime.GOOS == "windows" {
 			// In test environment, skip persisting to system registry
 		} else {
-			fmt.Fprintf(out, "Set %s in current session. To persist across shells, add to ~/.bashrc or ~/.zshrc:\n", MaskOperand(apiKeyEnv))
-			fmt.Fprintf(out, "  export %s=\"...\"\n", MaskOperand(apiKeyEnv))
+			fmt.Fprintf(out, "Set %s in current session. To persist across shells, add to ~/.bashrc or ~/.zshrc:\n", envEcho(apiKeyEnv))
+			fmt.Fprintf(out, "  export %s=\"...\"\n", envEcho(apiKeyEnv))
 		}
 	} else if apiKeyEnv != "" {
 		keyValue = os.Getenv(apiKeyEnv)
@@ -311,7 +325,7 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 						if envVal := os.Getenv(newKey); envVal != "" {
 							apiKeyEnv = newKey
 							keyValue = envVal
-							fmt.Fprintf(out, "Using environment variable %s (loaded from current session).\n", MaskOperand(apiKeyEnv))
+							fmt.Fprintf(out, "Using environment variable %s (loaded from current session).\n", envEcho(apiKeyEnv))
 						} else {
 							keyValue = newKey
 							fmt.Fprintf(out, "API Key recorded: %s\n", MaskSecret(keyValue))
@@ -419,7 +433,7 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 	if keyValue != "" {
 		keyStatus = "saved in environment, " + MaskSecret(keyValue)
 	}
-	fmt.Fprintf(out, "API Key Env     : %s (%s)\n", MaskOperand(apiKeyEnv), keyStatus)
+	fmt.Fprintf(out, "API Key Env     : %s (%s)\n", envEcho(apiKeyEnv), keyStatus)
 	fmt.Fprintf(out, "Config File     : %s\n", targetPath)
 	fmt.Fprintf(out, "Configured Models (%d):\n", len(models))
 	for i, m := range models {

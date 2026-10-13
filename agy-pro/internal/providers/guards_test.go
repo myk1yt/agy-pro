@@ -197,6 +197,117 @@ func TestMaskOperand_U8(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// C3 — MaskOperand heuristic carve-outs (security re-review, arbiter-ruled
+// FIX): the path/URL exemption used to exempt ANY string containing "/" or
+// "\", so AWS-secret-shaped values (about half of real AWS secrets carry "/")
+// echoed in full; and the length mask used to catch every >=20/24-rune token,
+// mangling benign model IDs such as claude-3-5-sonnet-20241022.
+// ---------------------------------------------------------------------------
+
+// TestMaskOperand_C3_AWSSecretWithSlashMasked: a "/" alone must no longer read
+// as a path. The classic AWS documentation example secret carries two.
+func TestMaskOperand_C3_AWSSecretWithSlashMasked(t *testing.T) {
+	secret := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	got := MaskOperand(secret)
+	if got != "wJalr****" {
+		t.Errorf("MaskOperand(AWS secret with /) = %q; want %q", got, "wJalr****")
+	}
+	assertNoLeak(t, got, secret)
+}
+
+// TestMaskOperand_C3_AWSSecretWithoutSlashMasked: the no-separator shape was
+// already masked; the C3 narrowing must not regress it.
+func TestMaskOperand_C3_AWSSecretWithoutSlashMasked(t *testing.T) {
+	secret := "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"
+	got := MaskOperand(secret)
+	if got != "wJalr****" {
+		t.Errorf("MaskOperand(AWS secret without /) = %q; want %q", got, "wJalr****")
+	}
+	assertNoLeak(t, got, secret)
+}
+
+// TestMaskOperand_C3_KnownShapesStillMasked: prefix- and shape-matched
+// credentials keep rendering first-5 + **** (U8 contract unchanged).
+func TestMaskOperand_C3_KnownShapesStillMasked(t *testing.T) {
+	for _, secret := range []string{
+		"sk-verysecretkey-0123456789abcdef",
+		"ghp_A16CharTokenHere1234567890abcd",
+		"AKIAIOSFODNN7EXAMPLE",
+		"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
+	} {
+		got := MaskOperand(secret)
+		if got != MaskSecret(secret) {
+			t.Errorf("MaskOperand(%q...) = %q; want %q", secret[:5], got, MaskSecret(secret))
+		}
+		assertNoLeak(t, got, secret)
+	}
+}
+
+// TestMaskOperand_C3_ModelIDsStayReadable: the length mask now applies only to
+// CONTIGUOUS secret-shaped runs, so separator-carrying model IDs (>=24 runes)
+// survive for the wizard's copy-paste completion hints.
+func TestMaskOperand_C3_ModelIDsStayReadable(t *testing.T) {
+	for _, benign := range []string{
+		"claude-3-5-sonnet-20241022",
+		"gemini-2.5-flash-preview-05-20",
+		"deepseek-v3-0324-671b-full",
+		"qwen3-8b-instruct-262144-context",
+		"gpt-4o",
+	} {
+		if got := MaskOperand(benign); got != benign {
+			t.Errorf("MaskOperand(%q) = %q; want unchanged", benign, got)
+		}
+	}
+}
+
+// TestMaskOperand_C3_LocationsStayReadable: only LOCATION-shaped strings keep
+// the exemption — a URL scheme, an absolute path, or a leading ./ ../ .\ ..\ .
+func TestMaskOperand_C3_LocationsStayReadable(t *testing.T) {
+	for _, loc := range []string{
+		"https://host/path",
+		"http://127.0.0.1:9/v1",
+		`C:\Users\test\AppData\Local\agy-pro\bin\agy.exe`,
+		`C:/Users/test/AppData/Local/agy-pro/bin/agy.exe`,
+		"/usr/local/bin/agy-pro",
+		"./relative/script.sh",
+		"../parent/script.sh",
+		`.\relative\script.cmd`,
+		`..\parent\script.cmd`,
+	} {
+		if got := MaskOperand(loc); got != loc {
+			t.Errorf("MaskOperand(%q) = %q; want unchanged", loc, got)
+		}
+	}
+}
+
+// TestMaskOperand_C3_BoundaryLengths: the length mask fires at 20 runes for
+// contiguous secret-shaped runs (19 stays readable); the short
+// provider/model-token exemption covers <24, so the alnum boundary is 24;
+// separator-carrying tokens never hit the length mask at any length.
+func TestMaskOperand_C3_BoundaryLengths(t *testing.T) {
+	if got := MaskOperand("abcdefghij1234567/8"); got != "abcdefghij1234567/8" {
+		t.Errorf("19-rune contiguous run = %q; want unchanged", got)
+	}
+	secret20 := "abcdefghij12345678/9"
+	if got := MaskOperand(secret20); got != "abcde****" {
+		t.Errorf("20-rune contiguous run = %q; want %q", got, "abcde****")
+	}
+	assertNoLeak(t, MaskOperand(secret20), secret20)
+
+	if got := MaskOperand("abcdefghij1234567890123"); got != "abcdefghij1234567890123" {
+		t.Errorf("23-rune alnum token = %q; want unchanged", got)
+	}
+	if got := MaskOperand("abcdefghij12345678901234"); got != "abcde****" {
+		t.Errorf("24-rune alnum run = %q; want %q", got, "abcde****")
+	}
+
+	long := "claude-3-5-sonnet-20241022-with-a-very-long-suffix-indeed"
+	if got := MaskOperand(long); got != long {
+		t.Errorf("long separator-carrying token = %q; want unchanged", got)
+	}
+}
+
 func TestRegistryOps_ErrorsMaskKeyOperands(t *testing.T) {
 	secret := "sk-rename-leak-0123456789abcd"
 	reg := &Registry{}

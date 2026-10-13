@@ -142,6 +142,40 @@ func TestView_MasksKeyShapedEnvName(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// C5 — the doctor line must never echo a key-shaped env NAME raw.
+// ---------------------------------------------------------------------------
+
+// TestPrintKeyAuditLine_MasksKeyShapedEnv (C5/U8, security finding N2): a
+// legacy registry can hold a credential in the apiKeyEnv slot (an AWS key ID
+// here). Every doctor branch must render that name through
+// providers.MaskOperand (first 5 + ****), never raw, while a conventional
+// env name stays readable.
+func TestPrintKeyAuditLine_MasksKeyShapedEnv(t *testing.T) {
+	akia := "AKIAIOSFODNN7EXAMPLE"
+	cases := []providers.KeyAudit{
+		{Provider: "p1", Env: akia, Resolved: false},
+		{Provider: "p2", Env: akia, Resolved: true, MaskedHint: "wJalr****", Probe: providers.KeyProbeResult{Status: providers.ProbeValid}},
+		{Provider: "p3", Env: akia, Resolved: true, MaskedHint: "wJalr****", Conflict: true},
+		{Provider: "p4", Env: akia, Resolved: true, MaskedHint: "wJalr****", Probe: providers.KeyProbeResult{Status: providers.ProbeInvalid}},
+	}
+	for _, a := range cases {
+		var buf bytes.Buffer
+		printKeyAuditLine(&buf, a)
+		line := buf.String()
+		assertNoLeak(t, line, akia)
+		if !strings.Contains(line, providers.MaskOperand(akia)) {
+			t.Errorf("doctor line lacks the masked env name %q: %q", providers.MaskOperand(akia), line)
+		}
+	}
+	// Conventional env names stay readable (no UX regression).
+	var buf bytes.Buffer
+	printKeyAuditLine(&buf, providers.KeyAudit{Provider: "p5", Env: "GEMINI_API_KEY", Resolved: true, MaskedHint: "AIza****", Probe: providers.KeyProbeResult{Status: providers.ProbeValid}})
+	if !strings.Contains(buf.String(), "GEMINI_API_KEY") {
+		t.Errorf("conventional env name must stay readable: %q", buf.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
 // B4/B5 — ParseProviderSpecJSON guards (add-json path).
 // ---------------------------------------------------------------------------
 

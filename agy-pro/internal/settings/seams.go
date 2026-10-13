@@ -172,21 +172,24 @@ func defaultDoctor(out io.Writer, strict bool) error {
 }
 
 // printKeyAuditLine renders one masked key-audit verdict (values only ever
-// appear as providers.MaskSecret output — §2.11).
+// appear as providers.MaskSecret output — §2.11). The env NAME routes through
+// providers.MaskOperand (C5/U8, security finding N2): a legacy registry can
+// hold a credential in the apiKeyEnv slot, and that name is echoed here.
 func printKeyAuditLine(out io.Writer, a providers.KeyAudit) {
 	hint := a.MaskedHint
 	if hint == "" {
 		hint = "(not set)"
 	}
+	env := providers.MaskOperand(a.Env)
 	switch {
 	case !a.Resolved:
-		fmt.Fprintf(out, "[WARN] %s (%s): %s\n", a.Provider, a.Env, hint)
+		fmt.Fprintf(out, "[WARN] %s (%s): %s\n", a.Provider, env, hint)
 	case a.Conflict:
-		fmt.Fprintf(out, "[WARN] %s (%s): %s (name variants conflict)\n", a.Provider, a.Env, hint)
+		fmt.Fprintf(out, "[WARN] %s (%s): %s (name variants conflict)\n", a.Provider, env, hint)
 	case a.Probe.Status == providers.ProbeValid:
-		fmt.Fprintf(out, "[OK]   %s (%s): %s (probe ok)\n", a.Provider, a.Env, hint)
+		fmt.Fprintf(out, "[OK]   %s (%s): %s (probe ok)\n", a.Provider, env, hint)
 	default:
-		fmt.Fprintf(out, "[WARN] %s (%s): %s (probe %s)\n", a.Provider, a.Env, hint, a.Probe.Status)
+		fmt.Fprintf(out, "[WARN] %s (%s): %s (probe %s)\n", a.Provider, env, hint, a.Probe.Status)
 	}
 }
 

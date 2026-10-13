@@ -178,3 +178,77 @@ func TestWizardTranscript_MasksKeyEcho(t *testing.T) {
 		t.Errorf("transcript lacks the canonical mask %q:\n%s", MaskSecret(planted), transcript)
 	}
 }
+
+// TestWizardTranscript_KeyShapedNameWithholdsDerivedEnv (C5/U8): a pasted key
+// in the provider-name slot passes the B5 name charset, and defaultEnvFor
+// derives an env name that embeds it verbatim (case-folded, separators swapped
+// for "_": "AKIAIOSFODNN7EXAMPLE" -> "AKIAIOSFODNN7EXAMPLE_API_KEY"). The
+// wizard must never echo that derived name.
+func TestWizardTranscript_KeyShapedNameWithholdsDerivedEnv(t *testing.T) {
+	tmpDir := t.TempDir()
+	provPath := filepath.Join(tmpDir, "providers.json")
+	t.Setenv(EnvProviders, provPath)
+	t.Setenv("AKIAIOSFODNN7EXAMPLE_API_KEY", "")
+
+	pasted := "AKIAIOSFODNN7EXAMPLE"
+	derived := "AKIAIOSFODNN7EXAMPLE_API_KEY"
+	keyValue := "sk-REALKEY-0011223344556677"
+	input := strings.Join([]string{
+		pasted,
+		"http://127.0.0.1:9/v1",
+		keyValue,
+		"model-x",
+		"",  // family (accept inferred)
+		"",  // context length default
+		"",  // max output default
+		"Y", // supports tools
+		"",  // allowed tools default
+		"N", // no thinking
+		"N", // no vision
+		"",  // probe choice default 1 = save anyway
+		"",  // more models default N
+	}, "\n") + "\n"
+
+	out := &bytes.Buffer{}
+	if err := InteractiveSetupWizard(strings.NewReader(input), out); err != nil {
+		t.Fatalf("InteractiveSetupWizard returned error: %v\nOutput: %s", err, out.String())
+	}
+	transcript := out.String()
+	assertNoLeak(t, transcript, pasted)
+	if strings.Contains(transcript, derived) {
+		t.Errorf("transcript echoes the derived env name that embeds the pasted key:\n%s", transcript)
+	}
+	assertNoLeak(t, transcript, keyValue)
+}
+
+// TestWizardTranscript_BenignNameKeepsDerivedEnvReadable (C5 UX guard): a
+// benign provider name still shows its derived env name and long model IDs
+// stay verbatim, so the copy-paste completion hints keep working.
+func TestWizardTranscript_BenignNameKeepsDerivedEnvReadable(t *testing.T) {
+	tmpDir := t.TempDir()
+	provPath := filepath.Join(tmpDir, "providers.json")
+	t.Setenv(EnvProviders, provPath)
+	t.Setenv("ACME_API_KEY", "")
+
+	modelID := "claude-3-5-sonnet-20241022"
+	input := strings.Join([]string{
+		"acme",
+		"http://127.0.0.1:9/v1",
+		"sk-BENIGNKEY-00112233445566",
+		modelID,
+		"", "", "", "Y", "", "N", "N",
+		"", "",
+	}, "\n") + "\n"
+
+	out := &bytes.Buffer{}
+	if err := InteractiveSetupWizard(strings.NewReader(input), out); err != nil {
+		t.Fatalf("InteractiveSetupWizard returned error: %v\nOutput: %s", err, out.String())
+	}
+	transcript := out.String()
+	if !strings.Contains(transcript, "ACME_API_KEY") {
+		t.Errorf("benign derived env name must stay readable:\n%s", transcript)
+	}
+	if !strings.Contains(transcript, modelID) {
+		t.Errorf("long model ID must stay readable (C3 UX):\n%s", transcript)
+	}
+}

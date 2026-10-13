@@ -63,7 +63,7 @@ Reality table:
 | agy-pro unified picker (B1) | YES | YES | YES |
 
 Implementation (B1, recommended): agy-pro's own combined inventory + picker.
-- `agy pro models --all` (or `agy pro picker`): one list = native catalog (shim invokes real `agy models` once, caches ~5s) + providers registry (existing DisplayName/capability API), grouped `[native] Gemini 3.8 Flash (High) ...` / `[google] gemini-2.5-flash ...` / `[nw] glm-5.3-flash ...`.
+- `agy pro models --all`: one list = native catalog (shim invokes real `agy models` once, caches ~5s) + providers registry (existing DisplayName/capability API), grouped `[native] Gemini 3.8 Flash (High) ...` / `[google] gemini-2.5-flash ...` / `[nw] glm-5.3-flash ...` . There is no separate picker subcommand; the interactive picker for the same list is the launcher's `[2]` sub-menu on a bare `agy` (next bullet).
 - Launcher upgrade: the 2s picker's option [2] becomes "choose a model" sub-menu listing the combined inventory; selecting a native model execs real agy native with `-m <id>`; selecting an external model activates the bridge and runs agy gateway (existing path). Also usable non-interactively: `agy -m "<model> (<provider>)"` already routes external; extend `-m` to accept bare native ids (already works as passthrough - verify).
 - `agy pro swarm` seat builder (4.3) consumes the SAME combined inventory - one source of truth.
 B2 (already works): document prominently that gateway mode's /model shows Gemini 2.5 + external together when the google preset is registered.
