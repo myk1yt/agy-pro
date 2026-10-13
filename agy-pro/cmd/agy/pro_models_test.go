@@ -167,56 +167,67 @@ func TestRunModelsCmdJSONMasksKeyShapedFamily(t *testing.T) {
 	}
 }
 
-// L1 sink pin: Entry.Family is a registry slot with no path-readability
+// L1 + M1 sink pin: Entry.Family is a registry slot with no path-readability
 // requirement, so the --json mask loop routes it through the registry-slot
 // display authority (providers.MaskRegistryValue, the same one
 // MaskFamilyName uses) instead of plain MaskOperand. A location-shaped
 // key-shaped family ("./<key>") is exempt at plain MaskOperand (spawn
 // errors must name the binary) and would ride raw into the dump without the
-// loop change. The seam drives the real inventory.Load so the registry ->
-// entry -> sink chain runs. Without the loop change the raw plant reaches
+// loop change. The second row pins the M1 class (batch M) end-to-end at the
+// sink: a marker-decorated JWT core is caught only by MaskRegistryValue's
+// isJWTShapedOperand branch (no uppercase letter, so seedShaped cannot see
+// it), so without that branch the JWT plant serializes raw. The seam drives
+// the real inventory.Load so the registry -> entry -> sink chain runs.
+// Without the loop change (or without the JWT branch) the raw plant reaches
 // the dump and this test fails.
 func TestRunModelsCmdJSONMasksLocationShapedKeyShapedFamily(t *testing.T) {
-	const familyPlant = "./wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY"
-	reg := &providers.Registry{Providers: []providers.Provider{{
-		Name:    "nw",
-		BaseURL: "https://api.example/v1",
-		Models: []providers.Model{
-			{ID: "glm-5.3-flash-flex", Family: familyPlant},
-			{ID: "qwen3.8-flash", Family: "Qwen"},
-		},
-	}}}
-	old := loadModelsInventory
-	loadModelsInventory = func(ctx context.Context) (*inventory.Inventory, error) {
-		return inventory.Load(ctx, reg, nil)
-	}
-	t.Cleanup(func() { loadModelsInventory = old })
+	for _, tc := range []struct{ name, familyPlant, wantFamily string }{
+		{"relative-marker decorated secret", "./wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY", "wJalr****"},
+		{"relative-marker decorated JWT", "./abcdefghij.klmnopqrst.uvwxyz012345", "abcde****"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := &providers.Registry{Providers: []providers.Provider{{
+				Name:    "nw",
+				BaseURL: "https://api.example/v1",
+				Models: []providers.Model{
+					{ID: "glm-5.3-flash-flex", Family: tc.familyPlant},
+					{ID: "qwen3.8-flash", Family: "Qwen"},
+				},
+			}}}
+			old := loadModelsInventory
+			loadModelsInventory = func(ctx context.Context) (*inventory.Inventory, error) {
+				return inventory.Load(ctx, reg, nil)
+			}
+			t.Cleanup(func() { loadModelsInventory = old })
 
-	var out, errw strings.Builder
-	code := runModelsCmdTo([]string{"--json"}, &out, &errw)
-	if code != 0 {
-		t.Fatalf("exit = %d, stderr = %s", code, errw.String())
-	}
-	got := out.String()
-	if strings.Contains(got, familyPlant) {
-		t.Errorf("models --json leaks the location-shaped key-shaped family raw:\n%s", got)
-	}
-	var entries []inventory.Entry
-	if err := json.Unmarshal([]byte(got), &entries); err != nil {
-		t.Fatalf("json decode: %v\n%s", err, got)
-	}
-	if len(entries) != 2 {
-		t.Fatalf("json entries = %d, want 2", len(entries))
-	}
-	// The registry-slot masker renders the location-shaped plant masked (the
-	// exact rendering belongs to providers.MaskRegistryValue; the sink pin
-	// only requires that the raw plant never serializes).
-	if !strings.Contains(entries[0].Family, "****") {
-		t.Errorf("location-shaped key-shaped family = %q, want a masked rendering", entries[0].Family)
-	}
-	// The benign family keeps its case and renders byte-identical.
-	if entries[1].Family != "Qwen" {
-		t.Errorf("benign family = %q, want the case-preserved %q", entries[1].Family, "Qwen")
+			var out, errw strings.Builder
+			code := runModelsCmdTo([]string{"--json"}, &out, &errw)
+			if code != 0 {
+				t.Fatalf("exit = %d, stderr = %s", code, errw.String())
+			}
+			got := out.String()
+			if strings.Contains(got, tc.familyPlant) {
+				t.Errorf("models --json leaks the plant raw:\n%s", got)
+			}
+			var entries []inventory.Entry
+			if err := json.Unmarshal([]byte(got), &entries); err != nil {
+				t.Fatalf("json decode: %v\n%s", err, got)
+			}
+			if len(entries) != 2 {
+				t.Fatalf("json entries = %d, want 2", len(entries))
+			}
+			// The registry-slot masker renders the plant masked (the exact
+			// rendering belongs to providers.MaskRegistryValue; the sink pin
+			// requires the deterministic first-5+**** form, so a rendering
+			// drift at the sink fails here too).
+			if entries[0].Family != tc.wantFamily {
+				t.Errorf("family = %q, want %q", entries[0].Family, tc.wantFamily)
+			}
+			// The benign family keeps its case and renders byte-identical.
+			if entries[1].Family != "Qwen" {
+				t.Errorf("benign family = %q, want the case-preserved %q", entries[1].Family, "Qwen")
+			}
+		})
 	}
 }
 

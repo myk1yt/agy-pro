@@ -184,13 +184,15 @@ func MaskFamilyName(m Model) string {
 }
 
 // MaskRegistryValue is the registry-slot display authority (batch L, closes
-// F-1 and M1; batch M, closes the round-4 P1): it renders a registry-persisted
-// display value (explicit family, reasoning effort) at every display sink
-// (models --json, status banner, RenderNumbered, the wizard model list). A
-// registry slot is never a legitimate path and carries no readability
-// requirement, so unlike a CLI operand (whose spawn error must still name the
-// binary and therefore keeps MaskOperand's location exemption) a
-// location-shaped key-shaped registry value must mask here.
+// F-1 and M1; batch M, closes the round-4 P1; batch N + addendum, closes the
+// round-5 P1 — both "://" segments, tail and head — and the scheme-only LOW):
+// it renders a registry-persisted display value (explicit family, reasoning
+// effort) at every display sink (models --json, status banner,
+// RenderNumbered, the wizard model list). A registry slot is never a
+// legitimate path and carries no readability requirement, so unlike a CLI
+// operand (whose spawn error must still name the binary and therefore keeps
+// MaskOperand's location exemption) a location-shaped key-shaped registry
+// value must mask here.
 //
 // The pipeline, every branch mask-only or identity (it can never unmask):
 //   - TrimSpace first (K2/M1: padding defeated the classifier, so a padded
@@ -206,7 +208,19 @@ func MaskFamilyName(m Model) string {
 //     neither the location marker nor any secret fragment beyond the mask
 //     survives;
 //   - when the strip leaves no core at all (a scheme-only value such as
-//     "https://") render the input unchanged, never an empty string;
+//     "https://") render the input unchanged, never an empty string — unless
+//     the stripped scheme segment is itself secret-shaped
+//     ("abcdefghijklmnop://" is a bare credential wearing a scheme costume),
+//     in which case mask it instead of echoing the secret (batch N LOW);
+//   - the tail behind the last "://" that survives the leading-only strip is
+//     classified for the mask DECISION only, never rendered (batch N, the
+//     round-5 P1): a non-leading scheme is deliberately not stripped (M3: a
+//     value that merely contains a URL must render intact), but a
+//     secret-shaped tail behind it masks, because isLocationShaped's
+//     contains-"://" exemption blinds every whole-value classifier to it;
+//   - the mirror rule closes the sixth shape of the same class: the segment
+//     BEFORE the first "://" is classified the same way, so a secret-shaped
+//     head with a benign tail ("<key>://x") masks too (batch N addendum);
 //   - else render the marker-stripped core, so a benign location-shaped value
 //     ("./gemini" -> "gemini", a leading-URL-scheme value) stays readable.
 //
@@ -218,13 +232,63 @@ func MaskRegistryValue(s string) string {
 		return m
 	}
 	core := stripLocationMarkers(s)
-	if core == s || core == "" {
+	if core == "" {
+		// The value is nothing but location markers, so batch M rendered it
+		// unchanged. A scheme segment can itself BE the secret
+		// ("abcdefghijklmnop://" strips to an empty core), and echoing the
+		// input would print it, so a secret-shaped stripped scheme segment
+		// masks instead. A benign scheme-only value ("https://") still
+		// renders unchanged.
+		if seg := secretShapedSchemeSegment(s); seg != "" {
+			return MaskSecret(seg)
+		}
 		return s
 	}
-	if operandLooksSecret(core) || seedShaped(core) || isJWTShapedOperand(strings.TrimSpace(core)) || NewRedactor()(core) != core {
+	// A value with no stripped markers was already classified in full by
+	// MaskOperand at the top, and re-running the wider core classifier on the
+	// identity path would mask the accepted C6 sentence class (>=2 interior
+	// spaces), so the core classifier stays scoped to the marker-stripped
+	// path exactly as batch M shipped it.
+	if core != s && registryCoreLooksSecret(core) {
 		return MaskSecret(core)
 	}
+	// A scheme that does NOT lead the value is deliberately not stripped (M3:
+	// a value that merely contains a URL must render intact), but the tail
+	// behind the last "://" can still be a decorated credential core that
+	// isLocationShaped's contains-"://" exemption hides from every
+	// whole-value classifier (the round-5 P1: batch M's leading-only strip
+	// dropped the old last-"://"-anywhere coverage). CLASSIFY the tail for
+	// the mask decision only; never render it — the render stays the batch-M
+	// form (identity, or first-5+**** of the tail).
+	if i := strings.LastIndex(core, "://"); i >= 0 {
+		if tail := strings.TrimSpace(core[i+len("://"):]); tail != "" && registryCoreLooksSecret(tail) {
+			return MaskSecret(tail)
+		}
+	}
+	// Mirror of the tail check: the segment BEFORE the first "://" can itself
+	// be the secret ("<key>://x" is a bare credential wearing a scheme costume
+	// with a benign tail — the sixth enumerated shape of the round-5 P1 class;
+	// it rendered masked-by-elision at cc6a5e4). Same contract: classify the
+	// head for the mask decision only; never render it.
+	if i := strings.Index(core, "://"); i >= 0 {
+		if head := strings.TrimSpace(core[:i]); head != "" && registryCoreLooksSecret(head) {
+			return MaskSecret(head)
+		}
+	}
+	if core == s {
+		return s
+	}
 	return core
+}
+
+// registryCoreLooksSecret is the registry-slot core classifier, shared by the
+// MaskRegistryValue mask branch and its "://" segment checks (tail and head):
+// the canonical display shapes (operandLooksSecret), the decorated-secret seed
+// core (seedShaped), the JWT class (isJWTShapedOperand, the 3f9ce5a
+// inheritance batch M restored), and the generic redactor patterns.
+func registryCoreLooksSecret(core string) bool {
+	return operandLooksSecret(core) || seedShaped(core) ||
+		isJWTShapedOperand(strings.TrimSpace(core)) || NewRedactor()(core) != core
 }
 
 // leadingSchemeRe matches a URL scheme at the START of a value ("https://",
@@ -233,6 +297,13 @@ func MaskRegistryValue(s string) string {
 // render intact (batch M P3; the old stripper cut at the LAST "://" anywhere
 // in the value and truncated such a sentence).
 var leadingSchemeRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*://`)
+
+// anySchemeRe matches a URL scheme at ANY position (leadingSchemeRe's
+// unanchored twin). It is not a rendering marker — the strip stays
+// leading-only (M3) — but it locates the scheme segments of a value that
+// strips away entirely, so a secret-shaped segment can be classified before
+// the value is echoed (batch N LOW).
+var anySchemeRe = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://`)
 
 // locationMarkerPrefixes are the relative-path markers a registry slot never
 // legitimately carries, hoisted to package level so the strip loop allocates
@@ -249,7 +320,10 @@ var locationMarkerPrefixes = []string{"./", "../", `.\`, `..\`}
 // stripper MaskRegistryValue uses so a location-shaped key-shaped registry
 // value can be classified on its core; a value with no markers returns
 // unchanged, and a value that strips away entirely (a scheme-only "https://")
-// returns an empty core, which MaskRegistryValue renders as the input.
+// returns an empty core, which MaskRegistryValue renders as the input —
+// unless the stripped scheme segment is itself secret-shaped, in which case
+// MaskRegistryValue masks it (batch N LOW). The stripper stays pure: the
+// scheme-segment classification lives at the render authority.
 func stripLocationMarkers(s string) string {
 	for {
 		before := s
@@ -267,6 +341,21 @@ func stripLocationMarkers(s string) string {
 			return s
 		}
 	}
+}
+
+// secretShapedSchemeSegment returns the first secret-shaped URL-scheme
+// segment of an all-markers value (the letter-led run before a "://",
+// located with anySchemeRe), or "" when none is. A value that strips away
+// entirely is nothing but location markers, so its scheme segment is the only
+// material left to classify: "abcdefghijklmnop://" is a bare 16-rune
+// credential wearing a scheme costume and must not be echoed.
+func secretShapedSchemeSegment(s string) string {
+	for _, m := range anySchemeRe.FindAllString(s, -1) {
+		if seg := strings.TrimSuffix(m, "://"); registryCoreLooksSecret(seg) {
+			return seg
+		}
+	}
+	return ""
 }
 
 // MaskProviderForReport renders a Provider for a report/JSON sink (S4):

@@ -161,14 +161,19 @@ func TestRunSettingsCmdAddJSONCompositeTailSeedsTokens(t *testing.T) {
 		t.Errorf("add-json read error must mask the comma-decorated operand:\n%s", errw)
 	}
 	// A benign comma list renders byte-identical (no eligible seed, the
-	// sentence keeps its readable path).
+	// sentence keeps its readable path). Full-line equality like the two
+	// prompt-file twins, so a substring pin cannot hide a rendering drift.
 	benign := "read,search"
 	code, _, errw = runSettings(t, []string{"providers", "add-json", benign}, "")
 	if code != 1 {
 		t.Fatalf("add-json(benign missing file) exit = %d, want 1", code)
 	}
-	if !strings.Contains(errw, benign) {
-		t.Errorf("add-json read error must keep the benign operand readable:\n%s", errw)
+	_, readErr := os.ReadFile(benign)
+	if readErr == nil {
+		t.Fatalf("os.ReadFile(%q) unexpectedly succeeded", benign)
+	}
+	if want := "[agy-pro] " + readErr.Error() + "\n"; errw != want {
+		t.Errorf("add-json benign full line drifted:\ngot:  %q\nwant: %q", errw, want)
 	}
 }
 
@@ -501,6 +506,72 @@ func TestRunSettingsCmd_RollbackKeysErrorMasked(t *testing.T) {
 			t.Errorf("benign rollback error must not be redacted:\n%s", errw)
 		}
 	})
+}
+
+// Batch N (round-5 M6 preemptive): the settings doctor rollback-keys tail
+// seeded the composite sentence with the whole operand only. A location-shaped
+// whole operand ("./backups,<secret>") never seeds (SeedEligible's location
+// exemption), so MaskSentence fell back to MaskOperand, whose generic patterns
+// do not cover a bare secret token: the forwarded ReadFile sentence beside
+// re-echoed it raw. The tail now takes the batch-M composition (whole operand +
+// providers.FlagSeedOperands), mirroring the add-json, fix-keys, and
+// prompt-file twins.
+//
+// The pin asserts the FULL output line. Without the fix the raw plant reaches
+// stderr through the sentence and the equality pin fails.
+func TestRunSettingsCmd_RollbackKeysCompositeTailSeedsTokens(t *testing.T) {
+	failRollback := func() {
+		t.Helper()
+		prev := newSettingsCore
+		newSettingsCore = func() *settings.Core {
+			return settings.NewCore(settings.Deps{
+				RollbackKeys: func(dir string) error {
+					return fmt.Errorf("open %s: The system cannot find the file specified.", providers.ResolveBackupFile(dir))
+				},
+			})
+		}
+		t.Cleanup(func() { newSettingsCore = prev })
+	}
+
+	awsPlant := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	for _, tc := range []struct{ name, operand string }{
+		{"comma-decorated compound plant", "./backups," + awsPlant},
+		{"semicolon-decorated compound plant", "./backups;" + awsPlant},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			failRollback()
+			code, _, errw := runSettings(t, []string{"doctor", "rollback-keys", tc.operand}, "")
+			if code != 1 {
+				t.Fatalf("rollback-keys exit = %d, want 1 (stderr=%s)", code, errw)
+			}
+			// The expected full line: the composite sentence with the plant
+			// replaced by the redaction marker. The sentence wording comes
+			// from the same stub error, so the pin is platform-independent
+			// and still byte-exact.
+			stubErr := fmt.Errorf("open %s: The system cannot find the file specified.", providers.ResolveBackupFile(tc.operand))
+			want := "[agy-pro] " + strings.ReplaceAll(stubErr.Error(), awsPlant, "[REDACTED]") + "\n"
+			if errw != want {
+				t.Errorf("full rollback error line drifted:\ngot:  %q\nwant: %q", errw, want)
+			}
+			if strings.Contains(errw, awsPlant) {
+				t.Errorf("rollback error tail leaks the planted secret %q:\n%s", awsPlant, errw)
+			}
+		})
+	}
+
+	// The other side of the composition: a benign comma list seeds no token,
+	// so the added per-token seeds must not start masking ordinary values.
+	// The full line stays byte-identical to the whole-operand seeding.
+	const benign = "read,search"
+	failRollback()
+	code, _, errw := runSettings(t, []string{"doctor", "rollback-keys", benign}, "")
+	if code != 1 {
+		t.Fatalf("rollback-keys(benign) exit = %d; want 1", code)
+	}
+	stubErr := fmt.Errorf("open %s: The system cannot find the file specified.", providers.ResolveBackupFile(benign))
+	if want := "[agy-pro] " + stubErr.Error() + "\n"; errw != want {
+		t.Errorf("benign rollback full line drifted:\ngot:  %q\nwant: %q", errw, want)
+	}
 }
 
 // F-beta F7: the `settings doctor fix-keys` tail echoes the aggregate error

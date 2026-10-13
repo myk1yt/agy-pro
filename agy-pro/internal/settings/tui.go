@@ -53,14 +53,14 @@ type TUI struct {
 	// clearScreen requests ANSI home/clear between frames (console only; C3).
 	clearScreen bool
 
-	view     SettingsView
-	section  int
-	row      int
-	message  string
-	result   []string
-	pending  *pendingConfirm
-	choices  *choiceState
-	running  bool
+	view    SettingsView
+	section int
+	row     int
+	message string
+	result  []string
+	pending *pendingConfirm
+	choices *choiceState
+	running bool
 }
 
 type pendingConfirm struct {
@@ -379,7 +379,13 @@ func (t *TUI) activate(it Item) {
 		})
 	case it.ID == "providers.delete":
 		t.runPrompt("provider name to delete (registry entry only)", func(s string) error {
-			t.pending = &pendingConfirm{item: it, operands: []string{s}, run: func() error { return t.core.ProviderDelete(s) }}
+			// Batch N (M6 preemptive): the danger-gate tail seeds the frame
+			// mask with the per-token forms too (providers.FlagSeedOperands),
+			// the composition the promptLine twin and the CLI rollback tails
+			// use: a location-shaped whole operand ("./backups,<secret>")
+			// never seeds, so the composite not-found error re-echoed the
+			// bare secret token raw.
+			t.pending = &pendingConfirm{item: it, operands: providers.FlagSeedOperands(s), run: func() error { return t.core.ProviderDelete(s) }}
 			return nil
 		})
 	case it.ID == "doctor.diagnose":
@@ -404,9 +410,14 @@ func (t *TUI) activate(it Item) {
 			// repair stack) re-embeds the resolved backup file; seed the frame
 			// mask with the prompted dir and the resolved file, matching the
 			// CLI rollback tails (cmd/agy E5).
+			// Batch N (M6 preemptive): the seed list also takes the per-token
+			// forms (providers.FlagSeedOperands), the batch-M composition the
+			// promptLine twin and the CLI rollback tails use: a location-shaped
+			// whole operand ("./backups,<secret>") never seeds, so the
+			// composite PathError re-echoed the bare secret token raw.
 			t.pending = &pendingConfirm{
 				item:     it,
-				operands: []string{s, providers.ResolveBackupFile(s)},
+				operands: providers.FlagSeedOperands(s, providers.ResolveBackupFile(s)),
 				run:      func() error { return t.core.DoctorRollbackKeys(s) },
 			}
 			return nil
@@ -480,7 +491,18 @@ func (t *TUI) promptLine(prompt string, fn func(string) error) (string, error) {
 		// F6: a composite error (a PathError embedding the JSON path, a
 		// rename conflict echoing the new name) must not carry a pasted key
 		// into the frame; benign values stay readable.
-		return s, errors.New(providers.MaskSentence(err.Error(), s))
+		// Batch N (M6 preemptive): the seed list also takes the per-token
+		// forms (providers.FlagSeedOperands), the batch-M composition the
+		// doctor.fix_keys gate and the CLI twins already use. The whole
+		// prompted value alone is not enough: a location-shaped whole value
+		// ("./backups,<secret>") never seeds (SeedEligible's location
+		// exemption), so the composite sentence fell back to MaskOperand,
+		// whose generic patterns do not cover a bare secret token, and the
+		// tail re-echoed it raw. FlagSeedOperands keeps the whole value AND
+		// adds each comma/space/semicolon-separated token, so the token seed
+		// closes the sentence; separator-free values seed exactly what they
+		// seeded before (byte-identical).
+		return s, errors.New(providers.MaskSentence(err.Error(), providers.FlagSeedOperands(s)...))
 	}
 	return s, nil
 }

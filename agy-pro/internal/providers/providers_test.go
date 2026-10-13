@@ -1507,6 +1507,18 @@ func TestCapabilitySummary(t *testing.T) {
 		// every other Summary sink: the banner, the wizard list).
 		{Capabilities{SupportsThinking: true, ReasoningEffort: "./abcDef.ghiJkl.mnopqr"}, "thinking(abcDe****)"},
 		{Capabilities{SupportsThinking: true, ReasoningEffort: "../aaaabcdef.gggghijk.iiiijjjj"}, "thinking(aaaab****)"},
+		// Round-5 P1 (batch N): a non-leading scheme is not stripped for
+		// rendering (the benign sentence containing a URL stays intact), but
+		// the tail behind the last mid-string "://" is classified for the
+		// mask decision, so the composed summary masks instead of riding raw.
+		{Capabilities{SupportsThinking: true, ReasoningEffort: "note https://wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"}, "thinking(wJalr****)"},
+		// Batch-N addendum: the mirror head check — a secret-shaped segment
+		// before the first "://" with a benign tail masks at the composition.
+		{Capabilities{SupportsThinking: true, ReasoningEffort: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY://x"}, "thinking(wJalr****)"},
+		// Batch-N LOW: a secret-shaped scheme-only value masks at the
+		// composition; a benign one ("https://") renders unchanged.
+		{Capabilities{SupportsThinking: true, ReasoningEffort: "abcdefghijklmnop://"}, "thinking(abcde****)"},
+		{Capabilities{SupportsThinking: true, ReasoningEffort: "https://"}, "thinking(https://)"},
 	}
 	for _, tc := range cases {
 		if got := tc.caps.Summary(); got != tc.want {

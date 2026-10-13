@@ -886,6 +886,14 @@ func TestMaskFamilyName(t *testing.T) {
 		{"./abcDef.ghiJkl.mnopqr", "abcDe****"},
 		{"../aaaabcdef.gggghijk.iiiijjjj", "aaaab****"},
 		{"https://abcDef.ghiJkl.mnopqr", "abcDe****"},
+		// Round-5 P1 (batch N): a non-leading scheme is not stripped for
+		// rendering, but a secret-shaped tail behind the last mid-string
+		// "://" masks the family (batch M's leading-only strip dropped the
+		// old last-"://"-anywhere coverage, so this rode raw).
+		{"note https://wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "wJalr****"},
+		// Batch-N addendum: the mirror head check — a secret-shaped segment
+		// BEFORE the first "://" with a benign tail masks the family.
+		{"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY://x", "wJalr****"},
 	} {
 		got := MaskFamilyName(Model{ID: "m", Family: tc.family})
 		if got != tc.want {
@@ -1017,6 +1025,77 @@ func TestMaskRegistryValue(t *testing.T) {
 	if got := MaskRegistryValue("https://"); got != "https://" {
 		t.Errorf("MaskRegistryValue(scheme-only) = %q; want https:// (an empty core renders the input)", got)
 	}
+	// Round-5 P1 (batch N): a NON-LEADING scheme is not stripped for
+	// rendering (M3 keeps a benign sentence containing a URL intact), but the
+	// tail behind the last mid-string "://" is still classified for the mask
+	// DECISION. Batch M's leading-only strip dropped the old
+	// last-"://"-anywhere coverage, so a registry value with a non-leading
+	// scheme plus a bare secret tail (first-5+**** at cc6a5e4) rode raw at
+	// every sink at 04f1500. The render stays the batch-M core form:
+	// first-5+**** of the secret-shaped tail.
+	for _, v := range []string{
+		"note https://wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+		"note https://wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY",
+	} {
+		if got := MaskRegistryValue(v); got != "wJalr****" {
+			t.Errorf("MaskRegistryValue(%q) = %q; want wJalr**** (non-leading scheme + secret tail)", v, got)
+		}
+		assertNoLeak(t, MaskRegistryValue(v), v)
+	}
+	// The same rule covers a scheme that survives the leading strip (a
+	// doubled scheme leaves a mid-string "://" in the core) with a JWT
+	// behind it, and a marker-decorated sentence whose tail is the secret.
+	if got := MaskRegistryValue("https://host/https://abcDef.ghiJkl.mnopqr"); got != "abcDe****" {
+		t.Errorf("MaskRegistryValue(doubled scheme + JWT tail) = %q; want abcDe****", got)
+	}
+	if got := MaskRegistryValue("./note https://wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"); got != "wJalr****" {
+		t.Errorf("MaskRegistryValue(marker-decorated sentence + secret tail) = %q; want wJalr****", got)
+	}
+	// Batch-N addendum: the MIRROR of the tail check — the segment BEFORE the
+	// first "://" — closes the sixth shape of the same class: a secret-shaped
+	// head with a benign tail ("<key>://x"). MaskOperand location-exempts it
+	// (contains "://"), the leading-only strip finds no marker (core == s),
+	// and the tail "x" is benign, so the tail check alone left it raw at every
+	// sink (it rendered masked-by-elision at cc6a5e4). Same contract as the
+	// tail rule: classify the head for the mask decision only, never render
+	// it; the render is first-5+**** of the head.
+	for _, v := range []string{
+		"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY://x",
+		"./wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY://x",
+	} {
+		if got := MaskRegistryValue(v); got != "wJalr****" {
+			t.Errorf("MaskRegistryValue(%q) = %q; want wJalr**** (secret-shaped head before \"://\")", v, got)
+		}
+		assertNoLeak(t, MaskRegistryValue(v), v)
+	}
+	// The tail path still owns the shapes whose head is benign: a
+	// user:password-decorated value and a sentence both mask through the tail
+	// check (regression guards for the other enumerated shapes).
+	for _, v := range []string{
+		"user:pass://wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+		"note https://wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+	} {
+		if got := MaskRegistryValue(v); got != "wJalr****" {
+			t.Errorf("MaskRegistryValue(%q) = %q; want wJalr**** (tail path)", v, got)
+		}
+		assertNoLeak(t, MaskRegistryValue(v), v)
+	}
+	// Batch-N LOW hardening: a scheme-only value strips to an empty core and
+	// was echoed whole; when the stripped scheme segment is itself
+	// secret-shaped ("abcdefghijklmnop://" is a bare 16-rune credential
+	// wearing a scheme costume) it masks instead of echoing the secret. A
+	// benign scheme-only value ("https://") still renders unchanged (the
+	// batch-M M4 pin above).
+	for _, tc := range []struct{ v, want string }{
+		{"abcdefghijklmnop://", "abcde****"},
+		{"./abcdefghijklmnop://", "abcde****"},
+		{"wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY://", "wJalr****"},
+	} {
+		if got := MaskRegistryValue(tc.v); got != tc.want {
+			t.Errorf("MaskRegistryValue(%q) = %q; want %q (secret-shaped scheme segment masks)", tc.v, got, tc.want)
+		}
+		assertNoLeak(t, MaskRegistryValue(tc.v), tc.v)
+	}
 }
 
 // TestStripLocationMarkers pins the marker stripper directly, platform-
@@ -1051,6 +1130,11 @@ func TestStripLocationMarkers(t *testing.T) {
 		// Round-4 LOW (batch M): a scheme-only value strips to an empty core;
 		// MaskRegistryValue renders such a value as the input.
 		{"https://", ""},
+		// Batch N: the stripper stays PURE for a secret-shaped scheme-only
+		// value too — it still returns the empty core, and the scheme-segment
+		// classification that masks "abcdefghijklmnop://" lives at the render
+		// authority (MaskRegistryValue), pinned in TestMaskRegistryValue.
+		{"abcdefghijklmnop://", ""},
 		{key, key},
 		{"./gemini", "gemini"},
 		{"high", "high"},
@@ -1190,6 +1274,15 @@ func TestMaskModelForReport_LocationShapedEffortMasked(t *testing.T) {
 	for _, tc := range []struct{ plant, want string }{
 		{"./abcDef.ghiJkl.mnopqr", "abcDe****"},
 		{"../aaaabcdef.gggghijk.iiiijjjj", "aaaab****"},
+		// Round-5 P1 (batch N): the non-leading-scheme tail class masks in
+		// BOTH report paths too (the explicit family through MaskFamilyName,
+		// the reasoning effort through MaskRegistryValue). Before the fix the
+		// stripped sentence core serialized raw into the report copy.
+		{"note https://wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "wJalr****"},
+		// Batch-N addendum: the head segment before the first "://" is
+		// classified the same way, so the "<key>://x" shape masks in both
+		// report paths too.
+		{"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY://x", "wJalr****"},
 	} {
 		got := MaskModelForReport(Model{ID: "m", Family: tc.plant, Capabilities: Capabilities{SupportsThinking: true, ReasoningEffort: tc.plant}})
 		if got.Family != tc.want {

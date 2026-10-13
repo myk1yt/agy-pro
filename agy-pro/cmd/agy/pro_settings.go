@@ -283,7 +283,18 @@ func settingsDoctorCmd(core *settings.Core, args []string, out, errw io.Writer) 
 			// E5: the forwarded rollback error re-embeds the raw backup dir /
 			// resolved file from the operand; redact seeded with both so a
 			// key-shaped --rollback-keys value cannot echo.
-			fmt.Fprintf(errw, "[agy-pro] %s\n", maskOperandSentence(err.Error(), args[1], providers.ResolveBackupFile(args[1])))
+			// Batch N (M6 preemptive): the seed list also takes the per-token
+			// forms (providers.FlagSeedOperands), the batch-M composition the
+			// add-json, fix-keys, and prompt-file twins already use. The whole
+			// operand alone is not enough: a location-shaped whole operand
+			// ("./backups,<secret>") never seeds (SeedEligible's location
+			// exemption), so the composite sentence fell back to MaskOperand,
+			// whose generic patterns do not cover a bare secret token, and the
+			// tail re-echoed it raw. FlagSeedOperands keeps the whole value AND
+			// adds each comma/space/semicolon-separated token, so the token
+			// seed closes the sentence; separator-free operands seed exactly
+			// what they seeded before (byte-identical).
+			fmt.Fprintf(errw, "[agy-pro] %s\n", maskOperandSentence(err.Error(), providers.FlagSeedOperands(args[1], providers.ResolveBackupFile(args[1]))...))
 			return 1
 		}
 		fmt.Fprintln(out, "[SUCCESS] registry key names restored from backup")
