@@ -530,3 +530,63 @@ func TestRunSwarmCmdPromptFileErrorBenignMultiWordPathReadable(t *testing.T) {
 		t.Errorf("benign operand must not trigger any redaction:\n%s", errBuf.String())
 	}
 }
+
+// Batch K slot-hardening pin: the MaskOperand-first slot with an
+// equality-only fallback skipped the fallback whenever MaskOperand PARTIALLY
+// masked the operand. A compound operand carrying both a pattern-shaped
+// credential (AKIA, masked by the generic redactor inside MaskOperand) and a
+// bare decorated secret (wJalr..., which no generic pattern catches)
+// therefore echoed the bare secret raw in the prompt-file slot. The hardened
+// two-pass slot runs the seeded sentence pass for every whitespace-carrying
+// operand, seeded from the original operand and applied to the already-masked
+// slot, so the bare secret is masked too. Without the hardening the raw plant
+// reaches stderr and this test fails.
+func TestRunSwarmCmdPromptFileSlotHardenedCompoundOperand(t *testing.T) {
+	t.Setenv("AGY_PRO_HOME", t.TempDir())
+	defer withStubSwarmInventory(t, swarmFixtureInventory(t), nil)()
+	const bare = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	const akia = "AKIAIOSFODNN7EXAMPLE"
+	operand := "prefix " + akia + " " + bare
+	var outBuf, errBuf strings.Builder
+	code := runSwarmCmd([]string{"--template", "code-review", "--seats", "p1", "--prompt-file", operand},
+		strings.NewReader(""), &outBuf, &errBuf)
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1\nstderr:\n%s", code, errBuf.String())
+	}
+	if strings.Contains(errBuf.String(), bare) || strings.Contains(errBuf.String(), akia) {
+		t.Errorf("hardened prompt-file slot leaked the compound operand raw:\n%s", errBuf.String())
+	}
+	if !strings.Contains(errBuf.String(), "[REDACTED]") {
+		t.Errorf("hardened prompt-file slot must render the compound operand masked:\n%s", errBuf.String())
+	}
+}
+
+// Batch K byte-identity pins for the hardened prompt-file slot: a
+// single-token bare plant, a single-token decorated plant, a one-space
+// operand, a location-shaped path, and a benign multi-word path must all
+// render exactly as the plain MaskOperand-first slot rendered before the
+// hardening (proved by the temporary-revert run in the batch-K report).
+func TestRunSwarmCmdPromptFileSlotRenderingPins(t *testing.T) {
+	for _, tc := range []struct{ name, path, wantSlot string }{
+		{"single-token bare plant", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "wJalr****"},
+		{"single-token decorated plant", "native:wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "nativ****"},
+		{"one-space operand", "a b", "a b"},
+		{"location-shaped path", "./registry-keys.json", "./registry-keys.json"},
+		{"benign multi-word path", "my prompts missing.md", "my prompts missing.md"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("AGY_PRO_HOME", t.TempDir())
+			defer withStubSwarmInventory(t, swarmFixtureInventory(t), nil)()
+			var outBuf, errBuf strings.Builder
+			code := runSwarmCmd([]string{"--template", "code-review", "--seats", "p1", "--prompt-file", tc.path},
+				strings.NewReader(""), &outBuf, &errBuf)
+			if code != 1 {
+				t.Fatalf("exit = %d, want 1\nstderr:\n%s", code, errBuf.String())
+			}
+			want := "Error reading prompt file " + tc.wantSlot + ": "
+			if !strings.HasPrefix(errBuf.String(), want) {
+				t.Errorf("slot rendering drifted:\ngot:  %q\nwant prefix: %q", errBuf.String(), want)
+			}
+		})
+	}
+}

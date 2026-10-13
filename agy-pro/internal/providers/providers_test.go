@@ -1490,6 +1490,10 @@ func TestCapabilitySummary(t *testing.T) {
 		{Capabilities{SupportsThinking: true, ReasoningEffort: "high"}, "thinking(high)"},
 		{Capabilities{SupportsTools: true, SupportsVision: true, SupportsThinking: true, ReasoningEffort: "high"}, "tools, vision, thinking(high)"},
 		{Capabilities{SupportsVideo: true, SupportsThinking: true, ReasoningEffort: "low"}, "video, thinking(low)"},
+		// K1: a key-shaped reasoningEffort (nothing on the add-json /
+		// hand-edit write path validates the field) renders masked at the
+		// composition; the API path keeps the raw field.
+		{Capabilities{SupportsThinking: true, ReasoningEffort: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"}, "thinking(wJalr****)"},
 	}
 	for _, tc := range cases {
 		if got := tc.caps.Summary(); got != tc.want {
@@ -1498,6 +1502,63 @@ func TestCapabilitySummary(t *testing.T) {
 	}
 	if got := (Model{Capabilities: Capabilities{SupportsVision: true}}).CapabilitySummary(); got != "vision" {
 		t.Errorf("Model.CapabilitySummary() = %q; want vision", got)
+	}
+}
+
+// TestCapabilitySummary_MasksKeyShapedReasoningEffort pins the K1 composition
+// fix end to end: the registry-persisted reasoningEffort is free-form text, so
+// a misdirected key paste in that slot renders first-5+**** in the composed
+// summary (and therefore at every display sink: the wizard model list at
+// wizard.go:447, the status banner, RenderNumbered's provider row). The raw
+// getter stays raw: the API path (fanout mapReasoningEffort, bridge
+// NormalizeReasoningEffort) reads Capabilities.ReasoningEffort directly and
+// never sees the composed text.
+func TestCapabilitySummary_MasksKeyShapedReasoningEffort(t *testing.T) {
+	key := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	caps := Capabilities{SupportsTools: true, SupportsVision: true, SupportsThinking: true, ReasoningEffort: key}
+	want := "tools, vision, thinking(wJalr****)"
+	if got := caps.Summary(); got != want {
+		t.Errorf("Summary() = %q; want %q", got, want)
+	}
+	assertNoLeak(t, caps.Summary(), key)
+	// The wizard model list renders exactly this expression (wizard.go:447).
+	if got := (Model{Capabilities: caps}).CapabilitySummary(); got != want {
+		t.Errorf("Model.CapabilitySummary() = %q; want %q", got, want)
+	}
+	// The API path contract: the raw getter is untouched by the display mask.
+	if got := caps.EffectiveReasoningEffort(); got != key {
+		t.Errorf("EffectiveReasoningEffort() = %q; want the raw %q (API path keeps the raw value)", got, key)
+	}
+	// Benign efforts render byte-identical through the mask.
+	for _, effort := range []string{"default", "none", "low", "medium", "high", "xhigh", "max"} {
+		benign := Capabilities{SupportsThinking: true, ReasoningEffort: effort}
+		if got := benign.Summary(); got != "thinking("+effort+")" {
+			t.Errorf("Summary(benign effort %q) = %q; want thinking(%s)", effort, got, effort)
+		}
+	}
+}
+
+// K1b: a LOCATION-shaped key-shaped effort ("./<key>") is not a legitimate
+// effort and the slot has no path-readability requirement, so it masks at the
+// composition even inside a >=3-part composite (where the composite itself
+// defeats the <=1-space display class and the sink mask cannot help). Before
+// the location fallback the plant rode raw at every display sink.
+func TestCapabilitySummary_MasksLocationShapedReasoningEffort(t *testing.T) {
+	key := "./wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY"
+	caps := Capabilities{SupportsTools: true, SupportsVision: true, SupportsThinking: true, ReasoningEffort: key}
+	want := "tools, vision, thinking(wJalr****)"
+	if got := caps.Summary(); got != want {
+		t.Errorf("Summary() = %q; want %q", got, want)
+	}
+	assertNoLeak(t, caps.Summary(), key)
+	if got := (Model{Capabilities: caps}).CapabilitySummary(); got != want {
+		t.Errorf("Model.CapabilitySummary() = %q; want %q", got, want)
+	}
+	if got := caps.EffectiveReasoningEffort(); got != key {
+		t.Errorf("EffectiveReasoningEffort() = %q; want the raw %q (API path keeps the raw value)", got, key)
+	}
+	if got := (Capabilities{SupportsThinking: true, ReasoningEffort: "./gemini"}).Summary(); got != "thinking(gemini)" {
+		t.Errorf("Summary(location-shaped benign effort) = %q; want thinking(gemini)", got)
 	}
 }
 

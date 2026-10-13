@@ -55,6 +55,16 @@ func (c Capabilities) CanUseTools() bool {
 // summary, `agy pro models`, and the launcher menu so that every surface shows
 // the same flags the gateway acts on. A model with no optional capability
 // renders as "none".
+//
+// K1: the reasoning effort is registry-persisted free-form text (nothing on
+// the add-json / hand-edit write path validates it), so the effort routes
+// through maskRegistryValue here at the composition: a key-shaped value pasted
+// into the reasoningEffort slot renders first-5+**** at every sink that calls
+// this renderer, while benign efforts render byte-identical. A LOCATION-shaped
+// effort ("./<key>") is not a legitimate effort and the slot has no
+// path-readability requirement, so it masks too. The API path is unaffected —
+// it reads the raw Capabilities.ReasoningEffort field directly (fanout
+// mapReasoningEffort, bridge NormalizeReasoningEffort), never Summary().
 func (c Capabilities) Summary() string {
 	parts := make([]string, 0, 4)
 	if c.SupportsTools {
@@ -67,7 +77,7 @@ func (c Capabilities) Summary() string {
 		parts = append(parts, "video")
 	}
 	if c.SupportsThinking {
-		parts = append(parts, "thinking("+c.EffectiveReasoningEffort()+")")
+		parts = append(parts, "thinking("+maskRegistryValue(c.EffectiveReasoningEffort())+")")
 	}
 	if len(parts) == 0 {
 		return "none"

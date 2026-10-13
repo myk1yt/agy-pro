@@ -920,6 +920,46 @@ func TestPrintConfiguredProvidersMasksKeyShapedMissingEnv(t *testing.T) {
 	}
 }
 
+// K1 banner sink pin: the status / legacy-models banner renders the
+// capability summary, which embeds the registry-controlled reasoningEffort.
+// Summary masks a plainly key-shaped effort at the composition, but a
+// location-shaped effort ("./<key>") is exempt there and rides raw into the
+// banner unless the banner slot masks the composed summary (defense in
+// depth, same as the models --json and RenderNumbered sinks). Without the
+// banner slot change the raw plant reaches the banner and this test fails.
+func TestPrintConfiguredProvidersAndModelsMasksKeyShapedEffort(t *testing.T) {
+	const plainPlant = "wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY"
+	const locationPlant = "./" + plainPlant
+	reg := &providers.Registry{Providers: []providers.Provider{{
+		Name:    "NW",
+		BaseURL: "https://api.neuralwatt.com/v1",
+		Models: []providers.Model{
+			{ID: "glm-5.3-flash-flex", Capabilities: providers.Capabilities{
+				SupportsTools: true, SupportsThinking: true, ReasoningEffort: locationPlant,
+			}},
+			{ID: "deepseek-v4.1-flash-flex", Capabilities: providers.Capabilities{
+				SupportsTools: true, SupportsThinking: true, ReasoningEffort: plainPlant,
+			}},
+			{ID: "qwen3.8-flash", Capabilities: providers.Capabilities{
+				SupportsTools: true, SupportsThinking: true, ReasoningEffort: "high",
+			}},
+		},
+	}}}
+	out := captureStdout(t, func() { printConfiguredProvidersAndModels(reg) })
+	if strings.Contains(out, plainPlant) {
+		t.Errorf("banner leaks the key-shaped reasoningEffort raw:\n%s", out)
+	}
+	// The sink renders the composed summary through MaskOperand (first-5+****
+	// of the whole summary); without the sink the location-shaped plant would
+	// serialize with the effort readable.
+	if !strings.Contains(out, "Capabilities: tools****") {
+		t.Errorf("banner must render the key-shaped effort masked:\n%s", out)
+	}
+	if !strings.Contains(out, "Capabilities: tools, thinking(high)") {
+		t.Errorf("banner must keep the benign effort readable:\n%s", out)
+	}
+}
+
 // TestRunDoctorFixKeysMasksFailureTailAndNote (E6): the --fix-keys failure
 // tail and the entry note line echo registry-derived env/variant names; a
 // key-shaped env must reach both masked, benign shapes readable.
@@ -1149,5 +1189,73 @@ func TestRunDoctorRollbackMasksDecoratedPlant(t *testing.T) {
 	// that any short benign token would also satisfy.
 	if !strings.Contains(out, "Backup file: nativ****") {
 		t.Errorf("backup-file line must mask the decorated plant as nativ****:\nstdout=%s", out)
+	}
+}
+
+// Batch K slot-hardening pin for the pre-existing main.go twin slot: the
+// --rollback-keys slot re-embeds the untrusted target in the resolved file.
+// A compound target (pattern-shaped AKIA + bare decorated secret) was only
+// PARTIALLY masked by MaskOperand, so the old equality-only fallback was
+// skipped and the bare secret echoed raw on the "Backup file:" line. The
+// hardened two-pass slot runs the seeded sentence pass for every
+// whitespace-carrying operand, seeded from the original target. Without the
+// hardening the raw plant reaches stdout and this test fails.
+func TestRunDoctorRollbackSlotHardenedCompoundTarget(t *testing.T) {
+	oldRollback := rollbackKeyNames
+	t.Cleanup(func() { rollbackKeyNames = oldRollback })
+	rollbackKeyNames = func(backupPath string, opts providers.RepairOptions) error {
+		return fmt.Errorf("open %s: The system cannot find the file specified.", backupPath)
+	}
+	const bare = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	const akia = "AKIAIOSFODNN7EXAMPLE"
+	target := "prefix " + akia + " " + bare
+	exit := stubDoctorExit(t)
+	var out, errOut string
+	errOut = captureStderr(t, func() {
+		out = captureStdout(t, func() { runDoctorRollback(target) })
+	})
+	if *exit != 1 {
+		t.Fatalf("exit = %d; want 1", *exit)
+	}
+	if strings.Contains(out, bare) || strings.Contains(out, akia) {
+		t.Errorf("hardened rollback slot leaked the compound operand raw:\nstdout=%s", out)
+	}
+	if strings.Contains(errOut, bare) || strings.Contains(errOut, akia) {
+		t.Errorf("rollback failure tail leaked the compound operand raw:\nstderr=%s", errOut)
+	}
+	if !strings.Contains(out, "Backup file: prefix [REDACTED] [REDACTED]") {
+		t.Errorf("backup-file line must render the compound operand fully masked:\nstdout=%s", out)
+	}
+}
+
+// Batch K byte-identity pins for the rollback twin slot: a one-space operand
+// and a location-shaped path must render exactly as the plain
+// MaskOperand-first slot rendered before the hardening (the single-token
+// bare/decorated plants are already pinned by
+// TestRunDoctorRollbackMasksPlantedBackupPath / ...MasksDecoratedPlant).
+func TestRunDoctorRollbackSlotRenderingPins(t *testing.T) {
+	oldRollback := rollbackKeyNames
+	t.Cleanup(func() { rollbackKeyNames = oldRollback })
+	rollbackKeyNames = func(backupPath string, opts providers.RepairOptions) error {
+		return errors.New("stop")
+	}
+	for _, tc := range []struct{ name, target, wantLine string }{
+		{"one-space operand", "a b", "Backup file: a b"},
+		{"location-shaped path", "./registry-keys.v2.json", "Backup file: ./registry-keys.v2.json"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			exit := stubDoctorExit(t)
+			var out, errOut string
+			errOut = captureStderr(t, func() {
+				out = captureStdout(t, func() { runDoctorRollback(tc.target) })
+			})
+			if *exit != 1 {
+				t.Fatalf("exit = %d; want 1", *exit)
+			}
+			if !strings.Contains(out, tc.wantLine) {
+				t.Errorf("rollback slot rendering drifted:\ngot:  %q\nwant: %q", out, tc.wantLine)
+			}
+			_ = errOut
+		})
 	}
 }

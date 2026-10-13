@@ -351,6 +351,77 @@ func TestBuilderPromptSlotMasksLongMultiWordPrompt(t *testing.T) {
 	})
 }
 
+// TestBuilderPromptSlotSeedListIsFlagSeedOperands (batch K, swarm package):
+// printBudgetAndPreview seeds MaskSentence with exactly
+// providers.FlagSeedOperands(prompt). That helper already returns the whole
+// prompt first and then each comma/space/semicolon-separated token, so the old
+// append([]string{prompt}, providers.FlagSeedOperands(prompt)...) prepended a
+// duplicate that MaskSentence deduped away: dropping it leaves every rendering
+// byte-identical. These pins hold the renderings the WHOLE-VALUE seed is
+// responsible for, so a later "simplification" that seeds tokens only (and so
+// loses the whole value) fails here.
+func TestBuilderPromptSlotSeedListIsFlagSeedOperands(t *testing.T) {
+	t.Run("whole-value seed masks a squash-shaped multi-word prompt", func(t *testing.T) {
+		// Splitting the AWS plant across a space keeps every token below the
+		// secret floors while the squashed whole value is one 40-rune opaque
+		// run: only the whole-value seed can mask this prompt.
+		prompt := "wJalrXUtnFEMI K7MDENGbPxRfiCYEXAMPLEKEY"
+		if providers.SeedEligible(prompt) != true {
+			t.Fatalf("fixture must stay whole-value seed eligible: %q", prompt)
+		}
+		out := runBuilderToPrompt(t, builderInv(t), prompt)
+		slot := lastPromptSlotLine(t, out)
+		if slot != "  4. prompt   [REDACTED]" {
+			t.Errorf("whole-value seed must mask the prompt wholly, got %q", slot)
+		}
+		if strings.Contains(out, "wJalrXUtnFEMI") || strings.Contains(out, "K7MDENGbPxRfiCYEXAMPLEKEY") {
+			t.Errorf("builder echoes a half of the plant raw:\n%s", out)
+		}
+	})
+
+	t.Run("whole-value seed masks a benign sentence around a bare key", func(t *testing.T) {
+		// Token-only seeding would render "AKIAI**** extra words around the
+		// key"; the whole-value seed renders the value masked as one unit.
+		prompt := akiaPlant + " extra words around the key"
+		out := runBuilderToPrompt(t, builderInv(t), prompt)
+		slot := lastPromptSlotLine(t, out)
+		if slot != "  4. prompt   [REDACTED]" {
+			t.Errorf("whole-value seed must mask the prompt wholly, got %q", slot)
+		}
+		if strings.Contains(slot, "extra words") {
+			t.Errorf("benign sentence wording must be masked with the whole value, not left readable: %q", slot)
+		}
+	})
+
+	t.Run("rendering equals the FlagSeedOperands composition", func(t *testing.T) {
+		prompts := []string{
+			"hello",
+			"fix the login bug and add tests",
+			"native:gemini-3.8-flash-high",
+			skPlant,
+			akiaPlant,
+			awsPlant,
+			"please review the attached diff and check sk-ant-api03-PLANT0123456789abcdef before merging upstream",
+			"compare https://api.example.com/v1/spec with " + awsPlant + " and report differences",
+			"Bearer " + awsPlant,
+			"wJalrXUtnFEMI K7MDENGbPxRfiCYEXAMPLEKEY",
+			"请 review " + strings.Repeat("这个仓库的安全问题并报告发现", 5),
+			strings.Repeat("abcdefghij", 12),
+		}
+		for _, p := range prompts {
+			out := runBuilderToPrompt(t, builderInv(t), p)
+			slot := lastPromptSlotLine(t, out)
+			want := providers.MaskSentence(p, providers.FlagSeedOperands(p)...)
+			if utf8.RuneCountInString(want) > 60 {
+				want = string([]rune(want)[:57]) + "..."
+			}
+			if want := "  4. prompt   " + want; slot != want {
+				t.Errorf("prompt %q (runes=%d):\n got %q\nwant %q", p, utf8.RuneCountInString(p), slot, want)
+			}
+		}
+	})
+}
+
 // TestBuilderPromptSlotTruncatesOnRuneBoundary (S3): the old prompt[:57]
 // byte-slice split a multi-byte rune and rendered U+FFFD; truncation now cuts
 // on the rune boundary.

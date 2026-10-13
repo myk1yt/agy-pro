@@ -185,10 +185,13 @@ func (inv *Inventory) RenderNumbered(out io.Writer) {
 	}
 	idW, midW := 0, 0
 	for _, e := range inv.Entries {
-		if n := len(e.ModelID); n > idW {
+		// K5: widths are computed from the MASKED strings, the same text the
+		// cells render, so a row whose raw id/capabilities are long but mask
+		// short does not pad every other row past its rendered text.
+		if n := len(providers.MaskOperand(e.ModelID)); n > idW {
 			idW = n
 		}
-		if n := len(midColumn(e)); n > midW {
+		if n := len(maskMidColumn(e)); n > midW {
 			midW = n
 		}
 	}
@@ -204,31 +207,27 @@ func (inv *Inventory) RenderNumbered(out io.Writer) {
 		// G6: registry-derived model ID — mask key-shaped ones, keep benign
 		// IDs readable (display consistency with the seat list and summary).
 		// S5: the same mask covers the native display name (maskMidColumn)
-		// and the group column (the provider name); the capability text of a
-		// provider row is flag-derived and never carries a registry value.
+		// and the group column (the provider name); K1: the capability text
+		// of a provider row carries the registry-persisted reasoningEffort
+		// (Capabilities.Summary composes thinking(<effort>)), so it routes
+		// through MaskOperand as well — masked at the composition and again
+		// at this sink.
 		fmt.Fprintf(out, "%s %-*s  %-*s  [%s]%s\n", num, idW, providers.MaskOperand(e.ModelID), midW, maskMidColumn(e), providers.MaskOperand(e.Group), suffix)
 	}
 }
 
 // maskMidColumn renders the middle column with its display text masked (S5):
 // the native display name comes from the `agy models` catalog and can carry
-// a key-shaped value, so it routes through MaskOperand; provider capability
-// text is flag-derived ("tools, vision") and stays readable.
+// a key-shaped value, so it routes through MaskOperand; the provider
+// capability text embeds the registry-controlled reasoningEffort (nothing on
+// the add-json / hand-edit write path validates that field), so it routes
+// through MaskOperand too — Capabilities.Summary masks the effort at the
+// composition and this sink masks the composed text again (defense in depth).
 func maskMidColumn(e Entry) string {
 	if e.Kind == "native" {
 		return providers.MaskOperand(e.DisplayName)
 	}
-	return e.Capabilities
-}
-
-// midColumn picks the rendered middle column for one entry: the capability
-// summary for provider rows, the display name for native rows (contract §2.7
-// sample lines).
-func midColumn(e Entry) string {
-	if e.Kind == "native" {
-		return e.DisplayName
-	}
-	return e.Capabilities
+	return providers.MaskOperand(e.Capabilities)
 }
 
 // IsK3Excluded reports whether a bare model id belongs to the k3 family

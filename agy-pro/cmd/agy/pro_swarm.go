@@ -231,16 +231,20 @@ func runSwarmNonInteractive(in io.Reader, out, errw io.Writer, fv swarmFlagValue
 		if err != nil {
 			// C2/D1: os.ReadFile embeds the operand path in its error text;
 			// seed the redactor with the raw operand so the planted secret is
-			// masked wherever it appears in the composite sentence. S2: the
-			// operand slot keeps the whole-string classifier first (single-
-			// token and benign paths render exactly as before); a multi-word
-			// or tab-decorated path defeats that classifier, so the slot then
-			// routes through the seeded sentence masker with the per-token
-			// seeds (the wide SeedEligible core) instead of echoing the path
-			// raw.
+			// masked wherever it appears in the composite sentence. Batch K:
+			// the hardened two-pass slot. The whole-string classifier runs
+			// first (single-token, one-space, location-shaped, and benign
+			// renderings stay byte-identical), then EVERY whitespace-carrying
+			// operand routes through the seeded sentence masker with the
+			// per-token seeds (the wide SeedEligible core), applied to the
+			// already-masked slot and seeded from the ORIGINAL operand. The
+			// old equality-only fallback was skipped whenever MaskOperand
+			// PARTIALLY masked the operand, so a compound path carrying both a
+			// pattern-shaped credential and a bare decorated secret echoed the
+			// bare secret raw.
 			pathSlot := providers.MaskOperand(fv.promptFile)
-			if pathSlot == fv.promptFile {
-				pathSlot = maskOperandSentence(fv.promptFile, providers.FlagSeedOperands(fv.promptFile)...)
+			if strings.ContainsAny(fv.promptFile, " \t\n\r") {
+				pathSlot = maskOperandSentence(pathSlot, providers.FlagSeedOperands(fv.promptFile)...)
 			}
 			fmt.Fprintf(errw, "Error reading prompt file %s: %v\n", pathSlot, maskOperandSentence(err.Error(), fv.promptFile))
 			return 1

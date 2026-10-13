@@ -593,6 +593,50 @@ func TestFanoutPromptFileSlotMasksMultiWordOperand(t *testing.T) {
 	}
 }
 
+// Batch K (round-2 residual): the slot's equality-only fallback skipped the
+// seeded pass whenever MaskOperand PARTIALLY masked the operand. A compound
+// path carrying BOTH a pattern-shaped credential (the generic pass inside
+// MaskOperand masks it) and a bare decorated secret (no pattern shape, so the
+// generic pass leaves it; seed-shaped only) therefore echoed the bare secret
+// raw. The slot now runs the seeded sentence pass on every whitespace-carrying
+// operand, with seeds from the ORIGINAL operand applied to the already-masked
+// slot, so the bare token masks as well.
+func TestFanoutPromptFileSlotMasksCompoundOperand(t *testing.T) {
+	t.Setenv(paths.EnvAgyProHome, t.TempDir())
+	awsPlant := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	skPlant := "sk-planted-c2-sweep-key-0123456789abcdef"
+
+	slotOf := func(stderr string) string {
+		const prefix = "Error reading prompt file "
+		i := strings.Index(stderr, prefix)
+		if i < 0 {
+			return ""
+		}
+		rest := stderr[i+len(prefix):]
+		if j := strings.Index(rest, ": "); j >= 0 {
+			return rest[:j]
+		}
+		return rest
+	}
+
+	// Two interior spaces: outside the <=1-space display class, so the
+	// classifier cannot mask the whole operand and the generic pass inside it
+	// masks only the sk- part.
+	operand := "my docs/" + skPlant + " and " + awsPlant
+	var out, errw bytes.Buffer
+	if code := Run([]string{"-prompt-file", operand}, nil, &out, &errw); code != 1 {
+		t.Fatalf("exit = %d; want 1\nstderr:\n%s", code, errw.String())
+	}
+	for _, plant := range []string{skPlant, awsPlant} {
+		if strings.Contains(out.String(), plant) || strings.Contains(errw.String(), plant) {
+			t.Errorf("compound prompt-file operand leaks the planted secret %q:\nstdout:\n%s\nstderr:\n%s", plant, out.String(), errw.String())
+		}
+	}
+	if slot := slotOf(errw.String()); slot != "my docs/[REDACTED] and [REDACTED]" {
+		t.Errorf("compound operand slot = %q; want %q\nstderr:\n%s", slot, "my docs/[REDACTED] and [REDACTED]", errw.String())
+	}
+}
+
 // E2: composite-error seeding follows the ONE shared rule
 // (providers.SeedEligible / providers.MaskSentence, F-alpha) and mirrors
 // cmd/agy's TestE2SeedEligibilityWholeOperandOnly. The old run extractor

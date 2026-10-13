@@ -167,6 +167,64 @@ func TestRunModelsCmdJSONMasksKeyShapedFamily(t *testing.T) {
 	}
 }
 
+// K1 sink pin: Entry.Capabilities carries the registry-controlled
+// reasoningEffort (Capabilities.Summary composes thinking(<effort>)) and
+// nothing on the add-json / hand-edit write path validates that field. The
+// composition mask inside Summary covers a plainly key-shaped effort, but a
+// LOCATION-shaped effort ("./<key>") is exempt there (spawn errors must name
+// the binary), so the composed summary rides raw into the JSON dump unless
+// the --json mask loop covers the field. The seam drives the real
+// inventory.Load so the registry -> entry -> sink chain runs. Without the
+// loop change the raw plant reaches the dump and this test fails.
+func TestRunModelsCmdJSONMasksKeyShapedReasoningEffort(t *testing.T) {
+	const plainPlant = "wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY"
+	const locationPlant = "./" + plainPlant
+	reg := &providers.Registry{Providers: []providers.Provider{{
+		Name:    "nw",
+		BaseURL: "https://api.example/v1",
+		Models: []providers.Model{
+			{ID: "glm-5.3-flash-flex", Capabilities: providers.Capabilities{
+				SupportsTools: true, SupportsThinking: true, ReasoningEffort: locationPlant,
+			}},
+			{ID: "deepseek-v4.1-flash-flex", Capabilities: providers.Capabilities{
+				SupportsTools: true, SupportsThinking: true, ReasoningEffort: plainPlant,
+			}},
+			{ID: "qwen3.8-flash", Capabilities: providers.Capabilities{
+				SupportsTools: true, SupportsThinking: true, ReasoningEffort: "high",
+			}},
+		},
+	}}}
+	old := loadModelsInventory
+	loadModelsInventory = func(ctx context.Context) (*inventory.Inventory, error) {
+		return inventory.Load(ctx, reg, nil)
+	}
+	t.Cleanup(func() { loadModelsInventory = old })
+
+	var out, errw strings.Builder
+	if code := runModelsCmdTo([]string{"--json"}, &out, &errw); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, errw.String())
+	}
+	got := out.String()
+	if strings.Contains(got, plainPlant) {
+		t.Errorf("models --json leaks the key-shaped reasoningEffort raw:\n%s", got)
+	}
+	var entries []inventory.Entry
+	if err := json.Unmarshal([]byte(got), &entries); err != nil {
+		t.Fatalf("json decode: %v\n%s", err, got)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("json entries = %d, want 3", len(entries))
+	}
+	// The sink renders the composed summary through MaskOperand (first-5+****
+	// of the whole summary); without the sink both plants would serialize
+	// with the effort readable ("tools, thinking(wJalr****)" at best).
+	for i, want := range []string{"tools****", "tools****", "tools, thinking(high)"} {
+		if entries[i].Capabilities != want {
+			t.Errorf("entry %d capabilities = %q, want %q", i, entries[i].Capabilities, want)
+		}
+	}
+}
+
 func TestRunModelsCmdUnknownFlagUsageExit2(t *testing.T) {
 	for _, args := range [][]string{{"--nope"}, {"extra-positional"}, {"--all", "trailing"}} {
 		var out, errw strings.Builder

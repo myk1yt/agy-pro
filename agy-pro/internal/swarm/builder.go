@@ -262,11 +262,12 @@ func (b *Builder) printBudgetAndPreview(out io.Writer, spec RunSpec) {
 	}
 	// I5/C1/S3: mask before any truncation so a key-shaped prompt cannot ride
 	// into the preview frame raw at ANY length (the old >60-byte gate left a
-	// <=60-byte key verbatim at this slot). The seeds are the whole prompt plus
-	// each comma/space/semicolon-separated token (providers.FlagSeedOperands),
-	// so a multi-word prompt with an embedded bare key masks per token while
+	// <=60-byte key verbatim at this slot). providers.FlagSeedOperands already
+	// returns the whole prompt first and then each
+	// comma/space/semicolon-separated token, so the seed list is exactly that:
+	// a multi-word prompt with an embedded bare key masks per token while
 	// benign wording stays readable (providers.SeedEligible decides).
-	prompt = providers.MaskSentence(prompt, append([]string{prompt}, providers.FlagSeedOperands(prompt)...)...)
+	prompt = providers.MaskSentence(prompt, providers.FlagSeedOperands(prompt)...)
 	if utf8.RuneCountInString(prompt) > 60 {
 		// Truncate on the RUNE boundary: the old prompt[:57] byte-slice could
 		// split a multi-byte rune and render U+FFFD.

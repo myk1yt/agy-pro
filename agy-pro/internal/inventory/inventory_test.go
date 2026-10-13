@@ -3,6 +3,7 @@ package inventory
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -340,6 +341,46 @@ func TestRenderNumberedMasksKeyShapedDisplayFields(t *testing.T) {
 	}
 	if !strings.Contains(out, "gemini-2.5-flash") {
 		t.Errorf("benign model ID must stay readable:\n%s", out)
+	}
+}
+
+// K1/K5 — the provider capability column embeds the registry-persisted
+// reasoningEffort (Capabilities.Summary composes thinking(<effort>) and
+// nothing on the add-json / hand-edit write path validates that field), so
+// RenderNumbered masks it; the column widths are computed from the MASKED
+// strings so every rendered cell stays aligned with its column.
+func TestRenderNumbered_MasksCapabilityColumnAndAlignsMaskedWidths(t *testing.T) {
+	keyEffort := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	reg := &providers.Registry{Providers: []providers.Provider{{
+		Name: "google",
+		Models: []providers.Model{
+			{ID: "gemini-2.5-flash", Capabilities: providers.Capabilities{SupportsTools: true, SupportsVision: true}},
+			{ID: keyEffort, Capabilities: providers.Capabilities{SupportsTools: true, SupportsVision: true, SupportsThinking: true, ReasoningEffort: keyEffort}},
+		},
+	}}}
+	inv, err := Load(context.Background(), reg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf strings.Builder
+	inv.RenderNumbered(&buf)
+	out := buf.String()
+	if strings.Contains(out, keyEffort) {
+		t.Errorf("render leaks the key-shaped reasoningEffort:\n%s", out)
+	}
+	if !strings.Contains(out, "thinking(wJalr****)") {
+		t.Errorf("capability column not masked:\n%s", out)
+	}
+	// Widths from the masked strings: idW = 16 (len "gemini-2.5-flash"),
+	// midW = 34 (len "tools, vision, thinking(wJalr****)"). With raw-width
+	// computation the benign row would pad to the raw 40-rune key id and the
+	// columns would not line up with the rendered (masked) cells.
+	wantLine1 := fmt.Sprintf("[ 1] %-16s  %-34s  [google]", "gemini-2.5-flash", "tools, vision")
+	wantLine2 := fmt.Sprintf("[ 2] %-16s  %-34s  [google]", "wJalr****", "tools, vision, thinking(wJalr****)")
+	for _, want := range []string{wantLine1, wantLine2} {
+		if !strings.Contains(out, want) {
+			t.Errorf("row not aligned to the masked column widths:\nwant %q\ngot:\n%s", want, out)
+		}
 	}
 }
 

@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -780,12 +781,12 @@ func TestSeedEligible_WideClass_PinnedTable(t *testing.T) {
 // TestSeedEligible_WideClass_ShortWordSentenceStaysOut pins the identifier
 // guard the wide rule must not defeat: a sentence whose every segment is
 // short is identifier-class and stays out of the seed rule (pre-diff
-// parity), so ordinary composite errors never arm the redactor.
+// parity), so ordinary composite errors never arm the redactor. The pin runs
+// unconditionally: a guard that skipped when the fixture stopped exercising
+// the identifier class could silently disable the pin exactly when the
+// classifier regressed (K4).
 func TestSeedEligible_WideClass_ShortWordSentenceStaysOut(t *testing.T) {
 	op := "the quick brown fox jumps over the lazy dog AB"
-	if !identifierSegmented(op) {
-		t.Skip("fixture no longer exercises the identifier guard")
-	}
 	if SeedEligible(op) {
 		t.Errorf("SeedEligible(%q) = true; want false (all-short-word sentence is identifier-class)", op)
 	}
@@ -845,6 +846,45 @@ func TestMaskFamilyName(t *testing.T) {
 			t.Errorf("MaskFamilyName(key-shaped family) = %q; want %q", got, tc.want)
 		}
 		assertNoLeak(t, got, tc.family)
+	}
+	// K2: a whitespace/newline-PADDED key-shaped family must not defeat the
+	// classifier. The plants are separator-carrying (the contiguous-run rule
+	// never sees them), and the padding is what defeated the display class:
+	// its interior-space gate rejects a space-padded operand and its
+	// tab/newline gate rejects a trailing newline, so before the trim these
+	// echoed raw. A trailing-newline and a space-padded plant are pinned.
+	for _, tc := range []struct{ family, want string }{
+		{"wJalr.XUtnFEMI-K7MDENG.bPxRfiCYEXAMPLEKEY\n", "wJalr****"},
+		{" wJalr.XUtnFEMI-K7MDENG.bPxRfiCYEXAMPLEKEY ", "wJalr****"},
+		{" wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n", "wJalr****"},
+	} {
+		got := MaskFamilyName(Model{ID: "m", Family: tc.family})
+		if got != tc.want {
+			t.Errorf("MaskFamilyName(padded family) = %q; want %q", got, tc.want)
+		}
+		assertNoLeak(t, got, tc.family)
+	}
+	// A padded benign family renders trimmed; the padding never survives.
+	if got := MaskFamilyName(Model{ID: "m", Family: " Gemini "}); got != "Gemini" {
+		t.Errorf("MaskFamilyName(padded benign family) = %q; want Gemini", got)
+	}
+	// K1b: a LOCATION-shaped key-shaped family is not a legitimate family and
+	// the slot has no readability requirement, so it still masks (before, the
+	// location exemption echoed it raw).
+	for _, tc := range []struct{ family, want string }{
+		{"./wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY", "wJalr****"},
+		{`..\wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY`, "wJalr****"},
+	} {
+		got := MaskFamilyName(Model{ID: "m", Family: tc.family})
+		if got != tc.want {
+			t.Errorf("MaskFamilyName(location-shaped family) = %q; want %q", got, tc.want)
+		}
+		assertNoLeak(t, got, tc.family)
+	}
+	// A location-shaped benign family renders with its markers stripped; the
+	// family slot never legitimately carries a path.
+	if got := MaskFamilyName(Model{ID: "m", Family: "./gemini"}); got != "gemini" {
+		t.Errorf("MaskFamilyName(location-shaped benign family) = %q; want gemini", got)
 	}
 	// Benign explicit families keep their readable form (case included).
 	for _, family := range []string{"gemini", "glm", "Gemini", "GLM"} {
@@ -937,8 +977,17 @@ func TestMaskProviderForReport_BenignUnchanged(t *testing.T) {
 		t.Errorf("benign provider fields changed: %+v", got)
 	}
 	m := got.Models[0]
-	if m.ID != "gemini-2.5-flash" || m.Family != "gemini" {
+	// K3: an empty explicit family stays empty — the id-inferred FamilyName()
+	// is no longer fabricated into the report copy, so the serialized model
+	// keeps its omitempty shape (summary.json must not gain a family key the
+	// registry never declared).
+	if m.ID != "gemini-2.5-flash" || m.Family != "" {
 		t.Errorf("benign model id/family changed: %+v", m)
+	}
+	if raw, err := json.Marshal(m); err != nil {
+		t.Fatalf("marshal masked model: %v", err)
+	} else if strings.Contains(string(raw), `"family"`) {
+		t.Errorf("masked model serialized a fabricated family key (omitempty shape broken): %s", raw)
 	}
 	if m.Tags[0] != "general" || m.Tags[1] != "tools" {
 		t.Errorf("benign tags changed: %q", m.Tags)

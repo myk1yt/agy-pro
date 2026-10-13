@@ -97,14 +97,24 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 				// name the file), so a >=2-space or tab-decorated path with an
 				// embedded bare secret classified as benign and echoed raw at
 				// the slot while the sentence beside it was masked. The slot
-				// therefore keeps the classifier first (single-token and benign
-				// paths render byte-identical to before) and only when the
-				// classifier left the operand unchanged does it route through
-				// the seeded sentence masker with the per-token seeds, matching
-				// the cmd/agy pro_swarm.go precedent.
+				// therefore keeps the classifier first and only then routes
+				// through the seeded sentence masker with the per-token seeds,
+				// matching the cmd/agy pro_swarm.go precedent.
+				//
+				// Batch K: the equality-only fallback skipped that seeded pass
+				// whenever MaskOperand PARTIALLY masked the operand, so a
+				// compound path carrying both a pattern-shaped credential (the
+				// generic pass masks it) and a bare decorated secret (no pattern
+				// shape; seed-shaped only) echoed the bare secret raw. The slot
+				// now runs the seeded pass on every whitespace-carrying operand,
+				// with the seeds taken from the ORIGINAL operand and applied to
+				// the already-masked slot: single-token, one-space,
+				// location-shaped and benign multi-word renderings stay
+				// byte-identical, while a multi-token operand's bare secret
+				// token is masked too.
 				pathSlot := providers.MaskOperand(*promptFileFlag)
-				if pathSlot == *promptFileFlag {
-					pathSlot = maskOperandSentence(*promptFileFlag, providers.FlagSeedOperands(*promptFileFlag)...)
+				if strings.ContainsAny(*promptFileFlag, " \t\n\r") {
+					pathSlot = maskOperandSentence(pathSlot, providers.FlagSeedOperands(*promptFileFlag)...)
 				}
 				fmt.Fprintf(errw, "Error reading prompt file %s: %v\n",
 					pathSlot, maskOperandSentence(err.Error(), *promptFileFlag))

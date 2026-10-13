@@ -165,11 +165,38 @@ func MaskOperand(s string) string {
 // raw. With no explicit family the id-inferred FamilyName() is masked
 // instead (the id itself can carry a key-shaped token). Benign families
 // ("gemini", "glm") keep their readable form.
+//
+// K2: the explicit family is TRIMMED before MaskOperand. Padding defeated
+// the classifier: the display class's interior-space gate rejects a
+// space-padded operand and its tab/newline gate rejects a trailing newline,
+// so a separator-carrying key-shaped family rode raw when padded.
+//
+// K1b: the family slot is never a legitimate path and has no readability
+// requirement, so a LOCATION-shaped key-shaped family still masks through
+// maskRegistryValue (MaskOperand alone exempts locations so a spawn error can
+// name the binary; that exemption does not apply to a registry slot).
 func MaskFamilyName(m Model) string {
 	if strings.TrimSpace(m.Family) != "" {
-		return MaskOperand(m.Family)
+		return maskRegistryValue(strings.TrimSpace(m.Family))
 	}
 	return MaskOperand(m.FamilyName())
+}
+
+// maskRegistryValue masks a registry-derived display value (explicit family,
+// reasoning effort). MaskOperand first; a location-shaped value then routes
+// through the same classifier with its location markers stripped, because a
+// registry slot is never a legitimate path and carries no readability
+// requirement, while a CLI operand's spawn error must still name the binary
+// (that exemption stays inside MaskOperand itself). A benign value that is
+// not location-shaped is returned unchanged.
+func maskRegistryValue(s string) string {
+	if m := MaskOperand(s); m != s {
+		return m
+	}
+	if isLocationShaped(s) {
+		return MaskOperand(strings.TrimLeft(s, `./\`))
+	}
+	return s
 }
 
 // MaskProviderForReport renders a Provider for a report/JSON sink (S4):
@@ -193,15 +220,22 @@ func MaskProviderForReport(p Provider) Provider {
 }
 
 // MaskModelForReport renders one Model for a report/JSON sink (S4): the ID
-// through MaskOperand, the family through MaskFamilyName (case-preserved so
-// a key-shaped explicit family still catches the decorated class), and every
-// other registry-controlled string field (tags, allowed tools, reasoning
-// effort) through MaskOperand. Benign values are unchanged; the input is
-// not mutated.
+// through MaskOperand, an explicit family through MaskFamilyName
+// (case-preserved so a key-shaped explicit family still catches the decorated
+// class), and every other registry-controlled string field (tags, allowed
+// tools, reasoning effort) through MaskOperand. Benign values are unchanged;
+// the input is not mutated.
+//
+// K3: an EMPTY explicit family stays empty. The id-inferred FamilyName() is
+// no longer fabricated into the report copy, so the serialized model keeps
+// its omitempty shape (summary.json must not gain a family key the registry
+// never declared).
 func MaskModelForReport(m Model) Model {
 	out := m
 	out.ID = MaskOperand(m.ID)
-	out.Family = MaskFamilyName(m)
+	if strings.TrimSpace(m.Family) != "" {
+		out.Family = MaskFamilyName(m)
+	}
 	out.Tags = maskStringSliceForReport(m.Tags)
 	out.Capabilities.AllowedTools = maskStringSliceForReport(m.Capabilities.AllowedTools)
 	out.Capabilities.ReasoningEffort = MaskOperand(m.Capabilities.ReasoningEffort)

@@ -433,10 +433,16 @@ func printConfiguredProvidersAndModels(reg *providers.Registry) {
 			ctxDisplay := formatTokenCount(m.ContextLength)
 			maxOutDisplay := formatTokenCount(m.MaxOutputTokens)
 
+			// K1: the capability summary embeds the registry-controlled
+			// reasoningEffort (Summary composes thinking(<effort>) and masks
+			// the effort there); this banner slot masks the composed summary
+			// again (defense in depth), matching the models --json and
+			// RenderNumbered sinks.
+			capSummary := providers.MaskOperand(m.CapabilitySummary())
 			fmt.Printf("    - %-*s  [Family: %-*s | Context: %s | MaxOutput: %s | Capabilities: %s]\n",
 				maxIDLen, providers.MaskOperand(providers.DisplayName(m.ID, p.Name)),
 				maxFamilyLen, providers.MaskFamilyName(m),
-				ctxDisplay, maxOutDisplay, m.CapabilitySummary())
+				ctxDisplay, maxOutDisplay, capSummary)
 		}
 	}
 }
@@ -837,11 +843,18 @@ func runDoctorRollback(target string) {
 	// E5/G4/H1: the target is an untrusted CLI operand — a misdirected paste
 	// puts a key in the --rollback-keys slot, and the resolved path re-embeds
 	// it (also in decorated form, which MaskOperand alone cannot classify).
-	// Plain classifier first (first-5+**** rendering); the seeded sentence
-	// masker only when the classifier cannot classify the decorated form.
+	// Batch K: the hardened two-pass slot. The whole-string classifier runs
+	// first (first-5+**** rendering; single-token, one-space, and
+	// location-shaped renderings stay byte-identical), then EVERY
+	// whitespace-carrying operand routes through the seeded sentence masker,
+	// applied to the already-masked line and seeded from the original target
+	// (plus the resolved file). The old equality-only fallback was skipped
+	// whenever MaskOperand PARTIALLY masked the operand, so a compound target
+	// carrying both a pattern-shaped credential and a bare decorated secret
+	// echoed the bare secret raw.
 	backupLine := providers.MaskOperand(file)
-	if backupLine == file {
-		backupLine = maskOperandSentence(file, append(providers.FlagSeedOperands(target), file)...)
+	if strings.ContainsAny(file, " \t\n\r") {
+		backupLine = maskOperandSentence(backupLine, append(providers.FlagSeedOperands(target), file)...)
 	}
 	fmt.Printf("Backup file: %s\n", backupLine)
 	if err := rollbackKeyNames(file, providers.RepairOptions{}); err != nil {
