@@ -846,14 +846,17 @@ func runDoctorRollback(target string) {
 	// Batch K: the hardened two-pass slot. The whole-string classifier runs
 	// first (first-5+**** rendering; single-token, one-space, and
 	// location-shaped renderings stay byte-identical), then EVERY
-	// whitespace-carrying operand routes through the seeded sentence masker,
-	// applied to the already-masked line and seeded from the original target
-	// (plus the resolved file). The old equality-only fallback was skipped
-	// whenever MaskOperand PARTIALLY masked the operand, so a compound target
-	// carrying both a pattern-shaped credential and a bare decorated secret
-	// echoed the bare secret raw.
+	// whitespace- or comma/semicolon-carrying operand routes through the
+	// seeded sentence masker, applied to the already-masked line and seeded
+	// from the original target (plus the resolved file). The old
+	// equality-only fallback was skipped whenever MaskOperand PARTIALLY
+	// masked the operand, so a compound target carrying both a pattern-shaped
+	// credential and a bare decorated secret echoed the bare secret raw.
+	// Batch L: the gate also carries the comma/semicolon class the old
+	// equality fallback used to seed, so a whitespace-free comma-decorated
+	// target ("./backups,<secret>") no longer keeps its bare secret raw.
 	backupLine := providers.MaskOperand(file)
-	if strings.ContainsAny(file, " \t\n\r") {
+	if strings.ContainsAny(file, " \t\n\r,;") {
 		backupLine = maskOperandSentence(backupLine, append(providers.FlagSeedOperands(target), file)...)
 	}
 	fmt.Printf("Backup file: %s\n", backupLine)

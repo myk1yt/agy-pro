@@ -922,11 +922,13 @@ func TestPrintConfiguredProvidersMasksKeyShapedMissingEnv(t *testing.T) {
 
 // K1 banner sink pin: the status / legacy-models banner renders the
 // capability summary, which embeds the registry-controlled reasoningEffort.
-// Summary masks a plainly key-shaped effort at the composition, but a
-// location-shaped effort ("./<key>") is exempt there and rides raw into the
-// banner unless the banner slot masks the composed summary (defense in
-// depth, same as the models --json and RenderNumbered sinks). Without the
-// banner slot change the raw plant reaches the banner and this test fails.
+// Summary masks a key-shaped effort at the composition (plainly key-shaped
+// and location-shaped alike, K1), and the banner slot masks the composed
+// summary again through MaskOperand as defense in depth (same as the models
+// --json and RenderNumbered sinks): the composed "tools, thinking(wJalr****)"
+// is itself secret-shaped, so the line renders "tools****". Without the
+// banner slot change the line renders "tools, thinking(wJalr****)" and this
+// test fails.
 func TestPrintConfiguredProvidersAndModelsMasksKeyShapedEffort(t *testing.T) {
 	const plainPlant = "wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY"
 	const locationPlant = "./" + plainPlant
@@ -950,8 +952,9 @@ func TestPrintConfiguredProvidersAndModelsMasksKeyShapedEffort(t *testing.T) {
 		t.Errorf("banner leaks the key-shaped reasoningEffort raw:\n%s", out)
 	}
 	// The sink renders the composed summary through MaskOperand (first-5+****
-	// of the whole summary); without the sink the location-shaped plant would
-	// serialize with the effort readable.
+	// of the whole summary); the composition mask inside Summary already
+	// renders the effort as "thinking(wJalr****)", and the sink mask is the
+	// defense-in-depth layer that pins the line to "tools****".
 	if !strings.Contains(out, "Capabilities: tools****") {
 		t.Errorf("banner must render the key-shaped effort masked:\n%s", out)
 	}
@@ -1256,6 +1259,53 @@ func TestRunDoctorRollbackSlotRenderingPins(t *testing.T) {
 				t.Errorf("rollback slot rendering drifted:\ngot:  %q\nwant: %q", out, tc.wantLine)
 			}
 			_ = errOut
+		})
+	}
+}
+
+// Batch L slot-gate pin for the main.go rollback twin: the batch-K gate ran
+// the seeded pass only for whitespace-carrying operands, so the
+// comma/semicolon-decorated class the OLD equality fallback used to seed
+// (21827f6) rode raw again — a masked->raw regression vs 21827f6. A
+// whitespace-free comma-decorated target ("./backups,<secret>") kept its
+// bare secret raw on the "Backup file:" line. The widened gate
+// (ContainsAny(op, " \t\n\r,;")) re-runs the seeded pass for the comma
+// class, so both plants render masked on the line and in the failure tail
+// (the tail seeds the per-token forms, so it masks fully). Without the
+// widening the raw plants reach stdout and this test fails.
+func TestRunDoctorRollbackSlotCommaDecoratedTargets(t *testing.T) {
+	oldRollback := rollbackKeyNames
+	t.Cleanup(func() { rollbackKeyNames = oldRollback })
+	rollbackKeyNames = func(backupPath string, opts providers.RepairOptions) error {
+		return fmt.Errorf("open %s: The system cannot find the file specified.", backupPath)
+	}
+	for _, tc := range []struct{ name, target, wantLine string }{
+		{"comma-decorated compound target", "./backups,wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "Backup file: ./backups,[REDACTED]"},
+		{"comma-decorated bare secret", "note,abcdefghijklmnopqrs", "Backup file: note,[REDACTED]"},
+		{"benign comma list", "read,search", "Backup file: read,search"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			exit := stubDoctorExit(t)
+			var out, errOut string
+			errOut = captureStderr(t, func() {
+				out = captureStdout(t, func() { runDoctorRollback(tc.target) })
+			})
+			if *exit != 1 {
+				t.Fatalf("exit = %d; want 1", *exit)
+			}
+			if !strings.Contains(out, tc.wantLine) {
+				t.Errorf("rollback slot rendering drifted:\ngot:  %q\nwant: %q", out, tc.wantLine)
+			}
+			// A masked expectation must not carry the raw target anywhere;
+			// the benign expectation carries it verbatim by design.
+			if !strings.Contains(tc.wantLine, tc.target) {
+				if strings.Contains(out, tc.target) {
+					t.Errorf("rollback slot leaked the comma-decorated target raw:\nstdout=%s", out)
+				}
+				if strings.Contains(errOut, tc.target) {
+					t.Errorf("rollback failure tail leaked the comma-decorated target raw:\nstderr=%s", errOut)
+				}
+			}
 		})
 	}
 }

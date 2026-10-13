@@ -1494,6 +1494,13 @@ func TestCapabilitySummary(t *testing.T) {
 		// hand-edit write path validates the field) renders masked at the
 		// composition; the API path keeps the raw field.
 		{Capabilities{SupportsThinking: true, ReasoningEffort: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"}, "thinking(wJalr****)"},
+		// L1/F-1: a URL-shaped key effort masks at the composition (a scheme
+		// is location-shaped on every platform), so the composed summary never
+		// itself becomes location-shaped and rides raw downstream.
+		{Capabilities{SupportsThinking: true, ReasoningEffort: "https://wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY"}, "thinking(wJalr****)"},
+		// M1: a PADDED key effort is trimmed before the masker, so the trailing
+		// newline no longer defeats the classifier and rides raw.
+		{Capabilities{SupportsThinking: true, ReasoningEffort: "wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY\n"}, "thinking(wJalr****)"},
 	}
 	for _, tc := range cases {
 		if got := tc.caps.Summary(); got != tc.want {
@@ -1559,6 +1566,15 @@ func TestCapabilitySummary_MasksLocationShapedReasoningEffort(t *testing.T) {
 	}
 	if got := (Capabilities{SupportsThinking: true, ReasoningEffort: "./gemini"}).Summary(); got != "thinking(gemini)" {
 		t.Errorf("Summary(location-shaped benign effort) = %q; want thinking(gemini)", got)
+	}
+	// L1/F-1: a Windows-drive- or abs-path-shaped key effort masks at the
+	// composition too (these rode raw on Windows before batch L). The exact
+	// form is platform-dependent, so they pin the no-leak mask.
+	for _, effort := range []string{`C:\wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY`, "/wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY"} {
+		got := (Capabilities{SupportsThinking: true, ReasoningEffort: effort}).Summary()
+		if strings.Contains(got, "wJalrXUtnFEMI") {
+			t.Errorf("Summary(effort %q) = %q; leaks the key core", effort, got)
+		}
 	}
 }
 

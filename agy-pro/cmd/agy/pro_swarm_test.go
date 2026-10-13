@@ -590,3 +590,40 @@ func TestRunSwarmCmdPromptFileSlotRenderingPins(t *testing.T) {
 		})
 	}
 }
+
+// Batch L slot-gate pin: the batch-K gate ran the seeded pass only for
+// whitespace-carrying operands, so the comma/semicolon-decorated class the
+// OLD equality fallback used to seed (21827f6) rode raw again — a
+// masked->raw regression vs 21827f6. The widened gate
+// (ContainsAny(op, " \t\n\r,;")) re-runs the seeded pass for the comma
+// class, so both plants render masked in the prompt-file slot. Without the
+// widening the raw plants reach the slot and this test fails.
+//
+// Scope note: the trailing os.ReadFile sentence is seeded only with the
+// WHOLE operand, and a location-shaped whole operand never seeds
+// (SeedEligible's location exemption); that sentence-class boundary is
+// pre-existing (byte-identical at 21827f6 and 3f9ce5a) and unchanged by
+// this batch, so the pin asserts the slot rendering, exactly like the
+// rendering-pin table above.
+func TestRunSwarmCmdPromptFileSlotCommaDecoratedOperands(t *testing.T) {
+	for _, tc := range []struct{ name, path, wantSlot string }{
+		{"comma-decorated compound plant", "./backups,wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "./backups,[REDACTED]"},
+		{"comma-decorated bare secret", "note,abcdefghijklmnopqrs", "note,[REDACTED]"},
+		{"benign comma list", "read,search", "read,search"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("AGY_PRO_HOME", t.TempDir())
+			defer withStubSwarmInventory(t, swarmFixtureInventory(t), nil)()
+			var outBuf, errBuf strings.Builder
+			code := runSwarmCmd([]string{"--template", "code-review", "--seats", "p1", "--prompt-file", tc.path},
+				strings.NewReader(""), &outBuf, &errBuf)
+			if code != 1 {
+				t.Fatalf("exit = %d, want 1\nstderr:\n%s", code, errBuf.String())
+			}
+			want := "Error reading prompt file " + tc.wantSlot + ": "
+			if !strings.HasPrefix(errBuf.String(), want) {
+				t.Errorf("slot rendering drifted:\ngot:  %q\nwant prefix: %q", errBuf.String(), want)
+			}
+		})
+	}
+}

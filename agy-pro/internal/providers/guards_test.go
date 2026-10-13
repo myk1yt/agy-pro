@@ -874,12 +874,26 @@ func TestMaskFamilyName(t *testing.T) {
 	for _, tc := range []struct{ family, want string }{
 		{"./wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY", "wJalr****"},
 		{`..\wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY`, "wJalr****"},
+		// L1/F-1: a URL scheme is location-shaped on every platform, so the
+		// scheme-shaped key family pins the same first-5+**** as the relative
+		// markers. Before batch L maskRegistryValue stripped only the leading
+		// ./ \ class, so this rode raw at every sink.
+		{"https://wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY", "wJalr****"},
 	} {
 		got := MaskFamilyName(Model{ID: "m", Family: tc.family})
 		if got != tc.want {
 			t.Errorf("MaskFamilyName(location-shaped family) = %q; want %q", got, tc.want)
 		}
 		assertNoLeak(t, got, tc.family)
+	}
+	// L1/F-1: a Windows-drive- or abs-path-shaped key family masks too. The
+	// exact form is platform-dependent (filepath.IsAbs gates the location
+	// exemption), so these pin the no-leak mask rather than a fixed string.
+	for _, fam := range []string{`C:\wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY`, "/wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY"} {
+		got := MaskFamilyName(Model{ID: "m", Family: fam})
+		if strings.Contains(got, "wJalrXUtnFEMI") {
+			t.Errorf("MaskFamilyName(%q) = %q; leaks the key core", fam, got)
+		}
 	}
 	// A location-shaped benign family renders with its markers stripped; the
 	// family slot never legitimately carries a path.
@@ -899,6 +913,91 @@ func TestMaskFamilyName(t *testing.T) {
 	} {
 		if got := MaskFamilyName(Model{ID: tc.id}); got != tc.want {
 			t.Errorf("MaskFamilyName(id %q) = %q; want %q", tc.id, got, tc.want)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// L1/F-1 + M1 — MaskRegistryValue, the registry-slot display authority: a
+// location-shaped (URL scheme, Windows drive, absolute path, relative marker)
+// or padded key-shaped registry value must mask, while benign values stay
+// readable. Before batch L it stripped only the leading ./\ class and did not
+// trim, so a URL- or drive-shaped plant rode raw and a padded plant defeated
+// the classifier at Summary().
+// ---------------------------------------------------------------------------
+
+func TestMaskRegistryValue(t *testing.T) {
+	key := "wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY"
+	// URL scheme and relative markers are location-shaped on every platform,
+	// so they pin the same first-5+**** as a bare key (these rode raw before
+	// the fix).
+	for _, v := range []string{
+		"https://" + key,
+		"./" + key,
+		`..\` + key,
+	} {
+		if got := MaskRegistryValue(v); got != "wJalr****" {
+			t.Errorf("MaskRegistryValue(%q) = %q; want wJalr****", v, got)
+		}
+		assertNoLeak(t, MaskRegistryValue(v), v)
+	}
+	// Drive- and abs-path-shaped values mask; the exact form is platform-
+	// dependent (filepath.IsAbs gates the location exemption), so they pin the
+	// no-leak mask. These rode raw on Windows before the fix (the old
+	// TrimLeft(`./\`) never stripped a "C:" drive).
+	for _, v := range []string{`C:\` + key, "C:/" + key, "/" + key, `\` + key} {
+		got := MaskRegistryValue(v)
+		if strings.Contains(got, "wJalrXUtnFEMI") {
+			t.Errorf("MaskRegistryValue(%q) = %q; leaks the key core", v, got)
+		}
+		if !strings.Contains(got, "****") {
+			t.Errorf("MaskRegistryValue(%q) = %q; want a mask", v, got)
+		}
+	}
+	// A bare and a PADDED key-shaped value mask (the top trim is the M1 fix: a
+	// padded plant defeated the display class's space/newline gates).
+	for _, v := range []string{key, key + "\n", " " + key + " ", "\t" + key} {
+		if got := MaskRegistryValue(v); got != "wJalr****" {
+			t.Errorf("MaskRegistryValue(%q) = %q; want wJalr****", v, got)
+		}
+	}
+	// Benign values stay readable: marker-stripped for a location-shaped value,
+	// byte-identical otherwise, and a benign URL renders scheme-stripped.
+	if got := MaskRegistryValue("./gemini"); got != "gemini" {
+		t.Errorf("MaskRegistryValue(./gemini) = %q; want gemini", got)
+	}
+	if got := MaskRegistryValue("high"); got != "high" {
+		t.Errorf("MaskRegistryValue(high) = %q; want high", got)
+	}
+	if got := MaskRegistryValue("https://api.example.com/v1"); got != "api.example.com/v1" {
+		t.Errorf("MaskRegistryValue(benign URL) = %q; want api.example.com/v1 (scheme-stripped)", got)
+	}
+}
+
+// TestStripLocationMarkers pins the marker stripper directly, platform-
+// independently: every location marker (URL scheme, Windows drive, absolute
+// path, relative marker) is removed, and a marker-free value is unchanged.
+func TestStripLocationMarkers(t *testing.T) {
+	key := "wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY"
+	cases := []struct{ in, want string }{
+		{"https://" + key, key},
+		{"http://" + key, key},
+		{"https://api.example.com/v1", "api.example.com/v1"},
+		{`C:\` + key, key},
+		{"C:/" + key, key},
+		{"/" + key, key},
+		{`\` + key, key},
+		{"./" + key, key},
+		{"../" + key, key},
+		{`.\` + key, key},
+		{`..\` + key, key},
+		{key, key},
+		{"./gemini", "gemini"},
+		{"high", "high"},
+	}
+	for _, tc := range cases {
+		if got := stripLocationMarkers(tc.in); got != tc.want {
+			t.Errorf("stripLocationMarkers(%q) = %q; want %q", tc.in, got, tc.want)
 		}
 	}
 }
@@ -999,6 +1098,30 @@ func TestMaskProviderForReport_BenignUnchanged(t *testing.T) {
 	empty := MaskProviderForReport(Provider{})
 	if empty.Name != "" || empty.Models != nil {
 		t.Errorf("empty provider = %+v; want zero value", empty)
+	}
+}
+
+// L1/F-2 — MaskModelForReport routes the reasoningEffort through the
+// registry-slot display authority (MaskRegistryValue), not plain MaskOperand,
+// so a location-shaped key-shaped effort masks in the report copy instead of
+// riding raw under MaskOperand's location exemption. Before batch L this field
+// serialized raw into summary.json / --json.
+func TestMaskModelForReport_LocationShapedEffortMasked(t *testing.T) {
+	key := "wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY"
+	for _, effort := range []string{"https://" + key, `C:\` + key, "/" + key, "./" + key} {
+		m := MaskModelForReport(Model{ID: "m", Capabilities: Capabilities{SupportsThinking: true, ReasoningEffort: effort}})
+		got := m.Capabilities.ReasoningEffort
+		if strings.Contains(got, "wJalrXUtnFEMI") {
+			t.Errorf("MaskModelForReport(effort %q) = %q; leaks the key core", effort, got)
+		}
+		if got == effort {
+			t.Errorf("MaskModelForReport(effort %q) = %q; want masked", effort, got)
+		}
+	}
+	// A benign effort stays unchanged.
+	m := MaskModelForReport(Model{ID: "m", Capabilities: Capabilities{SupportsThinking: true, ReasoningEffort: "high"}})
+	if m.Capabilities.ReasoningEffort != "high" {
+		t.Errorf("MaskModelForReport(benign effort) = %q; want high", m.Capabilities.ReasoningEffort)
 	}
 }
 

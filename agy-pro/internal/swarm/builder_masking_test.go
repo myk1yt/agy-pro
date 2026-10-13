@@ -362,9 +362,14 @@ func TestBuilderPromptSlotMasksLongMultiWordPrompt(t *testing.T) {
 // loses the whole value) fails here.
 func TestBuilderPromptSlotSeedListIsFlagSeedOperands(t *testing.T) {
 	t.Run("whole-value seed masks a squash-shaped multi-word prompt", func(t *testing.T) {
-		// Splitting the AWS plant across a space keeps every token below the
-		// secret floors while the squashed whole value is one 40-rune opaque
-		// run: only the whole-value seed can mask this prompt.
+		// The squashed whole value is one 38-rune opaque run (>= the 21-rune
+		// decorated floor), so it seeds as a whole. Token 2
+		// ("K7MDENGbPxRfiCYEXAMPLEKEY", 25 runes) clears the 16-rune
+		// contiguous-run floor and seeds on its own, but token 1
+		// ("wJalrXUtnFEMI", 13 runes) is below every floor and reachable ONLY
+		// through the whole-value seed: token-only seeding would render
+		// "wJalrXUtnFEMI [REDACTED]" and leak the first half raw, so this pin
+		// fails without the whole-value seed.
 		prompt := "wJalrXUtnFEMI K7MDENGbPxRfiCYEXAMPLEKEY"
 		if providers.SeedEligible(prompt) != true {
 			t.Fatalf("fixture must stay whole-value seed eligible: %q", prompt)
@@ -380,8 +385,10 @@ func TestBuilderPromptSlotSeedListIsFlagSeedOperands(t *testing.T) {
 	})
 
 	t.Run("whole-value seed masks a benign sentence around a bare key", func(t *testing.T) {
-		// Token-only seeding would render "AKIAI**** extra words around the
-		// key"; the whole-value seed renders the value masked as one unit.
+		// Token-only seeding would render "[REDACTED] extra words around the
+		// key" (the redactor masks a seeded token as [REDACTED], never as the
+		// first-5 form); the whole-value seed renders the value masked as one
+		// unit.
 		prompt := akiaPlant + " extra words around the key"
 		out := runBuilderToPrompt(t, builderInv(t), prompt)
 		slot := lastPromptSlotLine(t, out)

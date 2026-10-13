@@ -234,16 +234,19 @@ func runSwarmNonInteractive(in io.Reader, out, errw io.Writer, fv swarmFlagValue
 			// masked wherever it appears in the composite sentence. Batch K:
 			// the hardened two-pass slot. The whole-string classifier runs
 			// first (single-token, one-space, location-shaped, and benign
-			// renderings stay byte-identical), then EVERY whitespace-carrying
-			// operand routes through the seeded sentence masker with the
-			// per-token seeds (the wide SeedEligible core), applied to the
-			// already-masked slot and seeded from the ORIGINAL operand. The
-			// old equality-only fallback was skipped whenever MaskOperand
-			// PARTIALLY masked the operand, so a compound path carrying both a
-			// pattern-shaped credential and a bare decorated secret echoed the
-			// bare secret raw.
+			// renderings stay byte-identical), then EVERY whitespace- or
+			// comma/semicolon-carrying operand routes through the seeded
+			// sentence masker with the per-token seeds (the wide SeedEligible
+			// core), applied to the already-masked slot and seeded from the
+			// ORIGINAL operand. The old equality-only fallback was skipped
+			// whenever MaskOperand PARTIALLY masked the operand, so a compound
+			// path carrying both a pattern-shaped credential and a bare
+			// decorated secret echoed the bare secret raw. Batch L: the gate
+			// also carries the comma/semicolon class the old equality fallback
+			// used to seed, so a whitespace-free comma-decorated operand
+			// ("./backups,<secret>") no longer keeps its bare secret raw.
 			pathSlot := providers.MaskOperand(fv.promptFile)
-			if strings.ContainsAny(fv.promptFile, " \t\n\r") {
+			if strings.ContainsAny(fv.promptFile, " \t\n\r,;") {
 				pathSlot = maskOperandSentence(pathSlot, providers.FlagSeedOperands(fv.promptFile)...)
 			}
 			fmt.Fprintf(errw, "Error reading prompt file %s: %v\n", pathSlot, maskOperandSentence(err.Error(), fv.promptFile))

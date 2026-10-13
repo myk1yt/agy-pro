@@ -167,15 +167,69 @@ func TestRunModelsCmdJSONMasksKeyShapedFamily(t *testing.T) {
 	}
 }
 
+// L1 sink pin: Entry.Family is a registry slot with no path-readability
+// requirement, so the --json mask loop routes it through the registry-slot
+// display authority (providers.MaskRegistryValue, the same one
+// MaskFamilyName uses) instead of plain MaskOperand. A location-shaped
+// key-shaped family ("./<key>") is exempt at plain MaskOperand (spawn
+// errors must name the binary) and would ride raw into the dump without the
+// loop change. The seam drives the real inventory.Load so the registry ->
+// entry -> sink chain runs. Without the loop change the raw plant reaches
+// the dump and this test fails.
+func TestRunModelsCmdJSONMasksLocationShapedKeyShapedFamily(t *testing.T) {
+	const familyPlant = "./wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY"
+	reg := &providers.Registry{Providers: []providers.Provider{{
+		Name:    "nw",
+		BaseURL: "https://api.example/v1",
+		Models: []providers.Model{
+			{ID: "glm-5.3-flash-flex", Family: familyPlant},
+			{ID: "qwen3.8-flash", Family: "Qwen"},
+		},
+	}}}
+	old := loadModelsInventory
+	loadModelsInventory = func(ctx context.Context) (*inventory.Inventory, error) {
+		return inventory.Load(ctx, reg, nil)
+	}
+	t.Cleanup(func() { loadModelsInventory = old })
+
+	var out, errw strings.Builder
+	code := runModelsCmdTo([]string{"--json"}, &out, &errw)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, errw.String())
+	}
+	got := out.String()
+	if strings.Contains(got, familyPlant) {
+		t.Errorf("models --json leaks the location-shaped key-shaped family raw:\n%s", got)
+	}
+	var entries []inventory.Entry
+	if err := json.Unmarshal([]byte(got), &entries); err != nil {
+		t.Fatalf("json decode: %v\n%s", err, got)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("json entries = %d, want 2", len(entries))
+	}
+	// The registry-slot masker renders the location-shaped plant masked (the
+	// exact rendering belongs to providers.MaskRegistryValue; the sink pin
+	// only requires that the raw plant never serializes).
+	if !strings.Contains(entries[0].Family, "****") {
+		t.Errorf("location-shaped key-shaped family = %q, want a masked rendering", entries[0].Family)
+	}
+	// The benign family keeps its case and renders byte-identical.
+	if entries[1].Family != "Qwen" {
+		t.Errorf("benign family = %q, want the case-preserved %q", entries[1].Family, "Qwen")
+	}
+}
+
 // K1 sink pin: Entry.Capabilities carries the registry-controlled
 // reasoningEffort (Capabilities.Summary composes thinking(<effort>)) and
 // nothing on the add-json / hand-edit write path validates that field. The
-// composition mask inside Summary covers a plainly key-shaped effort, but a
-// LOCATION-shaped effort ("./<key>") is exempt there (spawn errors must name
-// the binary), so the composed summary rides raw into the JSON dump unless
-// the --json mask loop covers the field. The seam drives the real
-// inventory.Load so the registry -> entry -> sink chain runs. Without the
-// loop change the raw plant reaches the dump and this test fails.
+// composition mask inside Summary covers a key-shaped effort (plainly
+// key-shaped and location-shaped alike, K1), and the --json mask loop
+// covers the field again as defense in depth: the composed summary is
+// itself secret-shaped, so the dump renders "tools****". The seam drives
+// the real inventory.Load so the registry -> entry -> sink chain runs.
+// Without the loop change the dump carries the unmasked composed summary
+// "tools, thinking(wJalr****)" and this test fails.
 func TestRunModelsCmdJSONMasksKeyShapedReasoningEffort(t *testing.T) {
 	const plainPlant = "wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY"
 	const locationPlant = "./" + plainPlant

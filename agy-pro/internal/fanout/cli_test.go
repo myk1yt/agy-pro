@@ -637,6 +637,70 @@ func TestFanoutPromptFileSlotMasksCompoundOperand(t *testing.T) {
 	}
 }
 
+// Batch L (round-3 confirmed P2): the batch-K gate carried only whitespace, so
+// a whitespace-free comma/semicolon-decorated operand never ran the seeded pass
+// at the slot. The pre-K equality fallback HAD run it for exactly those
+// operands (MaskOperand leaves them unchanged: a leading ./ marker exempts the
+// display class, and an all-lowercase squash fails its uppercase gate), so the
+// whitespace-only gate was a masked->raw regression vs 21827f6. The gate now
+// covers comma/semicolon too; these pins hold both directions: the decorated
+// classes mask at the slot, and a benign comma list renders byte-identical.
+func TestFanoutPromptFileSlotMasksCommaDecoratedOperand(t *testing.T) {
+	t.Setenv(paths.EnvAgyProHome, t.TempDir())
+	awsPlant := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+
+	slotOf := func(stderr string) string {
+		const prefix = "Error reading prompt file "
+		i := strings.Index(stderr, prefix)
+		if i < 0 {
+			return ""
+		}
+		rest := stderr[i+len(prefix):]
+		if j := strings.Index(rest, ": "); j >= 0 {
+			return rest[:j]
+		}
+		return rest
+	}
+	run := func(arg string) (int, string) {
+		var out, errw bytes.Buffer
+		code := Run([]string{"-prompt-file", arg}, nil, &out, &errw)
+		return code, errw.String()
+	}
+
+	// The comma/semicolon-decorated classes the whitespace-only gate dropped.
+	// Each escapes MaskOperand entirely (location marker or all-lowercase
+	// squash), so without the widened gate the slot itself echoes the raw
+	// token. The slot is the regression site: the composite sentence beside
+	// it has always taken the whole raw operand as its only seed (unchanged
+	// since 21827f6), which is deliberately ineligible for these fixtures.
+	for _, tc := range []struct{ arg, want string }{
+		{"./backups," + awsPlant, "./backups,[REDACTED]"},
+		{"note,abcdefghijklmnopqrs", "note,[REDACTED]"},
+		{"./backups;" + awsPlant, "./backups;[REDACTED]"},
+	} {
+		code, stderr := run(tc.arg)
+		if code != 1 {
+			t.Fatalf("exit = %d; want 1 for %q\nstderr:\n%s", code, tc.arg, stderr)
+		}
+		if slot := slotOf(stderr); slot != tc.want {
+			t.Errorf("operand slot = %q; want %q for %q\nstderr:\n%s", slot, tc.want, tc.arg, stderr)
+		}
+	}
+
+	// Benign comma list: nothing seeds, so the slot and the composite
+	// sentence beside it render byte-identical.
+	code, stderr := run("read,search")
+	if code != 1 {
+		t.Fatalf("exit = %d; want 1 for the benign comma list\nstderr:\n%s", code, stderr)
+	}
+	if slot := slotOf(stderr); slot != "read,search" {
+		t.Errorf("benign comma list slot = %q; want %q (byte-identical)\nstderr:\n%s", slot, "read,search", stderr)
+	}
+	if strings.Contains(stderr, "[REDACTED]") {
+		t.Errorf("benign comma list must not be redacted:\n%s", stderr)
+	}
+}
+
 // E2: composite-error seeding follows the ONE shared rule
 // (providers.SeedEligible / providers.MaskSentence, F-alpha) and mirrors
 // cmd/agy's TestE2SeedEligibilityWholeOperandOnly. The old run extractor

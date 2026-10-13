@@ -296,9 +296,9 @@ func TestLoadCarriesCasePreservedFamily(t *testing.T) {
 	if got := entryFamily(inv.Entries[0]); got != "gemini" {
 		t.Errorf("entryFamily(case-preserved family) = %q; want the folded gemini", got)
 	}
-	// The models --json sink masks Entry.Family through MaskOperand; the
-	// case-preserved feed is what lets the decorated class catch it (the
-	// folded form rode raw).
+	// The models --json sink masks Entry.Family through MaskRegistryValue
+	// (the registry-slot authority); the case-preserved feed is what lets the
+	// decorated class catch it (the folded form rode raw).
 	masked := providers.MaskOperand(inv.Entries[1].Family)
 	if masked != "Nativ****" {
 		t.Errorf("MaskOperand(key-shaped family) = %q; want Nativ**** (C2 display fix)", masked)
@@ -381,6 +381,51 @@ func TestRenderNumbered_MasksCapabilityColumnAndAlignsMaskedWidths(t *testing.T)
 		if !strings.Contains(out, want) {
 			t.Errorf("row not aligned to the masked column widths:\nwant %q\ngot:\n%s", want, out)
 		}
+	}
+}
+
+// Round-3 LOW — the capability-column mask (maskMidColumn's MaskOperand) is
+// defense in depth on top of the composition mask inside Capabilities.Summary.
+// A separator-carrying key effort is already masked at the composition, so the
+// sink mask is redundant for it and reverting the sink does not fail the pin
+// above. This fixture discriminates the SINK: an IDENTIFIER-SEGMENTED plant
+// (>=4 short segments) evades the composition's display class, but the composed
+// 1-space summary "tools, thinking(<plant>)" becomes secret-shaped once the
+// "thinking(" prefix merges the first segment past the 16-rune identifier
+// floor, so ONLY the RenderNumbered sink mask catches it. Reverting
+// maskMidColumn's MaskOperand leaks the plant raw.
+func TestRenderNumbered_MaskMidColumnSinkDiscriminatesComposite(t *testing.T) {
+	plant := "abcdefgh.IJKL.mnop.QRSTUVWX"
+	reg := &providers.Registry{Providers: []providers.Provider{{
+		Name: "google",
+		Models: []providers.Model{
+			{ID: "gemini-2.5-flash", Capabilities: providers.Capabilities{SupportsTools: true, SupportsVision: true}},
+			{ID: "m2", Capabilities: providers.Capabilities{SupportsTools: true, SupportsThinking: true, ReasoningEffort: plant}},
+		},
+	}}}
+	inv, err := Load(context.Background(), reg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The composition leaves the plant raw (the identifier-segmented class
+	// evades the display mask); only the RenderNumbered sink masks it. If a
+	// future composition change starts masking this shape, the fixture needs a
+	// new plant to keep discriminating the sink.
+	if got := inv.Entries[1].Capabilities; !strings.Contains(got, plant) {
+		t.Fatalf("fixture no longer exercises the composition gap (plant masked at composition): %q", got)
+	}
+	var buf strings.Builder
+	inv.RenderNumbered(&buf)
+	out := buf.String()
+	if strings.Contains(out, plant) {
+		t.Errorf("sink mask reverted: the plant leaks raw:\n%s", out)
+	}
+	if !strings.Contains(out, "tools****") {
+		t.Errorf("sink must mask the 1-space composite to tools****:\n%s", out)
+	}
+	// The benign row stays readable.
+	if !strings.Contains(out, "tools, vision") {
+		t.Errorf("benign capability row must stay readable:\n%s", out)
 	}
 }
 

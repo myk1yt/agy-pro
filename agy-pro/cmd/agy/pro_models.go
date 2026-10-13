@@ -79,13 +79,19 @@ func runModelsCmdTo(args []string, out, errw io.Writer) int {
 		// composes thinking(<effort>)) and nothing on the add-json / hand-edit
 		// write path validates that field, so the composed summary routes
 		// through MaskOperand here too: defense in depth on top of the
-		// composition mask inside Summary.
+		// composition mask inside Summary. L1: Family is a registry slot and
+		// never a legitimate path, so it routes through the registry-slot
+		// display authority (providers.MaskRegistryValue, the same one
+		// MaskFamilyName uses) instead of plain MaskOperand: a
+		// location-shaped key-shaped family ("./<key>", URL- or drive-shaped)
+		// masks instead of riding raw under MaskOperand's location exemption,
+		// while benign families stay readable.
 		for i := range inv.Entries {
 			inv.Entries[i].ModelID = providers.MaskOperand(inv.Entries[i].ModelID)
 			inv.Entries[i].Spec = providers.MaskOperand(inv.Entries[i].Spec)
 			inv.Entries[i].DisplayName = providers.MaskOperand(inv.Entries[i].DisplayName)
 			inv.Entries[i].Group = providers.MaskOperand(inv.Entries[i].Group)
-			inv.Entries[i].Family = providers.MaskOperand(inv.Entries[i].Family)
+			inv.Entries[i].Family = providers.MaskRegistryValue(inv.Entries[i].Family)
 			inv.Entries[i].Capabilities = providers.MaskOperand(inv.Entries[i].Capabilities)
 		}
 		if err := enc.Encode(inv.Entries); err != nil {

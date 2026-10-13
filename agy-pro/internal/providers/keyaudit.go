@@ -158,45 +158,94 @@ func MaskOperand(s string) string {
 }
 
 // MaskFamilyName renders a model's family for display (C2). An explicit
-// registry family is CASE-PRESERVED and masked through MaskOperand, so a
-// key-shaped value pasted into the family slot renders first-5+****: the
-// decorated class requires an uppercase letter, which the folded
-// FamilyName() would have destroyed and let a lowercase-shaped secret ride
-// raw. With no explicit family the id-inferred FamilyName() is masked
-// instead (the id itself can carry a key-shaped token). Benign families
-// ("gemini", "glm") keep their readable form.
+// registry family is CASE-PRESERVED and masked through the registry-slot
+// display authority MaskRegistryValue, so a key-shaped value pasted into the
+// family slot renders first-5+****: the decorated class requires an uppercase
+// letter, which the folded FamilyName() would have destroyed and let a
+// lowercase-shaped secret ride raw. With no explicit family the id-inferred
+// FamilyName() is masked instead (the id itself can carry a key-shaped
+// token). Benign families ("gemini", "glm") keep their readable form.
 //
-// K2: the explicit family is TRIMMED before MaskOperand. Padding defeated
-// the classifier: the display class's interior-space gate rejects a
-// space-padded operand and its tab/newline gate rejects a trailing newline,
-// so a separator-carrying key-shaped family rode raw when padded.
+// K2: MaskRegistryValue trims at the top, so a padded explicit family no
+// longer defeats the classifier (the display class's interior-space and
+// tab/newline gates rejected a separator-carrying key-shaped family when it
+// was padded).
 //
-// K1b: the family slot is never a legitimate path and has no readability
-// requirement, so a LOCATION-shaped key-shaped family still masks through
-// maskRegistryValue (MaskOperand alone exempts locations so a spawn error can
-// name the binary; that exemption does not apply to a registry slot).
+// K1b/L1: the family slot is never a legitimate path and has no readability
+// requirement, so a LOCATION-shaped key-shaped family (relative ./, a URL
+// scheme, a Windows drive, an absolute path) still masks through
+// MaskRegistryValue. MaskOperand alone exempts locations so a spawn error can
+// name the binary; that exemption does not apply to a registry slot.
 func MaskFamilyName(m Model) string {
 	if strings.TrimSpace(m.Family) != "" {
-		return maskRegistryValue(strings.TrimSpace(m.Family))
+		return MaskRegistryValue(m.Family)
 	}
 	return MaskOperand(m.FamilyName())
 }
 
-// maskRegistryValue masks a registry-derived display value (explicit family,
-// reasoning effort). MaskOperand first; a location-shaped value then routes
-// through the same classifier with its location markers stripped, because a
-// registry slot is never a legitimate path and carries no readability
-// requirement, while a CLI operand's spawn error must still name the binary
-// (that exemption stays inside MaskOperand itself). A benign value that is
-// not location-shaped is returned unchanged.
-func maskRegistryValue(s string) string {
+// MaskRegistryValue is the registry-slot display authority (batch L, closes
+// F-1 and M1): it renders a registry-persisted display value (explicit family,
+// reasoning effort) at every display sink (models --json, status banner,
+// RenderNumbered, the wizard model list). A registry slot is never a
+// legitimate path and carries no readability requirement, so unlike a CLI
+// operand (whose spawn error must still name the binary and therefore keeps
+// MaskOperand's location exemption) a location-shaped key-shaped registry
+// value must mask here.
+//
+// The pipeline, every branch mask-only or identity (it can never unmask):
+//   - TrimSpace first (K2/M1: padding defeated the classifier, so a padded
+//     plant rode raw at every sink);
+//   - MaskOperand next, returned unchanged when it masked anything;
+//   - else strip every location marker (relative ./ ../ .\ ..\, a URL scheme
+//     "://", a Windows drive "C:\", leading separators) into core; a value
+//     with no markers returns unchanged;
+//   - when the stripped core is secret-shaped (operandLooksSecret, seedShaped,
+//     or the generic redactor) mask it, so neither the location marker nor any
+//     secret fragment beyond the mask survives;
+//   - else render the marker-stripped core, so a benign location-shaped value
+//     ("./gemini" -> "gemini", a URL scheme-stripped) stays readable.
+//
+// MaskOperand itself and every classifier stay byte-unchanged: CLI operands
+// keep the location exemption, only registry slots route through this.
+func MaskRegistryValue(s string) string {
+	s = strings.TrimSpace(s)
 	if m := MaskOperand(s); m != s {
 		return m
 	}
-	if isLocationShaped(s) {
-		return MaskOperand(strings.TrimLeft(s, `./\`))
+	core := stripLocationMarkers(s)
+	if core == s {
+		return s
 	}
-	return s
+	if operandLooksSecret(core) || seedShaped(core) || NewRedactor()(core) != core {
+		return MaskSecret(core)
+	}
+	return core
+}
+
+// stripLocationMarkers removes the location markers a registry slot never
+// legitimately carries, returning the value's opaque core: a URL scheme (up to
+// and including the last "://"), a Windows drive ("C:\" or "C:/"), repeated
+// relative markers (./ ../ .\ ..\), and any leading path separators. It is the
+// marker stripper MaskRegistryValue uses so a location-shaped key-shaped
+// registry value can be classified on its core; a value with no markers
+// returns unchanged.
+func stripLocationMarkers(s string) string {
+	if i := strings.LastIndex(s, "://"); i >= 0 {
+		s = s[i+len("://"):]
+	}
+	if len(s) >= 3 && ((s[0] >= 'A' && s[0] <= 'Z') || (s[0] >= 'a' && s[0] <= 'z')) && s[1] == ':' && (s[2] == '/' || s[2] == '\\') {
+		s = s[3:]
+	}
+	for {
+		before := s
+		for _, p := range []string{"./", "../", `.\`, `..\`} {
+			s = strings.TrimPrefix(s, p)
+		}
+		s = strings.TrimLeft(s, `/\`)
+		if s == before {
+			return s
+		}
+	}
 }
 
 // MaskProviderForReport renders a Provider for a report/JSON sink (S4):
@@ -219,12 +268,14 @@ func MaskProviderForReport(p Provider) Provider {
 	return out
 }
 
-// MaskModelForReport renders one Model for a report/JSON sink (S4): the ID
-// through MaskOperand, an explicit family through MaskFamilyName
-// (case-preserved so a key-shaped explicit family still catches the decorated
-// class), and every other registry-controlled string field (tags, allowed
-// tools, reasoning effort) through MaskOperand. Benign values are unchanged;
-// the input is not mutated.
+// MaskModelForReport renders one Model for a report/JSON sink (S4): the ID,
+// tags, and allowed tools through MaskOperand, an explicit family through
+// MaskFamilyName (case-preserved so a key-shaped explicit family still catches
+// the decorated class), and the reasoning effort through the registry-slot
+// display authority MaskRegistryValue (L1: the effort is registry-persisted
+// free-form text, so a location-shaped key-shaped effort must mask here rather
+// than ride raw under MaskOperand's location exemption). Benign values are
+// unchanged; the input is not mutated.
 //
 // K3: an EMPTY explicit family stays empty. The id-inferred FamilyName() is
 // no longer fabricated into the report copy, so the serialized model keeps
@@ -238,7 +289,7 @@ func MaskModelForReport(m Model) Model {
 	}
 	out.Tags = maskStringSliceForReport(m.Tags)
 	out.Capabilities.AllowedTools = maskStringSliceForReport(m.Capabilities.AllowedTools)
-	out.Capabilities.ReasoningEffort = MaskOperand(m.Capabilities.ReasoningEffort)
+	out.Capabilities.ReasoningEffort = MaskRegistryValue(m.Capabilities.ReasoningEffort)
 	return out
 }
 

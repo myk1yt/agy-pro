@@ -106,14 +106,27 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 				// compound path carrying both a pattern-shaped credential (the
 				// generic pass masks it) and a bare decorated secret (no pattern
 				// shape; seed-shaped only) echoed the bare secret raw. The slot
-				// now runs the seeded pass on every whitespace-carrying operand,
-				// with the seeds taken from the ORIGINAL operand and applied to
-				// the already-masked slot: single-token, one-space,
+				// now runs the seeded pass on every separator-carrying
+				// operand, with the seeds taken from the ORIGINAL operand and
+				// applied to the already-masked slot: single-token, one-space,
 				// location-shaped and benign multi-word renderings stay
 				// byte-identical, while a multi-token operand's bare secret
 				// token is masked too.
+				//
+				// Batch L: the gate covers comma/semicolon as well as
+				// whitespace. FlagSeedOperands splits on those separators, and
+				// the pre-K equality fallback ran the seeded pass for a
+				// whitespace-free comma-decorated operand whenever MaskOperand
+				// left it unchanged (it did: the classifier sees no secret
+				// shape in either class), so the whitespace-only gate was a
+				// masked->raw regression vs 21827f6 for
+				// "./backups,wJalr.../bPxRfiCYEXAMPLEKEY" (the leading ./
+				// marker exempts the display class) and
+				// "note,abcdefghijklmnopqrs" (the all-lowercase squash fails
+				// the uppercase gate). A benign comma list ("read,search")
+				// seeds nothing and stays byte-identical.
 				pathSlot := providers.MaskOperand(*promptFileFlag)
-				if strings.ContainsAny(*promptFileFlag, " \t\n\r") {
+				if strings.ContainsAny(*promptFileFlag, " \t\n\r,;") {
 					pathSlot = maskOperandSentence(pathSlot, providers.FlagSeedOperands(*promptFileFlag)...)
 				}
 				fmt.Fprintf(errw, "Error reading prompt file %s: %v\n",
