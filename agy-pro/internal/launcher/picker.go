@@ -29,6 +29,11 @@ import (
 // menu's 2s deadline; a timeout cancels back to the legacy [2] bridge route.
 const pickerTimeout = 60 * time.Second
 
+// swarmPromptTimeout bounds the [3] swarm prompt read. Free text needs more
+// thought time than a seat number; a timeout cancels back to the native
+// default (same outcome as an empty prompt).
+const swarmPromptTimeout = 300 * time.Second
+
 // ModelPick is the outcome of the launcher model sub-menu.
 type ModelPick struct {
 	Entry  inventory.Entry
@@ -55,11 +60,18 @@ var pickerInventory = func(reg *providers.Registry) *inventory.Inventory {
 	return inv
 }
 
+// readConsoleLineFn is the console line-reader seam. The Windows build points
+// it at the raw-console implementation; other builds at the unavailable stub.
+// Tests override it to drive the picker's console path deterministically.
+var readConsoleLineFn = readConsoleLine
+
 // showModelPicker renders the numbered combined inventory and reads one
-// selection line through the shared relay (multi-digit capable - the raw
-// console single-key path only maps 1/2/3/Enter, prompt.go:32-43). Returns
+// selection. When stdin is a real console the line comes from the console path
+// (multi-digit capable, nothing consumed until the line is complete), so the
+// shared relay is never touched and the real-agy child can inherit the console
+// directly; the relay stays reserved for non-console stdin. Returns
 // Picked=false on timeout, EOF, empty input, or an invalid selection.
-func showModelPicker(out io.Writer, lines lineSource, inv *inventory.Inventory) ModelPick {
+func showModelPicker(out io.Writer, consoleIn *os.File, lines lineSource, inv *inventory.Inventory) ModelPick {
 	if inv == nil {
 		inv = &inventory.Inventory{}
 	}
@@ -72,20 +84,43 @@ func showModelPicker(out io.Writer, lines lineSource, inv *inventory.Inventory) 
 	inv.RenderNumbered(out)
 	fmt.Fprint(out, "Model number (Enter=cancel): ")
 
+	if consoleIn != nil {
+		if line, status := readConsoleLineFn(consoleIn, pickerTimeout); status == consoleChoice {
+			return resolvePickerLine(line, inv, out)
+		} else if status == consoleTimeout {
+			// Deadline: nothing was consumed, so any partial line stays in the
+			// buffer for the child. Cancel like an empty answer.
+			fmt.Fprintln(out, "[agy-pro] no model selected (timed out); continuing with External Models (bridge)")
+			return ModelPick{}
+		}
+		// consoleUnavailable: fall through to the shared line source.
+	}
 	line, ok := lines.readLine(pickerTimeout)
 	if !ok {
+		fmt.Fprintln(out, "[agy-pro] no model selected (input closed or timed out); continuing with External Models (bridge)")
 		return ModelPick{}
 	}
+	return resolvePickerLine(line, inv, out)
+}
+
+// resolvePickerLine maps one selection line onto a pick. An empty line cancels
+// silently-by-default no more: every cancel now states what happens next, so a
+// user who typed nothing (or typed a version-shaped token) is never left
+// wondering why the session did not advance.
+func resolvePickerLine(line string, inv *inventory.Inventory, out io.Writer) ModelPick {
 	trimmed := strings.TrimSpace(line)
-	// Enter alone cancels: the §2.7 "empty input = default preset" rule is the
-	// swarm builder's seat-selection default; in the single-model picker the
-	// prompt offers "Enter=cancel".
 	if trimmed == "" {
+		fmt.Fprintln(out, "[agy-pro] no model selected (cancelled); continuing with External Models (bridge)")
 		return ModelPick{}
 	}
 	entries, err := inventory.ParseSelection(trimmed, inv)
 	if err != nil || len(entries) == 0 {
-		fmt.Fprintln(out, "[agy-pro] no model selected; continuing with External Models (bridge)")
+		if len(inv.Entries) == 0 {
+			fmt.Fprintln(out, "[agy-pro] no models in the combined inventory; continuing with External Models (bridge)")
+			return ModelPick{}
+		}
+		fmt.Fprintf(out, "[agy-pro] invalid selection %q (want a number 1-%d, a range like 3-5, or a preset p1/p2/p3); continuing with External Models (bridge)\n",
+			providers.MaskOperand(trimmed), len(inv.Entries))
 		return ModelPick{}
 	}
 	return ModelPick{Entry: entries[0], Picked: true}

@@ -469,6 +469,14 @@ Seat grammar: `native:<model-id>` for Antigravity's own models, `<provider>/<mod
 
 Every generated artifact (`summary.json`, `reconciliation.md`, per-seat reports) is written owner-only, and any key-shaped value that rides into a report or the console renders as the first 5 characters plus `****`, never a suffix.
 
+### Swarm from inside the agy TUI (`/agypro_swarm:swarm`)
+
+The swarm also runs from inside an `agy` chat session through the `agypro_swarm` plugin command. agy's plugin system namespaces plugin commands, so the invocation is `/agypro_swarm:swarm` (there is no core `/swarm`; the honesty label is mandatory everywhere). The command is agent-mediated: it reads the combined inventory (`agy pro models --all`), collects template / seats / tools / timeout / task through numbered menus, echoes the resolved `agy pro swarm --dry-run` command with a per-seat cost note and an explicit go/no-go, and only then runs the real swarm and presents `summary.json`, `reconciliation.md` and the per-seat reports in chat.
+
+Cost rules that are enforced by the command body: every seat is one full agent turn; native seats spend the Antigravity subscription, provider seats spend that provider's API credits; no real run happens without an explicit go after the dry-run echo. The task prompt travels through `--prompt-file` (a temp file), never spliced raw into a shell line, and API key values are never requested or echoed in chat. The dry-run echo is labeled information-only and is never executed or pasted: when the prompt came from a file it references the file instead of inlining the text, so no prompt content can ride a copy-pasteable shell line.
+
+The XOR boundary is unchanged and stated plainly: this is a command/tool action that runs separate subprocesses; it does not add external models to the session's `/model` popover, which stays native-or-bridge, never both.
+
 ### What it adds
 
 | Capability | Command |
@@ -483,6 +491,7 @@ Every generated artifact (`summary.json`, `reconciliation.md`, per-seat reports)
 | Numbered swarm builder (hybrid native + external seats) | `agy pro swarm`, `agy pro fanout --seats "native:<model>,<provider>/<model>"` |
 | Multi-model fanout swarm | `agy pro fanout -task=security -n=3` |
 | Settings panel / in-session settings | `agy pro settings` (TUI), `/setting_agypro` (plugin command) |
+| Swarm from inside the chat | `/agypro_swarm:swarm` (plugin slash command; numbered seats, dry-run echo + cost confirm, artifact findings in chat) |
 | Diagnostics | `agy pro doctor`, `agy pro status`, `agy pro models` |
 
 `agy pro doctor` probes every configured provider key upstream with zero tokens (`GET <baseURL>/models`, 5s timeout) and prints a masked verdict (`valid` / `invalid` / `indeterminate` / `SKIP`). Key material is always displayed as the first 5 characters followed by `****` (5 characters or fewer render as `****`; no suffix is ever shown). `agy pro doctor --fix-keys` restores a BOM-prefixed environment variable name from a probe-valid variant (backup written first) and `agy pro doctor --rollback-keys <dir>` undoes that repair.

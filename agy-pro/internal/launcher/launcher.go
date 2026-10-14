@@ -80,7 +80,7 @@ func ExecutePassthrough(realAgyPath string, args []string) (int, error) {
 			// bypasses ShouldActivateBridge entirely; an external pick keeps
 			// the forceBridge path; an aborted pick keeps the legacy [2]
 			// bridge behavior.
-			pick := showModelPicker(os.Stdout, rel, pickerInventory(reg))
+			pick := showModelPicker(os.Stdout, os.Stdin, rel, pickerInventory(reg))
 			plan := planFromPick(pick)
 			forcedNativeID = plan.ForcedNativeID
 			if plan.ForceBridge {
@@ -88,7 +88,7 @@ func ExecutePassthrough(realAgyPath string, args []string) (int, error) {
 				args = append(args, plan.ModelArgs...)
 			}
 		case RouteFanout:
-			code, handled, err := runSwarmFromMenu(rel, os.Stdout, os.Stderr)
+			code, handled, err := runSwarmFromMenu(os.Stdin, rel, os.Stdout, os.Stderr)
 			if handled || err != nil {
 				return code, err
 			}
@@ -272,11 +272,31 @@ func recordRoute(entry string) {
 // runSwarmFromMenu handles launcher choice [3]: one line of prompt input and
 // the default fanout seat rotation (no -models override). handled is false
 // when the prompt was left empty, which cancels back to the native default.
-// The relay is the shared stdin owner so the prompt sees whatever the menu
-// choice left over and the swarm (or a later native child) receives the rest.
-func runSwarmFromMenu(rel *stdinRelay, out, errw io.Writer) (code int, handled bool, err error) {
+//
+// The prompt is read through the console path when stdin is a console (free
+// text, same reader as the picker), so the relay is never touched and the
+// native-default child that follows an empty prompt inherits the console
+// directly. Handing that child a relay pipe while its stdout is the console
+// is the exact hang shape the picker fix removed (agy blocks reading a pipe
+// stdin in that configuration). The relay stays the fallback for non-console
+// stdin, where the fanout seats do not need the console.
+func runSwarmFromMenu(consoleIn *os.File, rel *stdinRelay, out, errw io.Writer) (code int, handled bool, err error) {
 	fmt.Fprint(out, "Swarm prompt: ")
-	line, _ := rel.readLine(0)
+	line := ""
+	if consoleIn != nil {
+		l, status := readConsoleLineFn(consoleIn, swarmPromptTimeout)
+		switch status {
+		case consoleChoice:
+			line = l
+		case consoleTimeout:
+			fmt.Fprintln(errw, "[agy-pro] swarm prompt timed out or was too long; continuing with native Gemini")
+			return 0, false, nil
+		default: // consoleUnavailable: non-console stdin, use the relay.
+			line, _ = rel.readLine(0)
+		}
+	} else {
+		line, _ = rel.readLine(0)
+	}
 	prompt := strings.TrimSpace(line)
 	if prompt == "" {
 		fmt.Fprintln(errw, "[agy-pro] empty swarm prompt; continuing with native Gemini")

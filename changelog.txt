@@ -2,6 +2,73 @@
 Antigravity-cli (agy-tools) Changelog
 ================================================================================
 
+Version: 0.10.5
+Release Date: 2026-10-14
+Previous Version: 0.10.4
+
+--------------------------------------------------------------------------------
+[Overview]
+--------------------------------------------------------------------------------
+Swarm inside the agy TUI plus the launcher [2] hang fix. The hybrid swarm is now
+reachable from inside an agy chat session through the `/agypro_swarm:swarm`
+plugin slash command (numbered seats, cost-confirmed dry-run echo, artifact
+findings in chat), the launcher [2] model picker no longer hangs the real agy
+child (root cause: the picker handed the child a relay pipe as stdin while the
+child's stdout was the console), and the profile config.json plugin map ships
+in the object form agy's protojson parser accepts.
+
+[Added]
+- `/agypro_swarm:swarm` plugin command (plugins/agypro_swarm): an agent-mediated
+  workflow that reads the combined inventory (`agy pro models --all`), collects
+  template/seats/tools/timeout/task through numbered menus, echoes the resolved
+  `agy pro swarm --dry-run` command with a per-seat cost note and an explicit
+  go/no-go, then runs the real swarm and presents summary.json /
+  reconciliation.md / seat-*.md findings in chat. Plugin commands are
+  namespaced by agy's plugin system, so the invocation is
+  `/agypro_swarm:swarm` (a plain `/swarm` is not a core command).
+- skills/swarm/SKILL.md mirror so the workflow is discoverable from `/skills`
+  and the model side (the same pattern as agypro_settings).
+
+[Fixed]
+- Launcher [2] hang: after the model picker the real agy child never rendered.
+  Root cause (reproduced headlessly against a real hidden console): the picker
+  read its selection through the shared stdin relay and handed the child the
+  relay pipe as stdin; agy's TUI blocks reading a pipe stdin while its stdout
+  is a console, so the session sat silent forever (0-byte language-server log).
+  The picker now reads its line through the console path (multi-digit capable,
+  nothing consumed until the line is complete), so the child inherits the
+  console directly - the configuration every other route already used.
+- Picker cancel/invalid feedback: an empty answer and an unparseable answer
+  both state the outcome and the grammar instead of failing silently
+  ("invalid selection ... (want a number 1-14, a range like 3-5, or a preset
+  p1-p3); continuing with External Models (bridge)").
+- Profile config.json plugins map: ships `{"<dir>": {"enabled": true}}` instead
+  of a bare boolean, which agy's config parser rejected ("unexpected token
+  true"), silently dropping every plugin enablement record.
+
+[Security]
+- The swarm dry-run echo no longer inlines the task prompt: when the prompt
+  arrives via --prompt-file the echoed (and executed) fanout command references
+  the file, so untrusted prompt text can never ride a copy-pasteable shell line.
+  The command body labels the echo "information only - NEVER execute or paste",
+  names the --prompt-file swarm form as the only real-run command, binds the
+  shell-safe charset to EVERY interpolated operand (seats, template, --task,
+  --tools, provider names, --root), confines --root to the workspace without an
+  explicit confirmation, and warns that --tools bounds provider seats only
+  while native seats run the agy default tool surface.
+
+[Tests]
+- Fail-without-fix pins: the console-path picker must leave the relay untouched
+  (rel.Used() == false), a console timeout cancels with a message, every cancel
+  states its outcome, the console line reader folds each record exactly once
+  across ticks (slow typing), accumulates every text key including non-ASCII,
+  honors repeat counts for text and Backspace, pairs UTF-16 surrogates, and
+  consumes nothing on timeout; the file-path echo must reference --prompt-file;
+  the profile config.json plugin values must parse as {"enabled": bool} with
+  keys naming real plugin directories; the plugin lint pins the honesty label,
+  XOR boundary, cost confirmation, dry-run-first, untrusted-data and
+  shell-safety rules and the SKILL.md mirror.
+
 Version: 0.10.4
 Release Date: 2026-10-13
 Previous Version: 0.10.3

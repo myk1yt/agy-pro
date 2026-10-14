@@ -499,7 +499,7 @@ func TestSharedReaderServesChoiceThenPrompt(t *testing.T) {
 	}
 
 	var promptOut, promptErr strings.Builder
-	code, handled, err := runSwarmFromMenu(rel, &promptOut, &promptErr)
+	code, handled, err := runSwarmFromMenu(nil, rel, &promptOut, &promptErr)
 	if err != nil {
 		t.Fatalf("runSwarmFromMenu: %v", err)
 	}
@@ -541,7 +541,7 @@ func TestRunSwarmFromMenuEmptyPromptCancels(t *testing.T) {
 
 	rel := newStdinRelay(strings.NewReader("\n"))
 	var out, errw strings.Builder
-	code, handled, err := runSwarmFromMenu(rel, &out, &errw)
+	code, handled, err := runSwarmFromMenu(nil, rel, &out, &errw)
 	if err != nil {
 		t.Fatalf("runSwarmFromMenu: %v", err)
 	}
@@ -579,7 +579,7 @@ func TestRunSwarmFromMenuInstantFailCreatesNoState(t *testing.T) {
 
 	rel := newStdinRelay(strings.NewReader("review the diff\n"))
 	var out, errw strings.Builder
-	code, handled, err := runSwarmFromMenu(rel, &out, &errw)
+	code, handled, err := runSwarmFromMenu(nil, rel, &out, &errw)
 	if err != nil {
 		t.Fatalf("runSwarmFromMenu: %v", err)
 	}
@@ -599,4 +599,34 @@ func TestRunSwarmFromMenuInstantFailCreatesNoState(t *testing.T) {
 		t.Error("instant failure must not write reports/")
 	}
 	assertNoSwarmLeak(t, sandbox)
+}
+
+// Fail-without-fix pin (gate round 2, the [3] sibling of the picker hang): the
+// swarm prompt read through the console path must leave the relay untouched,
+// so the native-default child that follows an EMPTY prompt inherits the
+// console. Before the fix the prompt went through the relay and the child got
+// a relay pipe with a console stdout - the exact hang shape.
+func TestRunSwarmFromMenuConsolePathLeavesRelayUntouched(t *testing.T) {
+	var out, errw strings.Builder
+	rel := newStdinRelay(strings.NewReader("review this\n"))
+
+	old := readConsoleLineFn
+	readConsoleLineFn = func(consoleIn *os.File, timeout time.Duration) (string, consoleRead) {
+		return "", consoleChoice // Enter with no text: empty prompt
+	}
+	defer func() { readConsoleLineFn = old }()
+
+	code, handled, err := runSwarmFromMenu(os.Stdin, rel, &out, &errw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if handled || code != 0 {
+		t.Fatalf("empty prompt must fall through to native (handled=%v code=%d)", handled, code)
+	}
+	if rel.Used() {
+		t.Fatal("console-path prompt used the relay; the native child would get a relay pipe as stdin (agy hang)")
+	}
+	if !strings.Contains(errw.String(), "empty swarm prompt") {
+		t.Errorf("empty prompt message missing:\n%s", errw.String())
+	}
 }

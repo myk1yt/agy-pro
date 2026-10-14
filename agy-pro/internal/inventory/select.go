@@ -21,6 +21,11 @@ const maxSeats = 40
 //	preset-id   := "p1" | "p2" | "p3"  (case-insensitive)
 //	empty input := the presented default preset (p1)
 //
+// The separator set is deliberately closed (no dot): a dot-decorated secret
+// typed into a selection line must stay ONE token so the seeded masker sees
+// the whole shape (U8). "1.11.12.14" is an invalid selection, and the picker
+// now says so with the grammar instead of failing silently.
+//
 // Errors: "invalid selection token %q", "seat number %d out of range (1-%d)",
 // "selection exceeds 40 seats", "range %q is inverted".
 //

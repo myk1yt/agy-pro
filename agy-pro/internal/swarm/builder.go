@@ -26,14 +26,22 @@ type RunSpec struct {
 	Seats      []inventory.Entry
 	Root       string
 	Prompt     string
+	PromptFile string // when set, the fanout args reference this file instead of inlining Prompt
 	TimeoutSec int
 }
 
-// Args returns the exact fanout argument vector for this spec.
+// Args returns the exact fanout argument vector for this spec. When the prompt
+// arrived through --prompt-file the vector references the file: inlining the
+// prompt text into the echoed command line would put untrusted text into a
+// copy-pasteable shell line (the dry-run echo is quoted Go-style, not
+// shell-safe) and leak prompt content into console scrollback.
 func (s RunSpec) Args() []string {
 	root := s.Root
 	if root == "" {
 		root = "."
+	}
+	if s.PromptFile != "" {
+		return BuildFanoutArgsFile(s.Template, s.Seats, root, s.PromptFile, s.TimeoutSec)
 	}
 	return BuildFanoutArgs(s.Template, s.Seats, root, s.Prompt, s.TimeoutSec)
 }

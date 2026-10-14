@@ -53,6 +53,36 @@ func BuildFanoutArgs(t Template, seats []inventory.Entry, root, prompt string, t
 	}
 }
 
+// BuildFanoutArgsFile is BuildFanoutArgs with the prompt passed by file
+// reference: the dry-run echo then never inlines prompt text (untrusted,
+// potentially shell-metacharacter-bearing) into a copy-pasteable line.
+func BuildFanoutArgsFile(t Template, seats []inventory.Entry, root, promptFile string, timeoutSec int) []string {
+	if timeoutSec <= 0 {
+		timeoutSec = DefaultTimeoutSec
+	}
+	if root == "" {
+		root = "."
+	}
+	return []string{
+		"--task", t.Task,
+		"--seats", strings.Join(specsOf(seats), ","),
+		"--root", root,
+		"--timeout", strconv.Itoa(timeoutSec),
+		"--tools", t.Tools,
+		"--prompt-file", promptFile,
+		"--json",
+	}
+}
+
+// specsOf joins seat specs; kept local so the two builders cannot drift.
+func specsOf(seats []inventory.Entry) []string {
+	out := make([]string, 0, len(seats))
+	for _, e := range seats {
+		out = append(out, e.Spec)
+	}
+	return out
+}
+
 // FormatCommand renders a fanout argument vector as the equivalent
 // `agy pro fanout ...` command line (preview, copy, --dry-run). Arguments that
 // contain whitespace or quotes are double-quoted with inner quotes escaped.

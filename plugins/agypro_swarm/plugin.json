@@ -1,0 +1,10 @@
+{
+  "name": "agypro_swarm",
+  "version": "0.1.0",
+  "description": "Run the agy-pro multi-model swarm (native + external provider seats) from inside the agy chat: numbered seat/template selection, cost-confirmed dry-run echo, then the real run with artifact findings presented in chat.",
+  "author": "agy-pro",
+  "license": "MIT",
+  "homepage": "https://github.com/myk1yt/agy-tools",
+  "repository": "https://github.com/myk1yt/agy-tools",
+  "keywords": ["swarm", "fanout", "multi-model", "agy-pro"]
+}

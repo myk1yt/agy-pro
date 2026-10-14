@@ -2,6 +2,7 @@ package mode
 
 import (
 	"bytes"
+	"encoding/json"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -598,5 +599,72 @@ func TestLegacyStateKeepsOriginalKeys(t *testing.T) {
 		if strings.Contains(string(saved), key) {
 			t.Fatalf("re-saved legacy state must not inject %s:\n%s", key, saved)
 		}
+	}
+}
+
+// The profile config.json files are deployed verbatim into the user's
+// ~/.gemini/config/config.json, and agy parses that file as protojson: the
+// plugins map values must be OBJECTS with an "enabled" bool. A bare boolean
+// ("code_reviewer": true) makes agy fail the whole config parse
+// ("unexpected token true"), which silently drops every plugin enablement
+// record. Fail-without-fix pin for the 2026-10-14 corruption.
+func TestProfileConfigJSONPluginEnablementShape(t *testing.T) {
+	for _, profile := range []string{ModeFull, ModeClean} {
+		t.Run(profile, func(t *testing.T) {
+			profileFS, err := profiles.GetProfileFS(profile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := fs.ReadFile(profileFS, "config.json")
+			if err != nil {
+				t.Fatalf("profile %s has no config.json: %v", profile, err)
+			}
+			var doc struct {
+				Plugins map[string]json.RawMessage `json:"plugins"`
+			}
+			if err := json.Unmarshal(data, &doc); err != nil {
+				t.Fatalf("profile %s config.json is not JSON: %v", profile, err)
+			}
+			for name, raw := range doc.Plugins {
+				var entry struct {
+					Enabled *bool `json:"enabled"`
+				}
+				if err := json.Unmarshal(raw, &entry); err != nil || entry.Enabled == nil {
+					t.Errorf("profile %s: plugins[%q] = %s, want an object with an \"enabled\" bool", profile, name, raw)
+				}
+			}
+		})
+	}
+}
+
+// The profile pin must also assert the plugins map KEYS name real plugin
+// directories. The full profile's config.json references plugins that the
+// ROOT installer deploys (repo plugins/ -> ~/.gemini/config/plugins/), not
+// files inside the profile FS itself, so the check accepts either source.
+func TestProfileConfigPluginKeysNameRealDirs(t *testing.T) {
+	for _, profile := range []string{ModeFull, ModeClean} {
+		t.Run(profile, func(t *testing.T) {
+			profileFS, err := profiles.GetProfileFS(profile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := fs.ReadFile(profileFS, "config.json")
+			if err != nil {
+				t.Fatalf("profile %s has no config.json: %v", profile, err)
+			}
+			var doc struct {
+				Plugins map[string]json.RawMessage `json:"plugins"`
+			}
+			if err := json.Unmarshal(data, &doc); err != nil {
+				t.Fatalf("profile %s config.json is not JSON: %v", profile, err)
+			}
+			for name := range doc.Plugins {
+				_, inProfile := fs.Stat(profileFS, "plugins/"+name)
+				_, inRepo := os.Stat(filepath.Join("..", "..", "..", "plugins", name))
+				if inProfile != nil && inRepo != nil {
+					t.Errorf("profile %s: plugins key %q matches neither the profile FS nor the repo plugins/ dir", profile, name)
+				}
+			}
+		})
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"agypro/internal/bridge"
 	"agypro/internal/inventory"
@@ -60,7 +61,7 @@ func TestShowModelPickerScriptedTranscript(t *testing.T) {
 	inv := pickerFixture()
 	var out strings.Builder
 	rel := newStdinRelay(strings.NewReader("11\n"))
-	pick := showModelPicker(&out, rel, inv)
+	pick := showModelPicker(&out, nil, rel, inv)
 	transcript := out.String()
 	t.Logf("picker transcript:\n%s", transcript)
 
@@ -96,11 +97,107 @@ func TestShowModelPickerAbortPaths(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var out strings.Builder
 			rel := newStdinRelay(strings.NewReader(tc.input))
-			pick := showModelPicker(&out, rel, inv)
+			pick := showModelPicker(&out, nil, rel, inv)
 			if pick.Picked {
 				t.Fatalf("input %q must cancel, got %+v", tc.input, pick.Entry)
 			}
 		})
+	}
+}
+
+// The console-path picker must never touch the shared relay: the real-agy child
+// inherits the console directly, which is the ONLY stdin configuration the agy
+// TUI renders under (a relay pipe plus a console stdout blocks agy's startup
+// read forever). Fail-without-fix pin for the [2] hang (2026-10-14).
+func TestShowModelPickerConsolePathLeavesRelayUntouched(t *testing.T) {
+	inv := pickerFixture()
+	var out strings.Builder
+	rel := newStdinRelay(strings.NewReader("1\n")) // would pick seat 1 if used
+
+	old := readConsoleLineFn
+	readConsoleLineFn = func(consoleIn *os.File, timeout time.Duration) (string, consoleRead) {
+		return "11", consoleChoice
+	}
+	defer func() { readConsoleLineFn = old }()
+
+	pick := showModelPicker(&out, os.Stdin, rel, inv)
+	if !pick.Picked || pick.Entry.Number != 11 {
+		t.Fatalf("console pick = %+v, want entry #11", pick)
+	}
+	if rel.Used() {
+		t.Fatal("console-path picker used the relay; the child would get a relay pipe as stdin (agy hang)")
+	}
+	if !strings.Contains(out.String(), "[11] gemini-3.8-flash-high") {
+		t.Errorf("transcript missing row 11:\n%s", out.String())
+	}
+}
+
+// A console timeout cancels with a stated outcome and consumes nothing, so a
+// partial line stays queued for the child.
+func TestShowModelPickerConsoleTimeoutCancelsWithMessage(t *testing.T) {
+	inv := pickerFixture()
+	var out strings.Builder
+	rel := newStdinRelay(strings.NewReader("1\n"))
+
+	old := readConsoleLineFn
+	readConsoleLineFn = func(consoleIn *os.File, timeout time.Duration) (string, consoleRead) {
+		return "", consoleTimeout
+	}
+	defer func() { readConsoleLineFn = old }()
+
+	pick := showModelPicker(&out, os.Stdin, rel, inv)
+	if pick.Picked {
+		t.Fatalf("timeout must cancel, got %+v", pick.Entry)
+	}
+	if rel.Used() {
+		t.Fatal("timeout path used the relay")
+	}
+	if !strings.Contains(out.String(), "no model selected (timed out)") {
+		t.Errorf("timeout cancel is silent:\n%s", out.String())
+	}
+}
+
+// Every cancel states what happens next: an empty answer names the fallback,
+// and a truly unparseable answer echoes the grammar.
+func TestShowModelPickerCancelAndInvalidMessages(t *testing.T) {
+	inv := pickerFixture()
+	for _, tc := range []struct{ name, input, want string }{
+		{"empty cancels", "\n", "no model selected (cancelled); continuing with External Models (bridge)"},
+		{"invalid token names grammar", "zzz\n", "invalid selection"},
+		{"out of range names grammar", "99\n", "invalid selection"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out strings.Builder
+			rel := newStdinRelay(strings.NewReader(tc.input))
+			pick := showModelPicker(&out, nil, rel, inv)
+			if pick.Picked {
+				t.Fatalf("input %q must cancel, got %+v", tc.input, pick.Entry)
+			}
+			if !strings.Contains(out.String(), tc.want) {
+				t.Errorf("cancel message missing %q:\n%s", tc.want, out.String())
+			}
+		})
+	}
+}
+
+// A dot-typed selection ("1.11.12.14" — the shape a user naturally types for
+// seats 1, 11, 12, 14) stays ONE token so the seeded masker keeps whole-shape
+// coverage (U8); the picker answers with the grammar instead of failing
+// silently. Fail-without-fix pin for the silent-cancel UX (2026-10-14).
+func TestShowModelPickerDotTypedSelectionNamesGrammar(t *testing.T) {
+	inv := pickerFixture()
+	var out strings.Builder
+	rel := newStdinRelay(strings.NewReader("1.11.12.14\n"))
+	pick := showModelPicker(&out, nil, rel, inv)
+	if pick.Picked {
+		t.Fatalf("dot-typed selection must not silently pick, got %+v", pick.Entry)
+	}
+	msg := out.String()
+	if !strings.Contains(msg, "invalid selection") {
+		t.Errorf("dot-typed selection failed without the grammar message:\n%s", msg)
+	}
+	if !strings.Contains(msg, "want a number 1-") {
+		t.Errorf("grammar hint missing:\n%s", msg)
 	}
 }
 
@@ -508,4 +605,73 @@ func TestCmdWrapPickerParityRows(t *testing.T) {
 			t.Errorf("token %q did not survive the picker .cmd argv wrap byte-for-byte:\n got %q", tok, string(data))
 		}
 	}
+}
+
+// Fail-without-fix pin (gate round 4, F-R4-01): when the console path is
+// unavailable (non-console stdin), the picker falls back to the shared relay
+// and the relay IS used - the branch that keeps piped/CI stdin working.
+func TestShowModelPickerConsoleUnavailableFallsBackToRelay(t *testing.T) {
+	inv := pickerFixture()
+	var out strings.Builder
+	rel := newStdinRelay(strings.NewReader("11\n"))
+
+	old := readConsoleLineFn
+	readConsoleLineFn = func(consoleIn *os.File, timeout time.Duration) (string, consoleRead) {
+		return "", consoleUnavailable
+	}
+	defer func() { readConsoleLineFn = old }()
+
+	pick := showModelPicker(&out, os.Stdin, rel, inv)
+	if !pick.Picked || pick.Entry.Number != 11 {
+		t.Fatalf("relay fallback pick = %+v, want entry #11", pick)
+	}
+	if !rel.Used() {
+		t.Fatal("consoleUnavailable must fall back to the relay (non-console stdin)")
+	}
+}
+
+// The [3] prompt has the same fallback and the same console-timeout cancel.
+func TestRunSwarmFromMenuFallbackAndTimeout(t *testing.T) {
+	t.Run("console unavailable falls back to relay", func(t *testing.T) {
+		isolateSwarmTest(t, "http://127.0.0.1:1") // dead stub; the engine must never dial a real provider
+		var out, errw strings.Builder
+		rel := newStdinRelay(strings.NewReader("review this\n"))
+		old := readConsoleLineFn
+		readConsoleLineFn = func(consoleIn *os.File, timeout time.Duration) (string, consoleRead) {
+			return "", consoleUnavailable
+		}
+		defer func() { readConsoleLineFn = old }()
+		_, handled, err := runSwarmFromMenu(os.Stdin, rel, &out, &errw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !handled {
+			t.Fatal("relay fallback must handle the prompt")
+		}
+		if !rel.Used() {
+			t.Fatal("consoleUnavailable must fall back to the relay")
+		}
+	})
+	t.Run("console timeout cancels with message", func(t *testing.T) {
+		var out, errw strings.Builder
+		rel := newStdinRelay(strings.NewReader(""))
+		old := readConsoleLineFn
+		readConsoleLineFn = func(consoleIn *os.File, timeout time.Duration) (string, consoleRead) {
+			return "", consoleTimeout
+		}
+		defer func() { readConsoleLineFn = old }()
+		code, handled, err := runSwarmFromMenu(os.Stdin, rel, &out, &errw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if handled || code != 0 {
+			t.Fatalf("timeout must fall through (handled=%v code=%d)", handled, code)
+		}
+		if rel.Used() {
+			t.Fatal("timeout path must not touch the relay")
+		}
+		if !strings.Contains(errw.String(), "timed out or was too long") {
+			t.Errorf("timeout message missing:\n%s", errw.String())
+		}
+	})
 }

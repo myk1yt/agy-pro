@@ -285,6 +285,7 @@ func runSwarmNonInteractive(in io.Reader, out, errw io.Writer, fv swarmFlagValue
 		Seats:      seats,
 		Root:       root,
 		Prompt:     prompt,
+		PromptFile: fv.promptFile,
 		TimeoutSec: timeout,
 	}
 

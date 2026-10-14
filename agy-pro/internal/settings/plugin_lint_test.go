@@ -57,7 +57,7 @@ func TestPluginAssetLint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read command body: %v", err)
 	}
-	text := string(body)
+	text := normalizeEOL(body)
 	if !strings.HasPrefix(text, "---\n") {
 		t.Error("command body missing frontmatter")
 	}
@@ -67,21 +67,9 @@ func TestPluginAssetLint(t *testing.T) {
 		t.Error("command body lacks the plugin-command honesty label")
 	}
 
-	// F-PLUG: never claim to contain/launch/embed the TUI.
-	tuiClaims := []string{
-		"launches the TUI",
-		"launch the TUI",
-		"opens the full-screen",
-		"open the full-screen",
-		"contains the TUI",
-		"embedded panel",
-		"renders the panel",
-		"native Settings Editor overlay",
-		"shows the Settings Editor",
-	}
 	lower := strings.ToLower(text)
-	for _, c := range tuiClaims {
-		if strings.Contains(lower, strings.ToLower(c)) {
+	for _, c := range tuiClaimPhrases {
+		if strings.Contains(lower, c) {
 			t.Errorf("command body claims TUI capability (%q) — F-PLUG violation", c)
 		}
 	}
@@ -138,6 +126,27 @@ func TestPluginAssetLint(t *testing.T) {
 	}
 }
 
+// normalizeEOL folds CRLF to LF. agy checks tracked *.md out as CRLF
+// (.gitattributes `*.md text` + core.autocrlf=true), so every frontmatter and
+// prefix assertion in this file must compare against the normalized text.
+func normalizeEOL(b []byte) string {
+	return strings.ReplaceAll(string(b), "\r\n", "\n")
+}
+
+// tuiClaimPhrases is the single shared F-PLUG denial list: an agent-consumed
+// plugin command body must never claim to contain, launch, or render a TUI.
+var tuiClaimPhrases = []string{
+	"launches the tui",
+	"launch the tui",
+	"opens the full-screen",
+	"open the full-screen",
+	"contains the tui",
+	"embedded panel",
+	"renders the panel",
+	"native settings editor overlay",
+	"shows the settings editor",
+}
+
 // looksLikePlantedKey is a conservative static check for accidentally pasted
 // credentials in agent-consumed files.
 func looksLikePlantedKey(w string) bool {
@@ -163,7 +172,7 @@ func TestPluginBodyShellSafeInterpolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read command body: %v", err)
 	}
-	text := string(body)
+	text := normalizeEOL(body)
 
 	for _, want := range []string{
 		"Shell-safe interpolation",
@@ -185,5 +194,119 @@ func TestPluginBodyShellSafeInterpolation(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Errorf("command body missing quoted-verb form %q", want)
 		}
+	}
+}
+
+// TestSwarmPluginAssetLint: the agypro_swarm plugin (the in-TUI swarm route)
+// must follow the same contract shape as agypro_settings - metadata-only
+// manifest, plugin-command honesty label, numbered-only selection, U8 masking,
+// shell-safe interpolation - plus the swarm-specific binding rules: the XOR
+// boundary is stated plainly, cost confirmation is mandatory before any paid
+// run, and dry-run comes first.
+func TestSwarmPluginAssetLint(t *testing.T) {
+	root := filepath.Join("..", "..", "..", "plugins", "agypro_swarm")
+
+	manifestPath := filepath.Join(root, "plugin.json")
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("read plugin.json: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatalf("plugin.json invalid JSON: %v", err)
+	}
+	if _, ok := fields["name"]; !ok {
+		t.Error("plugin.json missing required name")
+	}
+	allowed := map[string]bool{
+		"name": true, "description": true, "version": true, "author": true,
+		"license": true, "homepage": true, "repository": true, "keywords": true,
+		"displayName": true,
+	}
+	for k := range fields {
+		if !allowed[k] {
+			t.Errorf("plugin.json has non-metadata field %q (metadata-only schema)", k)
+		}
+	}
+
+	cmdPath := filepath.Join(root, "commands", "swarm.md")
+	body, err := os.ReadFile(cmdPath)
+	if err != nil {
+		t.Fatalf("read command body: %v", err)
+	}
+	text := normalizeEOL(body)
+	if !strings.HasPrefix(text, "---\n") {
+		t.Error("command body missing frontmatter")
+	}
+	if !strings.Contains(text, "plugin slash command") && !strings.Contains(text, "PLUGIN slash command") {
+		t.Error("command body lacks the plugin-command honesty label")
+	}
+	lower := strings.ToLower(text)
+	for _, c := range tuiClaimPhrases {
+		if strings.Contains(lower, c) {
+			t.Errorf("command body claims TUI capability (%q)", c)
+		}
+	}
+
+	// Swarm-specific binding rules.
+	for _, want := range []string{
+		"XOR boundary",
+		"Cost confirmation is mandatory",
+		"Dry-run first by default",
+		"--dry-run",
+		"--prompt-file",
+		"agy pro swarm --template",
+		"agy pro fanout",
+		"agy pro models --all",
+		"summary.json",
+		"reconciliation.md",
+		"run_command",
+		"in your own terminal",
+		"first-5",
+		"never splice a user-supplied string raw",
+		"^[A-Za-z0-9][A-Za-z0-9._/:,-]*$",
+		"untrusted workspace and model output",
+		"agy plugin install",
+		"owner-only",
+		"Delete the temp file",
+		"information only",
+		"NEVER execute or paste",
+		"confined to the current",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("command body missing %q", want)
+		}
+	}
+
+	// Numbered selection is the single choice language.
+	if !strings.Contains(text, "[1]") || !strings.Contains(text, "[0] Exit") {
+		t.Error("command body missing the numbered menu protocol")
+	}
+
+	// No key-shaped literals in the body.
+	for _, w := range strings.FieldsFunc(text, func(r rune) bool {
+		return r == ' ' || r == '\n' || r == '`' || r == '"' || r == '\'' || r == ',' || r == '.'
+	}) {
+		if looksLikePlantedKey(w) {
+			t.Errorf("command body contains a key-shaped literal %q", w)
+		}
+	}
+
+	// The skills/swarm/SKILL.md mirror is what makes the command discoverable
+	// in the slash palette on this agy build; the lint must pin its existence.
+	skillPath := filepath.Join(root, "skills", "swarm", "SKILL.md")
+	skill, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatalf("read SKILL.md mirror: %v", err)
+	}
+	skillText := normalizeEOL(skill)
+	if !strings.Contains(skillText, "name: swarm") {
+		t.Error("SKILL.md frontmatter name must be swarm")
+	}
+	if !strings.Contains(skillText, "commands/swarm.md") {
+		t.Error("SKILL.md must point at the authoritative commands/swarm.md body")
+	}
+	if !strings.Contains(skillText, "plugin") {
+		t.Error("SKILL.md must label the surface as a plugin skill")
 	}
 }

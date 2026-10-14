@@ -393,6 +393,14 @@ agy pro fanout --task review --seats "native:gemini-3.8-flash-high,NW/glm-5.3-fl
 
 생성되는 산출물(`summary.json`, `reconciliation.md`, 좌석별 리포트)은 모두 소유자 전용 권한으로 쓰이고, 키 모양 값이 리포트나 콘솔에 들어가면 앞 5글자 + `****` 로만 표시됩니다(뒤쪽 부분은 절대 노출 안 함).
 
+### agy TUI 안에서 스웜 실행하기 (`/agypro_swarm:swarm`)
+
+스웜은 `agy` 채팅 세션 안에서도 `agypro_swarm` 플러그인 명령으로 실행합니다. agy 의 플러그인 시스템은 플러그인 명령에 네임스페이스를 붙이므로 호출은 `/agypro_swarm:swarm` 입니다(코어 `/swarm` 은 없고, 어디서나 "플러그인 명령"이라고 정직하게 부릅니다). 이 명령은 에이전트가 대신 수행하는 워크플로입니다: 통합 목록(`agy pro models --all`)을 읽고, 번호 메뉴로 템플릿/좌석/도구/타임아웃/작업을 모으고, 확정된 `agy pro swarm --dry-run` 명령을 좌석별 비용 안내와 함께 보여준 뒤 명시적 확인을 받고, 그 다음에 실제 스웜을 돌려 `summary.json`·`reconciliation.md`·좌석별 리포트를 채팅에 요약해 보여줍니다.
+
+명령 본문이 강제하는 비용 규칙: 좌석 하나 = 에이전트 턴 하나. 네이티브 좌석은 Antigravity 구독을, 프로바이더 좌석은 해당 프로바이더 API 크레딧을 씁니다. 드라이런 echo 에 대한 명시적 확인 없이 실제 실행은 없습니다. 작업 프롬프트는 `--prompt-file`(임시 파일)로 전달되고 셸 줄에 raw 로 붙지 않으며, API 키 값은 채팅에서 요구하거나 출력하지 않습니다.
+
+XOR 경계는 그대로이고 명령 본문에 plainly 명시됩니다: 이건 별도 서브프로세스를 돌리는 명령/도구 동작이며, 세션의 `/model` 팝업에 외부 모델을 추가하지 않습니다(네이티브 XOR 브리지, 둘 다 never).
+
 ### 추가되는 기능
 
 | 기능 | 명령 |
@@ -407,6 +415,7 @@ agy pro fanout --task review --seats "native:gemini-3.8-flash-high,NW/glm-5.3-fl
 | 번호로 고르는 스웜 빌더 (네이티브+외부 하이브리드 좌석) | `agy pro swarm`, `agy pro fanout --seats "native:<모델>,<프로바이더>/<모델>"` |
 | 멀티 모델 팬아웃 스웜 | `agy pro fanout -task=security -n=3` |
 | 설정 패널 / 세션 내 설정 | `agy pro settings`(TUI), `/setting_agypro`(플러그인 명령) |
+| 채팅 안에서 스웜 실행 | `/agypro_swarm:swarm`(플러그인 슬래시 명령; 번호 좌석 선택, 드라이런 echo + 비용 확인, 산출물 요약을 채팅에) |
 | 진단 | `agy pro doctor`, `agy pro status`, `agy pro models` |
 
 `agy pro doctor`는 등록된 프로바이더 키를 토큰을 쓰지 않고 업스트림으로 probe(`GET <baseURL>/models`, 5초 타임아웃)하여 프로바이더별 결과를 마스킹해 표시합니다 (`valid` / `invalid` / `indeterminate` / `SKIP`). 키 값은 항상 앞 5글자 + `****` 형태로만 표시됩니다(5글자 이하는 `****`, 뒤쪽 일부를 노출하는 일은 없습니다). `agy pro doctor --fix-keys`는 probe를 `valid`로 통과한 BOM 변형 이름을 정상 이름으로 복원하고(실행 전 백업 생성), `agy pro doctor --rollback-keys <디렉터리>`는 그 복원을 되돌립니다.

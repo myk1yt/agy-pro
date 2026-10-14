@@ -12,3 +12,9 @@ import (
 func readConsoleChoice(consoleIn *os.File, timeout time.Duration) (string, consoleRead) {
 	return "", consoleUnavailable
 }
+
+// readConsoleLine has no raw-console implementation outside Windows. The
+// picker falls back to the shared line source with the same deadline.
+func readConsoleLine(consoleIn *os.File, timeout time.Duration) (string, consoleRead) {
+	return "", consoleUnavailable
+}
