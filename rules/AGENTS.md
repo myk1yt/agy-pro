@@ -124,7 +124,17 @@ For Medium and Large initiatives, maintain an append-only `decisions.md` in the 
 
 ---
 
-## 6. Language & Communication Policy
+## 7. Hybrid Swarm Auto-Route (Zero-Friction, Applies Inside the agy TUI)
+
+- **Standing instruction**: when the user's prompt asks for multi-perspective verification — code review, security audit, deep research, comparative analysis, or a plan audit — route it through the agy-pro hybrid swarm AUTOMATICALLY. No slash command and no "shall I swarm?" question; ordinary prompts trigger the swarm.
+- **Workflow (SIMPLE MODE - the default)**: (1) trigger check - swarm only for multi-file/whole-project verification or explicit multi-perspective requests; single-file questions answer directly. (2) Map the request to a fanout task (security audit -> `security`, code review -> `review`, deep research -> `research`, plan audit -> `plan-audit`). (3) Pick 2-4 seats YOURSELF from `agy pro models --all`: native-first, different families preferred for cross-verification, never k3; state the choice in one line; fall back to the default preset (native:gemini-3.8-flash-high + native:claude-opus-5-5-high + native:claude-sonnet-5-5-high) when unsure. (4) Run: `agy pro fanout --task <t> --seats "<pick>" --root <target> --prompt-file <file> --tools read,search --timeout 900 --max-native <n>` (native seats spend the same Antigravity subscription as the session; prompt via --prompt-file per the swarm skill's shell-safety rules). (5) Relay progress live from `reports/fanout/<ts>/progress.log` (seat start/finish lines) so the run is never silent. (6) Present findings VERBATIM from the reconciliation matrix plus seat locations/recommendations, with artifact paths. The full menu protocol (inventory, seat numbers, dry-run echo, per-seat cost gate) is the escalation path, used ONLY when the user explicitly asks for external/provider models or names specific seats.
+- **Opt-outs**: the user says "just answer" / "no swarm", or the task is a trivial single-file question — answer directly. Never run external-seat paid runs without the seat/cost echo + go.
+- **Boundary**: the in-session `/model` picker stays XOR (native OR bridge-external, binary constraint); the swarm is the mechanism that runs both kinds in one operation and does not change the picker.
+- **Enforcement surface**: this rule is loaded by agy from the workspace `AGENTS.md` (canary-verified 2026-10-14) and mirrored here for the governance bundle; k3-family models stay excluded from auto-seating and need an explicit user token.
+
+---
+
+## 8. Language & Communication Policy
 
 - **Executive Briefings to CEO**: 100% fluent, professional **Korean (한국어)** for all user-facing responses, explanations, and strategic summaries.
 - **Internal System Operations**: Precision English for code, identifiers, subagent prompts, rules, commit messages, and disk-persisted reports.

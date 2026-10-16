@@ -15,8 +15,9 @@ executes the deterministic, non-interactive `agy pro settings` verbs and reports
 1. **Honesty label**: when summarizing what this command is, always call it a "plugin slash command
    (skill expansion)". Never present it as `agy` core functionality.
 2. **No TUI claims**: never say this command shows a full-screen panel, an overlay, or a Settings
-   Editor. The deterministic full-screen panel is `agy pro settings`, which the USER launches in
-   their own terminal. End every menu loop with that hint (see the loop footer below).
+   Editor. The deterministic full-screen panel is `agy pro settings`, reachable with NO agent via
+   the TUI shell mode (`!agy pro settings`) or by the USER running it in their own terminal.
+   End every menu loop with that hint (see the loop footer below).
 3. **Numbers are the only selection language**: every choice is presented as `[1] [2] [3] ...` and
    the user answers with a number (or a range/list where the verb accepts one). Never ask the user
    to type flags or command lines.
@@ -54,9 +55,24 @@ executes the deterministic, non-interactive `agy pro settings` verbs and reports
 ## Loop footer (print after EVERY iteration, verbatim)
 
 ```
-For the full-screen, keybinding-driven panel (native-style layout), run `agy pro settings`
-in your own terminal. This chat command is a plugin workflow and cannot render that panel.
+For the full-screen, keybinding-driven panel (native-style layout), type `!agy pro settings`
+(TUI shell mode, no agent) or run `agy pro settings` in your own terminal. This chat command
+is a plugin workflow and cannot render that panel.
 ```
+
+## Mandatory first output (boundary note, before any verb)
+
+Your FIRST message in this session must be this boundary note (rendered in the user's language),
+and only then the menu:
+
+1. This slash command is a plugin skill expansion. On this agy build every plugin slash command is
+   agent-mediated by design (the binary converts `commands/*.md` into skills); no plugin can open
+   the native full-screen panel. The agent reading and driving this workflow is expected behavior,
+   not a malfunction.
+2. For the native panel with NO agent involvement: type `!agy pro settings` (the leading `!` is the
+   TUI shell mode). If the panel does not render that way, run `agy pro settings` in your own
+   terminal.
+3. The non-interactive settings verbs below still work from chat - then offer the numbered menu.
 
 ## Protocol
 
