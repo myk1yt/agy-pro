@@ -3,6 +3,17 @@
 // It exposes all external models configured in providers.json to native agy
 // through its /models endpoint, and transparently routes /chat/completions
 // requests (both SSE streaming and standard JSON) to the appropriate provider.
+//
+// Scope (design V8 / NATIVE_COEXISTENCE_DESIGN §2 Complements): this gateway
+// path stays XOR and tool-less on agy 1.3.5. XOR means a session is EITHER
+// native Gemini OR this gateway, never both, and it is an escape hatch only,
+// NOT the native-coexistence path (that is the /v1internal mesh in the hybrid
+// profiles). Tool-less means agy's gateway client never sends `tools` and
+// discards response `tool_calls`; the bridge-side tool loop in bridge_tools.go
+// is what re-attaches tools for Gemini-parity actions, and the M4 hardening
+// work only makes that loop more robust (incremental streaming, cross-turn
+// usage, an outbound body cap). None of it widens the gateway into the
+// coexistence surface.
 package bridge
 
 import (
@@ -25,13 +36,9 @@ import (
 	"sync"
 	"time"
 
+	"agypro/internal/openaiup"
 	"agypro/internal/providers"
 )
-
-// maxChatBodyBytes caps the /chat/completions request body (M6): an
-// unbounded io.ReadAll was a self-DoS surface for a runaway or hostile
-// client on the loopback listener.
-const maxChatBodyBytes = 32 << 20 // 32 MB
 
 // GenerateSessionKey returns a fresh local bridge session key: 32 random
 // bytes rendered as hex (64 chars). The same value is the server-side
@@ -65,29 +72,6 @@ func authorize(w http.ResponseWriter, r *http.Request, sessionKey string) bool {
 	}
 	writeJSONError(w, http.StatusUnauthorized, "invalid or missing bridge session key", "authentication_error")
 	return false
-}
-
-// ValidReasoningEfforts enumerates the supported reasoning effort levels.
-var ValidReasoningEfforts = map[string]bool{
-	"default": true,
-	"none":    true,
-	"low":     true,
-	"medium":  true,
-	"high":    true,
-	"xhigh":   true,
-	"max":     true,
-}
-
-// NormalizeReasoningEffort sanitizes reasoning effort strings, defaulting to "default".
-func NormalizeReasoningEffort(effort string) string {
-	cleaned := strings.ToLower(strings.TrimSpace(effort))
-	if cleaned == "" {
-		return "default"
-	}
-	if ValidReasoningEfforts[cleaned] {
-		return cleaned
-	}
-	return "default"
 }
 
 // ModelEntry represents a single model in OpenAI's /models response format.
@@ -176,7 +160,8 @@ func StartBridge(reg *providers.Registry, sessionKey string, toolsCfg BridgeTool
 // Both data routes require the Authorization bearer sessionKey; /health stays
 // open for diagnostics. OPTIONS preflights are answered without auth.
 // toolsCfg configures the bridge-side tool loop (see BridgeToolsConfig); the
-// zero value keeps the byte-identical reverse-proxy behavior.
+// zero value keeps the reverse-proxy path, which forwards the request body
+// verbatim (inbound headers are scrubbed; see handleChatCompletions).
 func NewHandler(reg *providers.Registry, sessionKey string, toolsCfg BridgeToolsConfig) http.Handler {
 	mux := http.NewServeMux()
 
@@ -283,8 +268,9 @@ func handleModels(w http.ResponseWriter, r *http.Request, reg *providers.Registr
 // handleChatCompletions routes the completion request to the corresponding provider.
 // When the bridge-side tool loop engages (toolsCfg active, no `tools` key in the
 // request, tools-capable model, non-empty allow-list) the loop serves the
-// request itself; otherwise the request takes the byte-identical reverse-proxy
-// path below (plan 8b R1-7).
+// request itself; otherwise the request takes the reverse-proxy path below,
+// which forwards the request body verbatim while scrubbing inbound headers and
+// capping the outbound body (plan 8b R1-7; M4 items 4/5).
 func handleChatCompletions(w http.ResponseWriter, r *http.Request, reg *providers.Registry, toolsCfg BridgeToolsConfig, workspaceRoot string) {
 	if r.Method == http.MethodOptions {
 		setCorsHeaders(w)
@@ -298,8 +284,8 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request, reg *provider
 
 	setCorsHeaders(w)
 
-	// M6: cap the request body before reading it (see maxChatBodyBytes).
-	r.Body = http.MaxBytesReader(w, r.Body, maxChatBodyBytes)
+	// M6: cap the request body before reading it (see openaiup.MaxBodyBytes).
+	r.Body = http.MaxBytesReader(w, r.Body, openaiup.MaxBodyBytes)
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "failed to read request body", "invalid_request_error")
@@ -338,14 +324,14 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request, reg *provider
 	var effort string
 	if rawEffort, exists := rawReq["reasoning_effort"]; exists {
 		if s, isStr := rawEffort.(string); isStr {
-			effort = NormalizeReasoningEffort(s)
+			effort = openaiup.NormalizeReasoningEffort(s)
 		} else {
 			effort = "default"
 		}
 	} else if target.Model.Capabilities.SupportsThinking {
 		configuredEffort := target.Model.Capabilities.ReasoningEffort
 		if configuredEffort != "" {
-			effort = NormalizeReasoningEffort(configuredEffort)
+			effort = openaiup.NormalizeReasoningEffort(configuredEffort)
 		} else {
 			effort = "default"
 		}
@@ -359,11 +345,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request, reg *provider
 	// - If effort is "default" or "none", remove reasoning_effort from payload
 	//   so the upstream server applies its native behavior without rejecting unknown "default"/"none" values.
 	// - If effort is "low", "medium", "high", "xhigh", "max" and thinking is supported, retain/set it.
-	if !target.Model.Capabilities.SupportsThinking || effort == "default" || effort == "none" {
-		delete(rawReq, "reasoning_effort")
-	} else {
-		rawReq["reasoning_effort"] = effort
-	}
+	openaiup.ApplyEffort(rawReq, target.Model.Capabilities, effort)
 
 	// Bridge-side tool execution loop seam (plan 8b R1): agy never sends
 	// `tools` and discards response `tool_calls`, so external providers only
@@ -371,12 +353,11 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request, reg *provider
 	// calls, re-feeds results, and synthesizes a text-only reply. Conditions:
 	// loop config active + request has no `tools` key + model SupportsTools +
 	// non-empty bridge-tools allow-list. Any miss falls through to the
-	// byte-identical reverse-proxy path below.
+	// reverse-proxy path below (verbatim request body; inbound headers scrubbed).
 	if loopTools := maybeToolLoopTools(toolsCfg, rawReq, target); loopTools != nil {
 		serveToolLoop(w, r, loopEnv{
 			rawReq:   rawReq,
 			target:   target,
-			apiKey:   apiKey,
 			modelReq: modelReq,
 			tools:    loopTools,
 			root:     workspaceRoot,
@@ -391,6 +372,19 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request, reg *provider
 	forwardBody, err := json.Marshal(rawReq)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("failed to serialize request: %v", err), "internal_error")
+		return
+	}
+
+	// M4 item 4: cap the outbound body before it reaches the provider, the
+	// outbound counterpart to the inbound MaxBytesReader cap applied above. A
+	// body past the cap fails loudly with 413; it is never silently truncated.
+	// This is a backstop, not dead code: json.Marshal HTML-escapes <, > and &,
+	// so a body sitting just under the 32 MB inbound cap can grow up to ~6x on
+	// re-marshal and trip the 413. A normal (small) request is unaffected.
+	if len(forwardBody) > maxOutboundBodyBytes {
+		writeJSONError(w, http.StatusRequestEntityTooLarge,
+			fmt.Sprintf("request body for provider exceeds the %d byte cap", maxOutboundBodyBytes),
+			"invalid_request_error")
 		return
 	}
 
@@ -409,10 +403,15 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request, reg *provider
 			outReq.URL.RawQuery = parsedTarget.RawQuery
 			outReq.Host = parsedTarget.Host
 
+			// The outbound request is a copy of the inbound one, so every
+			// header agy sent would otherwise ride along to the provider:
+			// X-Goog-Api-Key, the agy User-Agent, Accept-Encoding, anything.
+			// Drop them all and set only what this request needs.
+			for name := range outReq.Header {
+				delete(outReq.Header, name)
+			}
 			if apiKey != "" {
 				outReq.Header.Set("Authorization", "Bearer "+apiKey)
-			} else {
-				outReq.Header.Del("Authorization")
 			}
 
 			outReq.Header.Set("Content-Type", "application/json")

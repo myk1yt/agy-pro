@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"agypro/internal/agenttools"
+	"agypro/internal/openaiup"
 	"agypro/internal/providers"
 )
 
@@ -109,6 +111,92 @@ func sseTurn(events ...string) turnFunc {
 		if fl != nil {
 			fl.Flush()
 		}
+	}
+}
+
+// sseTurnUnterminated writes the given SSE events and then closes the stream
+// WITHOUT a terminal signal: no finish_reason chunk and no [DONE] sentinel. It
+// is the complete-but-unterminated shape the G10F-1 gate in openaiup.Call refuses
+// (ErrStreamTruncated), used to pin how the bridge tool loop answers it.
+func sseTurnUnterminated(events ...string) turnFunc {
+	return func(w http.ResponseWriter, body map[string]any) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fl, _ := w.(http.Flusher)
+		for _, ev := range events {
+			fmt.Fprintf(w, "data: %s\n\n", ev)
+			if fl != nil {
+				fl.Flush()
+			}
+		}
+	}
+}
+
+// G10F-1 on the bridge path: the truncation gate lives in the shared
+// openaiup.Call, so the bridge tool loop now also receives ErrStreamTruncated for
+// a stream that carried the whole answer and then closed with neither a
+// finish_reason nor any [DONE] spelling. The loop must NOT present that partial
+// text as a complete answer (a silent fake success): it discards the turn, records
+// the failure, and answers the fixed apology. Before the gate this shape came back
+// as a normal answer, and no bridge test pinned the behavior either way.
+func TestToolLoop_UnterminatedUpstreamStreamAnswersApology(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("AGY_PRO_HOME", home)
+	ws := t.TempDir()
+	t.Setenv(envBridgeWorkspace, ws)
+
+	// A full-looking answer delta, then a clean close with no terminal frame.
+	payload, err := json.Marshal(map[string]any{
+		"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": "half an answer"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := &scriptedUpstream{turns: []turnFunc{sseTurnUnterminated(string(payload))}}
+	upstream := httptest.NewServer(up.handler())
+	defer upstream.Close()
+
+	reg := toolsTestRegistry(t, upstream.URL)
+	server := startToolsBridge(t, reg, BridgeToolsConfig{Enabled: true, Tools: []string{"read"}})
+
+	status, _, raw := postChat(t, server.URL, `{"model":"tool-model","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d; want 200 with the synthesized fallback", status)
+	}
+	content := sseContents(t, raw)
+	if content != toolLoopApology {
+		t.Errorf("content = %q; want the fixed apology (the truncated turn must not be presented as complete)", content)
+	}
+	if strings.Contains(content, "half an answer") {
+		t.Errorf("the partial text of an unterminated stream leaked into the answer: %q", content)
+	}
+	// The loop breaks on the failure: exactly one upstream call, no retry.
+	if got := up.count(); got != 1 {
+		t.Errorf("upstream calls = %d; want 1 (the loop must not retry a truncated stream)", got)
+	}
+
+	// The failure is diagnosable (F-03): the audit log names the truncated turn.
+	logDir := filepath.Join(home, "logs")
+	entries, readErr := os.ReadDir(logDir)
+	if readErr != nil {
+		t.Fatalf("audit log dir missing (F-03 requires an upstream-error record): %v", readErr)
+	}
+	var logText strings.Builder
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "bridge-tools-") && strings.HasSuffix(e.Name(), ".jsonl") {
+			data, err := os.ReadFile(filepath.Join(logDir, e.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			logText.Write(data)
+		}
+	}
+	text := logText.String()
+	if !strings.Contains(text, "upstream_turn") {
+		t.Errorf("audit log missing the upstream_turn record: %s", text)
+	}
+	if !strings.Contains(text, "terminal frame") {
+		t.Errorf("audit log must name the truncation cause: %s", text)
 	}
 }
 
@@ -495,6 +583,67 @@ func TestLoopOff_RequestWithToolsPassthrough(t *testing.T) {
 	}
 }
 
+// FIX-6: the passthrough copies the inbound request, so every header agy sent
+// would otherwise ride along to the provider. Only Content-Type and the
+// Authorization rule may survive.
+func TestLoopOff_StripsInboundHeaders(t *testing.T) {
+	var got http.Header
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, verbatimBody)
+	}))
+	defer upstream.Close()
+
+	reg := toolsTestRegistry(t, upstream.URL)
+	server := startToolsBridge(t, reg, BridgeToolsConfig{})
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/v1/chat/completions",
+		strings.NewReader(`{"model":"tool-model","messages":[{"role":"user","content":"hi"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+testSessionKey)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Goog-Api-Key", "agy-gemini-key-must-not-leak")
+	req.Header.Set("X-Custom-Thing", "must-not-be-forwarded")
+	req.Header.Set("User-Agent", "google-genai-sdk/1.74.0")
+	req.Header.Set("Accept", "text/event-stream")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d; want 200", resp.StatusCode)
+	}
+	if string(raw) != verbatimBody {
+		t.Errorf("response must stay byte-identical, got %q", raw)
+	}
+	if got == nil {
+		t.Fatal("upstream received no request")
+	}
+
+	dump := fmt.Sprintf("%v", got)
+	for _, forbidden := range []string{
+		"X-Goog-Api-Key", "agy-gemini-key-must-not-leak",
+		"X-Custom-Thing", "must-not-be-forwarded",
+		"google-genai-sdk/1.74.0",
+	} {
+		if strings.Contains(dump, forbidden) {
+			t.Errorf("inbound header %q reached the provider: %s", forbidden, dump)
+		}
+	}
+	if got.Get("Authorization") != "Bearer secret-upstream-key-abcdef" {
+		t.Errorf("Authorization = %q; want the provider key, not the bridge session key", got.Get("Authorization"))
+	}
+	if got.Get("Content-Type") != "application/json" {
+		t.Errorf("Content-Type = %q; want application/json", got.Get("Content-Type"))
+	}
+}
+
 // ---------------------------------------------------------------------------
 // R1-2: text + tool_calls in one turn => tool_calls win, loop continues
 // ---------------------------------------------------------------------------
@@ -597,11 +746,11 @@ func TestToolLoop_PanicRecoveryEmitsFallbackText(t *testing.T) {
 		turnHook:   func(turn int) { panic("synthetic loop panic") },
 	}
 	out := lp.run(context.Background())
-	if out == nil || strings.TrimSpace(out.content) == "" {
+	if out == nil || strings.TrimSpace(out.Content()) == "" {
 		t.Fatalf("panic must still produce non-empty text, got %+v", out)
 	}
-	if out.content != toolLoopApology {
-		t.Errorf("panic content = %q; want fixed apology", out.content)
+	if out.Content() != toolLoopApology {
+		t.Errorf("panic content = %q; want fixed apology", out.Content())
 	}
 }
 
@@ -647,8 +796,8 @@ func TestToolLoop_PanicKeepsLastNonEmptyText(t *testing.T) {
 		},
 	}
 	out := lp.run(context.Background())
-	if out.content != "partial text" {
-		t.Errorf("panic fallback content = %q; want last non-empty text %q", out.content, "partial text")
+	if out.Content() != "partial text" {
+		t.Errorf("panic fallback content = %q; want last non-empty text %q", out.Content(), "partial text")
 	}
 }
 
@@ -885,52 +1034,8 @@ func TestToolLoop_UpstreamErrorFallsBackWithoutRawErrorBody(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // F-01: SSE synthesis must cut chunks on rune boundaries, never mid-UTF-8
+// (the chunking itself lives in internal/openaiup and is pinned there)
 // ---------------------------------------------------------------------------
-
-func TestSplitPieces_RuneBoundaries(t *testing.T) {
-	cases := []struct {
-		name string
-		s    string
-		size int
-	}{
-		{"hangul small budget", strings.Repeat("한", 10), 4},
-		{"mixed ascii hangul", strings.Repeat("a가", 1500), 2048},
-		{"emoji 4-byte runes", strings.Repeat("😀", 5), 4},
-		{"empty", "", 4},
-		{"shorter than budget", "abc", 10},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			pieces := splitPieces(tc.s, tc.size)
-			if strings.Join(pieces, "") != tc.s {
-				t.Errorf("reconstruction lost data (input %d bytes)", len(tc.s))
-			}
-			for _, p := range pieces {
-				if !utf8.ValidString(p) {
-					t.Errorf("piece %q is not valid UTF-8", p)
-				}
-				if tc.size > 0 && len(p) > tc.size {
-					t.Errorf("piece length %d exceeds size %d", len(p), tc.size)
-				}
-			}
-		})
-	}
-
-	// The exact F-01 shape: 3-byte runes against a 2048-byte budget.
-	s := strings.Repeat("한글", 700) // 4200 bytes
-	pieces := splitPieces(s, 2048)
-	if len(pieces) < 2 {
-		t.Fatalf("expected multiple pieces, got %d", len(pieces))
-	}
-	if strings.Join(pieces, "") != s {
-		t.Error("2048-budget reconstruction lost data")
-	}
-	for _, p := range pieces {
-		if !utf8.ValidString(p) {
-			t.Errorf("2048-budget piece corrupted: %q", p)
-		}
-	}
-}
 
 func TestToolLoop_KoreanLongStreamNoCorruption(t *testing.T) {
 	ws := t.TempDir()
@@ -1059,6 +1164,96 @@ func TestToolLoop_UpstreamErrorAudited(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// FIX-28: the audit sinks must mask key-shaped registry names. A value
+// misdirected into a provider-name or model-id slot used to render raw in the
+// durable 0600 JSONL and on stderr, because only the error snippet was
+// redacted there.
+// ---------------------------------------------------------------------------
+
+func TestToolLoop_UpstreamErrorAuditMasksKeyShapedNames(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("AGY_PRO_HOME", home)
+	ws := t.TempDir()
+	t.Setenv(envBridgeWorkspace, ws)
+
+	const (
+		provPlant  = "sk-planted-provider-name-0123456789abcdef"
+		modelPlant = "sk-planted-model-id-0123456789abcdef"
+	)
+	t.Setenv("TEST_BRIDGE_TOOLS_KEY", "secret-upstream-key-abcdef")
+
+	up := &scriptedUpstream{turns: []turnFunc{
+		func(w http.ResponseWriter, body map[string]any) {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, `{"error":"boom internal"}`)
+		},
+	}}
+	upstream := httptest.NewServer(up.handler())
+	defer upstream.Close()
+
+	reg := &providers.Registry{Providers: []providers.Provider{{
+		Name:      provPlant,
+		BaseURL:   upstream.URL,
+		APIKeyEnv: "TEST_BRIDGE_TOOLS_KEY",
+		Models: []providers.Model{
+			{ID: modelPlant, Capabilities: providers.Capabilities{SupportsTools: true}},
+		},
+	}}}
+
+	// Capture the log.Printf stderr sink alongside the JSONL sink.
+	var stderr bytes.Buffer
+	log.SetOutput(&stderr)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	server := startToolsBridge(t, reg, BridgeToolsConfig{Enabled: true, Tools: []string{"read"}})
+	status, _, raw := postChat(t, server.URL, `{"model":"`+modelPlant+`","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d; want 200 with synthesized fallback (body %s)", status, raw)
+	}
+	if got := sseContents(t, raw); got != toolLoopApology {
+		t.Errorf("fallback content = %q; want apology", got)
+	}
+
+	logDir := filepath.Join(home, "logs")
+	entries, err := os.ReadDir(logDir)
+	if err != nil {
+		t.Fatalf("audit log dir missing: %v", err)
+	}
+	var logText strings.Builder
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "bridge-tools-") && strings.HasSuffix(e.Name(), ".jsonl") {
+			data, err := os.ReadFile(filepath.Join(logDir, e.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			logText.Write(data)
+		}
+	}
+	jsonl := logText.String()
+	if !strings.Contains(jsonl, "upstream_turn") {
+		t.Fatalf("audit log missing the upstream_turn record: %s", jsonl)
+	}
+	for _, plant := range []string{provPlant, modelPlant} {
+		if strings.Contains(jsonl, plant) {
+			t.Errorf("audit JSONL leaked %q raw:\n%s", plant, jsonl)
+		}
+		if strings.Contains(stderr.String(), plant) {
+			t.Errorf("stderr audit line leaked %q raw:\n%s", plant, stderr.String())
+		}
+	}
+	if !strings.Contains(jsonl, "sk-pl****") {
+		t.Errorf("audit JSONL carries no masked registry name:\n%s", jsonl)
+	}
+	if !strings.Contains(stderr.String(), "sk-pl****") {
+		t.Errorf("stderr audit line carries no masked registry name:\n%s", stderr.String())
+	}
+	// The masked names still identify the failing target.
+	if !strings.Contains(stderr.String(), "tool loop upstream turn 0 failed for") {
+		t.Errorf("stderr audit line lost its shape:\n%s", stderr.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
 // F-04 / security M-1: per-turn tool call cap, per-tool deadline, wall budget
 // ---------------------------------------------------------------------------
 
@@ -1163,8 +1358,8 @@ func TestToolLoop_ToolDeadlineAbortsHungTool(t *testing.T) {
 		},
 	}
 	out := lp.run(context.Background())
-	if out.content != "done" {
-		t.Fatalf("loop content = %q; want done (loop must survive a hung tool)", out.content)
+	if out.Content() != "done" {
+		t.Fatalf("loop content = %q; want done (loop must survive a hung tool)", out.Content())
 	}
 	toolContent := contentOf(up.call(1))
 	if !strings.Contains(toolContent, "deadline") {
@@ -1176,11 +1371,14 @@ func TestToolLoop_ToolDeadlineAbortsHungTool(t *testing.T) {
 }
 
 func TestToolLoop_ToolExecCancelledDuringExecution(t *testing.T) {
-	agg := newTurnAgg()
-	call := &toolCallAgg{id: "call_1", name: "read_file"}
-	call.args.WriteString("{}")
-	agg.calls[0] = call
-	agg.order = []int{0}
+	agg := openaiup.NewTurn()
+	idx := 0
+	agg.MergeToolCall(&openaiup.ToolCall{
+		Index:    &idx,
+		ID:       "call_1",
+		Type:     "function",
+		Function: openaiup.ToolCallFunction{Name: "read_file", Arguments: "{}"},
+	})
 
 	lp := &toolLoop{
 		tools:      &bridgeToolSet{},
@@ -1250,6 +1448,133 @@ func TestFilterToolDefs_FailClosedUnknownTool(t *testing.T) {
 	// read-only allow-list keeps only the read token tools.
 	tsRead := filterToolDefs(defs, map[string]bool{"read": true})
 	if strings.Join(tsRead.names, ",") != "read_file" {
-		t.Errorf("read-only names = %q; want read_file", tsRead.names)
+		t.Errorf("read-only names = %q; want read_file", strings.Join(tsRead.names, ","))
+	}
+}
+
+// FIX-13: serveToolLoop's nil-redact fallback must mask, not pass through. The
+// re-injected tool message is the sink, and a loop invoked without a redactor
+// used to write the raw tool output upstream.
+func TestServeToolLoop_NilRedactMasksToolOutput(t *testing.T) {
+	ws := t.TempDir()
+	const planted = "AIzaSyDELmE1f2g3h4i5j6k7l8m9n0o1p2q3r4s"
+	if err := os.WriteFile(filepath.Join(ws, "secret.txt"), []byte("leak "+planted), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(envBridgeWorkspace, ws)
+
+	up := &scriptedUpstream{turns: []turnFunc{
+		sseTurn(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_s","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"secret.txt\"}"}}]}}]}`),
+		sseTurn(`{"choices":[{"index":0,"delta":{"content":"ok"}}]}`),
+	}}
+	upstream := httptest.NewServer(up.handler())
+	defer upstream.Close()
+
+	reg := toolsTestRegistry(t, upstream.URL)
+	tools, err := resolveBridgeTools([]string{"read"})
+	if err != nil || tools == nil {
+		t.Fatalf("resolveBridgeTools: %v %v", tools, err)
+	}
+	target, err := findBestTarget(reg, "tool-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"tool-model","stream":true,"messages":[{"role":"user","content":"read"}]}`))
+	serveToolLoop(rec, req, loopEnv{
+		rawReq:   map[string]any{"stream": true, "model": "tool-model", "messages": []any{map[string]any{"role": "user", "content": "read"}}},
+		target:   target,
+		modelReq: "tool-model",
+		tools:    tools,
+		root:     ws,
+		redact:   nil, // the FIX-13 path
+	})
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	toolContent := contentOf(up.call(1))
+	if toolContent == "" {
+		t.Fatal("no role:tool message re-injected")
+	}
+	if strings.Contains(toolContent, planted) {
+		t.Errorf("nil redactor re-injected the credential raw: %q", toolContent)
+	}
+	if !strings.Contains(toolContent, "[REDACTED]") {
+		t.Errorf("tool output should show the redaction marker: %q", toolContent)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// openaiup.Call seam: the loop still authenticates upstream exactly as before
+// the transport moved into internal/openaiup
+// ---------------------------------------------------------------------------
+
+// jsonOKTurn answers one non-streaming turn so the loop finishes immediately.
+func jsonOKTurn(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, `{"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+}
+
+func TestToolLoop_SendsBearerKeyUpstream(t *testing.T) {
+	ws := t.TempDir()
+	t.Setenv(envBridgeWorkspace, ws)
+
+	var gotAuth string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		jsonOKTurn(w)
+	}))
+	defer upstream.Close()
+
+	reg := toolsTestRegistry(t, upstream.URL)
+	server := startToolsBridge(t, reg, BridgeToolsConfig{Enabled: true, Tools: []string{"read"}})
+
+	status, _, _ := postChat(t, server.URL, `{"model":"tool-model","messages":[{"role":"user","content":"hi"}]}`)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d; want 200", status)
+	}
+	if gotAuth != "Bearer secret-upstream-key-abcdef" {
+		t.Errorf("upstream Authorization = %q; want the provider key as a bearer token", gotAuth)
+	}
+}
+
+// A provider that declares no key variable must not send an Authorization
+// header at all (never a bare "Bearer ").
+func TestToolLoop_OmitsAuthorizationWhenKeyEmpty(t *testing.T) {
+	ws := t.TempDir()
+	t.Setenv(envBridgeWorkspace, ws)
+
+	var gotAuth string
+	sawHeader := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, sawHeader = r.Header["Authorization"]
+		gotAuth = r.Header.Get("Authorization")
+		jsonOKTurn(w)
+	}))
+	defer upstream.Close()
+
+	reg := &providers.Registry{
+		Providers: []providers.Provider{
+			{
+				Name:    "tool-prov",
+				BaseURL: upstream.URL,
+				Models: []providers.Model{
+					{ID: "tool-model", Capabilities: providers.Capabilities{SupportsTools: true}},
+				},
+			},
+		},
+	}
+	server := startToolsBridge(t, reg, BridgeToolsConfig{Enabled: true, Tools: []string{"read"}})
+
+	status, _, _ := postChat(t, server.URL, `{"model":"tool-model","messages":[{"role":"user","content":"hi"}]}`)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d; want 200", status)
+	}
+	if sawHeader {
+		t.Errorf("upstream Authorization = %q; want the header absent when the provider declares no key", gotAuth)
 	}
 }

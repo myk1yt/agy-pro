@@ -1,11 +1,7 @@
 package bridge
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,9 +12,9 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"agypro/internal/agenttools"
+	"agypro/internal/openaiup"
 	"agypro/internal/providers"
 )
 
@@ -48,6 +44,18 @@ const (
 	// no longer fan out unbounded local work. Calls beyond the cap get a
 	// failure tool result instead of execution.
 	toolLoopMaxToolCallsPerTurn = 16
+
+	// maxOutboundBodyBytes caps the request body the bridge builds for the
+	// provider (M4 item 4). It is the outbound counterpart to the inbound
+	// openaiup.MaxBodyBytes cap the bridge applies before reading the request
+	// (bridge.go), and it matches that 32 MB value so a clean, well-formed
+	// request is never affected. A tool loop grows the message history on every
+	// turn, so a pathological or prompt-injected conversation could otherwise
+	// forward an ever-larger body and blast the provider (or exhaust memory).
+	// A body past the cap fails loudly with a clear error; it is never silently
+	// truncated. Enforced on both outbound paths: the reverse proxy
+	// (handleChatCompletions) and every upstream turn (upstreamTurn).
+	maxOutboundBodyBytes = openaiup.MaxBodyBytes
 )
 
 // toolLoopApology is the fixed fallback answer used when the loop ends without
@@ -234,178 +242,10 @@ func cloneMessages(raw any) []any {
 	return out
 }
 
-// wireToolCall is one OpenAI tool_call as it appears in stream deltas and in
-// non-streaming messages; `index` is optional and drives the delta merge.
-type wireToolCall struct {
-	Index    *int   `json:"index"`
-	ID       string `json:"id"`
-	Type     string `json:"type"`
-	Function struct {
-		Name      string `json:"name"`
-		Arguments string `json:"arguments"`
-	} `json:"function"`
-}
-
-// wireMessage covers both stream `delta` and non-stream `message` shapes.
-type wireMessage struct {
-	Role             string         `json:"role"`
-	Content          *string        `json:"content"`
-	ReasoningContent *string        `json:"reasoning_content"`
-	ToolCalls        []wireToolCall `json:"tool_calls"`
-}
-
-type wireChoice struct {
-	Index        int         `json:"index"`
-	Delta        wireMessage `json:"delta"`
-	Message      wireMessage `json:"message"`
-	FinishReason *string     `json:"finish_reason"`
-}
-
-type wireChunk struct {
-	ID      string         `json:"id"`
-	Object  string         `json:"object"`
-	Model   string         `json:"model"`
-	Choices []wireChoice   `json:"choices"`
-	Usage   map[string]any `json:"usage"`
-}
-
-// toolCallAgg accumulates one tool call across index-aware deltas (R1-2:
-// arguments routinely arrive split over several chunks).
-type toolCallAgg struct {
-	id   string
-	typ  string
-	name string
-	args strings.Builder
-}
-
-// turnAgg is the aggregated result of one upstream turn.
-type turnAgg struct {
-	content   string
-	reasoning string
-	calls     map[int]*toolCallAgg
-	order     []int
-	usage     map[string]any
-}
-
-func newTurnAgg() *turnAgg {
-	return &turnAgg{calls: map[int]*toolCallAgg{}}
-}
-
-func (a *turnAgg) mergeChunk(c *wireChunk) {
-	if c.Usage != nil {
-		a.usage = c.Usage
-	}
-	for i := range c.Choices {
-		a.mergeMessage(&c.Choices[i].Delta)
-		a.mergeMessage(&c.Choices[i].Message)
-	}
-}
-
-func (a *turnAgg) mergeMessage(m *wireMessage) {
-	if m == nil {
-		return
-	}
-	if m.Content != nil {
-		a.content += *m.Content
-	}
-	if m.ReasoningContent != nil {
-		a.reasoning += *m.ReasoningContent
-	}
-	for i := range m.ToolCalls {
-		a.mergeToolCall(&m.ToolCalls[i])
-	}
-}
-
-func (a *turnAgg) mergeToolCall(tc *wireToolCall) {
-	var slot *toolCallAgg
-	if tc.Index != nil {
-		slot = a.calls[*tc.Index]
-	} else if tc.ID == "" && tc.Function.Name == "" && tc.Function.Arguments != "" && len(a.order) > 0 {
-		// Continuation chunk that omitted index: append to the newest call.
-		slot = a.calls[a.order[len(a.order)-1]]
-	}
-	if slot == nil {
-		idx := len(a.order)
-		if tc.Index != nil {
-			idx = *tc.Index
-		}
-		for {
-			if _, exists := a.calls[idx]; !exists {
-				break
-			}
-			idx++
-		}
-		slot = &toolCallAgg{}
-		a.calls[idx] = slot
-		a.order = append(a.order, idx)
-	}
-	if tc.ID != "" {
-		slot.id = tc.ID
-	}
-	if tc.Type != "" {
-		slot.typ = tc.Type
-	}
-	if tc.Function.Name != "" {
-		slot.name = tc.Function.Name
-	}
-	if tc.Function.Arguments != "" {
-		slot.args.WriteString(tc.Function.Arguments)
-	}
-}
-
-// callID returns the wire id of the i-th aggregated call, synthesizing a stable
-// fallback when the upstream omitted it (assistant and tool messages must agree).
-func (a *turnAgg) callID(i int) string {
-	if i >= 0 && i < len(a.order) {
-		if call := a.calls[a.order[i]]; call != nil && call.id != "" {
-			return call.id
-		}
-	}
-	return fmt.Sprintf("call_%d", i)
-}
-
-func (a *turnAgg) mergeSSE(r io.Reader) error {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 16<<20)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, ":") {
-			continue
-		}
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if data == "[DONE]" {
-			break
-		}
-		var chunk wireChunk
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			continue
-		}
-		a.mergeChunk(&chunk)
-	}
-	return sc.Err()
-}
-
-func (a *turnAgg) mergeJSON(r io.Reader) error {
-	raw, err := io.ReadAll(io.LimitReader(r, maxChatBodyBytes))
-	if err != nil {
-		return fmt.Errorf("failed to read upstream response: %w", err)
-	}
-	var chunk wireChunk
-	if err := json.Unmarshal(raw, &chunk); err != nil {
-		return fmt.Errorf("failed to parse upstream response: %w", err)
-	}
-	a.mergeChunk(&chunk)
-	return nil
-}
-
 // toolLoop runs the aggregate-then-synthesize loop for one request. All state is
 // request-local; nothing is shared between requests (plan 8b R1-3).
 type toolLoop struct {
 	target        providers.Target
-	apiKey        string
 	reqBody       map[string]any // request fields preserved verbatim (stream/stream_options/max_completion_tokens/...)
 	messages      []any
 	tools         *bridgeToolSet
@@ -430,17 +270,32 @@ type toolLoop struct {
 	turnHook func(turn int)
 	// execOverride is a test seam replacing tool dispatch; nil in production.
 	execOverride func(name, argsJSON string) string
+
+	// observe, when non-nil, receives every upstream turn as it completes so a
+	// streaming caller can flush SSE to the client incrementally instead of
+	// buffering the whole loop (M4 item 1). reasoning is this turn's own
+	// reasoning trace (earlier turns were already observed); content and usage
+	// are meaningful only when terminal is true, i.e. the final, tool-call-free
+	// answer, whose usage is the cross-turn cumulative sum (M4 item 2). The
+	// production non-streaming path leaves it nil, so run's return value stays
+	// the single source of truth there.
+	observe func(reasoning, content string, usage map[string]any, terminal bool)
 }
 
 // run executes the loop and ALWAYS returns a turn with non-empty content
 // (R1-8): final text when upstream produced one, else the last non-empty text
 // seen, else the fixed apology. Panic recovery lives here too.
-func (lp *toolLoop) run(ctx context.Context) (out *turnAgg) {
+func (lp *toolLoop) run(ctx context.Context) (out *openaiup.Turn) {
 	var lastText string
 	var reasoningLog strings.Builder
+	// usageTurns collects every turn's usage block so the surfaced usage is the
+	// cross-turn cumulative sum (main turn + tool turns), not just the final
+	// turn's (M4 item 2).
+	var usageTurns []map[string]any
 	defer func() {
 		if rec := recover(); rec != nil {
 			out = lp.fallbackTurn(lastText, reasoningLog.String())
+			out.Usage = sumUsage(usageTurns)
 		}
 	}()
 
@@ -472,27 +327,46 @@ func (lp *toolLoop) run(ctx context.Context) (out *turnAgg) {
 			lp.logUpstreamError(turn, err)
 			break
 		}
-		if agg.content != "" {
-			lastText = agg.content
+		if agg.Content() != "" {
+			lastText = agg.Content()
 		}
-		reasoningLog.WriteString(agg.reasoning)
+		reasoningLog.WriteString(agg.Reasoning())
+		usageTurns = append(usageTurns, agg.Usage)
 
-		if len(agg.order) == 0 {
-			// Final answer turn. text+tool_calls in one turn is impossible here
-			// because tool_calls always win (checked above).
-			if strings.TrimSpace(agg.content) == "" {
-				return lp.fallbackTurn(lastText, reasoningLog.String())
+		// A turn with no tool calls and non-empty content is the final answer.
+		// text+tool_calls in one turn is impossible here because tool_calls
+		// always win (a turn carrying tool_calls is never terminal).
+		if len(agg.OrderedCalls()) == 0 && strings.TrimSpace(agg.Content()) != "" {
+			agg.Usage = sumUsage(usageTurns)
+			if lp.observe != nil {
+				// Stream this turn's own reasoning (earlier turns already
+				// streamed theirs) then the answer, and close the SSE framing.
+				lp.observe(agg.Reasoning(), agg.Content(), agg.Usage, true)
 			}
 			// Preserve the full reasoning trace across tool turns (R1-2).
-			agg.reasoning = reasoningLog.String()
+			agg.SetReasoning(reasoningLog.String())
 			return agg
+		}
+
+		// Not the final answer: stream this turn's reasoning so a streaming
+		// client sees progress during the tool loop instead of blocking until
+		// the whole loop finishes (M4 item 1). Any content in a tool turn is
+		// discarded from the client stream (tool_calls win, R1-2) and is only
+		// re-injected as the assistant message below.
+		if lp.observe != nil {
+			lp.observe(agg.Reasoning(), "", nil, false)
+		}
+		if len(agg.OrderedCalls()) == 0 {
+			// A tool-call-free turn with empty content is not an answer: fall
+			// through to the fallback below (R1-8).
+			break
 		}
 
 		// Tool calls: execute, re-feed, continue (tool_calls outrank any text
 		// produced in the same turn - R1-2).
 		assistant := map[string]any{
 			"role":       "assistant",
-			"content":    contentOrNil(agg.content),
+			"content":    contentOrNil(agg.Content()),
 			"tool_calls": toolCallsPayload(agg),
 		}
 		messages = append(messages, assistant)
@@ -503,20 +377,101 @@ func (lp *toolLoop) run(ctx context.Context) (out *turnAgg) {
 		cancelTools()
 	}
 
-	return lp.fallbackTurn(lastText, reasoningLog.String())
+	out = lp.fallbackTurn(lastText, reasoningLog.String())
+	out.Usage = sumUsage(usageTurns)
+	return out
 }
 
-func (lp *toolLoop) fallbackTurn(lastText, lastReasoning string) *turnAgg {
-	out := &turnAgg{content: lastText, reasoning: lastReasoning}
-	if strings.TrimSpace(out.content) == "" {
-		out.content = toolLoopApology
+func (lp *toolLoop) fallbackTurn(lastText, lastReasoning string) *openaiup.Turn {
+	out := openaiup.NewTurn()
+	out.SetContent(lastText)
+	out.SetReasoning(lastReasoning)
+	if strings.TrimSpace(out.Content()) == "" {
+		out.SetContent(toolLoopApology)
 	}
 	return out
 }
 
+// sumUsage aggregates token usage across every turn of a bridged request (the
+// main turn plus every tool turn) so the usage surfaced to agy reflects the
+// whole tool-augmented generation, not just the final turn (M4 item 2).
+// prompt_tokens, completion_tokens and total_tokens are summed across turns;
+// the last turn's remaining keys (prompt_tokens_details, ...) are kept as the
+// base so the per-turn usage shape is preserved rather than broken. Returns
+// nil when no turn reported a usage block, matching the prior behavior for a
+// provider that sends none.
+func sumUsage(turns []map[string]any) map[string]any {
+	var base map[string]any
+	var prompt, completion, total float64
+	var sawPrompt, sawCompletion, sawTotal bool
+	for _, m := range turns {
+		if m == nil {
+			continue
+		}
+		base = m
+		if v, ok := usageNum(m, "prompt_tokens"); ok {
+			prompt += v
+			sawPrompt = true
+		}
+		if v, ok := usageNum(m, "completion_tokens"); ok {
+			completion += v
+			sawCompletion = true
+		}
+		if v, ok := usageNum(m, "total_tokens"); ok {
+			total += v
+			sawTotal = true
+		}
+	}
+	if base == nil {
+		return nil
+	}
+	out := make(map[string]any, len(base))
+	for k, v := range base {
+		out[k] = v
+	}
+	if sawPrompt {
+		out["prompt_tokens"] = prompt
+	}
+	if sawCompletion {
+		out["completion_tokens"] = completion
+	}
+	if sawTotal {
+		out["total_tokens"] = total
+	}
+	return out
+}
+
+// usageNum reads a token-count field from a usage block. A JSON-decoded usage
+// block carries float64; json.Number, int and int64 are accepted too so a
+// caller that builds a usage block directly (a test, a future non-JSON path)
+// still sums correctly.
+func usageNum(m map[string]any, key string) (float64, bool) {
+	v, ok := m[key]
+	if !ok {
+		return 0, false
+	}
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case json.Number:
+		f, err := n.Float64()
+		return f, err == nil
+	default:
+		return 0, false
+	}
+}
+
 // upstreamTurn performs one raw HTTP call to the provider. The request keeps
-// every original body field; only model/messages/tools are set per turn.
-func (lp *toolLoop) upstreamTurn(ctx context.Context, messages []any) (*turnAgg, error) {
+// every original body field; only model/messages/tools are set per turn. The
+// transport itself lives in openaiup.Call so the bridge and the geminiwire
+// adapter share one implementation.
+func (lp *toolLoop) upstreamTurn(ctx context.Context, messages []any) (*openaiup.Turn, error) {
 	body := make(map[string]any, len(lp.reqBody)+3)
 	for k, v := range lp.reqBody {
 		body[k] = v
@@ -529,38 +484,14 @@ func (lp *toolLoop) upstreamTurn(ctx context.Context, messages []any) (*turnAgg,
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize upstream request: %w", err)
 	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, lp.target.Provider.Endpoint(), bytes.NewReader(payload))
-	if err != nil {
-		return nil, err
+	// M4 item 4: the loop grows the message history on every turn, so cap the
+	// outbound body before it reaches the provider. An over-cap body fails
+	// loudly (this error is logged by logUpstreamError and the loop falls back
+	// to text); it is never silently truncated.
+	if len(payload) > maxOutboundBodyBytes {
+		return nil, fmt.Errorf("outbound request body is %d bytes, over the %d byte cap", len(payload), maxOutboundBodyBytes)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	if lp.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+lp.apiKey)
-	}
-
-	resp, err := lp.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("upstream request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return nil, fmt.Errorf("upstream returned status %d: %s", resp.StatusCode, lp.redact(string(snippet)))
-	}
-
-	agg := newTurnAgg()
-	if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
-		if err := agg.mergeSSE(resp.Body); err != nil {
-			return nil, err
-		}
-	} else {
-		if err := agg.mergeJSON(resp.Body); err != nil {
-			return nil, err
-		}
-	}
-	return agg, nil
+	return openaiup.Call(ctx, lp.client, lp.target, payload, lp.redact)
 }
 
 // auditLogger lazily builds the redacting JSONL audit logger shared by tool
@@ -582,19 +513,23 @@ func (lp *toolLoop) auditLogger() *agenttools.Logger {
 // logUpstreamError records a failed upstream turn in the audit log and on
 // stderr (F-03). The error string already carries only a redacted snippet of
 // the upstream body; the logger redacts again, so the raw body never lands in
-// either sink.
+// either sink. The provider and model names go through MaskOperand at both
+// sinks: a key-shaped value misdirected into a registry slot must not render
+// raw in the durable JSONL or on stderr.
 func (lp *toolLoop) logUpstreamError(turn int, err error) {
 	if err == nil {
 		return
 	}
 	msg := lp.redact(err.Error())
+	provName := providers.MaskOperand(lp.target.Provider.Name)
+	modelID := providers.MaskOperand(lp.target.Model.ID)
 	log.Printf("[bridge] tool loop upstream turn %d failed for %s/%s: %s",
-		turn, lp.target.Provider.Name, lp.target.Model.ID, msg)
+		turn, provName, modelID, msg)
 	if lg := lp.auditLogger(); lg != nil {
 		_ = lg.Log(agenttools.LogEntry{
 			SeatID:    0,
-			Model:     lp.target.Model.ID,
-			Provider:  lp.target.Provider.Name,
+			Model:     modelID,
+			Provider:  provName,
 			Tool:      "upstream_turn",
 			Arguments: fmt.Sprintf(`{"turn":%d}`, turn),
 			Error:     msg,
@@ -619,14 +554,11 @@ func (lp *toolLoop) toolRunner() *agenttools.ToolRunner {
 // calls beyond the per-turn cap fail without executing (security M-1). Every
 // aggregated call still gets a tool message so the assistant/tool pairing in
 // the re-fed history stays protocol-complete.
-func (lp *toolLoop) executeTools(ctx context.Context, agg *turnAgg) []any {
-	out := make([]any, 0, len(agg.order))
-	for i, idx := range agg.order {
-		call := agg.calls[idx]
-		if call == nil {
-			continue
-		}
-		name := call.name
+func (lp *toolLoop) executeTools(ctx context.Context, agg *openaiup.Turn) []any {
+	calls := agg.OrderedCalls()
+	out := make([]any, 0, len(calls))
+	for i, call := range calls {
+		name := call.Name
 		if name == "" {
 			name = "unknown"
 		}
@@ -637,11 +569,11 @@ func (lp *toolLoop) executeTools(ctx context.Context, agg *turnAgg) []any {
 		case ctx.Err() != nil:
 			content = "Error: tool loop cancelled before execution"
 		default:
-			content = lp.executeOne(ctx, name, call.args.String())
+			content = lp.executeOne(ctx, name, call.Args)
 		}
 		out = append(out, map[string]any{
 			"role":         "tool",
-			"tool_call_id": agg.callID(i),
+			"tool_call_id": agg.CallID(i),
 			"name":         name,
 			"content":      lp.redact(content),
 		})
@@ -681,23 +613,20 @@ func (lp *toolLoop) executeOne(ctx context.Context, name, argsJSON string) strin
 	}
 }
 
-func toolCallsPayload(agg *turnAgg) []map[string]any {
-	list := make([]map[string]any, 0, len(agg.order))
-	for i, idx := range agg.order {
-		call := agg.calls[idx]
-		if call == nil {
-			continue
-		}
-		typ := call.typ
+func toolCallsPayload(agg *openaiup.Turn) []map[string]any {
+	calls := agg.OrderedCalls()
+	list := make([]map[string]any, 0, len(calls))
+	for i, call := range calls {
+		typ := call.Type
 		if typ == "" {
 			typ = "function"
 		}
 		list = append(list, map[string]any{
-			"id":   agg.callID(i),
+			"id":   agg.CallID(i),
 			"type": typ,
 			"function": map[string]any{
-				"name":      call.name,
-				"arguments": call.args.String(),
+				"name":      call.Name,
+				"arguments": call.Args,
 			},
 		})
 	}
@@ -711,56 +640,10 @@ func contentOrNil(s string) any {
 	return s
 }
 
-func newCompletionID() string {
-	buf := make([]byte, 12)
-	if _, err := rand.Read(buf); err != nil {
-		return fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
-	}
-	return "chatcmpl-" + hex.EncodeToString(buf)
-}
-
-// splitPieces splits s into pieces of at most size bytes, cutting only at UTF-8
-// rune boundaries (F-01): byte-level slicing would split multi-byte runes
-// (Korean/CJK/emoji) and json.Marshal would then coerce each half to U+FFFD in
-// the synthesized SSE deltas.
-func splitPieces(s string, size int) []string {
-	if s == "" {
-		return nil
-	}
-	if size <= 0 || len(s) <= size {
-		return []string{s}
-	}
-	var out []string
-	for len(s) > size {
-		cut := size
-		for cut > 0 && !utf8.RuneStart(s[cut]) {
-			cut--
-		}
-		if cut == 0 {
-			// Defensive: a rune larger than the piece size still gets a
-			// whole-rune piece instead of a corrupted fragment.
-			_, n := utf8.DecodeRuneInString(s)
-			if n <= 0 {
-				n = 1
-			}
-			out = append(out, s[:n])
-			s = s[n:]
-			continue
-		}
-		out = append(out, s[:cut])
-		s = s[cut:]
-	}
-	if s != "" {
-		out = append(out, s)
-	}
-	return out
-}
-
 // loopEnv carries everything serveToolLoop needs from handleChatCompletions.
 type loopEnv struct {
 	rawReq   map[string]any
 	target   providers.Target
-	apiKey   string
 	modelReq string
 	tools    *bridgeToolSet
 	root     string
@@ -773,6 +656,12 @@ type loopEnv struct {
 // a chat.completion.chunk SSE stream for stream:true, a single chat.completion
 // JSON body otherwise (R1-1). Every exit path ends with non-empty text +
 // finish_reason "stop" + [DONE] (R1-8).
+//
+// The gateway path is XOR and tool-less on agy 1.3.5 (design V8): agy's gateway
+// client never sends `tools` and discards response `tool_calls`, so this loop
+// is the escape hatch that re-attaches tools, runs them locally, and
+// synthesizes a text-only reply. It is NOT the native-coexistence path (that is
+// the mesh); it hardens the existing escape hatch, it does not widen it.
 func serveToolLoop(w http.ResponseWriter, r *http.Request, env loopEnv) {
 	stream := false
 	if s, ok := env.rawReq["stream"].(bool); ok {
@@ -781,7 +670,10 @@ func serveToolLoop(w http.ResponseWriter, r *http.Request, env loopEnv) {
 
 	redact := env.redact
 	if redact == nil {
-		redact = func(s string) string { return s }
+		// Fail closed: tool outputs and upstream error text are the two places
+		// uncontrolled text reaches a sink, so a missing redactor still masks
+		// the generic credential shapes.
+		redact = providers.NewRedactor()
 	}
 
 	reqBody := make(map[string]any, len(env.rawReq))
@@ -793,7 +685,6 @@ func serveToolLoop(w http.ResponseWriter, r *http.Request, env loopEnv) {
 
 	lp := &toolLoop{
 		target:        env.target,
-		apiKey:        env.apiKey,
 		reqBody:       reqBody,
 		messages:      injectToolInstructions(cloneMessages(env.rawReq["messages"]), toolProtocolInstructions(env.tools.defs)),
 		tools:         env.tools,
@@ -806,122 +697,152 @@ func serveToolLoop(w http.ResponseWriter, r *http.Request, env loopEnv) {
 		turnHook:      env.turnHook,
 	}
 
-	id := newCompletionID()
+	id := openaiup.NewCompletionID()
 	created := time.Now().Unix()
 
-	// Build every response byte before touching the writer, so a panic during
-	// synthesis still leaves room for the R1-8 fallback response.
-	var sseEvents []string
-	var jsonBody []byte
-	responded := false
-
-	defer func() {
-		if rec := recover(); rec != nil && !responded {
-			writeFallbackResponse(w, stream, env.modelReq, id, created)
-		}
-	}()
-
-	out := lp.run(r.Context())
-	if stream {
-		sseEvents = buildSSEEvents(env.modelReq, id, created, out)
-	} else {
-		var err error
-		jsonBody, err = json.Marshal(buildCompletion(env.modelReq, id, created, out))
+	if !stream {
+		// Non-streaming: aggregate the whole loop, then emit one JSON body.
+		// Built before the writer is touched so a panic during synthesis still
+		// leaves room for the R1-8 fallback body.
+		var jsonBody []byte
+		responded := false
+		defer func() {
+			if rec := recover(); rec != nil && !responded {
+				writeFallbackJSON(w, env.modelReq, id, created)
+			}
+		}()
+		out := lp.run(r.Context())
+		jsonBody, err := json.Marshal(buildCompletion(env.modelReq, id, created, out))
 		if err != nil {
 			jsonBody = nil
 		}
-	}
-
-	responded = true
-	if stream {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
-		w.WriteHeader(http.StatusOK)
-		flusher, _ := w.(http.Flusher)
-		for _, ev := range sseEvents {
-			_, _ = io.WriteString(w, ev)
-			if flusher != nil {
-				flusher.Flush()
-			}
+		responded = true
+		if jsonBody == nil {
+			out = lp.fallbackTurn(out.Content(), out.Reasoning())
+			jsonBody, _ = json.Marshal(buildCompletion(env.modelReq, id, created, out))
 		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(jsonBody)
 		return
 	}
 
-	if jsonBody == nil {
-		out = lp.fallbackTurn(out.content, out.reasoning)
-		jsonBody, _ = json.Marshal(buildCompletion(env.modelReq, id, created, out))
+	// Streaming (M4 item 1): open the SSE stream immediately, then flush each
+	// turn's reasoning as the loop completes it and the final answer when the
+	// loop reaches it, so a long tool-augmented generation streams incrementally
+	// instead of blocking until the whole loop finishes (the non-tool reverse
+	// proxy streams the same way, via FlushInterval: -1). Every path still ends
+	// with non-empty text + finish_reason "stop" + [DONE] (R1-8).
+	flusher, _ := w.(http.Flusher)
+	sw := &sseStream{w: w, flusher: flusher, id: id, created: created, model: env.modelReq}
+	sw.open()
+
+	finished := false
+	lp.observe = func(reasoning, content string, usage map[string]any, terminal bool) {
+		for _, piece := range openaiup.SplitPieces(reasoning, 2048) {
+			sw.delta(map[string]any{"reasoning_content": piece}, nil, nil)
+		}
+		if !terminal {
+			return
+		}
+		for _, piece := range openaiup.SplitPieces(content, 2048) {
+			sw.delta(map[string]any{"content": piece}, nil, nil)
+		}
+		sw.delta(map[string]any{}, "stop", usage)
+		sw.done()
+		finished = true
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(jsonBody)
+
+	out := lp.run(r.Context())
+	if !finished {
+		// The loop ended without a final-answer turn (iteration exhaustion,
+		// timeout, upstream error, or a panic the loop recovered from): the
+		// per-turn reasoning already streamed, so emit only the fallback text to
+		// close the R1-8 framing. The cross-turn cumulative usage rides on the
+		// last chunk.
+		for _, piece := range openaiup.SplitPieces(out.Content(), 2048) {
+			sw.delta(map[string]any{"content": piece}, nil, nil)
+		}
+		sw.delta(map[string]any{}, "stop", out.Usage)
+		sw.done()
+	}
 }
 
-// writeFallbackResponse is the panic path: still a complete non-empty answer.
-func writeFallbackResponse(w http.ResponseWriter, stream bool, modelReq, id string, created int64) {
-	out := &turnAgg{content: toolLoopApology}
-	if stream {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.WriteHeader(http.StatusOK)
-		flusher, _ := w.(http.Flusher)
-		for _, ev := range buildSSEEvents(modelReq, id, created, out) {
-			_, _ = io.WriteString(w, ev)
-			if flusher != nil {
-				flusher.Flush()
-			}
-		}
+// sseStream writes one synthesized chat.completion.chunk SSE response to agy,
+// flushing after every chunk so a long tool-augmented generation streams
+// incrementally (M4 item 1). It carries the R1-8 framing: a role delta first,
+// then reasoning/content deltas, then finish_reason "stop" with the cumulative
+// usage, then the [DONE] sentinel.
+type sseStream struct {
+	w       http.ResponseWriter
+	flusher http.Flusher
+	id      string
+	created int64
+	model   string
+}
+
+// open writes the SSE headers, the 200 status, and the opening role delta, so
+// the client sees the stream is live before the first upstream turn completes.
+func (s *sseStream) open() {
+	s.w.Header().Set("Content-Type", "text/event-stream")
+	s.w.Header().Set("Cache-Control", "no-cache")
+	s.w.Header().Set("Connection", "keep-alive")
+	s.w.WriteHeader(http.StatusOK)
+	s.delta(map[string]any{"role": "assistant"}, nil, nil)
+}
+
+// delta writes one chunk carrying delta, the finish_reason (nil on non-final
+// chunks), and the usage block (only on the final chunk), then flushes.
+func (s *sseStream) delta(delta map[string]any, finish any, usage map[string]any) {
+	env := map[string]any{
+		"id":      s.id,
+		"object":  "chat.completion.chunk",
+		"created": s.created,
+		"model":   s.model,
+		"choices": []map[string]any{
+			{"index": 0, "delta": delta, "finish_reason": finish},
+		},
+	}
+	if usage != nil {
+		env["usage"] = usage
+	}
+	b, err := json.Marshal(env)
+	if err != nil {
 		return
 	}
+	_, _ = io.WriteString(s.w, "data: "+string(b)+"\n\n")
+	if s.flusher != nil {
+		s.flusher.Flush()
+	}
+}
+
+// done writes the terminal [DONE] sentinel and flushes.
+func (s *sseStream) done() {
+	_, _ = io.WriteString(s.w, "data: [DONE]\n\n")
+	if s.flusher != nil {
+		s.flusher.Flush()
+	}
+}
+
+// writeFallbackJSON is the non-streaming panic path: still a complete,
+// non-empty chat.completion body (R1-8). The streaming path has no equivalent
+// because it writes incrementally and closes its own framing (see
+// serveToolLoop).
+func writeFallbackJSON(w http.ResponseWriter, modelReq, id string, created int64) {
+	out := openaiup.NewTurn()
+	out.SetContent(toolLoopApology)
 	body, _ := json.Marshal(buildCompletion(modelReq, id, created, out))
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(body)
 }
 
-// buildSSEEvents renders the synthesized chat.completion.chunk stream:
-// reasoning deltas preserved, content deltas, finish_reason "stop", usage on
-// the last chunk, then [DONE] (R1-2).
-func buildSSEEvents(model, id string, created int64, out *turnAgg) []string {
-	events := make([]string, 0, 8)
-	emit := func(delta map[string]any, finish any, usage map[string]any) {
-		env := map[string]any{
-			"id":      id,
-			"object":  "chat.completion.chunk",
-			"created": created,
-			"model":   model,
-			"choices": []map[string]any{
-				{"index": 0, "delta": delta, "finish_reason": finish},
-			},
-		}
-		if usage != nil {
-			env["usage"] = usage
-		}
-		b, err := json.Marshal(env)
-		if err != nil {
-			return
-		}
-		events = append(events, "data: "+string(b)+"\n\n")
-	}
-
-	emit(map[string]any{"role": "assistant"}, nil, nil)
-	for _, piece := range splitPieces(out.reasoning, 2048) {
-		emit(map[string]any{"reasoning_content": piece}, nil, nil)
-	}
-	for _, piece := range splitPieces(out.content, 2048) {
-		emit(map[string]any{"content": piece}, nil, nil)
-	}
-	emit(map[string]any{}, "stop", out.usage)
-	events = append(events, "data: [DONE]\n\n")
-	return events
-}
-
 // buildCompletion renders the single chat.completion body for non-streaming
 // requests (R1-1).
-func buildCompletion(model, id string, created int64, out *turnAgg) map[string]any {
-	msg := map[string]any{"role": "assistant", "content": out.content}
-	if out.reasoning != "" {
-		msg["reasoning_content"] = out.reasoning
+func buildCompletion(model, id string, created int64, out *openaiup.Turn) map[string]any {
+	msg := map[string]any{"role": "assistant", "content": out.Content()}
+	if out.Reasoning() != "" {
+		msg["reasoning_content"] = out.Reasoning()
 	}
 	env := map[string]any{
 		"id":      id,
@@ -932,8 +853,8 @@ func buildCompletion(model, id string, created int64, out *turnAgg) map[string]a
 			{"index": 0, "message": msg, "finish_reason": "stop"},
 		},
 	}
-	if out.usage != nil {
-		env["usage"] = out.usage
+	if out.Usage != nil {
+		env["usage"] = out.Usage
 	}
 	return env
 }
