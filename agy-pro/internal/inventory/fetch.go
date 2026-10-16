@@ -35,20 +35,73 @@ type NativeFetcher interface {
 // realagy.CleanChildEnv so a nested gateway shell can never turn the catalog
 // into the 8-entry gateway list (E4 caveat).
 type RealAgyModels struct {
-	BinPath       string                                                          // "" -> realagy.Resolve() at fetch (contract §2.5)
-	FetchDeadline time.Duration                                                   // default 15s - per-fetch subprocess/network bound (F-Da)
-	ScrubEnvNames []string                                                        // provider APIKeyEnv names; set via NewRealAgyFetcher
-	Spawn         func(ctx context.Context, bin string, args ...string) *exec.Cmd // test seam
+	BinPath       string        // "" -> realagy.Resolve() at fetch (contract §2.5)
+	FetchDeadline time.Duration // default 15s - per-fetch subprocess/network bound (F-Da)
+	ScrubEnvNames []string      // provider APIKeyEnv names; set via NewRealAgyFetcher
+	// Redact masks the failure text. NewRealAgyFetcher seeds it with the
+	// registry's configured key values (the same seeded redactor the fanout CLI
+	// uses); nil falls back to the unseeded generic shapes, which still masks
+	// bearer/sk-/AIza/AWS/PEM material.
+	Redact func(string) string
+	Spawn  func(ctx context.Context, bin string, args ...string) *exec.Cmd // test seam
 }
 
 // NewRealAgyFetcher wires BinPath="" (resolve at fetch), FetchDeadline 15s and
-// ScrubEnvNames = realagy.ApiKeyEnvNames(reg). THE canonical constructor.
+// ScrubEnvNames = KeyScrubNames(reg). THE canonical constructor.
 // Callers wrap it: Cached(NewRealAgyFetcher(reg), 5*time.Second).
 func NewRealAgyFetcher(reg *providers.Registry) *RealAgyModels {
 	return &RealAgyModels{
 		FetchDeadline: DefaultFetchDeadline,
-		ScrubEnvNames: realagy.ApiKeyEnvNames(reg),
+		ScrubEnvNames: KeyScrubNames(reg),
+		Redact:        reg.Redactor(),
 	}
+}
+
+// redactor returns the failure-text redactor, failing closed to the generic
+// (unseeded) shapes when the caller supplied none.
+func (r *RealAgyModels) redactor() func(string) string {
+	if r.Redact != nil {
+		return r.Redact
+	}
+	return providers.NewRedactor()
+}
+
+// KeyScrubNames is the provider-key env-name scrub union for the `agy models`
+// fetch subprocess: every registry apiKeyEnv name UNION every compiled-in
+// known-preset KeyEnv name (FIX-4 parity with hybrid.ChildKeyScrubNames, which
+// the hybrid session children use).
+//
+// The union is load-bearing on its own, not just as parity: the preset list is
+// independent of providers.json, so an exported preset key for a provider that
+// is ABSENT from the registry (OPENAI_API_KEY, GROQ_API_KEY, ...) would
+// otherwise ride into this subprocess - the S-3 class, on a spawn that exists
+// precisely to read the user's environment. The registry-only list closed that
+// hole only for providers the user had registered.
+//
+// It mirrors hybrid.ChildKeyScrubNames deliberately (same order, same skip
+// rules); internal/inventory cannot import internal/hybrid without dragging the
+// mesh/wireadp/wirecheck graph into every inventory consumer, and
+// internal/realagy is outside this change's fence. The equality is pinned by
+// TestKeyScrubNamesMatchesHybridUnion in fetch_test.go, so the two cannot drift.
+func KeyScrubNames(reg *providers.Registry) []string {
+	names := realagy.ApiKeyEnvNames(reg)
+	seen := make(map[string]bool, len(names))
+	for _, n := range names {
+		seen[n] = true
+	}
+	for _, h := range providers.KnownProviders() {
+		n := strings.TrimSpace(h.KeyEnv)
+		if n == "" {
+			continue
+		}
+		key := strings.ToLower(n)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		names = append(names, n)
+	}
+	return names
 }
 
 // Fetch runs one `agy models` invocation and parses its catalog.
@@ -94,15 +147,23 @@ func (r *RealAgyModels) Fetch(ctx context.Context) ([]NativeModel, error) {
 	if err != nil {
 		// A9: the stderr tail is printed to the console and lands in
 		// Inventory.NativeErr (which the launcher/settings surfaces render), so
-		// it goes through the same Redactor the fanout CLI uses for provider
-		// error snippets. `agy models` failures can echo credential fragments.
-		redact := providers.NewRedactor()
-		tail := strings.TrimSpace(stderr.String())
+		// it goes through the same seeded redactor the fanout CLI uses for
+		// provider error snippets. `agy models` failures can echo credential
+		// fragments.
+		//
+		// Redact BEFORE cutting, the ordering openaiup.Call and
+		// wireadp.sanitizeMessage document: a secret the child positioned across
+		// the cut must be whole when the redactor sees it, otherwise the cut
+		// deletes the "bearer " prefix (or the sk-/AIza head) and leaves an
+		// unshaped fragment that no pattern matches. Cutting first inverted that
+		// rule and let a straddling fragment reach the terminal.
+		redact := r.redactor()
+		tail := redact(strings.TrimSpace(stderr.String()))
 		if len(tail) > 200 {
 			tail = tail[len(tail)-200:]
 		}
 		if tail != "" {
-			return nil, fmt.Errorf("agy models failed: %v: %s", redact(err.Error()), redact(tail))
+			return nil, fmt.Errorf("agy models failed: %v: %s", redact(err.Error()), tail)
 		}
 		return nil, fmt.Errorf("agy models failed: %v", redact(err.Error()))
 	}

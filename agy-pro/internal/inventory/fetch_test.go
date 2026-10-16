@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"agypro/internal/hybrid"
 	"agypro/internal/paths"
 	"agypro/internal/providers"
 )
@@ -294,6 +295,10 @@ func TestFetchFailureRedactsStderrTail(t *testing.T) {
 	}
 }
 
+// R5B-FIX-4: NewRealAgyFetcher must scrub with the FIX-4 UNION (registry
+// apiKeyEnv names UNION the compiled-in known-preset KeyEnv names), not the
+// registry-only list. An exported preset key for a provider that is ABSENT from
+// providers.json used to ride into the `agy models` subprocess - the S-3 class.
 func TestNewRealAgyFetcherWiresScrubNames(t *testing.T) {
 	reg := &providers.Registry{Providers: []providers.Provider{
 		{Name: "a", APIKeyEnv: "A_KEY"},
@@ -305,10 +310,203 @@ func TestNewRealAgyFetcherWiresScrubNames(t *testing.T) {
 	if f.FetchDeadline != DefaultFetchDeadline {
 		t.Errorf("FetchDeadline = %v, want %v", f.FetchDeadline, DefaultFetchDeadline)
 	}
-	if len(f.ScrubEnvNames) != 2 {
-		t.Errorf("ScrubEnvNames = %v, want exactly A_KEY,B_KEY", f.ScrubEnvNames)
+	// Scrub comparison is case-insensitive by construction (CleanChildEnv folds
+	// both sides through normalizeEnvName), so the assertion folds too.
+	got := map[string]bool{}
+	for _, n := range f.ScrubEnvNames {
+		got[strings.ToLower(strings.TrimSpace(n))] = true
 	}
-	if NewRealAgyFetcher(nil).ScrubEnvNames != nil {
-		t.Error("nil registry must yield nil scrub names")
+	// The registry names are all present (and only once each).
+	for _, want := range []string{"a_key", "b_key"} {
+		if !got[want] {
+			t.Errorf("ScrubEnvNames = %v; want the registry name %q", f.ScrubEnvNames, want)
+		}
+	}
+	// The preset union is present: GROQ_API_KEY is a known preset whose provider
+	// is NOT in this registry, which is exactly the hole FIX-4 closes.
+	for _, want := range []string{"groq_api_key", "openai_api_key", "deepseek_api_key"} {
+		if !got[want] {
+			t.Errorf("ScrubEnvNames = %v; want the preset name %q (FIX-4 union)", f.ScrubEnvNames, want)
+		}
+	}
+	if len(f.ScrubEnvNames) < 2+len(providers.KnownProviders()) {
+		t.Errorf("ScrubEnvNames = %v; want at least the registry names plus every preset", f.ScrubEnvNames)
+	}
+	// A nil registry still yields the preset union: the presets are independent
+	// of providers.json, so an unreadable registry must not widen the hole.
+	if NewRealAgyFetcher(nil).ScrubEnvNames == nil {
+		t.Error("a nil registry must still yield the preset union, not nil")
+	}
+}
+
+// R5B-FIX-4 (end to end): with a planted EXPORTED preset key whose provider is
+// absent from the registry, the `agy models` fetch child's environment must not
+// contain that key NAME (so its value cannot ride into the subprocess).
+func TestFetchChildEnvScrubsPresetKeysAbsentFromRegistry(t *testing.T) {
+	f, envFile := newStubFetcher(t, q6Catalog)
+	// The constructor's union is what Fetch hands to CleanChildEnv.
+	f.ScrubEnvNames = KeyScrubNames(&providers.Registry{Providers: []providers.Provider{
+		{Name: "onlyprov", APIKeyEnv: "ONLYPROV_KEY"},
+	}})
+	// A planted FAKE preset key for a provider the registry does not carry.
+	const planted = "sk-planted-groq-fake-secret"
+	t.Setenv("GROQ_API_KEY", planted)
+	t.Setenv("ONLYPROV_KEY", planted)
+
+	if _, err := f.Fetch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	dump := readChildEnv(t, envFile)
+	if strings.Contains(dump, "GROQ_API_KEY=") {
+		t.Errorf("the fetch child env carries the preset key NAME (FIX-4 union gap):\n%s", dump)
+	}
+	if strings.Contains(dump, planted) {
+		t.Errorf("the fetch child env carries a planted key VALUE:\n%s", dump)
+	}
+	if strings.Contains(dump, "ONLYPROV_KEY=") {
+		t.Errorf("the fetch child env carries the registry key NAME:\n%s", dump)
+	}
+	if !strings.Contains(dump, paths.EnvAgyProActive+"=1") {
+		t.Errorf("child env missing recursion latch:\n%s", dump)
+	}
+}
+
+// TestKeyScrubNamesMatchesHybridUnion is the drift guard: internal/inventory
+// cannot import internal/hybrid in production (it would drag the
+// mesh/wireadp/wirecheck graph into every inventory consumer), so the union is
+// mirrored here. This test imports hybrid to pin the two lists equal as SETS,
+// so the mirror cannot silently drift.
+func TestKeyScrubNamesMatchesHybridUnion(t *testing.T) {
+	reg := &providers.Registry{Providers: []providers.Provider{
+		{Name: "a", APIKeyEnv: "A_KEY"},
+		{Name: "b", APIKeyEnv: "B_KEY"},
+		{Name: "c", APIKeyEnv: "A_KEY"},
+		{Name: "d"},
+	}}
+	fold := func(names []string) map[string]bool {
+		out := map[string]bool{}
+		for _, n := range names {
+			out[strings.ToLower(strings.TrimSpace(n))] = true
+		}
+		return out
+	}
+	mine := fold(KeyScrubNames(reg))
+	theirs := fold(hybrid.ChildKeyScrubNames(reg))
+	if len(mine) != len(theirs) {
+		t.Fatalf("scrub union sizes differ: inventory %d vs hybrid %d", len(mine), len(theirs))
+	}
+	for n := range theirs {
+		if !mine[n] {
+			t.Errorf("inventory's KeyScrubNames is missing %q, which hybrid.ChildKeyScrubNames carries", n)
+		}
+	}
+	// The nil-registry shape must agree too (the FIX-4 always-on preset half).
+	if len(fold(KeyScrubNames(nil))) != len(fold(hybrid.ChildKeyScrubNames(nil))) {
+		t.Error("the nil-registry scrub unions differ")
+	}
+}
+
+// A9/F-1 (ordering half): the stderr tail must be REDACTED BEFORE it is cut to
+// its last 200 bytes. Cutting first deleted the "sk-" head of a credential the
+// child positioned across the cut and left the unshaped remainder in the fetch
+// error and in Inventory.NativeErr. openaiup.Call and wireadp.sanitizeMessage
+// document the opposite order; this sink was the one place that inverted it.
+func TestFetchFailureRedactsBeforeCuttingStderrTail(t *testing.T) {
+	// A shaped secret whose head ("sk-") is what a cut-first implementation
+	// drops: the surviving fragment matches no redactor pattern, so it can only
+	// be masked while the secret is still whole.
+	const planted = "sk-planted-inventory-straddle-secret-42"
+	// The secret sits early and 166 bytes of filler follow it, so the 200-byte
+	// cut lands INSIDE the secret: the head is dropped and the remainder
+	// straddles the boundary.
+	stderr := "AGY_ERROR: unauthorized\n" + planted + strings.Repeat("y", 166)
+	if got := len(stderr) - 200; got <= len("AGY_ERROR: unauthorized\n") || got >= len(planted) {
+		t.Fatalf("fixture does not straddle the cut: cut at %d, secret spans [23,%d)", got, len(planted))
+	}
+	frag := planted[7:] // the part a cut-first implementation carried raw
+
+	t.Setenv("GO_WANT_HELPER_PROCESS", "1")
+	t.Setenv("AGY_PRO_STUB_STDOUT", "")
+	t.Setenv("AGY_PRO_STUB_STDERR", stderr)
+	t.Setenv("AGY_PRO_STUB_EXIT", "3")
+	t.Setenv("AGY_PRO_STUB_ENVFILE", filepath.Join(t.TempDir(), "child-env.txt"))
+	t.Setenv("AGY_PRO_STUB_SLEEP_MS", "")
+
+	f := &RealAgyModels{
+		BinPath:       "fake-agy",
+		FetchDeadline: DefaultFetchDeadline,
+		Spawn:         spawnStub(),
+	}
+	_, err := f.Fetch(context.Background())
+	if err == nil {
+		t.Fatal("a failing `agy models` child must fail the fetch")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, planted) {
+		t.Errorf("fetch error leaked the whole planted secret: %v", msg)
+	}
+	// The straddling fragment: what a cut-first implementation carried raw.
+	if strings.Contains(msg, frag) {
+		t.Errorf("fetch error leaked the straddling fragment %q (the tail must be redacted before the cut): %v", frag, msg)
+	}
+	if !strings.Contains(msg, "[REDACTED]") {
+		t.Errorf("fetch error = %v; want a [REDACTED] marker", msg)
+	}
+
+	// The same text must not survive into Inventory.NativeErr either.
+	inv, lerr := Load(context.Background(), nil, f)
+	if lerr != nil {
+		t.Fatalf("Load: %v", lerr)
+	}
+	if inv.NativeErr == nil {
+		t.Fatal("NativeErr must record the failed fetch (honest degrade)")
+	}
+	if strings.Contains(inv.NativeErr.Error(), frag) {
+		t.Errorf("Inventory.NativeErr leaked the straddling fragment %q: %v", frag, inv.NativeErr)
+	}
+}
+
+// A9/F-1 (seeding half): the failure sink must use the SEEDED redactor, not the
+// unseeded generic one. A registered key value that matches no generic shape
+// (opaque hex) is only maskable by literal replacement, which is exactly what
+// the fanout CLI's reg.Redactor() provides and NewRedactor() does not.
+func TestNewRealAgyFetcherSeedsTheFailureRedactor(t *testing.T) {
+	const planted = "9f2c7a1b4e6d8f0a3b5c7d9e1f2a4b6c8d0e2f4a"
+	t.Setenv("TEST_INVENTORY_SEED_KEY", planted)
+	reg := &providers.Registry{Providers: []providers.Provider{
+		{Name: "seedprov", BaseURL: "http://127.0.0.1:9/v1", APIKeyEnv: "TEST_INVENTORY_SEED_KEY",
+			Models: []providers.Model{{ID: "seed-model", ContextLength: 300000}}},
+	}}
+
+	f := NewRealAgyFetcher(reg)
+	if f.Redact == nil {
+		t.Fatal("NewRealAgyFetcher must wire a redactor (the seeded one, not the generic shapes)")
+	}
+	// The constructor's seeded redactor masks the registered key value.
+	if got := f.Redact("upstream echoed " + planted); strings.Contains(got, planted) {
+		t.Errorf("seeded redactor leaked the registered key value: %q", got)
+	} else if !strings.Contains(got, "[REDACTED]") {
+		t.Errorf("seeded redactor did not mask the registered key value: %q", got)
+	}
+
+	// End to end through Fetch: the opaque value in the child's stderr never
+	// reaches the error string, and the child env never carries the key name.
+	f.Spawn = spawnStub()
+	f.BinPath = "fake-agy"
+	t.Setenv("GO_WANT_HELPER_PROCESS", "1")
+	t.Setenv("AGY_PRO_STUB_STDOUT", "")
+	t.Setenv("AGY_PRO_STUB_STDERR", "AGY_ERROR: upstream rejected "+planted+"\n")
+	t.Setenv("AGY_PRO_STUB_EXIT", "3")
+	envFile := filepath.Join(t.TempDir(), "child-env.txt")
+	t.Setenv("AGY_PRO_STUB_ENVFILE", envFile)
+	t.Setenv("AGY_PRO_STUB_SLEEP_MS", "")
+
+	if _, err := f.Fetch(context.Background()); err == nil {
+		t.Fatal("a failing `agy models` child must fail the fetch")
+	} else if strings.Contains(err.Error(), planted) {
+		t.Errorf("fetch error leaked the registered key value: %v", err)
+	}
+	if env := readChildEnv(t, envFile); strings.Contains(env, "TEST_INVENTORY_SEED_KEY="+planted) {
+		t.Error("the fetch child env carries the provider key value (the scrub must drop the name)")
 	}
 }
