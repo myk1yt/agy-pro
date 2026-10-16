@@ -418,6 +418,11 @@ func (r *Registry) Redactor() func(string) string {
 var (
 	bearerRe = regexp.MustCompile(`(?i)(bearer\s+)[A-Za-z0-9._~+/=-]{8,}`)
 	skRe     = regexp.MustCompile(`\b(sk|pk|key|tok)-[A-Za-z0-9_-]{12,}`)
+	// googleAPIKeyRe is the Google API key shape ("AIza" + 35 chars). agy itself
+	// hands a GEMINI_API_KEY/GOOGLE_API_KEY value to whatever endpoint it talks
+	// to, so this shape shows up in loopback captures and provider error echoes
+	// as often as the OpenAI-family shapes below.
+	googleAPIKeyRe = regexp.MustCompile(`AIza[0-9A-Za-z_-]{35}`)
 	// Generic credential shapes (S-4/F2 extension): material the registry
 	// does not know about - AWS access key IDs (the AKIA and ASIA twins),
 	// secret-key assignments, Authorization header values and PEM private key
@@ -443,6 +448,7 @@ func NewRedactor(secrets ...string) func(string) string {
 		}
 		s = bearerRe.ReplaceAllString(s, "${1}[REDACTED]")
 		s = skRe.ReplaceAllString(s, "[REDACTED]")
+		s = googleAPIKeyRe.ReplaceAllString(s, "[REDACTED]")
 		s = awsKeyIDRe.ReplaceAllString(s, "[REDACTED]")
 		s = awsSecretRe.ReplaceAllString(s, "${1}[REDACTED]")
 		s = authValueRe.ReplaceAllString(s, "${1}[REDACTED]")

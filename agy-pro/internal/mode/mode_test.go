@@ -595,10 +595,68 @@ func TestLegacyStateKeepsOriginalKeys(t *testing.T) {
 			t.Fatalf("re-saved legacy state lost %s:\n%s", key, saved)
 		}
 	}
-	for _, key := range []string{`"bridge_tools"`, `"default_profile"`} {
+	for _, key := range []string{`"bridge_tools"`, `"default_profile"`, `"hybrid_profile"`} {
 		if strings.Contains(string(saved), key) {
 			t.Fatalf("re-saved legacy state must not inject %s:\n%s", key, saved)
 		}
+	}
+}
+
+// TestHybridProfileAdditiveKeyRoundTrip covers the hybrid_profile key added
+// for the native-coexistence profiles (session 261014_0007): it round-trips
+// through state.json, defaults to HybridProfileNone when absent, normalizes
+// aliases, and never appears in a legacy state file.
+func TestHybridProfileAdditiveKeyRoundTrip(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv(paths.EnvAgyProHome, tempDir)
+	t.Setenv(paths.EnvGeminiConfigDir, filepath.Join(tempDir, "cfg"))
+
+	// A fresh state has no key: the effective value is none.
+	state, err := LoadState()
+	if err != nil {
+		t.Fatalf("LoadState failed: %v", err)
+	}
+	if state.HybridProfile != "" {
+		t.Fatalf("fresh state should not carry hybrid_profile, got %q", state.HybridProfile)
+	}
+	if got := state.EffectiveHybridProfile(); got != HybridProfileNone {
+		t.Fatalf("EffectiveHybridProfile() = %q; want %q", got, HybridProfileNone)
+	}
+
+	// The key survives a save/load cycle alongside the pre-existing keys.
+	state.HybridProfile = "p2"
+	state.DefaultProfile = ProfileNative
+	if err := SaveState(state); err != nil {
+		t.Fatalf("SaveState failed: %v", err)
+	}
+	reloaded, err := LoadState()
+	if err != nil {
+		t.Fatalf("reload LoadState failed: %v", err)
+	}
+	if reloaded.HybridProfile != "p2" {
+		t.Fatalf("hybrid_profile did not round-trip, got %q", reloaded.HybridProfile)
+	}
+	if reloaded.EffectiveHybridProfile() != "p2" {
+		t.Fatalf("EffectiveHybridProfile() = %q; want p2", reloaded.EffectiveHybridProfile())
+	}
+	if reloaded.EffectiveDefaultProfile() != ProfileNative {
+		t.Fatalf("default_profile did not survive alongside hybrid_profile, got %q", reloaded.DefaultProfile)
+	}
+
+	// Aliases normalize; an unrecognized value fails closed to none.
+	reloaded.HybridProfile = "picker"
+	if got := reloaded.EffectiveHybridProfile(); got != "p1" {
+		t.Fatalf("EffectiveHybridProfile(picker) = %q; want p1", got)
+	}
+	reloaded.HybridProfile = "garbage"
+	if got := reloaded.EffectiveHybridProfile(); got != HybridProfileNone {
+		t.Fatalf("EffectiveHybridProfile(garbage) = %q; want %q", got, HybridProfileNone)
+	}
+
+	// A nil state reads as none (the pre-existing Effective* contract).
+	var nilState *State
+	if got := nilState.EffectiveHybridProfile(); got != HybridProfileNone {
+		t.Fatalf("nil.EffectiveHybridProfile() = %q; want %q", got, HybridProfileNone)
 	}
 }
 

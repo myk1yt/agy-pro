@@ -52,6 +52,12 @@ func TestRedactorGenericCredentialShapes(t *testing.T) {
 			leak: "MIIEpAIBAAKCAQEA0",
 			keep: "PRIVATE KEY",
 		},
+		{
+			name: "google api key",
+			in:   "export GEMINI_API_KEY=AIzaSyDELmE1f2g3h4i5j6k7l8m9n0o1p2q3r4s",
+			leak: "AIzaSyDELmE1f2g3h4i5j6k7l8m9n0o1p2q3r4s",
+			keep: "GEMINI_API_KEY=",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -66,6 +72,25 @@ func TestRedactorGenericCredentialShapes(t *testing.T) {
 				t.Errorf("no redaction marker in output: %q", got)
 			}
 		})
+	}
+}
+
+// The Google key shape is exact: 34 characters after the AIza prefix is not a
+// key and must ride through untouched, so the pattern does not eat ordinary
+// text that happens to start with those four letters.
+func TestRedactorGoogleKeyShapeIsExact(t *testing.T) {
+	redact := NewRedactor()
+	const short = "AIzaSyDELmE1f2g3h4i5j6k7l8m9n0o1p2q3r4" // 34 chars after AIza
+	if got := redact("note: " + short); got != "note: "+short {
+		t.Errorf("a 38-char AIza string must survive untouched, got %q", got)
+	}
+	const exact = "AIzaSyDELmE1f2g3h4i5j6k7l8m9n0o1p2q3r4s" // 35 chars after AIza
+	got := redact("note: " + exact)
+	if strings.Contains(got, exact) {
+		t.Errorf("a 39-char Google key survived redaction: %q", got)
+	}
+	if !strings.Contains(got, "[REDACTED]") {
+		t.Errorf("no redaction marker in output: %q", got)
 	}
 }
 

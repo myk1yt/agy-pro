@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"agypro/internal/providers"
 )
 
 // LogEntry represents an executed tool call recorded in the JSONL log.
@@ -40,7 +42,10 @@ func NewLogger(logPath string, redactor func(string) string) (*Logger, error) {
 		return nil, fmt.Errorf("failed to create log directory: %w", err)
 	}
 	if redactor == nil {
-		redactor = func(s string) string { return s }
+		// Fail closed: the audit log is a durable sink for tool output and
+		// upstream error text, so a missing redactor still masks the generic
+		// credential shapes.
+		redactor = providers.NewRedactor()
 	}
 	return &Logger{
 		path:    logPath,
@@ -58,6 +63,14 @@ func (l *Logger) Log(entry LogEntry) error {
 	if entry.Timestamp == "" {
 		entry.Timestamp = time.Now().UTC().Format(time.RFC3339)
 	}
+	// Model/Provider/Tool are display identifiers, but a key-shaped value
+	// misdirected into a registry model id or provider name would otherwise
+	// land raw in this durable 0600 line. MaskOperand is the same display
+	// authority the report sinks use, so benign names stay readable while
+	// credential-shaped ones render first-5+****.
+	entry.Model = providers.MaskOperand(entry.Model)
+	entry.Provider = providers.MaskOperand(entry.Provider)
+	entry.Tool = providers.MaskOperand(entry.Tool)
 	if l.redact != nil {
 		entry.Arguments = l.redact(entry.Arguments)
 		entry.Output = l.redact(entry.Output)

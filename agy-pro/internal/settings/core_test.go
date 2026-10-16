@@ -3,10 +3,12 @@ package settings
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
 
+	"agypro/internal/fanout"
 	"agypro/internal/inventory"
 	"agypro/internal/mode"
 	"agypro/internal/providers"
@@ -310,6 +312,31 @@ func TestViewD2Coverage(t *testing.T) {
 func hasItem(v SettingsView, id string) bool {
 	_, ok := v.FindItem(id)
 	return ok
+}
+
+// TestViewFanoutTimeoutRendersSharedConstant (2026-10-14, residual round): the
+// "Fanout Wall Timeout (--timeout)" row must render the shared
+// fanout.DefaultTimeoutSec (300s), not a hardcoded "120s" string, so the
+// settings panel cannot drift from the CLI flag truth again.
+func TestViewFanoutTimeoutRendersSharedConstant(t *testing.T) {
+	f := newFakeDeps()
+	f.state.ManagedItems = mode.DefaultManagedItems
+	c := NewCore(f.deps())
+	view, err := c.View()
+	if err != nil {
+		t.Fatalf("View: %v", err)
+	}
+	it, ok := view.FindItem("fanout.timeout")
+	if !ok {
+		t.Fatal("fanout.timeout item missing from View()")
+	}
+	want := fmt.Sprintf("%ds", fanout.DefaultTimeoutSec)
+	if it.Value != want || it.Default != want {
+		t.Errorf("fanout.timeout = Value:%q Default:%q; want %q (the shared constant)", it.Value, it.Default, want)
+	}
+	if it.Value == "120s" {
+		t.Error("fanout.timeout still renders the stale 120s string")
+	}
 }
 
 // TestViewMasksSecrets (A4/U8): a planted key value never appears in the view

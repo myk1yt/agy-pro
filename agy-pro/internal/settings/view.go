@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"agypro/internal/fanout"
 	"agypro/internal/mode"
 	"agypro/internal/providers"
 	"agypro/internal/realagy"
@@ -261,8 +262,8 @@ func (c *Core) sectionSwarm(st *mode.State) Section {
 		},
 		{ID: "fanout.n", Label: "Fanout Default Seats (--n)", Value: "3", Default: "3", Source: "constant", ReadOnly: true,
 			Note: "CLI flag truth (fanout/cli.go); flags remain the power-user/CI path"},
-		{ID: "fanout.timeout", Label: "Fanout Wall Timeout (--timeout)", Value: "120s", Default: "120s", Source: "constant", ReadOnly: true,
-			Note: "CLI flag truth"},
+		{ID: "fanout.timeout", Label: "Fanout Wall Timeout (--timeout)", Value: fmt.Sprintf("%ds", fanout.DefaultTimeoutSec), Default: fmt.Sprintf("%ds", fanout.DefaultTimeoutSec), Source: "constant", ReadOnly: true,
+			Note: "CLI flag truth (fanout/cli.go); the shared provider client's per-request timeout is derived from this budget (never shorter, 120s floor)"},
 		{ID: "fanout.max_turns", Label: "Fanout Max Turns (--max-turns)", Value: "10", Default: "10", Source: "constant", ReadOnly: true,
 			Note: "CLI flag truth"},
 		{ID: "fanout.tools", Label: "Fanout Tools (--tools)", Value: "read,search", Default: "read,search", Source: "constant", ReadOnly: true,

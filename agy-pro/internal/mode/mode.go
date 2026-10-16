@@ -50,6 +50,10 @@ const BridgeToolsNone = "none"
 // (contract §2.3).
 const DefaultNativeSeatConcurrency = 2
 
+// HybridProfileNone is the canonical "no hybrid profile" value returned by
+// EffectiveHybridProfile for a missing, blank, or unrecognized stored key.
+const HybridProfileNone = "none"
+
 // MaxNativeSeatConcurrency is the upper bound of the native-seat concurrency
 // clamp (contract §2.3). The stored value AND the --max-native flag share it.
 const MaxNativeSeatConcurrency = 8
@@ -129,6 +133,14 @@ type State struct {
 	// (contract §2.3). Additive key with the same forward-compatibility
 	// contract as DefaultProfile: absent means DefaultNativeSeatConcurrency.
 	NativeSeatConcurrency int `json:"native_seat_concurrency,omitempty"`
+	// HybridProfile is the persisted native-coexistence profile ("p1" or "p2";
+	// empty for none). Additive key with the same forward-compatibility
+	// contract as DefaultProfile: a state file written before it existed keeps
+	// loading and re-saving without the key. The AGY_PRO_HYBRID environment
+	// override takes precedence over this persisted value; the precedence is
+	// resolved by hybrid.ResolveProfile, not by EffectiveHybridProfile (which
+	// reads the persisted value only).
+	HybridProfile string `json:"hybrid_profile,omitempty"`
 }
 
 // EffectiveDefaultProfile returns the stored launch profile, or ProfilePrompt
@@ -164,6 +176,26 @@ func (s *State) EffectiveNativeSeatConcurrency() int {
 		return DefaultNativeSeatConcurrency
 	}
 	return ClampNativeSeatConcurrency(s.NativeSeatConcurrency)
+}
+
+// EffectiveHybridProfile returns the stored native-coexistence profile
+// normalized to "p1" or "p2", or HybridProfileNone when the key is missing
+// (pre-existing state files), blank, or unrecognized. It reads the persisted
+// value only; the AGY_PRO_HYBRID environment override is layered on top by
+// hybrid.ResolveProfile. The alias set matches hybrid.ParseProfile so a
+// hand-edited state file carrying "picker"/"subagent" still normalizes.
+func (s *State) EffectiveHybridProfile() string {
+	if s == nil {
+		return HybridProfileNone
+	}
+	switch strings.ToLower(strings.TrimSpace(s.HybridProfile)) {
+	case "p1", "picker", "1":
+		return "p1"
+	case "p2", "subagent", "2":
+		return "p2"
+	default:
+		return HybridProfileNone
+	}
 }
 
 // LoadState reads the state file. If missing, returns a default state.
