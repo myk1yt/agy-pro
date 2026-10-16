@@ -15,6 +15,7 @@ import (
 	"agypro/internal/agenttools"
 	"agypro/internal/bridge"
 	"agypro/internal/fanout"
+	"agypro/internal/hybrid"
 	"agypro/internal/mode"
 	"agypro/internal/paths"
 	"agypro/internal/providers"
@@ -69,7 +70,8 @@ func ExecutePassthrough(realAgyPath string, args []string) (int, error) {
 
 	forceBridge := false
 	forcedNativeID := ""
-	switch Decide(args, os.Getenv, stdinIsTTY(), modelCount, loadDefaultProfile()) {
+	hybridProfile := hybrid.ResolveProfile(os.Getenv, loadHybridProfile())
+	switch Decide(args, os.Getenv, stdinIsTTY(), modelCount, loadDefaultProfile(), hybridProfile.String()) {
 	case RouteMenu:
 		names := EnabledProviderNames(reg)
 		choice := ShowMenu(os.Stdout, os.Stdin, rel, modelCount, ProviderSummary(names), MenuTimeout)
@@ -99,6 +101,27 @@ func ExecutePassthrough(realAgyPath string, args []string) (int, error) {
 		}
 	case RouteBridge:
 		forceBridge = true
+	case RouteHybridP1:
+		// Native-coexistence P1 front door (picker coexistence): a per-session
+		// /v1internal mesh behind CLOUD_CODE_URL. hybrid.LaunchP1 owns the
+		// wirecheck gate, the mesh lifetime, the child env, and the native
+		// fallback, and maps the exit code (child passthrough / mesh-died 75).
+		return hybrid.LaunchP1(hybrid.LaunchOptions{
+			RealAgyPath: realAgyPath,
+			Args:        args,
+			Stdin:       childStdin,
+			Stdout:      os.Stdout,
+			Stderr:      os.Stderr,
+		})
+	case RouteHybridP2:
+		// P2 (subagent profile) front door (U9b): for a bare interactive
+		// session the combined native+external picker runs first and pins the
+		// choice, then hybrid.LaunchP2 owns the wirecheck gate, the mesh, the
+		// per-session app-data dir, the settings write, the child env and the
+		// exit-code map (mirrors the P1 arm above). No fall-through to the
+		// bridge/passthrough path: a P2 session is a mesh session, or the true
+		// native fallback LaunchP2 itself decides.
+		return runHybridP2(realAgyPath, args, childStdin, rel, reg)
 	}
 
 	// Forced-native picker pick: pure native session, scrubbed env, no bridge
@@ -117,34 +140,60 @@ func ExecutePassthrough(realAgyPath string, args []string) (int, error) {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
-	// Propagate recursion guard to child process. The snapshot is taken before
-	// the bridge starts on purpose: startBridgeOrFallback pins
-	// AGY_PRO_WORKSPACE on this process (R1-3), and the child must never
-	// receive the shim's workspace root (S-3, four gateway entries only).
-	childEnv := os.Environ()
-	childEnv = append(childEnv, paths.EnvAgyProActive+"=1")
+	// The gateway/bridge session was the one spawn path that still built the
+	// child env from a raw os.Environ() snapshot, so a shell-exported provider
+	// key VALUE (NW_API_KEY, CHARM_API_KEY, an ambient GEMINI_API_KEY, a stale
+	// AGY_LLM_GATEWAY_*) rode straight into the TUI child and everything it
+	// spawns (S-3) - the asymmetry the hybrid front doors, the native seats and
+	// the `agy models` fetch already close with realagy.CleanChildEnv (M4
+	// item 3). A gateway session talks to the local bridge, never a provider
+	// directly, so the child needs none of those values: scrub them with the
+	// same fixed-scrub-set + FIX-4 preset union (hybrid.ChildKeyScrubNames), then
+	// append this session's own four gateway entries (scrub-then-append, the P2
+	// injection order). Provider keys still resolve in THIS process at request
+	// time (bridge.go Provider.KeyValue).
+	//
+	// XOR / tool-less (design V8, agy 1.3.5): this gateway path is an escape
+	// hatch only - a session is EITHER native Gemini OR this gateway, never both,
+	// and it stays tool-less at the agy client (see the bridge package doc). It
+	// is NOT the native-coexistence path (that is the hybrid mesh); M4 only
+	// hardens it.
+	//
+	// Two no-bridge outcomes share this block and are NOT the same env:
+	//   - bridgeActive false (no --bridge/-b/env and no external model
+	//     targeted) -> the pure-native passthrough below keeps the ambient
+	//     environment, so native Gemini - subscription or an ambient AI-Studio
+	//     key - is unchanged (an unshimmed agy);
+	//   - bridgeActive true but startBridgeOrFallback fails -> the child still
+	//     gets the SCRUBBED env (no gateway entries). That scrub is intentional
+	//     and consistent with the hybrid native fallback's S-3 posture: native
+	//     agy still authenticates via its keyring, so dropping provider key
+	//     values is safe, and it keeps a bridge-mode failure from silently
+	//     re-leaking the very keys the gateway path scrubs.
+	bridgeActive := activateBridge && reg != nil && len(CollectModelIDs(reg)) > 0
+	var childEnv []string
+	if bridgeActive {
+		childEnv = realagy.CleanChildEnv(hybrid.ChildKeyScrubNames(reg))
+	} else {
+		// Pure-native passthrough: keep the ambient environment and only append
+		// the recursion latch. This path never starts a bridge, so the shim's
+		// workspace root is never pinned here (AGY_PRO_WORKSPACE is a
+		// bridge-tool-loop concern set by startBridgeOrFallback, R1-3).
+		childEnv = append(os.Environ(), paths.EnvAgyProActive+"=1")
+	}
 
-	// Inject LLM Gateway bridge if conditions are met
-	if activateBridge && reg != nil {
-		// Provider keys are deliberately NOT injected into the child (S-3):
-		// the bridge resolves them in this process at request time
-		// (bridge.go Provider.KeyValue), and the child only needs the
-		// session-scoped AGY_LLM_GATEWAY_* values below. Copying every
-		// registry key into the child env would hand them to anything the
-		// child spawns (agent tools, MCP servers).
-		modelIDs := CollectModelIDs(reg)
-		if len(modelIDs) > 0 {
-			sessionKey, keyErr := bridge.GenerateSessionKey()
-			if keyErr != nil {
-				return 1, keyErr
-			}
-			gatewayEnv, stopBridge := startBridgeOrFallback(reg, sessionKey, ResolveBridgeTools(), os.Stderr)
-			if stopBridge != nil {
-				defer stopBridge()
-			}
-			for _, ge := range gatewayEnv {
-				childEnv = setEnvKV(childEnv, ge)
-			}
+	// Inject LLM Gateway bridge if conditions are met.
+	if bridgeActive {
+		sessionKey, keyErr := bridge.GenerateSessionKey()
+		if keyErr != nil {
+			return 1, keyErr
+		}
+		gatewayEnv, stopBridge := startBridgeOrFallback(reg, sessionKey, ResolveBridgeTools(), os.Stderr)
+		if stopBridge != nil {
+			defer stopBridge()
+		}
+		for _, ge := range gatewayEnv {
+			childEnv = setEnvKV(childEnv, ge)
 		}
 	}
 
@@ -155,7 +204,11 @@ func ExecutePassthrough(realAgyPath string, args []string) (int, error) {
 		if errors.As(err, &exitErr) {
 			return exitErr.ExitCode(), nil
 		}
-		return 1, fmt.Errorf("failed to run real agy at %q: %w", realAgyPath, err)
+		// FIX-65: never echo the resolved binary path (it may live under a user
+		// directory). The underlying exec error carries the path too, so mask
+		// the whole line and report a class label; the exec itself is unchanged.
+		// This error is terminal (printed by main), so no unwrap is lost.
+		return 1, fmt.Errorf("failed to run the real agy binary: %s", providers.MaskOperand(err.Error()))
 	}
 
 	return 0, nil
@@ -313,6 +366,18 @@ func loadDefaultProfile() string {
 		return mode.ProfilePrompt
 	}
 	return st.EffectiveDefaultProfile()
+}
+
+// loadHybridProfile reads the persisted native-coexistence profile ("p1"/"p2"/
+// "none"). The AGY_PRO_HYBRID environment override is layered on by
+// hybrid.ResolveProfile at the Decide call site, so this reads the persisted
+// value only. Missing or unreadable state falls back to none.
+func loadHybridProfile() string {
+	st, err := mode.LoadState()
+	if err != nil || st == nil {
+		return mode.HybridProfileNone
+	}
+	return st.EffectiveHybridProfile()
 }
 
 // CountEnabledModels counts distinct enabled model entries across all

@@ -62,8 +62,9 @@ func TestBannerHelperChild(t *testing.T) {
 }
 
 // bannerHarness wires ExecutePassthrough's seams to the helper child and
-// returns the captured stdout.
-func bannerHarness(t *testing.T, args []string, tty bool, stdinLines string) string {
+// returns the captured stdout. launcherEnv is the AGY_LAUNCHER value for the
+// run ("" = default opt-out path, "1" = explicit menu opt-in).
+func bannerHarness(t *testing.T, launcherEnv string, args []string, tty bool, stdinLines string) string {
 	t.Helper()
 
 	tempDir := t.TempDir()
@@ -77,7 +78,7 @@ func bannerHarness(t *testing.T, args []string, tty bool, stdinLines string) str
 	t.Setenv(paths.EnvAgyProActive, "")
 	t.Setenv("AGY_PRO_BRIDGE", "")
 	t.Setenv("AGY_BRIDGE", "")
-	t.Setenv("AGY_LAUNCHER", "")
+	t.Setenv("AGY_LAUNCHER", launcherEnv)
 	t.Setenv("GO_WANT_BANNER_HELPER", "1")
 	t.Setenv("AGY_PRO_STUB_ENVFILE", filepath.Join(tempDir, "child-env.txt"))
 
@@ -146,9 +147,9 @@ func bannerHarness(t *testing.T, args []string, tty bool, stdinLines string) str
 	return out.String()
 }
 
-// (a) end-to-end: the interactive launcher path prints the banner exactly once.
+// (a) end-to-end: the opt-in interactive launcher path prints the banner exactly once.
 func TestCommunityBannerExactlyOnceOnInteractiveLaunch(t *testing.T) {
-	got := bannerHarness(t, nil, true, "1\n")
+	got := bannerHarness(t, "1", nil, true, "1\n")
 	if n := strings.Count(got, CommunityBanner); n != 1 {
 		t.Fatalf("interactive launch banner occurrences = %d, want 1:\n%s", n, got)
 	}
@@ -157,10 +158,22 @@ func TestCommunityBannerExactlyOnceOnInteractiveLaunch(t *testing.T) {
 	}
 }
 
+// Default flip pin: a bare `agy` on a TTY without AGY_LAUNCHER=1 never renders
+// the menu or the community banner - it goes straight to the native child.
+func TestCommunityBannerAbsentOnDefaultBareLaunch(t *testing.T) {
+	got := bannerHarness(t, "", nil, true, "")
+	if strings.Contains(got, CommunityBanner) || strings.Contains(got, "reddit.com") {
+		t.Fatalf("default bare launch leaked the launcher menu/banner:\n%s", got)
+	}
+	if strings.Contains(got, "Fast Launcher") || strings.Contains(got, "Select [1/2/3]") {
+		t.Fatalf("default bare launch rendered the menu:\n%s", got)
+	}
+}
+
 // (b) print mode (-p): zero banner hits in captured output.
 func TestCommunityBannerAbsentInPrintModeOutput(t *testing.T) {
 	// TTY on purpose: -p must skip the menu even on an interactive console.
-	got := bannerHarness(t, []string{"-p", "reply OK"}, true, "")
+	got := bannerHarness(t, "", []string{"-p", "reply OK"}, true, "")
 	if strings.Contains(got, "reddit.com") {
 		t.Fatalf("print-mode output leaked the community banner:\n%s", got)
 	}
@@ -168,7 +181,7 @@ func TestCommunityBannerAbsentInPrintModeOutput(t *testing.T) {
 
 // (b) piped/non-TTY stdin: zero banner hits in captured output.
 func TestCommunityBannerAbsentInPipedOutput(t *testing.T) {
-	got := bannerHarness(t, nil, false, "")
+	got := bannerHarness(t, "", nil, false, "")
 	if strings.Contains(got, "reddit.com") {
 		t.Fatalf("piped output leaked the community banner:\n%s", got)
 	}

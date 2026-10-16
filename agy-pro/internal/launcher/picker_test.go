@@ -351,6 +351,93 @@ func TestForcedNativePickBypassesBridgeUnderIdCollision(t *testing.T) {
 	<-drainDone
 }
 
+// R5BF2-4 (adjacent-pattern scan of the S-3 class R5B-FIX-4 closed on the
+// inventory fetch): executeForcedNative - the menu-[2] native pick path - must
+// scrub with the FIX-4 PRESET UNION, not the registry-only list. An exported
+// preset key for a provider ABSENT from providers.json used to ride into this
+// native child; the P2 session child, the P2 native fallback and the `agy
+// models` fetch already close that hole.
+func TestExecuteForcedNative_ScrubsPresetKeysAbsentFromRegistry(t *testing.T) {
+	tempDir := t.TempDir()
+	provFile := filepath.Join(tempDir, "providers.json")
+	// A registry that declares ONE provider with a bespoke key env name, so
+	// every preset key below belongs to a provider that is NOT registered.
+	provJSON := `{"providers":[{"name":"onlyprov","baseURL":"http://127.0.0.1:1","apiKeyEnv":"ONLYPROV_TEST_KEY","models":[{"id":"ext-one"}]}]}`
+	if err := os.WriteFile(provFile, []byte(provJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(providers.EnvProviders, provFile)
+	// Planted FAKE preset keys (never real values).
+	t.Setenv("GROQ_API_KEY", "sk-planted-groq-fake-secret")
+	t.Setenv("OPENAI_API_KEY", "sk-planted-openai-fake-secret")
+	t.Setenv("ONLYPROV_TEST_KEY", "sk-planted-onlyprov-fake-secret")
+
+	reg, err := providers.Load()
+	if err != nil {
+		t.Fatalf("load registry: %v", err)
+	}
+
+	envFile := filepath.Join(tempDir, "child-env.txt")
+	t.Setenv("GO_WANT_BANNER_HELPER", "1")
+	t.Setenv("AGY_PRO_STUB_ENVFILE", envFile)
+
+	var gotArgs []string
+	oldSpawn := spawnRealAgy
+	spawnRealAgy = func(name string, args ...string) *exec.Cmd {
+		gotArgs = append([]string{}, args...)
+		return exec.Command(os.Args[0], "-test.run=TestBannerHelperChild")
+	}
+	defer func() { spawnRealAgy = oldSpawn }()
+
+	oldStdout := os.Stdout
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = pw
+	code, runErr := executeForcedNative("dummy-real-agy", "ext-one", nil, reg)
+	_ = pw.Close()
+	os.Stdout = oldStdout
+	drainDone := make(chan struct{})
+	go func() {
+		_, _ = pr.Read(make([]byte, 1<<20))
+		_ = pr.Close()
+		close(drainDone)
+	}()
+
+	if runErr != nil {
+		t.Fatal(runErr)
+	}
+	if code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	if strings.Join(gotArgs, " ") != "--model ext-one" {
+		t.Errorf("child args = %v; want [--model ext-one]", gotArgs)
+	}
+	<-drainDone
+
+	data, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatalf("child env not recorded: %v", err)
+	}
+	dump := string(data)
+	for _, banned := range []string{
+		"GROQ_API_KEY=",
+		"OPENAI_API_KEY=",
+		"ONLYPROV_TEST_KEY=",
+		"sk-planted-groq-fake-secret",
+		"sk-planted-openai-fake-secret",
+		"sk-planted-onlyprov-fake-secret",
+	} {
+		if strings.Contains(dump, banned) {
+			t.Errorf("forced-native child env leaks %q (R5BF2-4 preset-union gap):\n%s", banned, dump)
+		}
+	}
+	if !strings.Contains(dump, "AGY_PRO_ACTIVE=1") {
+		t.Errorf("forced-native child missing recursion latch:\n%s", dump)
+	}
+}
+
 // F-BRIDGE test (b): an external pick under the same collision routes to the
 // gateway+bridge path with the DisplayName model spec.
 func TestExternalPickActivatesBridgeUnderIdCollision(t *testing.T) {
@@ -581,6 +668,12 @@ func TestCmdWrapPickerParityRows(t *testing.T) {
 		`pct\%back`, // A11: single backslash before a percent
 		`a"\%b`,     // A11 hole: quote, backslash-run, percent
 		`back"\%end`,
+		// U9b: the P2 blade: map key the front door pins carries ':' and '/'
+		// (and a registry id may carry a slash). The existing wrap must keep it
+		// byte-for-byte, so a .cmd/.bat real-agy target stays safe on the P2
+		// route too.
+		`blade:127.0.0.1:52566/models/ext-nw`,
+		`blade:127.0.0.1:52566/models/vendor/model-x`,
 	}
 	for _, tok := range cases {
 		_ = os.Remove(argsDump)

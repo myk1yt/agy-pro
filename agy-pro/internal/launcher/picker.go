@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"agypro/internal/hybrid"
 	"agypro/internal/inventory"
 	"agypro/internal/providers"
 	"agypro/internal/realagy"
@@ -175,10 +176,16 @@ func executeForcedNative(realAgyPath, modelID string, stdin io.Reader, reg *prov
 	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	// Provider key env names join the scrub list so a native child never
-	// inherits key VALUES (S-3 / F-ENV / F-Db) - the same builder the catalog
-	// fetch and native seats use (contract §2.2.4).
-	cmd.Env = realagy.CleanChildEnv(realagy.ApiKeyEnvNames(reg))
+	// R5BF2-4 (adjacent-pattern scan of the S-3 class R5B-FIX-4 just closed on
+	// the inventory fetch): the scrub list is the FIX-4 PRESET UNION
+	// (hybrid.ChildKeyScrubNames = registry apiKeyEnv names UNION the compiled-in
+	// known-preset KeyEnv names), not the registry-only list. An exported preset
+	// key for a provider ABSENT from providers.json (OPENAI_API_KEY,
+	// GROQ_API_KEY, ...) used to ride into this menu-[2] native child and
+	// everything it spawns - the same hole the P2 session child, the P2 native
+	// fallback and the `agy models` fetch already close. Strictly wider, no
+	// behavior regression: a native pick needs no provider key value.
+	cmd.Env = realagy.CleanChildEnv(hybrid.ChildKeyScrubNames(reg))
 
 	if err := cmd.Run(); err != nil {
 		var exitErr *exec.ExitError
