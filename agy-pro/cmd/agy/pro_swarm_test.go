@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -317,6 +318,45 @@ func TestRunSwarmCmdNonInteractiveRunsOnTTY(t *testing.T) {
 	}
 	if !strings.Contains(outBuf.String(), "seat | kind | model | verdict") {
 		t.Errorf("summary table missing:\n%s", outBuf.String())
+	}
+}
+
+// Pinned timeout default (2026-10-14, residual round): the non-interactive
+// `agy pro swarm` path (the surface the /agypro_swarm plugin command drives)
+// must seed the swarm budget from fanout.DefaultTimeoutSec (300s), not a local
+// 120s constant, so the dry-run echo and the real run both carry the same
+// budget the engine applies.
+func TestRunSwarmCmdNonInteractiveDefaultTimeoutIs300(t *testing.T) {
+	t.Setenv("AGY_PRO_HOME", t.TempDir())
+	defer withStubSwarmInventory(t, swarmFixtureInventory(t), nil)()
+	defer withTTY(t, true)()
+	ran := false
+	defer stubFanoutRun(t, cannedSummary(), nil, &ran)()
+
+	var outBuf, errBuf strings.Builder
+	code := runSwarmCmd([]string{
+		"--dry-run",
+		"--template", "code-review",
+		"--seats", "native:gemini-3.8-flash-high,nw/glm-5.3-flash-flex",
+		"--prompt", "check it",
+	}, strings.NewReader("MUST-NOT-BE-READ\n"), &outBuf, &errBuf)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, errBuf.String())
+	}
+	got := outBuf.String()
+	if !strings.Contains(got, "--timeout 300") {
+		t.Errorf("dry-run echo must carry the 300s default budget: %q", got)
+	}
+	if strings.Contains(got, "--timeout 120") {
+		t.Errorf("dry-run echo still carries the stale 120s budget: %q", got)
+	}
+
+	// The usage text renders the shared constant, not a hardcoded literal.
+	if !strings.Contains(proSwarmUsage, fmt.Sprintf("(default %d)", fanout.DefaultTimeoutSec)) {
+		t.Errorf("proSwarmUsage must document the shared default (default %d):\n%s", fanout.DefaultTimeoutSec, proSwarmUsage)
+	}
+	if strings.Contains(proSwarmUsage, "default 120") {
+		t.Errorf("proSwarmUsage still documents the stale 120s default:\n%s", proSwarmUsage)
 	}
 }
 

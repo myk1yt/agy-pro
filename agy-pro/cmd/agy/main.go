@@ -19,6 +19,7 @@ import (
 	"agypro/internal/mode"
 	"agypro/internal/paths"
 	"agypro/internal/providers"
+	"agypro/internal/wirecheck"
 )
 
 const Version = "0.1.0"
@@ -67,6 +68,8 @@ func handleProCommand(args []string) {
 		os.Exit(runSwarmCmd(subArgs, os.Stdin, os.Stdout, os.Stderr))
 	case "settings":
 		os.Exit(runSettingsCmd(subArgs, os.Stdin, os.Stdout, os.Stderr))
+	case "hybrid":
+		os.Exit(runHybridCmd(subArgs))
 	case "doctor":
 		runDoctor(subArgs)
 	case "fanout":
@@ -596,6 +599,9 @@ func runDoctor(args []string) {
 	} else {
 		fmt.Printf("[OK]   Real agy located: %s\n", realAgy)
 		cmd := exec.Command(realAgy, "--version")
+		// Default-deny child env (FIX-12): the third-party binary must never
+		// inherit the full shim environment (provider key values included).
+		cmd.Env = wirecheck.FilterChildEnv(nil)
 		if out, err := cmd.Output(); err == nil {
 			fmt.Printf("       Version: %s\n", strings.TrimSpace(string(out)))
 		}
@@ -653,6 +659,10 @@ func runDoctor(args []string) {
 
 	// Check 5: Go toolchain
 	goCmd := exec.Command("go", "version")
+	// Default-deny child env (round 2b, F1/MEDIUM): a PATH-shadowed `go` must
+	// never inherit the full shim environment (provider key values included).
+	// `go version` needs only PATH (and SystemRoot on Windows), both allowed.
+	goCmd.Env = wirecheck.FilterChildEnv(nil)
 	if out, err := goCmd.Output(); err == nil {
 		fmt.Printf("[OK]   Go toolchain: %s", string(out))
 	} else {
@@ -882,6 +892,9 @@ func runVersion() {
 	realAgy, err := launcher.FindRealAgy()
 	if err == nil {
 		cmd := exec.Command(realAgy, "--version")
+		// Default-deny child env (FIX-12): the third-party binary must never
+		// inherit the full shim environment (provider key values included).
+		cmd.Env = wirecheck.FilterChildEnv(nil)
 		if out, err := cmd.Output(); err == nil {
 			fmt.Printf("upstream: %s\n", strings.TrimSpace(string(out)))
 		}

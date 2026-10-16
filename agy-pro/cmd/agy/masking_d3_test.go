@@ -39,15 +39,18 @@ func TestD3StatusModelsSlotsMasked(t *testing.T) {
 		}
 	}
 
-	// Benign registry values stay byte-identical.
+	// Benign registry values stay byte-identical. The key-env name is one no
+	// environment can resolve (hermetic): the live machine exports the real
+	// NW_API_KEY (process env + HKCU persistent store), which would flip the
+	// slot to "Configured" and drop the name from the output.
 	benign := &providers.Registry{Providers: []providers.Provider{{
 		Name:      "nw",
 		BaseURL:   "https://api.neuralwatt.com/v1",
-		APIKeyEnv: "NW_API_KEY",
+		APIKeyEnv: "AGY_PRO_TEST_BENIGN_KEY_ENV",
 		Models:    []providers.Model{{ID: "glm-5.3-flash-flex", Family: "glm"}},
 	}}}
 	out = captureStdout(t, func() { printConfiguredProvidersAndModels(benign) })
-	for _, want := range []string{"[1] nw (https://api.neuralwatt.com/v1)", "glm-5.3-flash-flex", "glm", "NW_API_KEY"} {
+	for _, want := range []string{"[1] nw (https://api.neuralwatt.com/v1)", "glm-5.3-flash-flex", "glm", "AGY_PRO_TEST_BENIGN_KEY_ENV"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("benign status/models output lost %q:\n%s", want, out)
 		}

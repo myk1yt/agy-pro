@@ -30,7 +30,11 @@ import (
 //
 // Phase 1: unused-but-compilable; U-wiring adds the one-line main.go dispatch.
 
-const proSwarmUsage = `Usage: agy pro swarm [options]
+// proSwarmUsage is the `agy pro swarm` usage text. The timeout default is
+// rendered from fanout.DefaultTimeoutSec (the single source of truth shared
+// with the fanout CLI flag), so this copy cannot drift from the constant the
+// way the old hardcoded "120" did.
+var proSwarmUsage = fmt.Sprintf(`Usage: agy pro swarm [options]
 
 Interactive (default): numbered template + seat builder (needs a TTY).
 Non-interactive (any option below present; zero prompts):
@@ -43,11 +47,11 @@ Non-interactive (any option below present; zero prompts):
   --tools SPEC        allowed tools: read,search,write,exec (default: the
                       template's tools)
   --task NAME         fanout task type (default: the template's task)
-  --timeout SECONDS   swarm timeout (default 120)
+  --timeout SECONDS   swarm timeout (default %d)
   --dry-run           print the equivalent "agy pro fanout" command and exit 0
 
 Seat assignment is numbered selection in the happy path; flags are the
-power-user/CI fallback.`
+power-user/CI fallback.`, fanout.DefaultTimeoutSec)
 
 // loadSwarmInventory builds the combined inventory with the canonical
 // env-scrubbed, cached real-agy fetcher (contract §2.5). Tests replace it to
@@ -102,7 +106,7 @@ func runSwarmCmd(args []string, in io.Reader, out, errw io.Writer) int {
 		promptFile   = fs.String("prompt-file", "", "path to prompt file, or '-' for stdin")
 		toolsFlag    = fs.String("tools", "", "allowed tools: read,search,write,exec (default: the template's tools)")
 		taskFlag     = fs.String("task", "", "fanout task type (default: the template's task)")
-		timeoutFlag  = fs.Int("timeout", 0, "swarm execution timeout in seconds (default 120)")
+		timeoutFlag  = fs.Int("timeout", 0, fmt.Sprintf("swarm execution timeout in seconds (default %d)", fanout.DefaultTimeoutSec))
 		dryRunFlag   = fs.Bool("dry-run", false, "print the equivalent agy pro fanout command and exit 0")
 	)
 	fs.Usage = func() {
@@ -266,7 +270,7 @@ func runSwarmNonInteractive(in io.Reader, out, errw io.Writer, fv swarmFlagValue
 		prompt = data
 	}
 
-	timeout := swarm.DefaultTimeoutSec
+	timeout := fanout.DefaultTimeoutSec
 	if fv.timeoutSet {
 		if fv.timeout <= 0 {
 			fmt.Fprintln(errw, "Error: --timeout must be a positive integer of seconds")
