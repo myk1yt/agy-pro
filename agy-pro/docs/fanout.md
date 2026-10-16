@@ -145,7 +145,7 @@ agy pro fanout [options]
 | `--root <dir>` | `.` | Working workspace root directory for tool execution. |
 | `--tools <list>` | `read,search` | Allowed tools. Read-only by default; `write` and `exec` require explicit opt-in. |
 | `--max-turns <n>` | `10` | Maximum agentic tool iterations per model. |
-| `--timeout <sec>` | `120` | Swarm timeout in seconds. |
+| `--timeout <sec>` | `300` | Swarm timeout in seconds. |
 | `--out <dir>` | `./reports/fanout/<ts>` | Output directory for seat reports and reconciliation matrix. |
 | `--json` | `false` | Emits machine-readable `summary.json` directly to stdout. |
 | `--setup` | `false` | Runs the interactive provider configuration wizard. |
@@ -235,7 +235,12 @@ After all seats complete their investigations, the reconciliation engine parses 
 ### 7.2 Generated Artifacts
 Under `--out DIR` (default `./reports/fanout/<ts>/`):
 1. `seat-<n>-<provider>-<model>.md`: The complete raw output of seat `n` (provider seats also carry their tool trajectory). The filename segments are the seat's provider name and model id as the writer sanitizes them (`/`, `\` and `:` become `-`), so a native seat is `seat-1-native-gemini-3.8-flash-high.md`, not `seat-1-kind-...`. Native seats add `| Kind | native |` and a `| Quota/Cost |` row.
-2. `summary.json`: Comprehensive machine-readable report with metadata, seat performance, failovers, and issue clusters. Every seat entry carries `kind` (`native` | `provider`).
+2. `summary.json`: Comprehensive machine-readable report with metadata, seat performance, failovers, and issue clusters. Every seat entry carries `kind` (`native` | `provider`). Additional keys:
+   - per-seat `thin` (`true` when a seat returned success with zero parsed findings; thin seats are excluded from the consensus denominator and named in reconciliation.md),
+   - per-seat `usage` (`prompt_tokens` / `completion_tokens` / `cached_tokens` when the provider reports them; `null` for native seats, which print only their answer),
+   - run-level `usage` totals with `cache_hit_ratio` (`cached_tokens / prompt_tokens`) when any seat reported cache stats,
+   - `thin_seats` / `thin_seat_ids` counts.
+3. `progress.log`: one line per seat event, streamed live while the run executes (`[seat N/M] <spec> running` / `[seat N/M] <spec> -> <status> (<duration>s, findings: k[, thin][, degraded])`), mirrored byte-identically to the console stream (stderr in `--json` mode, so stdout stays pure JSON). An agent driving a background run tails this file to relay progress.
 3. `reconciliation.md`: Executive synthesis markdown containing:
    - Consensus & Reconciliation Matrix (`Seat 1 (native/gemini-3.8-flash-high)` style provenance) and a `Native Seats: k / m` header
    - Detailed Findings Breakdown with file locations

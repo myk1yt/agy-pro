@@ -97,7 +97,7 @@ flowchart TD
 | [`Agent/security-reviewer`](https://github.com/myk1yt/agy-tools/tree/Agent/security-reviewer) | **엔터프라이즈 멀티 에이전트 보안 감사** | `@security-reviewer` 오케스트레이터 + 4개 도메인 인스펙터 (OWASP, IAM, 자격 증명, 공급망) | `git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-security-reviewer.ps1` | `cmd /c "git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-security-reviewer.ps1"` | `git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install-security-reviewer.sh` |
 | [`Agent/code-reviewer`](https://github.com/myk1yt/agy-tools/tree/Agent/code-reviewer) | **Pre-Merge 코드 리뷰 & 퀄리티 게이트** | `@code-reviewer` 에이전트, 4단계 파이프라인, 8개 텍사노미, P0-P3 무관용 판정 게이트 | `git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-code-reviewer.ps1` | `cmd /c "git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-code-reviewer.ps1"` | `git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install-code-reviewer.sh` |
 | [`gemini-config`](https://github.com/myk1yt/agy-tools/tree/gemini-config) | **자율 멀티 에이전트 거버넌스** | 7단계 라이프사이클 프로토콜, Master Zero-Source-Edit 불변성, 오케스트레이터 스킬 | `git clone -b gemini-config https://github.com/myk1yt/agy-tools.git && cd agy-tools && scripts\install.bat` | `cmd /c "git clone -b gemini-config https://github.com/myk1yt/agy-tools.git && cd agy-tools && scripts\install.bat"` | `git clone -b gemini-config https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install.sh` |
-| [`feature/agy-pro`](https://github.com/myk1yt/agy-tools/tree/feature/agy-pro) | **Go 셔틀 & 멀티모델 스웜 (`agy-pro`)** | 투명 `agy` 셔틀, 네이티브+외부 통합 모델 목록을 보여주는 2초 런처, 외부 모델 브릿지, 하이브리드 네이티브 좌석을 번호로 고르는 스웜 빌더, `agy pro` 스위트 (setup / mode / models / swarm / settings / fanout / doctor), 원큐 Windows 설치·설치 제거 (Windows 전용) | `git clone -b feature/agy-pro https://github.com/myk1yt/agy-tools.git && cd agy-tools && install.cmd` | `cmd /c "git clone -b feature/agy-pro https://github.com/myk1yt/agy-tools.git && cd agy-tools && install.cmd"` | — |
+| [`feature/agy-pro`](https://github.com/myk1yt/agy-tools/tree/feature/agy-pro) | **Go 셔틀 & 멀티모델 스웜 (`agy-pro`)** | 투명 `agy` 셔틀, 네이티브+외부 통합 모델 목록을 보여주는 옵트인 2초 런처(`AGY_LAUNCHER=1`), 외부 모델 브릿지, 하이브리드 네이티브 좌석을 번호로 고르는 스웜 빌더, `agy pro` 스위트 (setup / mode / models / swarm / settings / fanout / doctor), 원큐 Windows 설치·설치 제거 (Windows 전용) | `git clone -b feature/agy-pro https://github.com/myk1yt/agy-tools.git && cd agy-tools && install.cmd` | `cmd /c "git clone -b feature/agy-pro https://github.com/myk1yt/agy-tools.git && cd agy-tools && install.cmd"` | — |
 | [`dashboard`](https://github.com/myk1yt/agy-tools/tree/dashboard) | **히스토리컬 프로토타입** | 최초 토큰 추적기 기반 (현재 `main`에 완전 병합됨) | — | — | — |
 
 > [!TIP]
@@ -308,7 +308,7 @@ agy-tokens --html --open
 
 ## 🚀 agy-pro: Go 셔틀, 모델 런처 & 스웜 오케스트레이터
 
-`agy-pro/`는 정품 `agy` 바이너리를 감싸는 Go 셔틀입니다. 네이티브 TUI와 표준 입출력 핸들, 종료 코드는 그대로 두고, 네이티브+외부 통합 모델 목록을 보여주는 모델 런처, 외부 OpenAI 호환 모델용 로컬 브릿지, 프로필 전환, 하이브리드 네이티브 좌석을 번호로 고르는 스웜 빌더, 모든 설정을 한곳에서 다루는 설정 패널을 더합니다. Go 표준 라이브러리만 사용합니다.
+`agy-pro/`는 정품 `agy` 바이너리를 감싸는 Go 셔틀입니다. 네이티브 TUI와 표준 입출력 핸들, 종료 코드는 그대로 두고, 네이티브+외부 통합 모델 목록을 보여주는 옵트인 모델 런처(`AGY_LAUNCHER=1`), 외부 OpenAI 호환 모델용 로컬 브릿지, 프로필 전환, 하이브리드 네이티브 좌석을 번호로 고르는 스웜 빌더, 모든 설정을 한곳에서 다루는 설정 패널을 더합니다. Go 표준 라이브러리만 사용합니다.
 
 ### 📋 복사-붙여넣기 설치 (Windows)
 
@@ -343,10 +343,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr 'https://raw.githubu
 
 ```bash
 agy pro setup          # 프로바이더 등록 (OpenRouter, DeepSeek, Groq, Google AI Studio 등)
-agy                    # 2초 픽커: [1] 네이티브 Gemini  [2] 외부 모델  [3] 스웜
+agy                    # 기본: 지연 없이 네이티브 Gemini로 바로 실행
+AGY_LAUNCHER=1 agy     # 옵트인: 2초 픽커 [1] 네이티브 Gemini  [2] 외부 모델  [3] 스웜
 ```
 
-픽커는 **인자 없는** `agy`에만 뜹니다. 인자를 하나라도 주면 픽커를 건너뛰고 실제 바이너리로 바로 실행됩니다. 프로바이더를 하나만 등록해도 런처가 뜹니다. 런처가 뜰 때는 커뮤니티 안내가 한 줄 함께 출력됩니다(`Visit https://www.reddit.com/r/GoogleAntigravityCLI/! A space for antigravity-cli users. Remember r/GoogleAntigravityCLI`). 이 줄은 대화형 런처에서만 나오고, `-p` 일회성 실행·파이프 입력·기계 판독 출력에는 나오지 않습니다. 픽커를 건너뛰려면:
+픽커는 **인자 없는** `agy`에 `AGY_LAUNCHER=1`을 설정했을 때만 뜹니다. 옵트인이 없으면 기본 실행은 메뉴 없이 지연 없이 네이티브로 바로 진행되고, 인자를 하나라도 주면 픽커를 건너뛰고 실제 바이너리로 바로 실행됩니다. 런처가 뜰 때는 커뮤니티 안내가 한 줄 함께 출력됩니다(`Visit https://www.reddit.com/r/GoogleAntigravityCLI/! A space for antigravity-cli users. Remember r/GoogleAntigravityCLI`). 이 줄은 대화형 런처에서만 나오고, `-p` 일회성 실행·파이프 입력·기계 판독 출력에는 나오지 않습니다. 외부 모델과 스웜은 런처 없이도 `AGY_PRO_BRIDGE=1 agy`, `agy pro swarm`, `agypro_swarm` 플러그인으로 사용할 수 있습니다. 프로필·실행 단위 오버라이드:
 
 ```bash
 agy pro config default-profile gateway   # 모든 `agy` 실행이 등록된 외부 모델을 /model에 노출
@@ -401,13 +402,50 @@ agy pro fanout --task review --seats "native:gemini-3.8-flash-high,NW/glm-5.3-fl
 
 XOR 경계는 그대로이고 명령 본문에 plainly 명시됩니다: 이건 별도 서브프로세스를 돌리는 명령/도구 동작이며, 세션의 `/model` 팝업에 외부 모델을 추가하지 않습니다(네이티브 XOR 브리지, 둘 다 never).
 
+### 네이티브 공존: agy 자체 세션 안에서 외부 프로바이더 쓰기 (`agy pro hybrid`)
+
+등록해 둔 외부 프로바이더를 **agy 자체 네이티브 세션 안에서**, 에이전트 중개 없이 쓸 수 있습니다. 사용자가 모델을 고르면 agy가 직접 구동하고, 로컬 메시가 와이어만 변환합니다. MCP 서버나 부채널은 없습니다(2026-10-14 사용자 결정).
+
+agy 바이너리의 클라이언트 경로가 갈리기 때문에, **세션 하나에 프로필 하나**만 고를 수 있습니다(프로브로 증명된 바이너리 사실입니다). `agy pro hybrid`로 고릅니다:
+
+```bash
+agy pro hybrid on p1     # 피커 공존 프로필
+agy pro hybrid on p2     # 서브에이전트 프로필
+agy pro hybrid off       # 저장한 프로필 해제
+agy pro hybrid status    # 실제 적용 프로필(env 오버라이드 vs 저장값) + wirecheck 판정
+agy pro hybrid check     # wirecheck 리포트 출력; 효과 프로필이 NOGO면 exit 1
+```
+
+`AGY_PRO_HYBRID=p1|p2|off` 환경 변수가 저장값보다 우선합니다(한 번만 쓰는 오버라이드). 형식이 잘못된 오버라이드는 무시하고 저장값을 씁니다.
+
+**P1 피커 공존.** agy 뒤에 세션용 로컬 메시를 띄우고 `CLOUD_CODE_URL`로 연결합니다. agy가 `/model` 카탈로그를 메시의 `fetchAvailableModels`에서 구성하므로, 등록한 외부 모델이 **agy 자체 `/model`**에 뜨고 agy 자체 11개 도구 엔진에서 도구를 로컬 실행합니다. 설정 파일은 쓰지 않습니다(`CLOUD_CODE_URL` 하나만 주입). 대가: 이 경로에는 서브에이전트 도구 패밀리가 없어 P1 세션에서는 서브에이전트를 전혀 띄울 수 없습니다(메시가 낸 `invoke_subagent`는 agy가 로컬에서 unknown tool로 거부). 메시가 서비스하는 카탈로그는 외부 전용(P1-lite)입니다.
+
+**P2 서브에이전트.** agy를 gemini 모드로 띄웁니다. 세션용 `--app_data_dir`를 만들고 그 안의 settings 파일에만 `modelProvider:"gemini"`와 `customModels`를 씁니다(전역 settings는 그대로). `GOOGLE_GEMINI_BASE_URL`과 스폰별 논스 `GEMINI_API_KEY`로 agy를 실행합니다. 외부는 **런처 시점**에 고릅니다(인자 없는 TTY 세션은 런처 피커, 아니면 `--model <key/id>`). 13개 도구(서브에이전트 패밀리 포함)가 붙고, 기본 `inherit`으로 띄운 서브에이전트는 **외부 세션 모델**에서 돕니다(R6 증명). 대가: 외부가 세션 중 `/model`에는 안 뜨고(11개 static Gemini 기본값만 나열), 이 세션에서는 구독 Gemini가 꺼집니다. 네이티브 static id는 레지스트리에 그 id가 있을 때만 서비스(설정된 프로바이더 과금)하고, 없으면 모델명을 명시한 404를 돌려줍니다. 조용한 대체는 없습니다.
+
+**자격 증명 안전.** 프로바이더 키는 프로세스 안에서 **이름으로만** 해석되고, 자식 환경·로그·settings에는 절대 들어가지 않습니다. exec 전에 자식 환경에서 `*_API_KEY` 형태 이름과 레지스트리 키 이름을 모두 지웁니다. P2 메시는 자식을 스폰별 64-hex 논스로 인증합니다(실제 키 아님). P1에서 agy의 키링 bearer는 메시가 수동적으로 받고 버리며, 절대 전달하지 않습니다. 게이트 G4/G5/G6에서 프로바이더 키 값은 모든 로컬 싱크(자식 env, 메시 감사, agy 로그, settings)에 0회인 것이 확인됐습니다.
+
+**솔직한 한계(숨기지 않습니다).**
+1. 세션 하나에 피커(P1)와 서브에이전트(P2)를 함께 쓸 수 없습니다. 세션마다 하나를 고릅니다.
+2. 서브에이전트별 외부 모델 지정은 agy 1.3.5에서 불가능합니다(티어 enum이 닫혀 있음). `inherit`이 메커니즘입니다.
+3. 구독 Gemini + 외부를 한 피커에 넣으려면 M1 릴레이가 필요한데, 명시적 사용자 승인이 필요하고 이번 릴리스에 없습니다.
+4. P1의 `/v1internal` 자세는 수동적입니다(받은 bearer를 버림). 루프백 + 임시 포트 + 60 req/min + 세션 수명 + 이름 전용 감사로 제한됩니다.
+5. `go test -race`는 개발 머신에서 실행할 수 없습니다(C 컴파일러 없음). 환경 저하이지 PASS가 아닙니다.
+6. 대화 제목(housekeeping) 턴은 메시가 로컬에서 답해 프로바이더 quota를 쓰지 않습니다(G10 수정).
+7. agy 자동 업데이터는 `AGY_CLI_DISABLE_AUTO_UPDATE=1`이 있어도 Google Cloud 엔드포인트로 비생성 네트워크 접촉을 합니다. 생성 트래픽은 모두 루프백이므로 "Google 트래픽 0"은 생성에 한정합니다.
+8. G8 TUI 게이트는 시각 미검증(UNVERIFIED)입니다. 자동 게이트 G4/G5/G6/G10는 print 모드 실증거를, G11(자동업데이트 재시작)는 이유와 함께 NOT-TESTED입니다.
+9. **P2 외부 세션에서 서브에이전트 티어 지정은 외부 세션 모델에서 돕니다.** P2 외부 세션에서 명시한 서브에이전트 티어(예: `model="flash"`)는 외부 세션 모델에서 실행됩니다(agy 자신의 해석이며, 메시는 대체하지 않습니다). 네이티브 static id는 레지스트리에 그 id가 정확히 등록되어 있을 때만 서비스되고, 없으면 모델명을 명시한 404를 돌려줍니다. 즉 티어를 고른다고 그 세션에서 더 싼 네이티브 모델로 떨어지지는 않습니다.
+10. **순수 네이티브 경로는 의도적으로 환경 변수의 키를 그대로 씁니다.** 하이브리드 프로필도 브리지도 없는 평범한 `agy`는 자식 프로세스에 ambient 환경(네이티브 AI-Studio 키 포함)을 그대로 물려줍니다. 이것은 shim을 끼우지 않은 네이티브 agy의 본래 동작이며, 공존 경로(P1, P2, 두 네이티브 폴백, 피커, `agy models`, fanout 네이티브 좌석)는 대신 자식 환경을 정리합니다.
+11. **P2의 `context_window`는 라우팅에 영향을 주지 않습니다.** 메시는 customModels 키에서 나온 bare slug로 라우팅하고, 실제 컨텍스트 윈도우는 외부 프로바이더가 정합니다. P1 카탈로그의 `max_tokens` 하한은 P1에 나열된 모델에 대한 실행 하드실패 가드이며, 레지스트리 `contextLength`가 0이거나 매우 작은 P2 실행은 미검증(G5에서 다루지 않음)이므로 0에 가까운 값은 피하는 것이 좋습니다.
+
 ### 추가되는 기능
 
 | 기능 | 명령 |
 |---|---|
-| 2초 인터랙티브 모델 런처 | 인자 없는 `agy` |
+| 2초 인터랙티브 모델 런처 (옵트인) | `AGY_LAUNCHER=1 agy` |
 | 네이티브+외부 통합 모델 목록 | `agy pro models --all`, 런처 `[2]` |
 | 네이티브 `/model` 픽커 안의 외부 모델 | `agy -b`, `agy -m "<모델> (<프로바이더>)"`, `AGY_PRO_BRIDGE=1` |
+| agy 자체 세션 안에서 외부 프로바이더 (피커 공존, 서브에이전트 불가) | `agy pro hybrid on p1` |
+| agy 자체 세션 안에서 외부 + 서브에이전트 (세션 중 `/model` 미노출) | `agy pro hybrid on p2` |
 | 시작 프로필 고정 (native / gateway / prompt) | `agy pro config default-profile <값>` |
 | 외부 모델용 게이트웨이 도구 루프 (기본 읽기 전용) | `agy pro config bridge-tools read,search`, `agy pro config show` |
 | 프로필 전환 (full-stack / clean) | `agy pro mode full`, `agy pro mode clean` |
@@ -420,7 +458,7 @@ XOR 경계는 그대로이고 명령 본문에 plainly 명시됩니다: 이건 �
 
 `agy pro doctor`는 등록된 프로바이더 키를 토큰을 쓰지 않고 업스트림으로 probe(`GET <baseURL>/models`, 5초 타임아웃)하여 프로바이더별 결과를 마스킹해 표시합니다 (`valid` / `invalid` / `indeterminate` / `SKIP`). 키 값은 항상 앞 5글자 + `****` 형태로만 표시됩니다(5글자 이하는 `****`, 뒤쪽 일부를 노출하는 일은 없습니다). `agy pro doctor --fix-keys`는 probe를 `valid`로 통과한 BOM 변형 이름을 정상 이름으로 복원하고(실행 전 백업 생성), `agy pro doctor --rollback-keys <디렉터리>`는 그 복원을 되돌립니다.
 
-`agy` 세션 안의 `/model` 팝업은 여전히 전부 아니면 전무(네이티브 XOR 외부)입니다. 네이티브 모델과 브릿지 모델을 한 팝업에 함께 넣는 것은 바이너리 차원에서 불가능합니다. 세션 안에서 가장 가까운 방법은 `google`(AI Studio) 프리셋을 등록한 뒤 `default_profile = gateway`로 두는 것이고(Gemini 2.5 + 외부 모델 동시 표시), 네이티브까지 포함한 전체 목록은 agy-pro 계층(`agy pro models --all`, 런처 `[2]`, `agy pro swarm`)에서 확인합니다.
+`agy` 세션 안의 `/model` 팝업은 게이트웨이 기준으로 여전히 전부 아니면 전무(네이티브 XOR 외부)입니다. 다만 네이티브 공존 프로필 P1(`agy pro hybrid on p1`)을 쓰면 등록한 외부 모델이 agy 자체 `/model` 카탈로그에 올라 agy 자체 도구 엔진에서 돕니다(단, 메시가 서비스하는 카탈로그는 외부 전용 P1-lite이고 이 경로에서는 서브에이전트를 쓸 수 없으며, 자세한 내용은 위 "네이티브 공존" 절을 참고). 네이티브와 외부를 한 팝업에 병합하는 것은 이번 릴리스의 더 큰 비전으로 G8 TUI 게이트에서만 검증되므로 시각 미검증(UNVERIFIED)으로 남습니다. 세션 안에서 가장 가까운 방법은 `google`(AI Studio) 프리셋을 등록한 뒤 `default_profile = gateway`로 두는 것이고(Gemini 2.5 + 외부 모델 동시 표시), 네이티브까지 포함한 전체 목록은 agy-pro 계층(`agy pro models --all`, 런처 `[2]`, `agy pro swarm`)에서 확인합니다.
 
 자세한 내용: [`agy-pro/README.md`](agy-pro/README.md), [`agy-pro/docs/bridge-architecture.md`](agy-pro/docs/bridge-architecture.md), [`agy-pro/docs/swarm-hybrid.md`](agy-pro/docs/swarm-hybrid.md).
 

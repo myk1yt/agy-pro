@@ -36,11 +36,12 @@ agy pro fanout --task review --seats "native:gemini-3.8-flash-high,nw/glm-5.3-fl
 
 ### 1.2 How a native seat runs
 
-`<real agy> --model <model-id> -p "<seat prompt>" --print-timeout <budget>s`
+`<real agy> --model <model-id> --disable-slash-commands -p "<seat prompt>" --print-timeout <budget>s`
 
 - `<real agy>` uses the same resolution order as the launcher: `AGY_PRO_REAL_AGY` > `PATH` scan (the shim
   itself is excluded) > `%LOCALAPPDATA%\agy\bin\agy.exe`.
-- The prompt is the task preset plus your prompt; multi-line prompts travel over `-p` argv (verified
+- The prompt is the seat-role preamble (anti-nesting control, `buildNativeSeatPrompt`) first, then the task
+  preset system prompt, then your text; multi-line prompts travel over `-p` argv (verified
   byte-faithful on `agy` 1.3.3). If the resolved binary is a `.cmd`/`.bat` wrapper, a multi-line prompt
   automatically switches to stdin transport.
 - The seat's working directory is the swarm root (`--root`), so a native seat analyzes the same workspace as
@@ -125,7 +126,7 @@ Numbered inventory:
 === tools & budget ===   (1. task / 2. tools / 3. timeout / 4. prompt)
 
 === preview ===
-  agy pro fanout --task review --seats native:gemini-3.8-flash-high,... --root . --timeout 120 ...
+  agy pro fanout --task review --seats native:gemini-3.8-flash-high,... --root . --timeout 300 ...
 Enter runs it.  c = copy/print only.  1-4 = edit that field.  q = quit.
 ```
 
@@ -159,7 +160,7 @@ agy pro swarm --template code-review --seats "p3" --prompt-file - --timeout 300
 stdin); an empty prompt falls back to the template scaffold.
 
 Templates: `code-review` (`--task review`, `read,search`), `security-audit` (`--task security`, `read,search`
-plus adversarial framing), `custom`. Default timeout 120s (the fanout CLI default).
+plus adversarial framing), `custom`. Default timeout 300s (the fanout CLI default).
 
 ---
 
@@ -197,7 +198,8 @@ agy pro models           # unchanged legacy output (providers, models, capabilit
 
 ### 3.1 Launcher picker
 
-Bare `agy` on a terminal with at least one registered model shows the 2-second launcher. Choosing `[2]`
+Bare `agy` on a terminal with at least one registered model shows the 2-second launcher when
+`AGY_LAUNCHER=1` is set (the default bare launch goes straight to native). Choosing `[2]`
 ("External Models") now opens the combined picker — the same numbered list:
 
 - a **native** number execs real `agy` natively with `--model <id>`, no bridge, gateway variables scrubbed;
@@ -292,7 +294,7 @@ Visit https://www.reddit.com/r/GoogleAntigravityCLI/! A space for antigravity-cl
 It is rendered exactly once per interactive launcher invocation, right after the `===` header and before the
 `[1]/[2]/[3]` options. It cannot appear in print mode (`-p`/`--print`/`--prompt`), in piped/non-TTY runs, in
 any `agy pro ...` subcommand, or in machine output (`summary.json`, `models --json`), because the launcher
-only runs for a bare `agy` on a TTY with at least one registered model.
+only runs for a bare `agy` with `AGY_LAUNCHER=1` on a TTY with at least one registered model.
 
 ---
 
@@ -312,13 +314,30 @@ changed is who rules on disputes and how the ruling is recorded:
 
 ## 8. What is NOT available
 
-- **One `/model` popover with native + external models together: still impossible.** Inside an interactive
-  `agy` session, `/model` is an all-or-nothing switch — the binary replaces the whole catalog when
-  `AGY_LLM_GATEWAY_MODELS` is set (`agy-pro/docs/bridge-architecture.md` §1). The combined list lives at the
-  `agy-pro` layer: `agy pro models --all`, the launcher picker, and `agy pro swarm`.
+- **One `/model` popover that MERGES native + external models: still not shipped.** The gateway is an
+  all-or-nothing switch — the binary replaces the whole catalog when `AGY_LLM_GATEWAY_MODELS` is set
+  (`agy-pro/docs/bridge-architecture.md` §1). Native coexistence profile P1 (`agy pro hybrid on p1`) does
+  put externals into agy's own `/model` catalog on agy's own tool engine, but the P1-lite mesh serves an
+  **external-only** catalog and P1 cannot spawn subagents (profile P2 trades the in-session `/model`
+  listing for the subagent family). The merged native+external picker is the fuller vision, verified only
+  at the G8 TUI gate (시각 미검증). The combined native + external list still lives at the `agy-pro`
+  layer: `agy pro models --all`, the launcher picker, and `agy pro swarm`
+  (`agy-pro/docs/bridge-architecture.md` §6).
 - **Gateway mode with the `google` (AI Studio) preset is the closest in-session equivalent**: `/model` then
   lists public Gemini 2.5 models next to your external models. The native Antigravity preview model
   (`gemini-3.8-flash-high`) is not published on AI Studio and cannot be proxied. See
   `agy-pro/docs/bridge-architecture.md` §2.3.
+- **A P2 subagent tier pick runs on the external session model.** In a P2 external session, an explicit
+  subagent tier pick (e.g. `model="flash"`) runs on the external session model (agy's own resolution; the
+  mesh never substitutes; a native static id is served only if that exact id is registered, else a clear
+  404 naming the model). Picking a tier is not a way to land on a cheaper native model in that session.
+- **The pure-native path intentionally keeps ambient keys.** A plain `agy` with no hybrid profile and no
+  bridge execs the child with the ambient environment (an ambient AI-Studio key included), which is what
+  unshimmed native agy has always done. Every coexistence path (P1, P2, both native fallbacks, the
+  picker, `agy models`, the fanout native seats) scrubs the child instead; the pure-native passthrough
+  deliberately does not.
+- **P2's `context_window` is cosmetic for routing.** The mesh routes by the bare slug derived from the
+  customModels key, and the external provider governs the real context window. The P1 catalog's
+  `max_tokens` floor is a run-hard-fail guard for P1's listed models; a P2 run with a zero/small registry `contextLength` is unprobed (G5 did not exercise it), so a near-zero value is best avoided.
 - **Disputes are ruled by the session main agent, not by an extra model call.** There is no automatic
   arbitration pass in `agy pro fanout`; the workflow in §7 is the shipped mechanism.

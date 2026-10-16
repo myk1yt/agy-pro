@@ -7,6 +7,10 @@ Primary evidence: [`reports/gateway-models-coexistence-experiment.md`](../../rep
 and [`reports/user-model-coexistence-ux-report.md`](../../reports/user-model-coexistence-ux-report.md)
 (both produced against `agy.exe` v1.3.3).
 
+Sections 1-5 describe the gateway/bridge path and were established against `agy.exe` v1.3.3. Sections 6
+(native coexistence) and 7 (the M4 hardened bridge) were established later, against `agy.exe` v1.3.5;
+their evidence is the design record and the blind-qa gate reports linked under Related surfaces.
+
 ---
 
 ## 1. The constraint: gateway models are an all-or-nothing switch
@@ -45,10 +49,11 @@ catalog**. The user must pick one catalog per session.
 
 `agy-pro` cannot patch `agy.exe`, so it moves the choice to three user-facing surfaces.
 
-### 2.1 Interactive Launcher (default)
+### 2.1 Interactive Launcher (opt-in)
 
-A **bare** `agy` (no arguments) in an interactive terminal, with at least one external model
-registered, shows a 2-second picker:
+A **bare** `agy` (no arguments) goes straight to the native session, zero menu and zero delay.
+With `AGY_LAUNCHER=1` set, in an interactive terminal, with at least one external model
+registered, it shows a 2-second picker instead:
 
 ```
 ===========================================================
@@ -64,7 +69,8 @@ Select [1/2/3] (Enter=default):
 Pressing `Enter` or letting the timer expire starts native `agy` with zero gateway variables and no
 delay. The community banner line is rendered here and only here: it cannot appear in print mode
 (`-p` / `--print` / `--prompt`), in piped/non-TTY runs, in any `agy pro ...` subcommand, or in machine
-output, because `ShowMenu` only runs for a bare `agy` on a TTY with at least one registered model.
+output, because `ShowMenu` only runs for a bare `agy` with `AGY_LAUNCHER=1` on a TTY with at least
+one registered model.
 
 `[2]` opens the **combined model picker** — one numbered list of native and external models (the
 `agy pro models --all` order). A native number execs real `agy` natively with `--model <id>` and a
@@ -73,7 +79,8 @@ model. `Enter` cancels the picker and keeps the legacy `[2]` bridge behavior. Se
 [`swarm-hybrid.md`](swarm-hybrid.md) §3.1.
 
 The picker belongs to the bare invocation, so any argument skips it and goes straight to the
-real binary. The documented bypasses:
+real binary. The menu is opt-in via `AGY_LAUNCHER=1`; these overrides still apply when the opt-in
+is set:
 
 | Bypass | Example |
 |---|---|
@@ -81,8 +88,11 @@ real binary. The documented bypasses:
 | explicit model or bridge flag | `-m` / `--model`, `-b` / `--bridge` |
 | one-shot prompt flag | `-p` / `--print` (`--prompt` is the upstream alias) |
 | bridge environment | `AGY_PRO_BRIDGE=1` (legacy `AGY_BRIDGE=1`) |
-| launcher switched off | `AGY_LAUNCHER=0` |
+| launcher switched off (legacy opt-out, now the default) | `AGY_LAUNCHER=0` |
 | non-interactive stdin | pipes, CI, `</dev/null` |
+
+External models and the swarm stay reachable without the launcher: `AGY_PRO_BRIDGE=1 agy` (or
+`agy -b`) for the gateway, `agy pro swarm` or the `agypro_swarm` plugin for the swarm.
 
 ### 2.2 Default Profile (`agy pro config default-profile`)
 
@@ -92,7 +102,7 @@ Users who do not want a prompt lock their startup behavior in `~/.agy-pro/state.
 - `native` — plain `agy` always boots 100% native (Antigravity subscription quota intact).
 - `gateway` — plain `agy` always starts the bridge and exposes every registered external model in
   `/model` immediately, which is the closest available equivalent to a multi-model pool.
-- `prompt` — the launcher (default).
+- `prompt` — neutral: a bare `agy` stays native; the launcher shows only with `AGY_LAUNCHER=1`.
 
 ### 2.3 Google AI Studio preset — how to get Gemini and external models in ONE `/model` list
 
@@ -164,10 +174,13 @@ Studio, so it cannot be proxied. Preserving that model requires native mode (lau
 
 | Goal | Possible | How |
 |---|---|---|
-| Native Gemini 3.8 preview with full subscription quota | yes | native mode (launcher `[1]` / `default_profile = native`) |
-| External models inside `agy /model` | yes | `-b` / `-m <external>` / `default_profile = gateway` |
-| External + public Gemini in one `/model` list | yes | register the `google` preset, then `default_profile = gateway` |
-| External + native Gemini 3.8 preview in one `/model` list | no | binary-level XOR; requires patching `agy.exe` |
+| Native Gemini 3.8 preview with full subscription quota | yes | native mode (launcher `[1]` / `default_profile = native`), or no hybrid profile |
+| External models inside `agy /model` | yes | gateway (`-b` / `-m <external>` / `default_profile = gateway`), **or** native coexistence P1 (`agy pro hybrid on p1`) |
+| Externals in agy's own catalog on agy's own tool engine (no bridge tool loop, no settings write) | yes | native coexistence P1; cost: no subagents on that path |
+| Externals **plus** the subagent family in one session | yes | native coexistence P2 (`agy pro hybrid on p2`); cost: externals are not in the in-session `/model`, subscription Gemini is off |
+| External + public Gemini 2.5 in one `/model` list | yes | register the `google` preset, then `default_profile = gateway` |
+| External + native Gemini 3.8 preview **merged** in one `/model` list | no | P1-lite serves an external-only catalog; the merged picker is the fuller vision, verified only at the G8 TUI gate (시각 미검증) |
+| Subscription Gemini + externals in one picker | no (this release) | needs the M1 relay, which needs explicit user approval and is not in this release |
 | All native + external models in one agy-pro list (outside the session) | yes | `agy pro models --all`, launcher picker `[2]`, `agy pro swarm` ([`swarm-hybrid.md`](swarm-hybrid.md)) |
 
 ---
@@ -241,7 +254,134 @@ is an accepted v1 trade-off: the bridge keeps the audit log, `agy` keeps a clean
 
 ---
 
-## 6. Related surfaces
+## 6. Native coexistence: externals inside agy's own session (profiles P1 / P2)
+
+The gateway (§1-§5) is XOR and routes externals through a walled `"Gateway"` provider catalog with the
+bridge's own local tool loop. Native coexistence is a different mechanism: it runs externals **inside
+agy's own native session** — agy's own catalog composition and agy's own tool engine — with **no agent
+mediation** (the user selects; agy drives; a local mesh translates the wire; no MCP server or side
+channel exists). Design record:
+[`NATIVE_COEXISTENCE_DESIGN.md`](../../../docs/261014_0006_session_native-coexistence-design/NATIVE_COEXISTENCE_DESIGN.md).
+
+### 6.1 One session, one client path
+
+agy's binary splits its client paths, and the split forces an either/or **per session** — a binary fact
+proven by live probe against v1.3.5, not a design choice:
+
+- The **CodeAssist** client path (`/v1internal`, entered via `CLOUD_CODE_URL`) composes its catalog from
+  the mesh's `fetchAvailableModels` and attaches **11 tools with no subagent family**. This is P1's path.
+- The **genai** client path (gemini mode, entered via `GOOGLE_GEMINI_BASE_URL`) attaches the **full
+  13-tool set including the subagent family** (`invoke_subagent` / `define_subagent` / `manage_subagents`).
+  This is P2's path.
+
+The subagent family exists only on the genai path; catalog composition (externals in agy's own `/model`)
+is proven on the CodeAssist path. So picker coexistence and subagent spawning cannot share one process.
+The user picks one profile per session; a named-model question inside a native session is served by
+switching the session model, and parallel multi-model work goes to the swarm (separate processes).
+
+### 6.2 Profile P1 — picker coexistence (`CLOUD_CODE_URL` → local `/v1internal` mesh)
+
+The shim starts a per-session mesh on an ephemeral loopback port, health-gates it, then execs the real
+`agy` with `CLOUD_CODE_URL=http://127.0.0.1:<port>`. **No settings file is written** (the only injected
+state is that one env var). `agy` composes its `/model` catalog from the mesh's `fetchAvailableModels`,
+so the registered externals appear in agy's own picker and run on agy's own 11-tool engine, with agy
+executing the tool calls locally (proven live, gate G4: `agy models` lists the externals, each selectable
+and runnable with per-model wire metadata, and a real `view_file` round-trip executes locally).
+
+- The mesh serves an **external-only** catalog (the "P1-lite" shape): the session's `/model` is the
+  externals you registered. Each entry carries a synthesized enum (9001+), membership in an
+  `agent_model_sorts` group, a non-empty `display_name` (`"<id> (<Provider>)"`), and a `max_tokens`
+  value at or above the ~25k floor; a cross-provider duplicate id is dropped fail-closed with a logged
+  reason, never a duplicate enum.
+- **Cost:** the CodeAssist path attaches no subagent family, so a P1 session cannot spawn subagents at
+  all (a mesh-emitted `invoke_subagent` dies in agy's local tool validation as an unknown tool).
+  Subagents are what P2 is for.
+- The interactive TUI experience (picker contents, mid-session switching between externals, tool cards,
+  approvals) is verified only by the G8 manual test script and is **시각 미검증 (UNVERIFIED)** until that
+  script runs.
+
+### 6.3 Profile P2 — subagent profile (`--app_data_dir` + gemini mode → local public-Gemini-wire mesh)
+
+The shim creates a per-session app-data dir (`--app_data_dir agy-hybrid-<id>`), writes
+`modelProvider:"gemini"` plus the managed `customModels` map into **that** per-session settings file
+(atomic write, timestamped backup, managed-key ledger; the global settings file is byte-identical
+afterward), starts the mesh on an ephemeral port, and execs `agy` with `GOOGLE_GEMINI_BASE_URL=<mesh>` +
+`GEMINI_API_KEY=<per-spawn nonce>`. Externals are selected **at launch** — the launcher picker for a
+bare TTY session, or `--model <key/id>` — and pinned so the session never lands on a static default by
+accident. The genai path attaches the full 13-tool set, and a subagent invoked with the default
+`inherit` runs on the external session model (the R6 proof; proven live, gate G5).
+
+Costs, stated plainly:
+
+- Externals are **not** listed in agy's in-session `/model`. A P2 session lists the 11 static Gemini
+  defaults; changing the external means relaunching with another `--model`.
+- Subscription Gemini is **off** in the session (contained by the per-session app-data dir). This is the
+  gemini-mode trade.
+- **Static-id policy:** a native/static id is served only if that exact id is in the registry (billed to
+  the configured provider); otherwise a clear Gemini-shaped **404 naming the model** — never a silent
+  substitution to an external.
+
+### 6.4 Credential safety (both profiles)
+
+Provider keys are resolved **in-process by NAME** and never placed in the child environment, logs, or
+settings files. Before exec the child environment is scrubbed of every `*_API_KEY`-shaped name plus the
+registry's configured key names. On P2 the mesh authenticates the child with a per-spawn 64-hex install
+nonce (never a real key). On P1 agy's own keyring bearer reaches the mesh passively and is **discarded,
+never forwarded**. The bridge's session key (§3) is server-side-only and never validated against a
+provider. Verified live in gates G4/G5/G6: the provider key VALUE appears in zero local sinks (child
+env, mesh audit, agy log, settings file); only header names are ever logged.
+
+### 6.5 Honest limits and accepted residuals
+
+1. One session, one client path (P1 XOR P2); you choose per session.
+2. Per-subagent external model binding is impossible on 1.3.5 (closed tier enum; a tier-only `model`
+   frontmatter field). `inherit` is the mechanism; named-role ↔ model parallelism lives in the swarm.
+3. Subscription Gemini + externals in one picker needs the M1 relay, which needs explicit user approval
+   and is **not** in this release.
+4. P1's `/v1internal` posture is passive (bearer received and discarded); bounded by loopback-only bind,
+   an ephemeral port, a 60 req/min limiter, session lifetime, and a names-only audit log.
+5. `go test -race` is not runnable on the dev machine (no C compiler) — an environmental degradation,
+   not a PASS; not claimed here.
+6. The conversation-title (housekeeping) turn is answered locally and never spends provider quota (a
+   G10 fix; before it the title turn was 38% of provider traffic).
+7. The agy auto-updater makes a non-generation network contact even with `AGY_CLI_DISABLE_AUTO_UPDATE=1`;
+   all generation traffic stays on loopback, so "zero Google traffic" is scoped to generation only.
+8. The G8 TUI gate is 시각 미검증 (UNVERIFIED) pending the manual test script; the automated gates
+   G4/G5/G6/G10 carry live print-mode evidence. G11 (auto-update restart) is NOT-TESTED with reason (no
+   update was available to trigger).
+9. A P2 subagent tier pick runs on the external session model. In a P2 external session, an explicit
+   subagent tier pick (e.g. `model="flash"`) runs on the external session model (agy's own resolution;
+   the mesh never substitutes; a native static id is served only if that exact id is registered, else a
+   clear 404 naming the model). Picking a tier is not a way to land on a cheaper native model in that
+   session.
+10. The pure-native path intentionally keeps ambient keys. A plain `agy` with no hybrid profile and no
+    bridge execs the child with the ambient environment (an ambient AI-Studio key included), which is
+    what unshimmed native agy has always done. Every coexistence path (P1, P2, both native fallbacks,
+    the picker, `agy models`, the fanout native seats) scrubs the child instead; the pure-native
+    passthrough deliberately does not.
+11. P2's `context_window` is cosmetic for routing. The mesh routes by the bare slug derived from the
+    customModels key, and the external provider governs the real context window. The P1 catalog's
+    `max_tokens` floor is a run-hard-fail guard for P1's listed models; a P2 run with a zero/small registry `contextLength` is unprobed (G5 did not exercise it), so a near-zero value is best avoided.
+
+---
+
+## 7. M4 hardened bridge (the gateway path, hardened)
+
+The gateway/bridge path stays **XOR** and agy's gateway client stays **tool-less** on 1.3.5 —
+`WIRE_PROTOCOL=gemini` is unsupported, so the gateway remains an escape hatch, not the native-coexistence
+path (V8). The M4 work therefore hardens the bridge's local tool loop (§5) without widening the gateway.
+All four items are test-pinned in `internal/bridge`:
+
+| Item | What changed |
+|---|---|
+| Streaming during tool turns | the loop streams incrementally instead of buffering a whole tool turn before forwarding |
+| Cross-turn usage sum | the synthesized final answer reports the cumulative `usage` (main turn + tool turns), not just the last turn |
+| Main-child env scrub | closes the known main↔child environment asymmetry so a key cannot ride one side only |
+| 32 MB outbound body cap | an over-cap outbound body fails loudly with a clear error and the provider is **never contacted** (never silently truncated); the same 32 MB ceiling as the inbound upstream response cap (`openaiup.MaxBodyBytes = 32 << 20`) |
+
+---
+
+## 8. Related surfaces
 
 - **Combined model list (outside the session)**: `agy pro models --all`, the launcher picker `[2]`, and
   the `agy pro swarm` builder — [`swarm-hybrid.md`](swarm-hybrid.md) §3.
@@ -250,3 +390,7 @@ is an accepted v1 trade-off: the bridge keeps the audit log, `agy` keeps a clean
   `agy pro settings ...` verbs through numbered menus and never contains or launches the panel —
   [`swarm-hybrid.md`](swarm-hybrid.md) §4.
 - **Key masking**: first 5 characters followed by `****` wherever a key is displayed (§3 above).
+- **Native-coexistence design + gate evidence**:
+  [`NATIVE_COEXISTENCE_DESIGN.md`](../../../docs/261014_0006_session_native-coexistence-design/NATIVE_COEXISTENCE_DESIGN.md);
+  blind-qa gate reports (G4/G5/G6/G10/G11) and the G8 manual test script under
+  `docs/261014_0007_session_hybrid-impl/`.

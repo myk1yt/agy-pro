@@ -97,7 +97,7 @@ flowchart TD
 | [`Agent/security-reviewer`](https://github.com/myk1yt/agy-tools/tree/Agent/security-reviewer) | **Enterprise Multi-Agent Security Audit** | `@security-reviewer` orchestrator + 4 domain inspectors (OWASP, IAM, Credentials, Supply Chain) | `git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-security-reviewer.ps1` | `cmd /c "git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-security-reviewer.ps1"` | `git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install-security-reviewer.sh` |
 | [`Agent/code-reviewer`](https://github.com/myk1yt/agy-tools/tree/Agent/code-reviewer) | **Pre-Merge Code Review & Quality Gate** | `@code-reviewer` agent, 4-stage pipeline, 8-category taxonomy, zero-tolerance P0-P3 gate | `git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-code-reviewer.ps1` | `cmd /c "git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-code-reviewer.ps1"` | `git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install-code-reviewer.sh` |
 | [`gemini-config`](https://github.com/myk1yt/agy-tools/tree/gemini-config) | **Autonomous Multi-Agent Governance** | 7-Stage Lifecycle Protocol, Master Zero-Source-Edit Invariant, orchestrator governance | `git clone -b gemini-config https://github.com/myk1yt/agy-tools.git && cd agy-tools && scripts\install.bat` | `cmd /c "git clone -b gemini-config https://github.com/myk1yt/agy-tools.git && cd agy-tools && scripts\install.bat"` | `git clone -b gemini-config https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install.sh` |
-| [`feature/agy-pro`](https://github.com/myk1yt/agy-tools/tree/feature/agy-pro) | **Go Shim & Multi-Model Swarm (`agy-pro`)** | Transparent `agy` shim, 2-second model launcher with a combined native + external model list, external-model bridge, numbered swarm builder with hybrid native seats, `agy pro` suite (setup / mode / models / swarm / settings / fanout / doctor), one-click Windows install & uninstall (Windows only) | `git clone -b feature/agy-pro https://github.com/myk1yt/agy-tools.git && cd agy-tools && install.cmd` | `cmd /c "git clone -b feature/agy-pro https://github.com/myk1yt/agy-tools.git && cd agy-tools && install.cmd"` | — |
+| [`feature/agy-pro`](https://github.com/myk1yt/agy-tools/tree/feature/agy-pro) | **Go Shim & Multi-Model Swarm (`agy-pro`)** | Transparent `agy` shim, opt-in 2-second model launcher (`AGY_LAUNCHER=1`) with a combined native + external model list, external-model bridge, numbered swarm builder with hybrid native seats, `agy pro` suite (setup / mode / models / swarm / settings / fanout / doctor), one-click Windows install & uninstall (Windows only) | `git clone -b feature/agy-pro https://github.com/myk1yt/agy-tools.git && cd agy-tools && install.cmd` | `cmd /c "git clone -b feature/agy-pro https://github.com/myk1yt/agy-tools.git && cd agy-tools && install.cmd"` | — |
 | [`dashboard`](https://github.com/myk1yt/agy-tools/tree/dashboard) | **Historical Prototype** | Original token tracker foundation (fully merged into `main`) | — | — | — |
 
 > [!TIP]
@@ -386,7 +386,7 @@ If the `where` output does not point at `AppData\Roaming\npm`, the old copy is s
 
 ## 🚀 agy-pro: Go Shim, Model Launcher & Swarm Orchestrator
 
-`agy-pro/` is a Go shim that wraps the authentic `agy` binary. It keeps the native TUI, stdio handles, and exit codes intact, and adds a model launcher with a combined native + external model list, a local bridge for external OpenAI-compatible models, profile switching, a numbered swarm builder with hybrid native seats, and one settings panel for everything. Go standard library only.
+`agy-pro/` is a Go shim that wraps the authentic `agy` binary. It keeps the native TUI, stdio handles, and exit codes intact, and adds an opt-in model launcher (`AGY_LAUNCHER=1`) with a combined native + external model list, a local bridge for external OpenAI-compatible models, profile switching, a numbered swarm builder with hybrid native seats, and one settings panel for everything. Go standard library only.
 
 ### 📋 Copy & Paste Install (Windows)
 
@@ -421,10 +421,11 @@ Variants, appended to the same line or run from a clone: `-KeepState` removes th
 
 ```bash
 agy pro setup          # register a provider (OpenRouter, DeepSeek, Groq, Google AI Studio, ...)
-agy                    # 2-second picker: [1] Native Gemini  [2] External Models  [3] Swarm
+agy                    # default: straight to native Gemini, zero delay
+AGY_LAUNCHER=1 agy     # opt in: 2-second picker [1] Native Gemini  [2] External Models  [3] Swarm
 ```
 
-The picker belongs to a **bare** `agy` (no arguments): any argument skips it and goes straight to the real binary. Registering a provider is enough to get the launcher. The launcher also prints one community line at startup (`Visit https://www.reddit.com/r/GoogleAntigravityCLI/! A space for antigravity-cli users. Remember r/GoogleAntigravityCLI`); it appears only in the interactive launcher, never in `-p`/piped/machine output. To skip the prompt:
+The picker belongs to a **bare** `agy` (no arguments) with `AGY_LAUNCHER=1` set: any argument skips it and goes straight to the real binary, and without the opt-in the bare launch is native with zero delay. The launcher also prints one community line at startup (`Visit https://www.reddit.com/r/GoogleAntigravityCLI/! A space for antigravity-cli users. Remember r/GoogleAntigravityCLI`); it appears only in the interactive launcher, never in `-p`/piped/machine output. External models and the swarm are also reachable without the launcher (`AGY_PRO_BRIDGE=1 agy`, `agy pro swarm`, the `agypro_swarm` plugin). Profile and per-run overrides:
 
 ```bash
 agy pro config default-profile gateway   # every `agy` run exposes all registered models in /model
@@ -481,7 +482,7 @@ The XOR boundary is unchanged and stated plainly: this is a command/tool action 
 
 | Capability | Command |
 |---|---|
-| Interactive 2-second model launcher | bare `agy` (no arguments) |
+| Interactive 2-second model launcher (opt-in) | `AGY_LAUNCHER=1 agy` |
 | Combined native + external model list | `agy pro models --all`, launcher `[2]` |
 | External models inside the native `/model` picker | `agy -b`, `agy -m "<model> (<provider>)"`, `AGY_PRO_BRIDGE=1` |
 | Default startup profile (native / gateway / prompt) | `agy pro config default-profile <value>` |
