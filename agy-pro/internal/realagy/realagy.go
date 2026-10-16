@@ -140,9 +140,32 @@ func ResolveWith(selfPath, envReal, pathEnv, fallback string) (string, error) {
 }
 
 // fixedScrubNames are always removed from a real-agy child environment:
-// the four gateway vars (launcher.go:504-509 — a native seat must never be
-// diverted into gateway mode, F-ENV) and the explicit-bridge vars
-// (launcher.go:443, defense-in-depth).
+// the four gateway vars (BuildGatewayEnv, launcher.go:488-493 — a native seat
+// must never be diverted into gateway mode, F-ENV), the explicit-bridge vars
+// (ShouldActivateBridge, launcher.go:427, defense-in-depth), the ambient Gemini
+// credentials, and the two redirect URLs.
+//
+// GEMINI_API_KEY / GOOGLE_API_KEY: an ambient key in the user's shell must
+// never ride into a native or hybrid child. Spec §10.3 mandates scrubbing both
+// (agy prefers GOOGLE_API_KEY when both are set, so an inherited value
+// overrides the shim's own injection); design F-16/R8 requires the clean
+// credential posture. providers.GoogleAIStudioKeyEnv is the SAME name from the
+// registry side (presets.go:31) — the collision is deliberate and disclosed.
+//
+// GOOGLE_GEMINI_BASE_URL / CLOUD_CODE_URL: an inherited value must never divert
+// a "pure native" child (the native fallback at hybrid/launch.go:20-32, whose
+// notice promises "no mesh, no CLOUD_CODE_URL") onto a foreign endpoint, and
+// must never divert a P2 gemini-mode child off the shim's mesh. Real agy honors
+// both (wirecheck canaries cloud_code_url_env / env_google_gemini_base_url).
+//
+// P2 INJECTION ORDER (spec §2 P2, mandatory): the P2 front door execs the child
+// with GOOGLE_GEMINI_BASE_URL=<mesh URL> + GEMINI_API_KEY=<install nonce>, and
+// BOTH must be appended AFTER this scrub (setEnvKV last-wins dedup,
+// launcher.go:524-540). Scrub-then-append is what removes the user's real key
+// and still lets the nonce win; appending before the scrub would delete the
+// nonce, and scrubbing after would delete the user's key but leave the nonce
+// dependent on exec's dedup. internal/hybrid has no p2.go yet, so the order is
+// pinned only by TestCleanChildEnv_AppendAfterScrubInjectionLands here.
 var fixedScrubNames = []string{
 	"AGY_LLM_GATEWAY_URL",
 	"AGY_LLM_GATEWAY_WIRE_PROTOCOL",
@@ -150,13 +173,58 @@ var fixedScrubNames = []string{
 	"AGY_LLM_GATEWAY_MODELS",
 	"AGY_PRO_BRIDGE",
 	"AGY_BRIDGE",
+	"GEMINI_API_KEY",
+	"GOOGLE_API_KEY",
+	"GOOGLE_GEMINI_BASE_URL",
+	"CLOUD_CODE_URL",
 }
 
-// normalizeEnvName folds an environment-variable name to its clean form:
-// every U+FEFF anywhere in the name is removed and surrounding whitespace is
-// trimmed (normalizeEnvName-equivalent, providers/envkeys.go:36-39, F-Db).
+// normalizeEnvName folds an environment-variable name to its canonical
+// comparison form: every U+FEFF anywhere in the name is removed, surrounding
+// whitespace is trimmed, and the name is lower-cased
+// (normalizeEnvName-equivalent, providers/envkeys.go:36-39, F-Db, plus the
+// case fold).
+//
+// The case fold is load-bearing (round-4 M-1): Windows environment names are
+// case-insensitive (os.Getenv resolves "nw_api_key" for a stored "NW_API_KEY")
+// while os.Environ preserves the stored case, so an exact-case comparison let a
+// case variant of a key name walk straight into the child, where agy and
+// everything it spawns (agent tools, MCP servers — the S-3 threat model) reads
+// it case-insensitively. Folding is applied to BOTH sides of the comparison
+// because both go through here. It is unconditional (not Windows-gated) so the
+// behavior is platform-independent and pinnable: the scrub set holds only key,
+// gateway, and redirect names, so over-scrubbing a case variant of a benign
+// name is impossible. Precedents: launcher.go:524-540 (setEnvKV,
+// strings.EqualFold) and wirecheck/version.go:47-59 (nameInAllowList).
 func normalizeEnvName(name string) string {
-	return strings.TrimSpace(strings.ReplaceAll(strings.TrimSpace(name), envBOM, ""))
+	return strings.ToLower(strings.TrimSpace(strings.ReplaceAll(strings.TrimSpace(name), envBOM, "")))
+}
+
+// apiKeyNameSuffix is the case-folded suffix that marks an environment variable
+// as a provider API-key VALUE. CleanChildEnvWithBase scrubs ANY name ending in
+// it, not only the registry apiKeyEnv names and the compiled presets, so the
+// recurring S-3 class is closed for every current and future *_API_KEY-shaped
+// provider - including an ambient key whose provider is absent from
+// providers.json AND is not a compiled preset (e.g. CHARM_API_KEY on a machine
+// that configures only nw). Name-based scrubbing alone cannot see such a key
+// (round-7 Finding 1 / M4F-1); the shape rule can.
+//
+// Why it is safe to scrub every *_API_KEY from a real-agy child: the child
+// never needs a provider key VALUE in any mode. Native seats use agy's keyring;
+// P1/P2 use the local mesh + the install nonce; the bridge uses the per-session
+// AGY_LLM_GATEWAY_API_KEY; and keys are otherwise resolved in-process from their
+// env-var NAME (Provider.KeyValue). The two *_API_KEY names a child DOES need
+// (GEMINI_API_KEY, AGY_LLM_GATEWAY_API_KEY) are already in fixedScrubNames and
+// are re-appended AFTER this scrub by their callers (the P2 install nonce,
+// BuildGatewayEnv), so the suffix rule never drops a value the child must keep.
+// normalizeEnvName already lower-cases, so the suffix is compared lower-case.
+const apiKeyNameSuffix = "_api_key"
+
+// isProviderKeyName reports whether an already-normalized env-var name is a
+// provider API-key name by shape (ends in apiKeyNameSuffix). It complements the
+// explicit scrub set so an undeclared *_API_KEY key cannot ride into a child.
+func isProviderKeyName(normalizedName string) bool {
+	return strings.HasSuffix(normalizedName, apiKeyNameSuffix)
 }
 
 // CleanChildEnv builds the environment for ANY real-agy child process this
@@ -165,12 +233,22 @@ func normalizeEnvName(name string) string {
 //	os.Environ()
 //	MINUS AGY_LLM_GATEWAY_URL / _WIRE_PROTOCOL / _API_KEY / _MODELS
 //	MINUS AGY_PRO_BRIDGE / AGY_BRIDGE
+//	MINUS GEMINI_API_KEY / GOOGLE_API_KEY / GOOGLE_GEMINI_BASE_URL / CLOUD_CODE_URL
 //	MINUS every name in scrubNames AND every BOM-variant of those names (F-Db):
 //	      an env entry is scrubbed when normalizeEnvName(entryName) equals
 //	      normalizeEnvName(scrubName) — U+FEFF stripped anywhere, whitespace
-//	      trimmed (envkeys.go:36-39 pattern; BOM-polluted names are real in
-//	      this codebase, envkeys.go:6-10)
-//	PLUS  AGY_PRO_ACTIVE=1 (paths.go:27 latch; guard at launcher.go:147-149)
+//	      trimmed, case folded (envkeys.go:36-39 pattern; BOM-polluted names are
+//	      real in this codebase, envkeys.go:6-10; Windows env names are
+//	      case-insensitive, round-4 M-1)
+//	MINUS every *_API_KEY-shaped name (isProviderKeyName), so an ambient key
+//	      whose provider is neither a preset nor configured is scrubbed too
+//	      (M4F-1; see apiKeyNameSuffix for why this is safe)
+//	PLUS  AGY_PRO_ACTIVE=1 (paths.go:27 latch; guard at launcher.go:58-60)
+//
+// Anything a caller must inject (P1's CLOUD_CODE_URL=<mesh>, P2's
+// GOOGLE_GEMINI_BASE_URL + GEMINI_API_KEY=<install nonce>) is appended AFTER
+// this call: the scrub removes the inherited value, the append replaces it
+// (see the P2 INJECTION ORDER note on fixedScrubNames).
 func CleanChildEnv(scrubNames []string) []string {
 	return CleanChildEnvWithBase(nil, scrubNames)
 }
@@ -202,7 +280,12 @@ func CleanChildEnvWithBase(base []string, scrubNames []string) []string {
 			out = append(out, kv)
 			continue
 		}
-		if scrub[normalizeEnvName(kv[:i])] {
+		name := normalizeEnvName(kv[:i])
+		// Scrub by explicit name (fixed set ∪ scrubNames) OR by shape: any
+		// *_API_KEY name is a provider key VALUE the child never needs, so an
+		// undeclared key whose provider is neither a preset nor configured
+		// (CHARM_API_KEY, a future vendor) is dropped too (M4F-1).
+		if scrub[name] || isProviderKeyName(name) {
 			continue
 		}
 		out = append(out, kv)
@@ -212,7 +295,10 @@ func CleanChildEnvWithBase(base []string, scrubNames []string) []string {
 
 // ApiKeyEnvNames extracts every registered provider's APIKeyEnv name — the
 // scrub list that keeps provider key VALUES out of every spawned child (S-3
-// precedent launcher.go:201-206). Registry may be nil/empty → nil.
+// precedent launcher.go:201-206). Names come back in normalizeEnvName's folded
+// form (BOM-stripped, trimmed, lower-cased), which is the form the scrub
+// comparison uses, so the case of the registry entry no longer matters.
+// Registry may be nil/empty → nil.
 func ApiKeyEnvNames(reg *providers.Registry) []string {
 	if reg == nil {
 		return nil
