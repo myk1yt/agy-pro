@@ -102,6 +102,9 @@ func verdictOf(s fanout.SeatResult) string {
 	if s.Degraded {
 		v += " (degraded)"
 	}
+	if s.Thin {
+		v += " (thin)"
+	}
 	return v
 }
 
@@ -140,7 +143,7 @@ func (b *Builder) Run() int {
 		Seats:      seats,
 		Root:       b.Root,
 		Prompt:     tmpl.PromptScaffold,
-		TimeoutSec: DefaultTimeoutSec,
+		TimeoutSec: fanout.DefaultTimeoutSec,
 	}
 	for {
 		b.printBudgetAndPreview(out, spec)

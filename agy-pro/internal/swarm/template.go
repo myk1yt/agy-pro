@@ -11,10 +11,6 @@ package swarm
 
 import "strings"
 
-// DefaultTimeoutSec is the swarm execution budget when no override is given.
-// It matches the fanout CLI default (`-timeout`, internal/fanout/cli.go).
-const DefaultTimeoutSec = 120
-
 // Template is one swarm task template (contract U3):
 // code-review -> {review, read,search}, security-audit -> {security, read,search
 // + adversarial framing}, custom.

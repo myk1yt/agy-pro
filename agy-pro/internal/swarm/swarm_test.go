@@ -56,13 +56,13 @@ func TestBuildFanoutArgsGolden(t *testing.T) {
 func TestBuildFanoutArgsDefaults(t *testing.T) {
 	tmpl := Templates()[1] // security-audit (adversarial scaffold)
 	got := BuildFanoutArgs(tmpl, nil, "", "", 0)
-	// -root falls back to ".", -timeout to DefaultTimeoutSec, empty prompt to
-	// the template scaffold.
+	// -root falls back to ".", -timeout to the fanout CLI default (300s), empty
+	// prompt to the template scaffold.
 	want := []string{
 		"--task", "security",
 		"--seats", "",
 		"--root", ".",
-		"--timeout", "120",
+		"--timeout", "300",
 		"--tools", "read,search",
 		"--prompt", tmpl.PromptScaffold,
 		"--json",

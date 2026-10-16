@@ -25,8 +25,11 @@ var SwarmFlagNames = []string{
 }
 
 // SwarmUsage is the `agy pro swarm` usage text (A2: it documents --tools and
-// --task, the two flag equivalents of the interactive edits).
-const SwarmUsage = `Usage: agy pro swarm [options]
+// --task, the two flag equivalents of the interactive edits). The timeout
+// default is rendered from fanout.DefaultTimeoutSec (the single source of
+// truth shared with the fanout CLI flag), so the text cannot drift from the
+// constant the way the old hardcoded "120" did.
+var SwarmUsage = fmt.Sprintf(`Usage: agy pro swarm [options]
 
 Interactive (default): numbered template + seat builder (needs a TTY).
 Non-interactive (any option below present; zero prompts):
@@ -40,11 +43,11 @@ Non-interactive (any option below present; zero prompts):
                       unknown tokens are rejected). Default: the template's tools
   --task NAME         fanout task type: review|security|plan-audit|research|
                       ideas|custom (free text). Default: the template's task
-  --timeout SECONDS   swarm timeout (default 120)
+  --timeout SECONDS   swarm timeout (default %d)
   --dry-run           print the equivalent "agy pro fanout" command and exit 0
 
 Seat assignment is numbered selection in the happy path; flags are the
-power-user/CI fallback.`
+power-user/CI fallback.`, fanout.DefaultTimeoutSec)
 
 // SwarmFlags is the parsed non-interactive flag surface.
 type SwarmFlags struct {
@@ -82,7 +85,7 @@ func ParseSwarmFlags(args []string, errw io.Writer) (SwarmFlags, int) {
 		promptFile   = fs.String("prompt-file", "", "path to prompt file, or '-' for stdin")
 		toolsFlag    = fs.String("tools", "", "allowed tools: read,search,write,exec (default: the template's tools)")
 		taskFlag     = fs.String("task", "", "fanout task type (default: the template's task)")
-		timeoutFlag  = fs.Int("timeout", 0, "swarm execution timeout in seconds (default 120)")
+		timeoutFlag  = fs.Int("timeout", 0, fmt.Sprintf("swarm execution timeout in seconds (default %d)", fanout.DefaultTimeoutSec))
 		dryRunFlag   = fs.Bool("dry-run", false, "print the equivalent agy pro fanout command and exit 0")
 	)
 	if err := fs.Parse(args); err != nil {

@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"agypro/internal/fanout"
 	"agypro/internal/inventory"
 	"agypro/internal/providers"
 )
@@ -33,7 +34,7 @@ func BuildFanoutArgs(t Template, seats []inventory.Entry, root, prompt string, t
 		specs = append(specs, e.Spec)
 	}
 	if timeoutSec <= 0 {
-		timeoutSec = DefaultTimeoutSec
+		timeoutSec = fanout.DefaultTimeoutSec
 	}
 	if root == "" {
 		root = "."
@@ -58,7 +59,7 @@ func BuildFanoutArgs(t Template, seats []inventory.Entry, root, prompt string, t
 // potentially shell-metacharacter-bearing) into a copy-pasteable line.
 func BuildFanoutArgsFile(t Template, seats []inventory.Entry, root, promptFile string, timeoutSec int) []string {
 	if timeoutSec <= 0 {
-		timeoutSec = DefaultTimeoutSec
+		timeoutSec = fanout.DefaultTimeoutSec
 	}
 	if root == "" {
 		root = "."
