@@ -1,0 +1,1 @@
+{"contents":[{"role":"user","parts":[{"text":"두 도구 병렬 호출"}]},{"role":"model","parts":[{"functionCall":{"name":"view_file","args":{"path":"a.go"}}},{"functionCall":{"name":"run_command","args":{"commandLine":"ls"}}}]}]}

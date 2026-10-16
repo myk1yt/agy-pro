@@ -1,0 +1,1 @@
+[{"messages":null,"notes":["maxOutputTokens clamped from 65536 to 8192"],"params":{"max_tokens":8192},"surface_thoughts":false,"tool_choice":null,"tools":null},{"messages":null,"notes":null,"params":{"max_tokens":4096},"surface_thoughts":false,"tool_choice":null,"tools":null}]

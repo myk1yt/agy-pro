@@ -1,0 +1,1 @@
+{"contents":[{"role":"user","parts":[{"text":"도구 호출"}]},{"role":"model","parts":[{"functionCall":{"name":"view_file","args":{"path":"b.go"}}}]},{"role":"model","parts":[{"functionResponse":{"id":"resp-9","name":"view_file","response":{"output":"body-b"}}}]}]}

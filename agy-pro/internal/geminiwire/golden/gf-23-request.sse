@@ -1,0 +1,16 @@
+data: {"id":"chatcmpl-gf23","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-gf23","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_gf23","type":"function","function":{"name":"view_file","arguments":"{\"path\":\"한"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-gf23","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"국어/🚀.md\",\"mo"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-gf23","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"de\""}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-gf23","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":":\"read"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-gf23","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"}"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-gf23","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: "[DONE]"
+

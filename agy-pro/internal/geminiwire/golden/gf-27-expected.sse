@@ -1,0 +1,4 @@
+data: {"candidates":[{"content":{"role":"model","parts":[{"text":"I'm sorry, but I could not finish this turn: provider mock-provider: upstream error (HTTP 502)"}]},"index":0}]}
+
+data: {"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"STOP","index":0}]}
+

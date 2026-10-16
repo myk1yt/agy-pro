@@ -1,0 +1,4 @@
+data: {"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"id":"call_gf23","name":"view_file","args":{"mode":"read","path":"한국어/🚀.md"}}}]},"index":0}]}
+
+data: {"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"STOP","index":0}]}
+

@@ -1,0 +1,1 @@
+{"contents":[{"role":"user","parts":[{"text":"a"},{"text":""},{"text":"b"}]},{"role":"model","parts":[{"text":""}]},{"role":"model","parts":[{"functionCall":{"name":"view_file","args":{"path":"x.go"}}}]},{"role":"model","parts":[{"functionResponse":{"name":"view_file","response":{"output":"ok"}}}]}]}

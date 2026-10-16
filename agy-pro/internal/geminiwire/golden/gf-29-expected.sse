@@ -1,0 +1,4 @@
+data: {"candidates":[{"content":{"role":"model","parts":[{"text":"\u003cUSER_REQUEST\u003e안녕하세요 제목 생성 요청입니다 이 텍스트는 60룬 절단과 제어문자 제거를 함께 검"}]},"index":0}]}
+
+data: {"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":0,"candidatesTokenCount":60,"totalTokenCount":60}}
+

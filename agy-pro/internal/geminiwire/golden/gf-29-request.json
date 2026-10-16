@@ -1,0 +1,1 @@
+{"contents":[{"role":"user","parts":[{"text":"<USER_REQUEST>\n안녕하세요\u0007 제목 생성 요청입니다 이 텍스트는 60룬 절단과 제어문자 제거를 함께 검증하기 위해 충분히 길게 작성되었습니다\n</USER_REQUEST>"}]}],"generationConfig":{"thinkingConfig":{"includeThoughts":false,"thinkingBudget":0}},"systemInstruction":{"role":"user","parts":[{"text":"<stand-in title-generator system prompt>"}]}}

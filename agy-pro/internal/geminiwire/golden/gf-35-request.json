@@ -1,0 +1,1 @@
+{"contents":[{"role":"model","parts":[{"functionCall":{"name":"alpha","args":{"n":1}}},{"functionCall":{"name":"beta","args":{"n":2}}}]},{"role":"model","parts":[{"functionResponse":{"name":"beta","response":{"output":"beta-out"}}},{"functionResponse":{"name":"alpha","response":{"output":"alpha-out"}}}]}]}

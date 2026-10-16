@@ -1,0 +1,1 @@
+{"messages":[{"role":"user","content":[{"type":"text","text":"이 이미지를 설명해줘"},{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=="}}]}],"notes":null,"params":{},"surface_thoughts":false,"tool_choice":null,"tools":null}

@@ -1,0 +1,1 @@
+{"messages":[{"role":"user","content":"view_file 호출"},{"role":"assistant","tool_calls":[{"id":"call_0","type":"function","function":{"name":"view_file","arguments":"{\"path\":\"main.go\",\"startLine\":10}"}}]}],"notes":null,"params":{},"surface_thoughts":false,"tool_choice":null,"tools":null}

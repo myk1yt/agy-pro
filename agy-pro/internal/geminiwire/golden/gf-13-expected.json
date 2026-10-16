@@ -1,0 +1,1 @@
+{"messages":[{"role":"user","content":"도구 호출"},{"role":"assistant","tool_calls":[{"id":"call_0","type":"function","function":{"name":"view_file","arguments":"{\"path\":\"b.go\"}"}}]},{"role":"tool","content":"body-b","tool_call_id":"call_0","name":"view_file"}],"notes":null,"params":{},"surface_thoughts":false,"tool_choice":null,"tools":null}

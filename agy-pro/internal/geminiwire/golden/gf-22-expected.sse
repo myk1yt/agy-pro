@@ -1,0 +1,8 @@
+data: {"candidates":[{"content":{"role":"model","parts":[{"text":"계획을 세웁니다","thought":true}]},"index":0}]}
+
+data: {"candidates":[{"content":{"role":"model","parts":[{"text":"파일을 읽겠습니다 🚀"}]},"index":0}]}
+
+data: {"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"id":"call_gf22","name":"view_file","args":{"path":"한국어.md"}}}]},"index":0}]}
+
+data: {"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":120,"candidatesTokenCount":30,"totalTokenCount":150,"thoughtsTokenCount":12,"cachedContentTokenCount":64}}
+
