@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -58,10 +59,32 @@ type SummaryReport struct {
 	Issues         []ConsolidatedIssue `json:"issues"`
 	ConfirmedCount int                 `json:"confirmed_count"`
 	DisputedCount  int                 `json:"disputed_count"`
+	// ThinSeats counts the seats that returned success with no findings signal
+	// and were therefore excluded from the consensus denominator (NCompleted).
+	// Omitted when no seat was thin, so a clean run's summary is unchanged.
+	ThinSeats int `json:"thin_seats,omitempty"`
+	// ThinSeatIDs names the excluded seats, so the operator can see exactly
+	// which seats the denominator dropped.
+	ThinSeatIDs []int `json:"thin_seat_ids,omitempty"`
+	// Usage is the run-level token accounting across the provider seats.
+	// Omitted when no seat reported usage (an all-native run): a native seat
+	// prints only its answer, so there is nothing honest to total.
+	Usage *RunUsage `json:"usage,omitempty"`
 	// UntrustedData fences the untrusted content this artifact carries (A12):
 	// seat answers and workspace quotes arrive here verbatim, and the main
 	// agent reads this file. Additive key; older readers ignore it.
 	UntrustedData string `json:"untrusted_data"`
+}
+
+// RunUsage is the run-level token accounting in summary.json. Every field is
+// optional: a run whose seats reported no usage carries no block at all, and a
+// run whose providers reported no cached-token breakdown carries no
+// cached_tokens / cache_hit_ratio. Nothing is defaulted to zero.
+type RunUsage struct {
+	PromptTokens     *int64   `json:"prompt_tokens,omitempty"`
+	CompletionTokens *int64   `json:"completion_tokens,omitempty"`
+	CachedTokens     *int64   `json:"cached_tokens,omitempty"`
+	CacheHitRatio    *float64 `json:"cache_hit_ratio,omitempty"`
 }
 
 // reportFilePerm is the mode for every generated fanout report (S-4/F2).
@@ -124,6 +147,7 @@ func Reconcile(task, root, outDir string, nRequested int, seats []*SeatResult) (
 	ts := time.Now().UTC().Format(time.RFC3339)
 	nCompleted := 0
 	degraded := false
+	var thinSeatIDs []int
 
 	// S-7 / R2-2: upstream error snippets can echo a truncated bearer token
 	// and seat content can quote a raw key, so everything that leaves through
@@ -132,6 +156,9 @@ func Reconcile(task, root, outDir string, nRequested int, seats []*SeatResult) (
 	redact := seatRedactor(seats)
 
 	var allFindings []Finding
+	// Run-level usage totals across the provider seats. A seat that reported no
+	// usage (a native seat, or a provider without a usage block) adds nothing.
+	var usage usageTotals
 
 	// 1. Write individual seat reports & extract findings
 	for _, seat := range seats {
@@ -141,11 +168,21 @@ func Reconcile(task, root, outDir string, nRequested int, seats []*SeatResult) (
 			continue
 		}
 		if seat.Status == "success" {
-			nCompleted++
+			// A successful seat that produced no findings signal did not do the
+			// job (seatIsThin), so it is excluded from the consensus
+			// denominator instead of inflating it. The flag is never written
+			// back onto the caller's seat (C7): the seat report and the summary
+			// copy each derive it from the same classifier.
+			if seatIsThin(seat) {
+				thinSeatIDs = append(thinSeatIDs, seat.SeatID)
+			} else {
+				nCompleted++
+			}
 		}
 		if seat.Degraded {
 			degraded = true
 		}
+		usage.addSeat(seat.Usage)
 
 		seatFile := filepath.Join(outDir, fmt.Sprintf("seat-%d-%s-%s.md",
 			seat.SeatID,
@@ -192,6 +229,9 @@ func Reconcile(task, root, outDir string, nRequested int, seats []*SeatResult) (
 		Degraded:       degraded,
 		ConfirmedCount: confirmedCount,
 		DisputedCount:  disputedCount,
+		ThinSeats:      len(thinSeatIDs),
+		ThinSeatIDs:    thinSeatIDs,
+		Usage:          usage.runUsage(),
 		Issues:         issues,
 		// A12: the fence travels with the data for machine consumers.
 		UntrustedData: untrustedDataNotice,
@@ -210,6 +250,9 @@ func Reconcile(task, root, outDir string, nRequested int, seats []*SeatResult) (
 		// to land in the caller's slice. A nil slice stays nil (omitempty).
 		copySeat := *s
 		copySeat.Failovers = append([]FailoverRecord(nil), s.Failovers...)
+		// Thin is derived here (not read off the caller's seat, C7) from the
+		// same classifier the denominator and the seat report use.
+		copySeat.Thin = seatIsThin(s)
 		copySeat.Error = redact(copySeat.Error)
 		copySeat.Content = redact(copySeat.Content)
 		copySeat.InitialTarget.Provider = providers.MaskProviderForReport(s.InitialTarget.Provider)
@@ -249,10 +292,11 @@ func Reconcile(task, root, outDir string, nRequested int, seats []*SeatResult) (
 
 // formatSeatReport renders one seat markdown report. redact is applied to
 // every upstream-derived error text (S-7): 500-byte error snippets from the
-// provider can echo a truncated bearer token.
+// provider can echo a truncated bearer token. A nil redactor fails closed to the
+// generic credential shapes instead of passing the text through untouched.
 func formatSeatReport(ts, task string, seat *SeatResult, redact func(string) string) string {
 	if redact == nil {
-		redact = func(s string) string { return s }
+		redact = providers.NewRedactor()
 	}
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("# Seat %d Audit Report\n\n", seat.SeatID))
@@ -272,6 +316,13 @@ func formatSeatReport(ts, task string, seat *SeatResult, redact func(string) str
 	sb.WriteString(fmt.Sprintf("| Model | `%s` (family: `%s`) |\n", providers.MaskOperand(seat.FinalTarget.Model.ID), providers.MaskFamilyName(seat.FinalTarget.Model)))
 	sb.WriteString(fmt.Sprintf("| Status | `%s` |\n", seat.Status))
 	sb.WriteString(fmt.Sprintf("| Degraded | `%v` |\n", seat.Degraded))
+	// The thin row is rendered only for a thin seat, so a seat that did the job
+	// keeps its report byte-identical to before the field existed. The flag is
+	// derived from the same classifier the consensus denominator uses, so the
+	// report and the denominator can never disagree.
+	if seatIsThin(seat) {
+		sb.WriteString("| Thin | true |\n")
+	}
 	sb.WriteString(fmt.Sprintf("| Duration | `%d ms` |\n", seat.DurationMs))
 	sb.WriteString(fmt.Sprintf("| Tool Calls | `%d` |\n", seat.ToolCallCount))
 	sb.WriteString(fmt.Sprintf("| Timestamp | `%s` |\n", ts))
@@ -299,6 +350,32 @@ func formatSeatReport(ts, task string, seat *SeatResult, redact func(string) str
 }
 
 var findingRe = regexp.MustCompile(`(?i)(?:^|\n)\s*(?:[-*]|\d+\.)\s*(?:\*{1,2})?\[?(BLOCKER|CRITICAL|HIGH|MEDIUM|LOW|INFO)\]?(?:\*{1,2})?:?\s*(.+?)(?:\n|$)`)
+
+// seatIsThin classifies a seat that answered but did not do the job: status
+// success with no findings signal in its content. Every task preset mandates a
+// "## Findings" section with severity markers (tasks.go), so a seat whose
+// content carries no "## Findings" section content and no severity marker
+// reported nothing actionable. Live evidence: reports/fanout/20261014-042933 (a
+// seat "succeeded" with "Waiting for the subagent swarm", 0 findings) and the
+// Charm qwen seat whose summary body was missing entirely - both counted toward
+// consensus as if they were real seats.
+//
+// The signal is the one parseFindings already looks for, so there is exactly
+// ONE findings parser in the package: the same function feeds the seat reports,
+// the progress line, the consensus matrix and this classifier. A body with a
+// severity marker in list position, or a bullet under the "## Findings"
+// section, is a real seat; anything else is thin.
+//
+// Classification is content-only for both seat kinds: a native seat's tool-call
+// count is not measured at all (agy -p prints only the answer), so the 0-tool
+// signal is not available to it, and content stays the primary gate for
+// provider seats too.
+func seatIsThin(seat *SeatResult) bool {
+	if seat == nil || seat.Status != "success" {
+		return false
+	}
+	return len(parseFindings(seat.SeatID, "", "", seat.Content)) == 0
+}
 
 func parseFindings(seatID int, prov, model, content string) []Finding {
 	var out []Finding
@@ -528,6 +605,13 @@ func formatReconciliationMarkdown(s *SummaryReport) string {
 	sb.WriteString(fmt.Sprintf("**Task:** `%s` | **Date:** `%s` | **Seats Evaluated:** `%d / %d` | **Native Seats:** `%d / %d` | **Degraded Mode:** `%v`\n\n",
 		s.Task, s.Timestamp, s.NCompleted, s.NRequested, nativeCount, len(s.Seats), s.Degraded))
 
+	// Thin-seat exclusion: stated directly under the header it explains, so the
+	// "Seats Evaluated" numerator is never read as "every seat succeeded".
+	if s.ThinSeats > 0 {
+		sb.WriteString(fmt.Sprintf("**Thin Seats Excluded:** `%d / %d` (%s): `success` with no findings, excluded from the consensus denominator above.\n\n",
+			s.ThinSeats, s.NRequested, seatList(s.ThinSeatIDs)))
+	}
+
 	// A12: the whole document is built from untrusted seat output, so the fence
 	// is the first thing after the header - before any finding text.
 	sb.WriteString(untrustedFence("every finding, title and description in this report"))
@@ -535,7 +619,12 @@ func formatReconciliationMarkdown(s *SummaryReport) string {
 	sb.WriteString("## Executive Summary\n\n")
 	sb.WriteString(fmt.Sprintf("- **Total Consolidated Findings:** %d\n", len(s.Issues)))
 	sb.WriteString(fmt.Sprintf("- **Confirmed by Multiple Models (`[CONFIRMED]`):** %d\n", s.ConfirmedCount))
-	sb.WriteString(fmt.Sprintf("- **Single-Model Blocker/High (`[DISPUTED]`):** %d (main-agent arbitration required, §4.4)\n\n", s.DisputedCount))
+	sb.WriteString(fmt.Sprintf("- **Single-Model Blocker/High (`[DISPUTED]`):** %d (main-agent arbitration required, §4.4)\n", s.DisputedCount))
+	if s.ThinSeats > 0 {
+		sb.WriteString(fmt.Sprintf("- **Thin Seats Excluded:** %d (%s) - `success` with no findings; only the %d %s that reported findings count toward the consensus denominator\n",
+			s.ThinSeats, seatList(s.ThinSeatIDs), s.NCompleted, seatWord(s.NCompleted)))
+	}
+	sb.WriteString("\n")
 
 	sb.WriteString("## 1. Consensus & Reconciliation Matrix\n\n")
 	sb.WriteString("| ID | Status | Severity | Finding Title | Reporting Seats | Recommended Action |\n")
@@ -580,6 +669,29 @@ func formatReconciliationMarkdown(s *SummaryReport) string {
 	sb.WriteString("\n")
 
 	return sb.String()
+}
+
+// formatSeatIDs renders a seat id list as "2, 3" for the thin-seat exclusion
+// notes (a bare %v of []int would print Go slice syntax).
+func formatSeatIDs(ids []int) string {
+	parts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		parts = append(parts, strconv.Itoa(id))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// seatWord pluralizes the noun for a seat count.
+func seatWord(n int) string {
+	if n == 1 {
+		return "seat"
+	}
+	return "seats"
+}
+
+// seatList renders "seat 2" / "seats 2, 3" for the thin-seat exclusion notes.
+func seatList(ids []int) string {
+	return seatWord(len(ids)) + " " + formatSeatIDs(ids)
 }
 
 // seatKindLabel renders the Kind provenance row value (§2.4). An empty Kind

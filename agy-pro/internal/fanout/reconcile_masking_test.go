@@ -302,3 +302,39 @@ func TestReconcileBenignTaskSurvivesMarshal(t *testing.T) {
 		t.Errorf("summary.Task = %q; want %q", summary.Task, task)
 	}
 }
+
+// FIX-13: a nil redactor used to pass upstream error text through untouched, so
+// a caller that had no redactor of its own wrote a shareable report with the
+// provider's credential echo in it. The fallback is now the generic redactor,
+// which masks the credential shapes it knows (here a Google API key, the shape
+// agy itself hands to whatever endpoint it talks to).
+func TestFormatSeatReportNilRedactorMasksCredentialShapes(t *testing.T) {
+	const planted = "AIzaSyDELmE1f2g3h4i5j6k7l8m9n0o1p2q3r4s"
+	target := providers.Target{
+		Provider: providers.Provider{Name: "prov"},
+		Model:    providers.Model{ID: "mod"},
+	}
+	seat := &SeatResult{
+		SeatID:        1,
+		InitialTarget: target,
+		FinalTarget:   target,
+		Status:        "failed",
+		Error:         `upstream HTTP 401: rejected credential ` + planted,
+		Content:       "## Findings\n- **[INFO]** body",
+	}
+
+	md := formatSeatReport("ts", "review", seat, nil)
+	if strings.Contains(md, planted) {
+		t.Errorf("nil redactor leaked the planted credential:\n%s", md)
+	}
+	if !strings.Contains(md, "[REDACTED]") {
+		t.Errorf("nil redactor produced no mask:\n%s", md)
+	}
+
+	// An explicit redactor still wins, so a registry-seeded caller keeps its
+	// own masking.
+	md2 := formatSeatReport("ts", "review", seat, providers.NewRedactor(planted))
+	if strings.Contains(md2, planted) {
+		t.Errorf("explicit redactor leaked the planted credential:\n%s", md2)
+	}
+}

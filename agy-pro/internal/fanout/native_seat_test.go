@@ -261,6 +261,48 @@ func TestNativeRunner_ExitThreeFailsWithRedactedTail(t *testing.T) {
 	}
 }
 
+// FIX-27: a nil seat redactor used to pass native stderr through raw. The
+// fallback is now the generic credential-shape redactor, so a caller that has
+// no redactor of its own still cannot leak a credential echo into SeatResult
+// (and from there into summary.json, reconciliation.md and the console).
+func TestNativeSeatResult_NilRedactorMasksStderrTail(t *testing.T) {
+	const planted = "sk-native-stderr-tail-0123456789abcdef"
+	stderr := "AGY_ERROR: {\"status\":429}\nAuthorization: Bearer " + planted + "\n"
+	out := NativeOutcome{ExitCode: 3, StderrTail: stderr}
+
+	res := nativeSeatResult(1, nativeTarget("gemini-3.8-flash-high"), out, nil)
+	if res.Status != "failed" || !res.Degraded {
+		t.Fatalf("result = %+v; want failed/degraded", res)
+	}
+	if strings.Contains(res.Error, planted) {
+		t.Errorf("nil redactor leaked the planted key: %q", res.Error)
+	}
+	if !strings.Contains(res.Error, "[REDACTED]") {
+		t.Errorf("error = %q; want the masked form", res.Error)
+	}
+	// The status mapping itself is untouched.
+	if !strings.HasPrefix(res.Error, "reason=quota ") {
+		t.Errorf("error = %q; want the reason=quota prefix", res.Error)
+	}
+	if !strings.Contains(res.Error, "native seat exited 3") {
+		t.Errorf("error = %q; want the exit-code mapping", res.Error)
+	}
+
+	// The same tail through the timeout branch, which is the other place the
+	// redactor runs.
+	timeoutOut := NativeOutcome{TimedOut: true, StderrTail: stderr}
+	tres := nativeSeatResult(1, nativeTarget("m"), timeoutOut, nil)
+	if !strings.Contains(tres.Error, "native seat exceeded its deadline") {
+		t.Errorf("error = %q; want the timeout mapping", tres.Error)
+	}
+	if strings.Contains(tres.Error, planted) {
+		t.Errorf("nil redactor leaked the planted key on the timeout path: %q", tres.Error)
+	}
+	if !strings.Contains(tres.Error, "[REDACTED]") {
+		t.Errorf("error = %q; want the masked form on the timeout path", tres.Error)
+	}
+}
+
 func TestNativeRunner_EmptyStdoutFails(t *testing.T) {
 	dir := t.TempDir()
 	r := &NativeRunner{
@@ -277,6 +319,56 @@ func TestNativeRunner_EmptyStdoutFails(t *testing.T) {
 	}
 	if res.Error != "native seat produced empty output" {
 		t.Fatalf("error = %q; want empty-output mapping", res.Error)
+	}
+}
+
+// TestNativeRunner_EmptyStdoutCarriesRedactedStderrTail pins the self-explaining
+// empty-output mapping: agy -p hitting its own --print-timeout exits 0 with
+// partial (here empty) output while the reason lands on stderr (live probe:
+// `agy.exe --model gemini-3.8-flash-low -p "..." --print-timeout 5s` -> exit 0,
+// empty stdout, stderr "[agy] print timeout after 5s with turn in progress;
+// returning partial output"). The failed seat must carry the REDACTED tail,
+// exactly like the timeout and exit-code mappings already do; without it the
+// operator only sees "native seat produced empty output" and cannot tell
+// budget starvation from a hang (the reports/fanout/20261014-065355 symptom).
+func TestNativeRunner_EmptyStdoutCarriesRedactedStderrTail(t *testing.T) {
+	dir := t.TempDir()
+	// Registered key value + generic shape: the seat redactor must mask both.
+	reg := &providers.Registry{Providers: []providers.Provider{
+		{Name: "p", APIKeyEnv: "STUB_PROV_KEY", Models: []providers.Model{{ID: "m"}}},
+	}}
+	t.Setenv("STUB_PROV_KEY", "sk-registered-secret-abc123")
+
+	// The real agy print-timeout line plus planted credential material: the
+	// reason must survive, the secrets must not.
+	stderr := "[agy] print timeout after 295s with turn in progress; returning partial output\nAuthorization: Bearer sk-registered-secret-abc123\ntoken sk-generic-shape-XYZ789abcd leaked\n"
+	r := &NativeRunner{
+		Resolver: stubResolver(),
+		Spawn: stubSpawn(map[string]string{
+			"AGY_PRO_STUB_STDOUT": "   \n  ",
+			"AGY_PRO_STUB_STDERR": stderr,
+		}),
+		scrubNames: realagy.ApiKeyEnvNames(reg),
+	}
+	out := r.Run(context.Background(), RunConfig{Root: dir}, SeatSpec{Kind: SeatKindNative, ModelID: "gemini-3.8-flash-high"}, "p", time.Now().Add(30*time.Second))
+	if out.ExitCode != 0 || out.TimedOut {
+		t.Fatalf("outcome = %+v; want exit 0 / not timed out (agy's own print-timeout path)", out)
+	}
+	res := nativeSeatResult(1, nativeTarget("gemini-3.8-flash-high"), out, reg.Redactor())
+	if res.Status != "failed" {
+		t.Fatalf("empty stdout must fail (A2), got %+v", res)
+	}
+	if !strings.HasPrefix(res.Error, "native seat produced empty output: ") {
+		t.Fatalf("error = %q; want the empty-output mapping carrying the stderr tail", res.Error)
+	}
+	if !strings.Contains(res.Error, "[agy] print timeout after 295s with turn in progress") {
+		t.Errorf("error = %q; want the print-timeout reason from the stderr tail", res.Error)
+	}
+	if strings.Contains(res.Error, "sk-registered-secret-abc123") || strings.Contains(res.Error, "sk-generic-shape-XYZ789abcd") {
+		t.Errorf("error leaked key material: %q", res.Error)
+	}
+	if !strings.Contains(res.Error, "[REDACTED]") {
+		t.Errorf("error = %q; want [REDACTED] in the stderr tail", res.Error)
 	}
 }
 
@@ -629,7 +721,11 @@ func TestNativeSeatConcurrencyDefaultClamp(t *testing.T) {
 		TimeoutSec:           20,
 		NativeResolver:       stubResolver(),
 		SpawnCommand: stubSpawn(map[string]string{
-			"AGY_PRO_STUB_STDOUT": "OK",
+			// A findings-carrying answer: NCompleted counts only the seats that
+			// reported findings (seatIsThin), so a bare "OK" would be excluded
+			// from the consensus denominator and this pin would no longer
+			// observe the concurrency clamp.
+			"AGY_PRO_STUB_STDOUT": "## Findings\n- **[LOW]** ok",
 		}),
 	}
 	summary, err := Execute(context.Background(), cfg)
@@ -1138,6 +1234,85 @@ func TestCmdWrap_RoundTripBothTransports(t *testing.T) {
 	}
 }
 
+// TestBuildNativeSeatPrompt_PreambleForEveryTaskPreset pins the anti-nesting
+// control: every task preset's native seat prompt must OPEN with the seat-role
+// preamble. Live evidence of the bug this fixes: native seats delegated to
+// their own sub-sub-agent swarms and returned 0 findings at 123.7s / 244s
+// (reports/fanout/20261014-042933, 20261014-005544). The assertions use
+// literal preamble text so the test fails if the preamble is removed or
+// emptied, and HasPrefix so it fails if the preamble stops opening the prompt.
+func TestBuildNativeSeatPrompt_PreambleForEveryTaskPreset(t *testing.T) {
+	tasks := []string{"review", "security", "plan-audit", "research", "ideas", "custom"}
+	// Literal markers quoted from nativeSeatPreamble (engine.go).
+	markers := []string{
+		"You are ONE independent seat of a parallel multi-model swarm",
+		"NEVER spawn subagents",
+		"NEVER launch, join, or wait for another swarm",
+		"Use your own tools (read_file, grep, glob, list_dir) directly",
+		"Spend at most HALF the time budget on reading and exploration",
+		"Write the COMPLETE final report before the time budget runs out",
+	}
+	for _, task := range tasks {
+		p := buildNativeSeatPrompt(task, "user task text")
+		if !strings.HasPrefix(p, nativeSeatPreamble) {
+			t.Errorf("task %q: native seat prompt must OPEN with the seat-role preamble, got:\n%s", task, p)
+		}
+		for _, m := range markers {
+			if !strings.Contains(p, m) {
+				t.Errorf("task %q: native seat prompt missing preamble marker %q", task, m)
+			}
+		}
+		preset := GetTaskPreset(task)
+		pi := strings.Index(p, preset.SystemPrompt)
+		if pi < 0 {
+			t.Errorf("task %q: native seat prompt lost the preset system prompt", task)
+			continue
+		}
+		if pi < len(nativeSeatPreamble) {
+			t.Errorf("task %q: preset system prompt appears before the preamble ends", task)
+		}
+		if !strings.Contains(p, "user task text") {
+			t.Errorf("task %q: native seat prompt lost the user text", task)
+		}
+		// Separation of paths: the preset itself (what provider seats get via
+		// SeatWorker Preset/UserPrompt) must stay preamble-free.
+		if strings.Contains(preset.SystemPrompt, "NEVER spawn subagents") {
+			t.Errorf("task %q: task preset leaked the seat-role preamble into the provider-seat path", task)
+		}
+	}
+	// The empty-user-prompt fallback still carries the preamble.
+	empty := buildNativeSeatPrompt("review", "   ")
+	if !strings.HasPrefix(empty, nativeSeatPreamble) {
+		t.Errorf("empty user prompt: native seat prompt must still open with the preamble")
+	}
+}
+
+// TestNativeRunner_SpawnArgsCarryDisableSlashCommands pins the hardening flag
+// adopted from the 2026-10-14 probe: `agy.exe --help` lists
+// "--disable-slash-commands   Disable slash command and skill expansion in
+// print mode", and the live probe `agy.exe --model gemini-3.8-flash-low -p
+// "..." --disable-slash-commands --print-timeout 30s` exited 0. The flag must
+// appear in the spawn args on the argv transport.
+func TestNativeRunner_SpawnArgsCarryDisableSlashCommands(t *testing.T) {
+	dir := t.TempDir()
+	argsDump := filepath.Join(dir, "args.bin")
+	r := &NativeRunner{
+		Resolver: stubResolver(),
+		Spawn: stubSpawn(map[string]string{
+			"AGY_PRO_STUB_ARGS_DUMP": argsDump,
+			"AGY_PRO_STUB_STDOUT":    "OK",
+		}),
+	}
+	out := r.Run(context.Background(), RunConfig{Root: dir}, SeatSpec{Kind: SeatKindNative, ModelID: "m"}, buildNativeSeatPrompt("review", "p"), time.Now().Add(30*time.Second))
+	if out.SpawnErr != nil {
+		t.Fatalf("spawn error: %v", out.SpawnErr)
+	}
+	args := argsDumped(t, argsDump)
+	if findArg(args, "--disable-slash-commands") < 0 {
+		t.Fatalf("argv missing --disable-slash-commands (probe-adopted hardening flag): %q", args)
+	}
+}
+
 // FuzzEscapeCmdTokenCmdRoundTrip (A11) is the fuzz half of the round-trip
 // matrix: every seed - and, under `go test -fuzz`, every generated prompt -
 // must reach the target byte-for-byte through the REAL cmd.exe wrap. The
@@ -1191,4 +1366,46 @@ func FuzzEscapeCmdTokenCmdRoundTrip(f *testing.F) {
 			t.Fatalf("prompt %q did not survive the .cmd argv wrap byte-for-byte:\n got %q", prompt, args)
 		}
 	})
+}
+
+// M4F-2 (adjacent-pattern parity): a native seat scrubs an undeclared
+// *_API_KEY (not a compiled preset, provider absent from the registry) via the
+// shared realagy.CleanChildEnvWithBase shape rule, so every spawn path scrubs
+// the credential class identically. The native runner carries no registry
+// scrubNames, so the shape rule is the protection here. A benign var survives;
+// the dump is asserted by substring, never printed.
+func TestNativeRunner_ScrubsUndeclaredAPIKeyShapedEnv(t *testing.T) {
+	dir := t.TempDir()
+	envDump := filepath.Join(dir, "env.txt")
+	r := &NativeRunner{
+		Resolver: stubResolver(),
+		Spawn: stubSpawn(map[string]string{
+			"AGY_PRO_STUB_ENV_DUMP":  envDump,
+			"AGY_PRO_STUB_STDOUT":    "ok",
+			"FANOUT_PLANTED_API_KEY": "sk-planted-fanout-undeclared-secret",
+			"FANOUT_PLANTED_BENIGN":  "keep-me",
+		}),
+	}
+	out := r.Run(context.Background(), RunConfig{Root: dir}, SeatSpec{Kind: SeatKindNative, ModelID: "gemini-3.8-flash-high"}, "seat prompt", time.Now().Add(30*time.Second))
+	if out.SpawnErr != nil {
+		t.Fatalf("spawn error: %v", out.SpawnErr)
+	}
+	if out.ExitCode != 0 {
+		t.Fatalf("exit = %d; want 0 (stderr: %s)", out.ExitCode, out.StderrTail)
+	}
+	data, err := os.ReadFile(envDump)
+	if err != nil {
+		t.Fatalf("read env dump: %v", err)
+	}
+	dump := string(data)
+	// The undeclared *_API_KEY name AND its (fake) value are absent.
+	for _, banned := range []string{"FANOUT_PLANTED_API_KEY", "sk-planted-fanout-undeclared-secret"} {
+		if strings.Contains(dump, banned) {
+			t.Errorf("native-seat child env leaks %q", banned)
+		}
+	}
+	// A benign var survives the scrub.
+	if !strings.Contains(dump, "FANOUT_PLANTED_BENIGN=keep-me") {
+		t.Errorf("benign var must survive the native-seat scrub")
+	}
 }

@@ -1,11 +1,11 @@
 package fanout
 
 // Native seat execution (contract §2.2): one seat = one real-agy subprocess
-// run in print mode. Transport: `<realAgy> --model <id> -p "<seat prompt>"
-// --print-timeout <budget>s` (argv; multi-line fidelity live-verified at U1
-// kickoff). ViaStdin is the pre-designed fallback seam (F-P); it is forced
-// for .cmd/.bat targets with multi-line prompts (F-Dc) because cmd.exe
-// cannot carry newlines in argv.
+// run in print mode. Transport: `<realAgy> --model <id>
+// --disable-slash-commands -p "<seat prompt>" --print-timeout <budget>s`
+// (argv; multi-line fidelity live-verified at U1 kickoff). ViaStdin is the
+// pre-designed fallback seam (F-P); it is forced for .cmd/.bat targets with
+// multi-line prompts (F-Dc) because cmd.exe cannot carry newlines in argv.
 
 import (
 	"bytes"
@@ -125,6 +125,18 @@ func (r *NativeRunner) Run(ctx context.Context, cfg RunConfig, spec SeatSpec, pr
 	viaStdin := r.ViaStdin || (batch && strings.ContainsAny(prompt, "\r\n"))
 
 	args := []string{"--model", spec.ModelID}
+	// Hardening flag (probe 2026-10-14): `agy.exe --help` lists
+	// "--disable-slash-commands   Disable slash command and skill expansion in
+	// print mode". Live probe with -p: `agy.exe --model gemini-3.8-flash-low -p
+	// "Reply with exactly: PROBE_OK" --disable-slash-commands --print-timeout
+	// 30s` exited 0 and printed PROBE_OK, so the flag is compatible with the
+	// print-mode spawn. It shrinks the child's inherited plugin/skill surface
+	// (the nesting vector); the anti-orchestration mandate itself rides in the
+	// seat prompt preamble (buildNativeSeatPrompt). The probed --help output
+	// lists NO flag that disables subagents outright (`agy agents` is a
+	// read-only list subcommand with only -h/--help), so the preamble is the
+	// primary control.
+	args = append(args, "--disable-slash-commands")
 	if viaStdin {
 		args = append(args, "-p")
 	} else {
@@ -204,10 +216,12 @@ func isQuotaExhausted(stderrTail string) bool {
 
 // nativeSeatResult maps a NativeOutcome onto the §2.2.3 SeatResult table.
 // redact is the registry redactor: stderr tails can echo credential
-// fragments and must never reach artifacts unredacted (A4).
+// fragments and must never reach artifacts unredacted (A4). A nil redactor
+// fails closed to the generic credential shapes rather than passing native
+// stderr through raw.
 func nativeSeatResult(seatID int, target providers.Target, o NativeOutcome, redact func(string) string) *SeatResult {
 	if redact == nil {
-		redact = func(s string) string { return s }
+		redact = providers.NewRedactor()
 	}
 	res := &SeatResult{
 		SeatID:        seatID,
@@ -248,9 +262,19 @@ func nativeSeatResult(seatID int, target providers.Target, o NativeOutcome, reda
 		}
 		res.Error = msg
 	case strings.TrimSpace(o.Content) == "":
-		// A2: no textless hang - an empty answer is a failed seat.
+		// A2: no textless hang - an empty answer is a failed seat. The
+		// redacted stderr tail rides along, same pattern as the timeout and
+		// exit-code cases: agy -p hitting its own --print-timeout exits 0
+		// with partial (here empty) output, so without the tail the operator
+		// sees no reason at all (live: reports/fanout/20261014-065355, 303.4s
+		// under a 300s budget, error was the bare "native seat produced empty
+		// output" while stderr carried the print-timeout line).
 		res.Status = "failed"
-		res.Error = "native seat produced empty output"
+		msg := "native seat produced empty output"
+		if tail != "" {
+			msg += ": " + tail
+		}
+		res.Error = msg
 	default:
 		res.Status = "success"
 	}

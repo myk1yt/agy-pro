@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"agypro/internal/agenttools"
+	"agypro/internal/openaiup"
 	"agypro/internal/providers"
 )
 
@@ -50,7 +51,38 @@ type ChatRequest struct {
 type ChatResponse struct {
 	ID      string       `json:"id"`
 	Choices []ChatChoice `json:"choices"`
-	Error   *APIError    `json:"error,omitempty"`
+	// Usage is the provider's token accounting for this call. Nil when the
+	// provider reports no usage block at all.
+	Usage *ChatUsage `json:"usage,omitempty"`
+	Error *APIError  `json:"error,omitempty"`
+}
+
+// ChatUsage is the token accounting a provider returns alongside a completion.
+// Every field is optional and absent fields stay absent: a provider that does
+// not break out cached tokens leaves PromptTokensDetails nil, and a provider
+// that reports no usage at all leaves ChatResponse.Usage nil. Nothing is ever
+// defaulted to zero, because a missing number and a real zero mean different
+// things once the numbers become a cache-hit ratio.
+type ChatUsage struct {
+	PromptTokens        *int64                   `json:"prompt_tokens,omitempty"`
+	CompletionTokens    *int64                   `json:"completion_tokens,omitempty"`
+	TotalTokens         *int64                   `json:"total_tokens,omitempty"`
+	PromptTokensDetails *ChatPromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+}
+
+// ChatPromptTokensDetails is the OpenAI prompt_tokens_details sub-object, where
+// providers that serve a prompt cache report prompt_tokens_details.cached_tokens.
+type ChatPromptTokensDetails struct {
+	CachedTokens *int64 `json:"cached_tokens,omitempty"`
+}
+
+// cachedTokens lifts prompt_tokens_details.cached_tokens out of the nested
+// sub-object so callers do not repeat the two-level nil dance.
+func (u *ChatUsage) cachedTokens() *int64 {
+	if u == nil || u.PromptTokensDetails == nil {
+		return nil
+	}
+	return u.PromptTokensDetails.CachedTokens
 }
 
 // ChatChoice represents an individual choice in the completion response.
@@ -67,16 +99,45 @@ type APIError struct {
 	Code    any    `json:"code"`
 }
 
+// requestTimeoutFloor is the per-request HTTP timeout floor for the shared
+// provider client. The historical 120s cap stays as the floor so no-budget
+// construction paths (NewClient) keep a ceiling; a swarm budget longer than
+// the floor raises it (NewClientWithBudget). It is a var, not a const, only so
+// tests can shrink it and observe the budget wiring end-to-end through
+// Execute (see TestExecuteClientTimeoutTracksSwarmBudget).
+var requestTimeoutFloor = 120 * time.Second
+
 // Client executes OpenAI-compatible requests.
 type Client struct {
 	httpClient *http.Client
 }
 
-// NewClient creates a new Client with standard configuration.
+// NewClient creates a new Client with the standard no-budget configuration:
+// the 120s per-request timeout floor. Prefer NewClientWithBudget when the
+// swarm budget is known (engine.go wires RunConfig.TimeoutSec through it).
 func NewClient() *Client {
+	return NewClientWithBudget(0)
+}
+
+// NewClientWithBudget creates a Client whose per-request HTTP timeout is never
+// shorter than the swarm budget: budgetSec seconds when it exceeds the 120s
+// floor, otherwise the floor itself. The per-request timeout used to be a flat
+// 120s, which killed a single provider chat call mid-seat under any longer
+// swarm budget (the 2026-10-14 "context deadline exceeded" degradations in
+// reports/fanout/20261014-042933: healthy endpoints, seats dead at 120s).
+// Context propagation remains the hard backstop: Execute's ctxWithTimeout
+// still bounds the whole swarm, so a longer client timeout can never outlive
+// the budget.
+func NewClientWithBudget(budgetSec int) *Client {
+	timeout := requestTimeoutFloor
+	if budgetSec > 0 {
+		if budget := time.Duration(budgetSec) * time.Second; budget > timeout {
+			timeout = budget
+		}
+	}
 	return &Client{
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout: timeout,
 		},
 	}
 }
@@ -142,9 +203,25 @@ func (c *Client) send(ctx context.Context, target providers.Target, reqBody Chat
 		return nil, 0, fmt.Errorf("failed to create request: %w", err)
 	}
 
+	// Resolved once per send: the Authorization header and the redactor seed
+	// below must never disagree, which they could if the environment changed
+	// between two resolutions. The value is never logged.
+	key := target.Provider.KeyValue()
+
 	req.Header.Set("Content-Type", "application/json")
-	if key := target.Provider.KeyValue(); key != "" {
+	if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
+	}
+
+	// S-7: the error snippets below quote provider-controlled text, and some
+	// providers echo the credential they were handed straight back. The redactor
+	// is seeded with this provider's resolved key value - resolved per call,
+	// never logged - so the snippet is masked before it reaches an error string,
+	// a seat report, a summary, or the CLI. providers.NewRedactor with no seed
+	// still masks the generic bearer/sk-/AWS/auth-header/PEM shapes.
+	redact := providers.NewRedactor()
+	if key != "" {
+		redact = providers.NewRedactor(key)
 	}
 
 	resp, err := c.httpClient.Do(req)
@@ -159,7 +236,7 @@ func (c *Client) send(ctx context.Context, target providers.Target, reqBody Chat
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		snippet := strings.TrimSpace(string(bodyData))
+		snippet := strings.TrimSpace(redact(string(bodyData)))
 		if len(snippet) > 500 {
 			snippet = snippet[:500] + "... (truncated)"
 		}
@@ -168,11 +245,21 @@ func (c *Client) send(ctx context.Context, target providers.Target, reqBody Chat
 
 	var chatResp ChatResponse
 	if err := json.Unmarshal(bodyData, &chatResp); err != nil {
-		return nil, resp.StatusCode, fmt.Errorf("failed to parse response JSON: %w (body snippet: %s)", err, string(bodyData[:minInt(len(bodyData), 200)]))
+		// Redact the whole body before cutting: a key positioned across the
+		// 200-byte cut would otherwise leak its unshaped fragment.
+		snippet := redact(string(bodyData))
+		if len(snippet) > 200 {
+			snippet = snippet[:200]
+		}
+		return nil, resp.StatusCode, fmt.Errorf("failed to parse response JSON: %w (body snippet: %s)", err, snippet)
 	}
 
 	if chatResp.Error != nil && chatResp.Error.Message != "" {
-		return nil, resp.StatusCode, fmt.Errorf("API error from %q: %s", providers.MaskOperand(target.Provider.Name), chatResp.Error.Message)
+		msg := redact(chatResp.Error.Message)
+		if len(msg) > 500 {
+			msg = msg[:500] + "... (truncated)"
+		}
+		return nil, resp.StatusCode, fmt.Errorf("API error from %q: %s", providers.MaskOperand(target.Provider.Name), msg)
 	}
 
 	if len(chatResp.Choices) == 0 {
@@ -187,28 +274,9 @@ func (c *Client) send(ctx context.Context, target providers.Target, reqBody Chat
 // "none": explicitly set to "none"
 // "low", "medium", "high": forwarded directly
 // "xhigh", "max": mapped to "high"
+//
+// The mapping lives in internal/openaiup so the bridge and the geminiwire
+// adapter apply the identical ladder.
 func mapReasoningEffort(effort string) string {
-	switch strings.ToLower(strings.TrimSpace(effort)) {
-	case "none":
-		return "none"
-	case "low":
-		return "low"
-	case "medium":
-		return "medium"
-	case "high":
-		return "high"
-	case "xhigh", "max":
-		return "high"
-	case "default", "":
-		return ""
-	default:
-		return ""
-	}
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
+	return openaiup.MapReasoningEffort(effort)
 }

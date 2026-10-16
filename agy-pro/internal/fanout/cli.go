@@ -42,7 +42,7 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 		rootFlag       = flags.String("root", ".", "Workspace root directory for tool execution")
 		toolsFlag      = flags.String("tools", "read,search", "Allowed tools: read,search,write,exec (closed set; unknown tokens are rejected)")
 		maxTurnsFlag   = flags.Int("max-turns", 10, "Maximum turns for agentic tool loop")
-		timeoutFlag    = flags.Int("timeout", 120, "Swarm execution timeout in seconds")
+		timeoutFlag    = flags.Int("timeout", DefaultTimeoutSec, "Swarm execution timeout in seconds")
 		outFlag        = flags.String("out", "", "Output directory for generated reports (default ./reports/fanout/<ts>)")
 		jsonFlag       = flags.Bool("json", false, "Output summary JSON to stdout")
 		setupFlag      = flags.Bool("setup", false, "Launch interactive provider setup wizard")
@@ -171,6 +171,17 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 		return 2
 	}
 
+	// 4. Live seat progress sink: the engine streams one line per seat
+	// start/finish (the same lines land in <out>/progress.log). Terminal runs
+	// watch stdout next to the final banner; --json keeps stdout pure (progress
+	// rides stderr) so the machine summary stays parseable - the swarm builder
+	// consumes that JSON.
+	if *jsonFlag {
+		cfg.ProgressOut = errw
+	} else {
+		cfg.ProgressOut = out
+	}
+
 	// 5. Execute Fanout Engine
 	ctx := context.Background()
 	summary, err := executeEngine(ctx, cfg)
@@ -202,6 +213,12 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 	// stay readable).
 	fmt.Fprintf(out, "Task:                  %s\n", providers.MaskOperand(summary.Task))
 	fmt.Fprintf(out, "Seats Evaluated:       %d / %d\n", summary.NCompleted, summary.NRequested)
+	// Thin seats succeeded but reported no findings, so they are not in the
+	// numerator above. Naming them keeps the count honest instead of silently
+	// shrinking "Seats Evaluated" (the 2026-10-14 quality-variance gap).
+	if summary.ThinSeats > 0 {
+		fmt.Fprintf(out, "Thin Seats Excluded:   %d (%s)\n", summary.ThinSeats, seatList(summary.ThinSeatIDs))
+	}
 	fmt.Fprintf(out, "Degraded Mode:         %v\n", summary.Degraded)
 	fmt.Fprintf(out, "Confirmed Issues:      %d\n", summary.ConfirmedCount)
 	fmt.Fprintf(out, "Disputed Issues:       %d\n", summary.DisputedCount)
