@@ -1,0 +1,66 @@
+<svg viewBox="0 0 680 576" width="100%" role="img"
+     aria-label="agy-pro 아키텍처: agy 셔틀이 네이티브 경로, agy pro 스위트, 외부 프로바이더 경로로 나뉘고 providers.json 레지스트리가 프로바이더 정보를 저장하는 구조"
+     xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="ahg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4b5563"/>
+    </marker>
+  </defs>
+
+  <!-- 사용자 입력 (Gray): "터미널: agy (또는 AGY_LAUNCHER=1 agy)" 11px ≈ 230px, 박스 400 -->
+  <rect x="140" y="20" width="400" height="48" rx="10" fill="#f9fafb" stroke="#4b5563" stroke-width="2"/>
+  <text x="340" y="44" text-anchor="middle" dominant-baseline="central" font-family="'Pretendard','Malgun Gothic','Apple SD Gothic Neo',sans-serif" font-size="12" fill="#1f2937">터미널: agy (또는 AGY_LAUNCHER=1 agy)</text>
+
+  <line x1="340" y1="68" x2="340" y2="90" stroke="#4b5563" stroke-width="2" marker-end="url(#ahg)"/>
+
+  <!-- agy 셔틀 (Blue): 투명 전달 -->
+  <rect x="140" y="96" width="400" height="68" rx="12" fill="#eff6ff" stroke="#2563eb" stroke-width="2"/>
+  <text x="340" y="120" text-anchor="middle" dominant-baseline="central" font-family="'Pretendard','Malgun Gothic','Apple SD Gothic Neo',sans-serif" font-size="13" font-weight="bold" fill="#1e40af">agy 셔틀 (shim)</text>
+  <text x="340" y="144" text-anchor="middle" dominant-baseline="central" font-family="'Pretendard','Malgun Gothic','Apple SD Gothic Neo',sans-serif" font-size="11" fill="#1e40af">인자 그대로 전달 · 터미널 UI와 종료 코드 보존</text>
+
+  <!-- 3분기 연결선 -->
+  <line x1="340" y1="164" x2="340" y2="186" stroke="#4b5563" stroke-width="2"/>
+  <line x1="120" y1="186" x2="560" y2="186" stroke="#4b5563" stroke-width="2"/>
+  <line x1="120" y1="186" x2="120" y2="202" stroke="#4b5563" stroke-width="2" marker-end="url(#ahg)"/>
+  <line x1="340" y1="186" x2="340" y2="202" stroke="#4b5563" stroke-width="2" marker-end="url(#ahg)"/>
+  <line x1="560" y1="186" x2="560" y2="202" stroke="#4b5563" stroke-width="2" marker-end="url(#ahg)"/>
+
+  <!-- 네이티브 경로 (Blue) -->
+  <rect x="20" y="210" width="200" height="170" rx="12" fill="#eff6ff" stroke="#2563eb" stroke-width="2"/>
+  <text x="120" y="236" text-anchor="middle" dominant-baseline="central" font-family="'Pretendard','Malgun Gothic','Apple SD Gothic Neo',sans-serif" font-size="12" font-weight="bold" fill="#1e40af">네이티브 경로</text>
+  <line x1="40" y1="254" x2="200" y2="254" stroke="#2563eb" stroke-width="1" stroke-dasharray="4 4"/>
+  <text x="120" y="278" text-anchor="middle" dominant-baseline="central" font-family="'Pretendard','Malgun Gothic','Apple SD Gothic Neo',sans-serif" font-size="11" fill="#1e40af">실제 agy 바이너리</text>
+  <text x="120" y="298" text-anchor="middle" dominant-baseline="central" font-family="'Pretendard','Malgun Gothic','Apple SD Gothic Neo',sans-serif" font-size="11" fill="#1e40af">그대로 실행</text>
+  <text x="120" y="330" text-anchor="middle" dominant-baseline="central" font-family="'Pretendard','Malgun Gothic','Apple SD Gothic Neo',sans-serif" font-size="11" fill="#1e40af">스웜 좌석:</text>
+  <text x="120" y="350" text-anchor="middle" dominant-baseline="central" font-family="'Pretendard','Malgun Gothic','Apple SD Gothic Neo',sans-serif" font-size="11" fill="#1e40af">native:&lt;모델ID&gt;</text>
+
+  <!-- agy pro 스위트 (Gray): 중앙 -->
+  <rect x="240" y="210" width="200" height="170" rx="12" fill="#f9fafb" stroke="#4b5563" stroke-width="2"/>
+  <text x="340" y="236" text-anchor="middle" dominant-baseline="central" font-family="'Pretendard','Malgun Gothic','Apple SD Gothic Neo',sans-serif" font-size="12" font-weight="bold" fill="#1f2937">agy pro 스위트</text>
+  <line x1="260" y1="254" x2="420" y2="254" stroke="#4b5563" stroke-width="1" stroke-dasharray="4 4"/>
+  <text x="340" y="278" text-anchor="middle" dominant-baseline="central" font-family="'Pretendard','Malgun Gothic','Apple SD Gothic Neo',sans-serif" font-size="11" fill="#1f2937">setup · mode · models</text>
+  <text x="340" y="300" text-anchor="middle" dominant-baseline="central" font-family="'Pretendard','Malgun Gothic','Apple SD Gothic Neo',sans-serif" font-size="11" fill="#1f2937">swarm · settings</text>
+  <text x="340" y="322" text-anchor="middle" dominant-baseline="central" font-family="'Pretendard','Malgun Gothic','Apple SD Gothic Neo',sans-serif" font-size="11" fill="#1f2937">fanout · doctor</text>
+  <text x="340" y="352" text-anchor="middle" dominant-baseline="central" font-family="'Pretendard','Malgun Gothic','Apple SD Gothic Neo',sans-serif" font-size="11" fill="#1f2937">설정 마법사 + 진단</text>
+
+  <!-- 외부 프로바이더 경로 (Teal) -->
+  <rect x="460" y="210" width="200" height="170" rx="12" fill="#f0fdfa" stroke="#0d9488" stroke-width="2"/>
+  <text x="560" y="236" text-anchor="middle" dominant-baseline="central" font-family="'Pretendard','Malgun Gothic','Apple SD Gothic Neo',sans-serif" font-size="12" font-weight="bold" fill="#115e59">외부 프로바이더 경로</text>
+  <line x1="480" y1="254" x2="640" y2="254" stroke="#0d9488" stroke-width="1" stroke-dasharray="4 4"/>
+  <text x="560" y="278" text-anchor="middle" dominant-baseline="central" font-family="'Pretendard','Malgun Gothic','Apple SD Gothic Neo',sans-serif" font-size="11" fill="#115e59">AGY_PRO_BRIDGE=1</text>
+  <text x="560" y="298" text-anchor="middle" dominant-baseline="central" font-family="'Pretendard','Malgun Gothic','Apple SD Gothic Neo',sans-serif" font-size="11" fill="#115e59">또는 agy -m 옵션</text>
+  <text x="560" y="330" text-anchor="middle" dominant-baseline="central" font-family="'Pretendard','Malgun Gothic','Apple SD Gothic Neo',sans-serif" font-size="11" fill="#115e59">스웜 좌석:</text>
+  <text x="560" y="350" text-anchor="middle" dominant-baseline="central" font-family="'Pretendard','Malgun Gothic','Apple SD Gothic Neo',sans-serif" font-size="11" fill="#115e59">&lt;프로바이더&gt;/&lt;모델ID&gt;</text>
+
+  <!-- 레지스트리 점선 연결 (프로바이더 경로 → 레지스트리) -->
+  <polyline points="560,380 560,470 444,470" fill="none" stroke="#d97706" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#ahg)"/>
+
+  <!-- 레지스트리 (Amber) -->
+  <rect x="240" y="440" width="400" height="64" rx="12" fill="#fffbeb" stroke="#d97706" stroke-width="2"/>
+  <text x="440" y="462" text-anchor="middle" dominant-baseline="central" font-family="'Pretendard','Malgun Gothic','Apple SD Gothic Neo',sans-serif" font-size="12" font-weight="bold" fill="#92400e">레지스트리: ~/.agy-pro/providers.json</text>
+  <text x="440" y="484" text-anchor="middle" dominant-baseline="central" font-family="'Pretendard','Malgun Gothic','Apple SD Gothic Neo',sans-serif" font-size="11" fill="#92400e">프로바이더 주소와 API 키의 '이름'만 저장 (키 값은 저장 안 함)</text>
+
+  <!-- 범례 칩 -->
+  <rect x="20" y="524" width="640" height="32" rx="16" fill="#f9fafb" stroke="#4b5563" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <text x="340" y="540" text-anchor="middle" dominant-baseline="central" font-family="'Pretendard','Malgun Gothic','Apple SD Gothic Neo',sans-serif" font-size="11" fill="#1f2937">좌석(seat): 스웜 실행 시 각 모델이 맡은 작업 자리. 네이티브와 외부 프로바이더를 한 스웜에 섞을 수 있습니다.</text>
+</svg>

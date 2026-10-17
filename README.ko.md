@@ -92,7 +92,7 @@ flowchart TD
 
 | 브랜치 | 설명 | 주요 기능 | 원큐 설치 (**명령 프롬프트**에 붙여넣기) | 원큐 설치 (**PowerShell**에 붙여넣기) | 원큐 설치 (**macOS / Linux 터미널**에 붙여넣기) |
 |---|---|---|---|---|---|
-| [`main`](https://github.com/myk1yt/agy-tools/tree/main) | **코어 엔진 & 개발자 툴킷** | 상태줄 배지, SSE 웹 대시보드, 1:1 Gemini 쿼터 풀 RPC, 동적 단가 계산, 21개 언어 | `git clone https://github.com/myk1yt/agy-tools.git && cd agy-tools && scripts\install.bat` | `cmd /c "git clone https://github.com/myk1yt/agy-tools.git && cd agy-tools && scripts\install.bat"` | `git clone https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install.sh` |
+| [`main`](https://github.com/myk1yt/agy-tools/tree/main) | **코어 엔진 & 개발자 툴킷 + agy-pro Go 셔틀** | 상태줄 배지, SSE 웹 대시보드, 1:1 Gemini 쿼터 풀 RPC, 동적 단가 계산, 21개 언어, agy-pro 스위트 (투명 `agy` 셔틀, 멀티모델 스웜, 파티션 모드 팬아웃, 프로바이더 쓰기/URL/검색 도구) | `git clone https://github.com/myk1yt/agy-tools.git && cd agy-tools && scripts\install.bat && install.cmd` | `cmd /c "git clone https://github.com/myk1yt/agy-tools.git && cd agy-tools && scripts\install.bat && install.cmd"` | `git clone https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install.sh` |
 | [`Agent/designer`](https://github.com/myk1yt/agy-tools/tree/Agent/designer) | **Zero-MCP 디자인 전문가** | `@designer` 에이전트, 5개 모듈형 스킬 (SVG, 3D 캔버스, 사이버펑크, 샌드박스, QA 하네스) | `git clone -b Agent/designer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-designer.ps1` | `cmd /c "git clone -b Agent/designer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-designer.ps1"` | `git clone -b Agent/designer https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install-designer.sh` |
 | [`Agent/security-reviewer`](https://github.com/myk1yt/agy-tools/tree/Agent/security-reviewer) | **엔터프라이즈 멀티 에이전트 보안 감사** | `@security-reviewer` 오케스트레이터 + 4개 도메인 인스펙터 (OWASP, IAM, 자격 증명, 공급망) | `git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-security-reviewer.ps1` | `cmd /c "git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-security-reviewer.ps1"` | `git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install-security-reviewer.sh` |
 | [`Agent/code-reviewer`](https://github.com/myk1yt/agy-tools/tree/Agent/code-reviewer) | **Pre-Merge 코드 리뷰 & 퀄리티 게이트** | `@code-reviewer` 에이전트, 4단계 파이프라인, 8개 텍사노미, P0-P3 무관용 판정 게이트 | `git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-code-reviewer.ps1` | `cmd /c "git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-code-reviewer.ps1"` | `git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install-code-reviewer.sh` |
@@ -102,6 +102,9 @@ flowchart TD
 
 > [!TIP]
 > 위 표의 각 줄은 **새 컴퓨터에서 한 번에 끝나는 완전한 설치 명령어**입니다. `git clone -b <브랜치>`는 클론하는 동안 해당 브랜치로 체크아웃이 자동으로 되므로, 별도로 `git checkout`을 치다가 빠뜨려 "plugin.json not found"가 나는 함정이 원천 차단됩니다. `&&` 연결은 명령 프롬프트와 macOS/Linux bash에서는 그대로 동작하지만, 기본 설치된 **Windows PowerShell 5.1은 `&&`을 구문 오류로 거부**합니다 — 그래서 PowerShell 열용례를 위해 `cmd /c "..."`로 감싼 버전을 함께 실었습니다. PowerShell 창에 해당 한 줄만 붙여넣으면 끝까지 실행됩니다.
+
+> [!NOTE]
+> `main` 줄의 명령은 설치 프로그램을 **두 개** 연달아 실행합니다. `main` 브랜치에는 **두 구성 요소**가 모두 들어 있기 때문입니다. `scripts\install.bat` (Node.js 툴킷, Node.js 16+ 필요)와 `install.cmd` (agy-pro Go 셔틀, **Windows 전용**, Node.js 불필요)입니다. Windows 사용자는 둘 다 실행하세요. 순서는 상관없고, 하나가 오류를 낸 경우에도 다른 설치 프로그램만 따로 실행하면 됩니다. macOS/Linux에서는 `install.sh`가 Node 툴킷만 설치하며, Go 셔틀은 `go build`로 직접 빌드합니다 (자세한 내용은 [한국어 사용자 설명서](MANUAL.ko.md) 참조).
 
 #### 사전 요구사항 (git + Node.js) 먼저 설치 — 이것도 한 줄로
 
@@ -698,6 +701,7 @@ agy-tokens --lang ar
 
 - 📖 **[Gemini 쿼터 풀 연동 아키텍처 (docs/QUOTA_POOL.md)](docs/QUOTA_POOL.md)**: HTTPS/HTTP RPC 프로세스 탐색, 5h/7d 슬라이딩 윈도우, 원자적 캐싱 및 1ms 미만 상태줄 조회 메커니즘을 다룹니다.
 - 📊 **[실시간 SSE 웹 대시보드 아키텍처 (docs/DASHBOARD.md)](docs/DASHBOARD.md)**: 듀얼 트랜스포트(SSE 푸시 + 스크립트 인젝션 폴링), SVG 벡터 차트 엔진, VS Code 터미널 연동 및 루프백 보안을 다룹니다.
+- 📘 **[한국어 사용자 설명서 (MANUAL.ko.md)](MANUAL.ko.md)**: 두 원큐 설치 프로그램, 설치 확인, agy-pro 스위트 (셔틀, 런처, 스웜, 파티션 팬아웃, 프로바이더 도구), Node 도구, 설정, 문제 해결, 제거까지를 그림과 실제 화면으로 설명하는 한국어 안내서입니다.
 
 ---
 

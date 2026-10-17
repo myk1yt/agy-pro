@@ -138,14 +138,18 @@ agy pro fanout [options]
 | `--task <name>` | `review` | Task preset: `review`, `security`, `plan-audit`, `research`, `ideas`, `custom`. |
 | `--prompt <text>` | `""` | Inline prompt text passed to the swarm. |
 | `--prompt-file <path>` | `""` | File path containing prompt text, or `-` for stdin. |
+| `--units <planfile>` | `""` | PARTITION mode: JSON plan of disjoint work units; one provider seat per unit, merged into one deliverable. Mutually exclusive with `--prompt`, `--prompt-file`, `--seats`, `--models`. See §8. |
 | `--n <count>` | `3` | Number of distinct seats/models to evaluate. |
 | `--models <list>` | `""` | Comma-separated model filters (e.g. `openai/gpt-4o,deepseek/deepseek-chat`). |
 | `--seats <spec>` | `""` | Hybrid seat spec: `native:<model-id>` runs real `agy` as a subprocess seat; `provider/model`, `model (provider)`, or `model` runs an external provider seat. Mutually exclusive with `--models` (exit 2). Seat count = token count. See [`swarm-hybrid.md`](swarm-hybrid.md) §1. |
 | `--max-native <n>` | `0` | Maximum concurrent native (real agy) seats. `0` uses `native_seat_concurrency` from `state.json`, else the default `2` (clamped 1..8). Extra native seats queue; provider seats stay uncapped. |
 | `--root <dir>` | `.` | Working workspace root directory for tool execution. |
 | `--tools <list>` | `read,search` | Allowed tools. Read-only by default; `write` and `exec` require explicit opt-in. |
+| `--allow-host <host>` | (none) | Repeatable. Hostname allowed for the `read_url_content` tool (port ignored, matched lowercase). Provider seats get `read_url_content` only when at least one host is listed; an empty list refuses every call. |
+| `--search-endpoint <url>` | `""` | Endpoint URL template for the `search_web` tool, containing one `{query}` placeholder (https only; http for loopback hosts). Provider seats get `search_web` only when this is set. |
+| `--search-key-env <name>` | `""` | NAME of the environment variable holding the search endpoint's API key; the value is read at call time and never logged. Optional when the endpoint needs no key. |
 | `--max-turns <n>` | `10` | Maximum agentic tool iterations per model. |
-| `--timeout <sec>` | `300` | Swarm timeout in seconds. |
+| `--timeout <sec>` | `300` | Swarm timeout in seconds. Flat default 300s; in partition mode (`--units`) with NO explicit `--timeout` the default auto-scales to `300 + 120 x units` seconds (capped at 3600). An explicit `--timeout` is honored exactly. |
 | `--out <dir>` | `./reports/fanout/<ts>` | Output directory for seat reports and reconciliation matrix. |
 | `--json` | `false` | Emits machine-readable `summary.json` directly to stdout. |
 | `--setup` | `false` | Runs the interactive provider configuration wizard. |
@@ -177,14 +181,42 @@ Each model can autonomously explore the workspace using standard tools:
 - `list_dir`: Directory tree explorer with depth limits.
 - `grep`: Regex-based codebase pattern search.
 - `glob`: Wildcard file path resolution.
-- `write_file`: (Opt-in only via `--tools write`) Atomic file write with overwrite protection.
-- `run_command`: (Opt-in only via `--tools exec`) Subprocess execution with strict timeouts.
+- `write_file`: (Opt-in only via `--tools write`, or per unit via `"write": true` in partition mode) Atomic file write with overwrite protection.
+- `run_command`: (Opt-in only via `--tools exec`) Subprocess execution with strict timeouts. In partition mode `run_command` stays OUT entirely (held for a separate user decision).
+- `read_url_content`: (Run-level opt-in via `--allow-host`, §5.3) GET-only fetch of an allow-listed host.
+- `search_web`: (Run-level opt-in via `--search-endpoint`, §5.3) Query against an operator-configured search endpoint.
+
+Every new capability defaults OFF: with no `--allow-host` and no `--search-endpoint`, a seat's tool list and runner are byte-identical to a pre-B4 run.
 
 ### 5.1 Directory Traversal Guard
 Every tool call is validated by `agenttools.ResolveSafePath(root, path)`. Attempts to escape the `--root` boundary (via `../`, absolute paths outside root, or symlink pivots) are immediately rejected with an access-denied error.
 
 ### 5.2 Tool Audit Logging
-All tool invocations and returned payloads are logged to `~/.agy-pro/logs/fanout-<timestamp>.jsonl` with seat ID, duration, and redactor scrubbing.
+All tool invocations and returned payloads are logged to `~/.agy-pro/logs/fanout-<timestamp>.jsonl` with seat ID, duration, and redactor scrubbing. Refused calls are recorded too, so a seat that probes the boundary leaves an audit trail.
+
+### 5.3 Network tools: `read_url_content` and `search_web` (run-level opt-in)
+
+Two provider-seat tools reach the network. Both are OFF unless the run configures them, and both obey the one redaction discipline: every operand that can reach the tool log (the arguments, the rendered output, and the error text of these two tools) is seeded through the shared secret-eligibility rule before logging, including the URL-escaped query forms, the endpoint's own query parameters, and the resolved key value (read by env-var NAME at call time, never logged itself), and no new raw log sink exists.
+
+Over-seeding cost (deliberate, bounded): the two network tools seed every operand text WHOLE and UNCONDITIONALLY (not gated on the secret-shape rule), together with its transformations (decoded and URL-escaped spellings, URL component spellings, case variants, truncation prefix ladders), so the durable log masks a whole argument or URL even when it is benign (a benign query renders `[REDACTED]` in the Arguments field) and benign result text that collides with an operand spelling renders `[REDACTED]` in the Output field. This trades audit readability of these two tools' log lines for spelling-complete masking of credential echoes (lowercase runs, composites, encoded spellings, truncation cuts); no other tool's log line is affected, and fixed structural tokens (the schema keys, the `{query}` placeholder, the http(s) scheme, whole operands under 4 runes) stay behind the rule so the tools' own error vocabulary and ordinary words survive. Decoding boundary: the seeds cover ONE hop of decoding (a value the backend reflects after one URL-decode or one JSON-unescape); a backend that decodes TWICE before reflecting is out of scope by design. The per-entry seed set is budgeted (256 seeds; the byte budget never drops whole operands or the verbatim arguments text) and filled in a documented priority order, so pathological argument sizes cannot blow up the log masking.
+
+**`read_url_content`** (enabled by a non-empty `--allow-host` list):
+- GET only; no custom headers, no auth material, no cookies.
+- https only; http is accepted for loopback hosts (`127.0.0.1`, `::1`, `localhost`) so local test stubs work. Any other scheme is refused.
+- The URL hostname must be in the run's allow-list (repeatable `--allow-host`, matched lowercase, port ignored). An EMPTY allow-list refuses every call: the tool cannot be used without an explicit list, loopback included.
+- Redirects are capped at 3, and every redirect target re-runs the full scheme/userinfo/allow-list validation, so a redirect cannot escape the list or downgrade https.
+- The body is capped at 512 KiB (larger bodies are truncated with a note). Only text-family content types are accepted (`text/*`, `application/json`, `application/xml`, their `+json`/`+xml` suffix families, and the small html/rss/atom/svg list); an absent or unparsable content type is refused (fail closed).
+- The fixed per-request budget is 30s at the tool layer; the tool schema exposes no method, header, or timeout argument.
+
+**`search_web`** (enabled by a non-empty `--search-endpoint`):
+- The endpoint is an operator-configured URL template containing exactly one `{query}` placeholder; the model's query is URL-escaped before substitution, so it cannot inject extra parameters or credentials. The placeholder may not sit in the scheme or the authority, and after substitution the request host must still equal the template host.
+- Redirects are capped at 3, and every redirect target re-runs the scheme/userinfo gate plus a host-invariance check (the request host is fixed), so the key-bearing request can neither be downgraded to plain http nor moved to another host or port.
+- The endpoint itself passes the same scheme gate (https always, http loopback only, userinfo refused).
+- The API key is referenced by env-var NAME only (`--search-key-env`); the VALUE is read from the environment at call time and travels in the `Authorization: Bearer` header, the single sink for the value. It is never placed in the URL, the arguments, or any error string. An unset or empty variable is a call-time error naming the variable (the run is not silently unauthenticated); an empty `--search-key-env` means the endpoint needs no key.
+- Non-2xx responses are refused naming the status. An over-512 KiB body is REFUSED (not truncated), because a truncated JSON document cannot be parsed and a half-parsed result list would be a fake result. Results render from one generic JSON backend (the first array of objects found, up to 10 items); an unparseable body is an error, never a fabricated empty success.
+- **Honest degrade**: with no endpoint configured the tool returns a clear not-configured error on every call and stays out of the advertised schema. A run NEVER fabricates a search result.
+
+When a run enables the allow-list and/or the search source, EVERY provider seat (cross-verification and partition alike, write units included) gains the corresponding tool; native seats never build this runner.
 
 ---
 
@@ -248,3 +280,170 @@ Under `--out DIR` (default `./reports/fanout/<ts>/`):
      ```markdown
      - [ ] **ACCEPT** / [ ] **DISMISS** : `ISSUE-001` (BLOCKER) - SQL Injection in auth :: arbitration: <ruling> - <one-line evidence-based rationale> (ruled-by: main-agent|user)
      ```
+---
+
+## 8. Partition mode (`--units <planfile>`)
+
+Cross-verification (§1-§7) sends ONE prompt to N seats and reconciles their
+findings. **Partition mode** is the other shape: decompose the work into
+disjoint units UP FRONT, run **one provider seat per unit**, and merge the
+per-unit work products into a single deliverable.
+
+```bash
+agy pro fanout --task review --units plan.json --root .
+```
+
+### 8.1 Plan format
+
+The plan file is a JSON array of unit objects. `id`, `title`, `scope`, and
+`deliverable` are required; `seat`, `body`, and `write` are optional:
+
+```json
+[
+  {
+    "id": "auth-review",
+    "title": "Review the auth package",
+    "scope": ["src/auth/*.go"],
+    "deliverable": "A findings report for the auth package",
+    "seat": "acme/acme-model",
+    "body": "Optional explicit prompt body; empty = synthesized from title+scope+deliverable",
+    "write": true
+  },
+  {
+    "id": "db-review",
+    "title": "Review the db package",
+    "scope": ["src/db/*.go"],
+    "deliverable": "A findings report for the db package"
+  }
+]
+```
+
+- `write` is the per-unit write opt-in (default `false`). See §8.5.
+
+- `scope` is a list of file globs/paths the unit may touch. Root-wide entries
+  (`.`, `/`, bare wildcards like `*` or `**`) are rejected: an unbounded unit
+  cannot be a disjoint slice. Overlapping scopes between two units are
+  rejected at parse time when detectable (the merge step re-checks at runtime
+  and stays the authority).
+- **Unit ceiling (64).** A plan carries at most 64 units: partition mode runs
+  one concurrent provider seat per unit, so an unbounded supply-chain plan
+  could exhaust provider quota/CPU. `ParsePlan` rejects a larger plan with a
+  clear error; split bigger decompositions into multiple plans.
+- `seat` names one seat spec in the `--seats` grammar (`provider/model`,
+  `model`); empty = the run default (rotation-selected). A unit's `seat` must
+  name exactly one seat.
+- Unit prompts are the shared seat preamble plus the unit body (explicit or
+  synthesized), so the cacheable prefix stays byte-identical across units.
+- `--units` is mutually exclusive with `--prompt`, `--prompt-file`, `--seats`,
+  and `--models` (exit 2): the plan is the single source of the run's work.
+
+### 8.2 Seats, boundary, and read-only slice
+
+- One seat per unit, in plan order. Seat count = unit count (`--n` is not
+  consulted).
+- **Provider seats only.** Native (`native:<id>`) partition seats are refused
+  with a clear error: the scope-bounded slice cannot confine a subprocess seat
+  (native partition seats stay refused, also for `write: true` units).
+- **Read-only by default, per-unit write opt-in.** The CLI refuses `--units`
+  with `--tools write/exec` (exit 2), and the engine clamps a library caller to
+  the same read-only slice. A unit opts into write with `"write": true` in the
+  plan; there is NO CLI-wide write switch (§8.5). The per-unit boundary itself
+  is the `ToolRunner` scope filter: a partition seat's path tools refuse any
+  path outside its unit's scope (fail closed, including every directory-walk
+  entry). The boundary is what makes the units' file ownership checkable at
+  merge time.
+
+### 8.3 Concurrency and timeout
+
+- Every unit's seat runs **concurrently** (one provider goroutine per unit).
+  Provider partition seats are **uncapped**: there is deliberately no provider
+  concurrency cap, because a cap would serialize independent units and slow
+  the wall clock; the swarm deadline is the bound. The unit ceiling (64,
+  §8.1) bounds the fan-out itself. The native-seat semaphore
+  (`--max-native`, §1, [`swarm-hybrid.md`](swarm-hybrid.md) §1.3) is
+  irrelevant in partition mode because native seats are refused.
+- Default deadline: with `--units` and NO explicit `--timeout`, the budget
+  auto-scales to **300s + 120s per unit, capped at 3600s** (rationale: every
+  seat shares the one swarm deadline, and a larger concurrent fleet needs
+  more headroom for provider rate-limit/failover retries). An explicit
+  `--timeout` is honored exactly; cross-verification runs keep the flat 300s
+  default.
+
+### 8.4 Outputs and fail-on-conflict
+
+Under `--out DIR` (default `./reports/fanout/<ts>/`):
+1. `merged.md`: the single deliverable: every unit's work product
+   concatenated in plan order under `## Unit <id>` headings.
+2. `summary.json`: additionally carries the `partition` manifest block:
+   `mode` (`"partition"`), `status` (`"merged"` | `"failed"`), `artifact`
+   (`"merged.md"`), per-unit rows (`unit_id`, `title`, claimed `files`,
+   seat `status`, `duration_ms`), the `conflicts` list (empty array when the
+   plan is disjoint), and the three-check `verification` verdict
+   (`units_delivered`, `each_unit_in_artifact_once`,
+   `no_silent_double_assignment`, `passed`). Per-seat entries carry `unit_id`
+   for attribution.
+3. `reconciliation.md`: the human-readable partition run report: merged
+   artifact name, per-unit claim counts and seat status, the verification
+   verdict, and, on a failed run, the conflict section naming every
+   overlapped file and the units claiming it.
+
+**Fail-on-conflict.** Disjointness is an input assumption of a plan. The merge
+expands every unit's scope globs into the concrete file list it claims and
+scans for overlaps: any file claimed by two or more units, any missing unit
+deliverable, or any merge-verification failure **fails the run** (exit 1)
+instead of silently merging or picking a winner. The merged artifact,
+summary.json, and the conflict report are still written for inspection; the
+console error names the colliding files and units. Fix the plan (narrow the
+scopes so every file has exactly one owner, or merge the colliding units)
+and re-run.
+
+### 8.5 Per-unit write opt-in and network tools
+
+Partition mode is read-only by default, but a plan may grant write to
+specific units, and a run may enable the two network tools. Every capability
+below defaults OFF, and with all of them off the non-partition
+(cross-verification) path stays byte-identical to a pre-B4 run.
+
+**Per-unit write opt-in (`"write": true`, default `false`).**
+- The opt-in is per plan UNIT, not per run: there is no CLI-wide write
+  switch, and `--units` with `--tools write/exec` stays a usage error (exit
+  2). A `write: false` (or absent) unit's seat carries no write tools; the
+  engine's run-level read-only clamp still backstops library callers.
+- A `write: true` unit's PROVIDER seat gains `write_file` and
+  `replace_in_file`; the write confinement uses the SAME dual-view rule as
+  reads: the target's lexical path AND its symlink-resolved path must both
+  stay inside the unit's scope (a new file resolves through its closest
+  existing ancestor, so legitimate in-scope creation works). Refusal is
+  error-shaped and model-visible (the seat sees the refusal as the tool
+  result and continues), seeded through the same redaction machinery as read
+  refusals.
+- Tool-block shape: a per-unit write opt-in makes the tool block (and
+  therefore the cacheable request prefix) unit-shaped in mixed write/read-only
+  plans, trading cross-unit prefix sharing for the write capability.
+- Native seats stay refused in partition mode, also for `write: true` units:
+  a `native:<id>` seat in a write unit fails the run with the
+  provider-seats-only error before any subprocess spawns.
+- Written output paths are caught by the existing claim walk and the
+  named-conflict policy: two write units claiming one path fail the run with
+  a named conflict.
+- `run_command` remains OUT of partition mode entirely; it is held for a
+  separate user decision.
+
+**Network tools (`--allow-host`, `--search-endpoint` / `--search-key-env`).**
+- Both tools are run-level opt-ins with the rules of §5.3. When a run enables
+  them, EVERY provider partition seat gains them (a write unit keeps both its
+  write tools and the enabled network tools); native seats never build this
+  runner.
+- `--allow-host` is repeatable; an empty allow-list refuses every
+  `read_url_content` call. `--search-key-env` names the key's env var; the
+  value is never logged (§5.3).
+- With no allow-list and no search endpoint the wire is unchanged: seats see
+  exactly the pre-B4 tool list.
+
+**Registry enablement is a separate step.** Which provider models gain
+`write_file`/`replace_in_file`/`read_url_content`/`search_web` in
+`providers.json` (`capabilities.allowedTools`) is decided AFTER the B4
+convergence review and requires an explicit user approval; until then a
+registry model whose `allowedTools` filter does not list a tool refuses that
+tool at the model-level check. This document describes the engine surface;
+nothing here edits the live registry.

@@ -2,6 +2,174 @@
 Antigravity-cli (agy-tools) Changelog
 ================================================================================
 
+Version: 0.10.8
+Release Date: 2026-10-17
+Previous Version: 0.10.7
+
+--------------------------------------------------------------------------------
+[Overview]
+--------------------------------------------------------------------------------
+Provider-seat tool parity (B4) for the fanout swarm, all default OFF: partition
+units can now opt into write per plan unit, and provider seats can be given two
+run-level network tools. A plan unit carrying `"write": true` gives that unit's
+PROVIDER seat `write_file`/`replace_in_file`, confined by the same lexical AND
+symlink-resolved scope rule as reads (refusal is error-shaped and model-visible);
+there is no CLI-wide write switch, native partition seats stay refused, and
+`run_command` remains OUT (held for a separate user decision). The repeatable
+`--allow-host` flag enables `read_url_content` (GET only, https only with a
+loopback http exception, no headers or auth, redirect cap 3 with per-redirect
+re-validation, 512 KiB body cap, text content types only; an empty allow-list
+refuses every call), and `--search-endpoint` / `--search-key-env` enable
+`search_web` (endpoint template with one `{query}` placeholder, key referenced
+by env-var NAME only and read at call time into the Authorization header, honest
+not-configured error when no source is configured, never a fake result). Every
+capability defaults OFF: with no allow-list and no search source the wire stays
+byte-identical to a pre-B4 run. Which provider models gain these tools in the
+live registry (`providers.json`) is presented for explicit user approval after
+convergence and is not part of this release. Docs updated: `agy-pro/docs/fanout.md`,
+`agy-pro/docs/swarm-hybrid.md`, and the `agypro_swarm` plugin docs.
+
+[Added]
+- Per-unit write opt-in for partition mode: the plan `Unit` gains an optional
+  `write` field (JSON `"write"`, default false). A `write: true` unit's provider
+  seat gets `AllowWrite` and a write-capable tool list via a deliberate per-unit
+  carve-out of the run-level read-only clamp; a `write: false` unit carries no
+  write tools. Write confinement reuses the read scope boundary: the target's
+  lexical path AND its symlink-resolved path (closest-existing-ancestor
+  resolution for not-yet-existing files) must both stay inside the unit scope,
+  refused error-shaped through the same seeded redaction machinery as reads.
+  Native partition seats stay refused (also for write units) before any
+  subprocess spawns; written output paths ride the existing claim walk and the
+  named-conflict policy (two write units claiming one path fail the run).
+- `agy pro fanout --allow-host <host>` (repeatable): the host allow-list for
+  the new `read_url_content` provider-seat tool. Matching is lowercase with the
+  port ignored; an empty list refuses every call (fail closed).
+- `read_url_content`: GET-only fetch for provider seats. https only (http for
+  loopback hosts only), userinfo refused, no custom headers or auth material,
+  redirect cap 3 with every redirect target re-validated against the scheme and
+  allow-list gates, 512 KiB body truncation with a note, text-family content
+  types only (an absent or unparsable content type is refused), fixed 30s
+  tool-layer budget, and URL-component redaction seeding for the tool audit
+  log. Exposed on a seat only when the run listed at least one host.
+- `agy pro fanout --search-endpoint <url>` / `--search-key-env <name>`: the
+  run-level search source for the new `search_web` provider-seat tool. The
+  endpoint is a template with one `{query}` placeholder (query escaped before
+  substitution; the endpoint itself passes the https/loopback/userinfo gate);
+  the key is referenced by env-var NAME only, read at call time, and travels in
+  the Authorization Bearer header as its single sink (never the URL, the
+  arguments, or an error string).
+- `search_web`: one generic JSON backend for provider seats. Non-2xx refused
+  naming the status; an over-512 KiB body refused (not truncated, since a
+  truncated JSON document cannot parse); results render from the first array of
+  objects (up to 10 items); an unparseable body is an error, never a fabricated
+  empty success. With no endpoint configured the tool returns a clear
+  not-configured error and stays out of the advertised schema. Exposed on a
+  seat only when the run configured a source.
+- Exposure wiring: when a run enables the allow-list and/or the search source,
+  EVERY provider seat (cross-verification and partition alike, write-unit
+  carve-out included) gains the corresponding tool and runner configuration;
+  native seats never build this runner. With both off the seat tool list and
+  the wire are byte-identical to a pre-B4 run.
+
+[Limits]
+- `run_command` for provider seats and all partition seats stays OUT; it is
+  held for a separate user decision (unchanged).
+- Registry enablement (which provider models gain write_file/replace_in_file/
+  read_url_content/search_web under `capabilities.allowedTools` in
+  `providers.json`) is a separate explicit user approval AFTER B4 convergence;
+  a registry model whose allowedTools filter does not list a tool refuses it at
+  the model-level check until then.
+- `read_url_content` sends no auth material of its own; allow-listed hosts that
+  need credentials are unreachable through it by design.
+- `go test -race` is not runnable on the dev machine (no C compiler) - an
+  environmental degradation, not a PASS.
+
+[Verification]
+- `go build ./...`, `go vet ./...`, `go test ./... -count=1 -p 1`: all test
+  packages ok, 0 FAIL.
+- New pins (both directions, mutation-verified): scoped writer accepts in-scope
+  writes and refuses out-of-scope and symlink-alias writes; the write-unit
+  carve-out, the native refusal, and the default-off clamp each fail their pin
+  when mutated; the allow-list gate, the redirect re-validation, the audit-log
+  redaction seeding, and the exposure-only-with-allow-list order each fail their
+  pin when mutated; the not-configured error, the key-by-env-NAME transport, and
+  the exposure-only-with-source order each fail their pin when mutated. The docs
+  drift-pins stay green.
+
+Version: 0.10.7
+Release Date: 2026-10-17
+Previous Version: 0.10.6
+
+--------------------------------------------------------------------------------
+[Overview]
+--------------------------------------------------------------------------------
+Partition mode for the fanout swarm: a run can now be decomposed into disjoint
+work units up front, executed as one provider seat per unit, and merged into a
+single deliverable. The plan is a JSON file (`--units <planfile>`): each unit
+carries an id, title, scope globs, and a deliverable, optionally its own seat
+spec and prompt body. Partition runs are read-only by construction (write/exec
+tools are refused), each seat's path-reading tools are bounded to its unit's
+scope, and native seats are refused (the read-only slice cannot confine a
+subprocess seat). After the seats finish, the merge step concatenates the
+per-unit work products into `merged.md`, expands every unit's scope into its
+concrete claimed-file list, and runs the authoritative disjointness scan: any
+overlap, missing deliverable, or merge-verification failure FAILS the run
+(fail-on-conflict) with the merged artifact and the conflict report still
+written for inspection. Per-unit attribution rides in summary.json (the
+`partition` manifest block) and the per-seat `unit_id`. The partition default
+wall-clock budget scales with the plan (300s + 120s per unit, capped at
+3600s); an explicit `--timeout` is honored exactly, and cross-verification
+runs keep the flat 300s default. Docs updated: `agy-pro/docs/fanout.md`,
+`agy-pro/docs/swarm-hybrid.md`, and the `agypro_swarm` plugin docs.
+
+[Added]
+- `agy pro fanout --units <planfile>`: PARTITION mode. One PROVIDER seat per
+  plan unit, all units concurrent. The plan is a JSON array of units
+  (`id`, `title`, `scope`, `deliverable` required; `seat`, `body` optional);
+  ParsePlan rejects missing fields, duplicate ids, root-wide or bare-wildcard
+  scopes, and any scope overlap it can prove. Mutually exclusive with
+  `--prompt`/`--prompt-file`/`--seats`/`--models` (exit 2).
+- Scoped read-only boundary: partition seats force the read-only tool slice
+  (the CLI refuses `--units` with `--tools write/exec`, and the engine clamps
+  a library caller the same way), and each seat's ToolRunner is bounded to its
+  unit's scope (guard.go PathInScope, fail closed on walk entries). Native
+  partition seats are refused with a clear error (held for the write-
+  capability decision, work item B4).
+- Merge step: `merged.md` (the single deliverable, units concatenated in plan
+  order), the claimed-file expansion, the authoritative overlap scan, a
+  three-check merge verification, the human-readable partition report at the
+  `reconciliation.md` path, and the `partition` manifest block in
+  summary.json (mode/status/artifact/units/conflicts/verification). Fail-on-
+  conflict: the run fails instead of silently merging overlapping units.
+- Per-unit attribution: `SeatResult.UnitID` flows to summary.json and the
+  partition report (attribution only, never into a request); unit prompts are
+  the shared seat preamble plus the unit body, so cross-unit prefix caching
+  survives.
+- Partition timeout scaling: with `--units` and no explicit `--timeout`, the
+  default deadline is 300s + 120s per unit, capped at 3600s; an explicit
+  `--timeout` wins exactly; cross-verification keeps 300s byte-for-byte.
+  Provider partition seats run uncapped-concurrent (one goroutine per unit);
+  there is deliberately no provider concurrency cap (a cap would serialize
+  independent units and slow the wall clock; the swarm deadline is the
+  bound), and the native-seat semaphore is irrelevant because native seats
+  are refused in partition mode.
+
+[Limits]
+- Partition mode is provider-seats-only and read-only; granting write/exec to
+  partition seats (work item B4) remains HELD for the user decision.
+- The merge-time disjointness scan is lexical (glob expansion over the
+  workspace); it cannot see semantic overlaps (two units editing the same
+  behavior through different files).
+- `go test -race` is not runnable on the dev machine (no C compiler) - an
+  environmental degradation, not a PASS.
+
+[Verification]
+- `go build ./...`, `go vet ./...`, `go test ./... -count=1 -p 1`: all test
+  packages ok, 0 FAIL.
+- B7 timeout scaling pinned and mutation-verified (per-unit budget, clamp,
+  and the CLI explicit-`--timeout` seam each kill their pin when mutated);
+  B5/B6 merge + conflict pins and the docs drift-pins stay green.
+
 Version: 0.10.6
 Release Date: 2026-10-15
 Previous Version: 0.10.5

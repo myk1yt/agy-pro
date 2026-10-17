@@ -3,6 +3,8 @@
 This note covers the surfaces added on top of the classic `agy pro fanout --models` swarm:
 
 - **hybrid swarms** — real `agy` (native Gemini) seats and external provider seats in ONE run (`--seats`),
+- **partition mode**: a plan file of disjoint work units, one PROVIDER seat per unit, merged into one
+  deliverable (`agy pro fanout --units <planfile>`; [`fanout.md`](fanout.md) §8),
 - **numbered seat selection** — `agy pro swarm`, the interactive builder (numbers are the happy path; flags
   are the power-user/CI fallback),
 - **one combined model list** — `agy pro models --all` and the launcher's model picker,
@@ -95,6 +97,40 @@ the Antigravity subscription (rate limits can hit mid-swarm), provider seats are
 
 An all-native `--seats` run works on a machine with no `~/.agy-pro/providers.json`: the missing registry is
 tolerated when every seat is native. Any provider seat, or any other registry error, keeps the hard failure.
+
+### 1.7 Partition mode: one provider seat per work unit
+
+`agy pro fanout --units <planfile>` runs the OTHER swarm shape (full reference: [`fanout.md`](fanout.md) §8):
+instead of one prompt across N cross-verifying seats, the plan file decomposes the work into disjoint units
+and the engine runs **one PROVIDER seat per unit**, concurrently, then merges the per-unit work products
+into a single `merged.md` deliverable.
+
+- **Provider seats only.** A native partition seat is refused with a clear error: the read-only slice below
+  cannot confine a subprocess seat. (`--max-native` and the native-seat semaphore do not apply.)
+- **Read-only by default, per-unit write opt-in, scope-bounded.** Partition
+  runs refuse `--tools write/exec` (no CLI-wide write switch); a plan unit
+  opts into write with `"write": true`, and that unit's PROVIDER seat gains
+  `write_file`/`replace_in_file` confined by the same lexical AND
+  symlink-resolved scope rule as reads (native seats stay refused, also for
+  write units; `run_command` stays OUT). Each seat's path tools are bounded
+  to its unit's scope (fail closed). Root-wide unit scopes and provable
+  scope overlaps are rejected at plan parse; the merge step re-checks
+  disjointness at runtime, and written paths ride the same claim walk, so
+  two write units claiming one path fail the run with a named conflict.
+- **Optional network tools.** A partition run may also enable
+  `read_url_content` (repeatable `--allow-host`, empty list refuses) and
+  `search_web` (`--search-endpoint` plus `--search-key-env`, key by
+  env-var NAME only); both default OFF and reach every provider partition
+  seat under the rules of [`fanout.md`](fanout.md) §5.3.
+- **Uncapped concurrency, scaled deadline.** All unit seats run concurrently with no provider cap (a cap
+  would serialize independent units; the swarm deadline is the bound). With no explicit `--timeout` the
+  default budget is 300s + 120s per unit (cap 3600s); an explicit `--timeout` wins exactly.
+- **Fail-on-conflict.** Any file claimed by two units, any missing unit deliverable, or a merge-verification
+  failure fails the run; `merged.md`, the `partition` manifest block in `summary.json`, and the conflict
+  report are still written for inspection.
+- A plan unit MAY name its own seat (`provider/model` or `model` in the unit's `seat` field); the numbered
+  `--seats` grammar is unchanged. Partition mode is mutually exclusive with `--prompt`/`--prompt-file`/
+  `--seats`/`--models`.
 
 ---
 

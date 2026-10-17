@@ -1,0 +1,57 @@
+<svg viewBox="0 0 680 542" width="100%" role="img"
+     aria-label="main 브랜치 설치 흐름: 클론 한 번으로 Node 툴킷 설치 프로그램과 agy-pro Go 셔틀 설치 프로그램을 함께 실행하는 모습"
+     xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="ah-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4b5563"/>
+    </marker>
+  </defs>
+
+  <!-- 헤더 밴드: "main 브랜치: 클론 한 번, 설치 두 개" 15px ≈ 285px, 박스 640 → 여백 충분 -->
+  <rect x="20" y="20" width="640" height="44" rx="10" fill="#f9fafb" stroke="#4b5563" stroke-width="2"/>
+  <text x="340" y="42" text-anchor="middle" dominant-baseline="central" font-family="'Pretendard','Malgun Gothic','Apple SD Gothic Neo',sans-serif" font-size="15" font-weight="bold" fill="#1f2937">main 브랜치: 클론 한 번, 설치 프로그램 두 개</text>
+
+  <!-- 클론 박스: "git clone + cd agy-tools" 12px ≈ 150px, 박스 240 → 여백 45px+ -->
+  <rect x="220" y="90" width="240" height="56" rx="10" fill="#f9fafb" stroke="#4b5563" stroke-width="2"/>
+  <text x="340" y="118" text-anchor="middle" dominant-baseline="central" font-family="'Pretendard','Malgun Gothic','Apple SD Gothic Neo',sans-serif" font-size="12" fill="#1f2937">git clone + cd agy-tools</text>
+
+  <!-- 분기 연결선 (20px 그리드 스냅) -->
+  <line x1="340" y1="146" x2="340" y2="162" stroke="#4b5563" stroke-width="2"/>
+  <line x1="170" y1="162" x2="510" y2="162" stroke="#4b5563" stroke-width="2"/>
+  <line x1="170" y1="162" x2="170" y2="176" stroke="#4b5563" stroke-width="2" marker-end="url(#ah-gray)"/>
+  <line x1="510" y1="162" x2="510" y2="176" stroke="#4b5563" stroke-width="2" marker-end="url(#ah-gray)"/>
+
+  <!-- 설치 프로그램 ① (Blue): 헤더 ≈ 205px / 최장 불릿 "rules / plugins / skills / hooks 구성" 11px ≈ 198px, 박스 300 → 여백 51px+ -->
+  <rect x="20" y="180" width="300" height="190" rx="12" fill="#eff6ff" stroke="#2563eb" stroke-width="2"/>
+  <text x="40" y="206" dominant-baseline="central" font-family="Consolas,'Malgun Gothic',monospace" font-size="13" font-weight="bold" fill="#1e40af">① scripts\install.bat · Node 툴킷</text>
+  <line x1="40" y1="226" x2="300" y2="226" stroke="#2563eb" stroke-width="1" stroke-dasharray="4 4"/>
+  <text x="40" y="250" dominant-baseline="central" font-family="'Pretendard','Malgun Gothic','Apple SD Gothic Neo',sans-serif" font-size="11" fill="#1e40af">· Node.js 16+ 확인</text>
+  <text x="40" y="274" dominant-baseline="central" font-family="'Pretendard','Malgun Gothic','Apple SD Gothic Neo',sans-serif" font-size="11" fill="#1e40af">· npm link로 4개 명령 등록</text>
+  <text x="40" y="298" dominant-baseline="central" font-family="'Pretendard','Malgun Gothic','Apple SD Gothic Neo',sans-serif" font-size="11" fill="#1e40af">· statusLine 상태줄 자동 설정</text>
+  <text x="40" y="322" dominant-baseline="central" font-family="'Pretendard','Malgun Gothic','Apple SD Gothic Neo',sans-serif" font-size="11" fill="#1e40af">· rules / plugins / skills / hooks 구성</text>
+  <text x="40" y="350" dominant-baseline="central" font-family="'Pretendard','Malgun Gothic','Apple SD Gothic Neo',sans-serif" font-size="11" fill="#1e40af">Windows, macOS, Linux 공통</text>
+
+  <!-- 설치 프로그램 ② (Teal) -->
+  <rect x="360" y="180" width="300" height="190" rx="12" fill="#f0fdfa" stroke="#0d9488" stroke-width="2"/>
+  <text x="380" y="206" dominant-baseline="central" font-family="'Pretendard','Malgun Gothic','Apple SD Gothic Neo',sans-serif" font-size="13" font-weight="bold" fill="#115e59">② install.cmd · agy-pro Go 셔틀</text>
+  <line x1="380" y1="226" x2="640" y2="226" stroke="#0d9488" stroke-width="1" stroke-dasharray="4 4"/>
+  <text x="380" y="250" dominant-baseline="central" font-family="'Pretendard','Malgun Gothic','Apple SD Gothic Neo',sans-serif" font-size="11" fill="#115e59">· Go 부재 시 자동 설치 (1.22+)</text>
+  <text x="380" y="274" dominant-baseline="central" font-family="'Pretendard','Malgun Gothic','Apple SD Gothic Neo',sans-serif" font-size="11" fill="#115e59">· agy.exe 빌드 → ~/.agy-pro/bin</text>
+  <text x="380" y="298" dominant-baseline="central" font-family="'Pretendard','Malgun Gothic','Apple SD Gothic Neo',sans-serif" font-size="11" fill="#115e59">· User PATH 백업 후 선행 추가</text>
+  <text x="380" y="322" dominant-baseline="central" font-family="'Pretendard','Malgun Gothic','Apple SD Gothic Neo',sans-serif" font-size="11" fill="#115e59">· agy pro doctor --strict 진단</text>
+  <text x="380" y="350" dominant-baseline="central" font-family="'Pretendard','Malgun Gothic','Apple SD Gothic Neo',sans-serif" font-size="11" fill="#115e59">Windows 전용 · Node 불필요</text>
+
+  <!-- 결과 연결선 -->
+  <line x1="170" y1="370" x2="170" y2="404" stroke="#4b5563" stroke-width="2" marker-end="url(#ah-gray)"/>
+  <line x1="510" y1="370" x2="510" y2="404" stroke="#4b5563" stroke-width="2" marker-end="url(#ah-gray)"/>
+
+  <!-- 결과 박스 (Blue / Teal): 최장 ≈ 252px, 박스 310 → 여백 29px+ -->
+  <rect x="20" y="410" width="310" height="60" rx="10" fill="#eff6ff" stroke="#2563eb" stroke-width="2"/>
+  <text x="175" y="440" text-anchor="middle" dominant-baseline="central" font-family="'Pretendard','Malgun Gothic','Apple SD Gothic Neo',sans-serif" font-size="12" fill="#1e40af">Node 툴킷: 상태줄 배지 + 대시보드 + 토큰/비용</text>
+  <rect x="350" y="410" width="310" height="60" rx="10" fill="#f0fdfa" stroke="#0d9488" stroke-width="2"/>
+  <text x="505" y="440" text-anchor="middle" dominant-baseline="central" font-family="'Pretendard','Malgun Gothic','Apple SD Gothic Neo',sans-serif" font-size="12" fill="#115e59">agy 셔틀: agy pro 스위트 + 멀티모델 스웜</text>
+
+  <!-- 하단 안내 칩: ≈ 413px, 박스 640 → 여백 충분 -->
+  <rect x="20" y="490" width="640" height="32" rx="16" fill="#f9fafb" stroke="#4b5563" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <text x="340" y="506" text-anchor="middle" dominant-baseline="central" font-family="'Pretendard','Malgun Gothic','Apple SD Gothic Neo',sans-serif" font-size="11" fill="#1f2937">두 설치는 서로 독립입니다. 순서는 무관하고, Go 셔틀은 Node.js 없이 동작합니다.</text>
+</svg>

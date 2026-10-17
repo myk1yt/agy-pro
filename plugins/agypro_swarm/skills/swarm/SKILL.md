@@ -30,6 +30,15 @@ run is never silent; (6) present the reconciliation matrix and seat findings VER
 artifact paths. The menu protocol applies only when the user explicitly asks for
 external/provider seats or names specific seats.
 
+PARTITION MODE: when the request decomposes into disjoint scopes, `agy pro fanout --units
+<planfile>` runs one PROVIDER seat per plan unit and merges the work products into a single
+`merged.md` (see the "Partition mode" section of `commands/swarm.md` and agy-pro/docs/fanout.md
+section 8). The plan file is written with your file-write tool like the prompt file; partition
+runs refuse native seats and fail the run on any scope conflict. They are read-only by default:
+a unit opts into write with `"write": true` (no CLI-wide write switch; `run_command` stays OUT),
+and a run may pass `--allow-host` / `--search-endpoint` / `--search-key-env` to give every
+provider partition seat `read_url_content` / `search_web` (both default OFF).
+
 ## Honesty rules (binding)
 
 - This is a **plugin skill/slash command**, the same class as `/agy_help`. It is NOT a core `agy`
