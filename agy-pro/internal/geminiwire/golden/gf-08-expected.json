@@ -1,1 +1,1 @@
-{"messages":[{"role":"system","content":"[agy-pro] 1 non-text part(s) of type image/png omitted: model lacks support"},{"role":"user","content":"사진을 봐줘"}],"notes":["[agy-pro] 1 non-text part(s) of type image/png omitted: model lacks support"],"params":{},"surface_thoughts":false,"tool_choice":null,"tools":null}
+{"messages":[{"role":"user","content":"사진을 봐줘"}],"notes":["[agy-pro] 1 non-text part(s) of type image/png omitted: model lacks support"],"params":{},"surface_thoughts":false,"tool_choice":null,"tools":null}

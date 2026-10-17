@@ -35,6 +35,7 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 		taskFlag       = flags.String("task", "review", "Task type: review|security|plan-audit|research|ideas|custom")
 		promptFlag     = flags.String("prompt", "", "Inline user prompt text")
 		promptFileFlag = flags.String("prompt-file", "", "Path to prompt file, or '-' for stdin")
+		unitsFlag      = flags.String("units", "", "Path to a partition plan file (JSON array of units): PARTITION mode runs one seat per unit, each bounded to its unit's scope (mutually exclusive with --prompt, --prompt-file, --seats and --models)")
 		nFlag          = flags.Int("n", 3, "Number of models to fan out across")
 		modelsFlag     = flags.String("models", "", "Comma-separated model identifiers (e.g. 'openai/gpt-4o,deepseek/deepseek-chat')")
 		seatsFlag      = flags.String("seats", "", "Comma-separated seat specs mixing native and provider seats: 'native:<model-id>' for a real agy (Gemini) subprocess seat, 'provider/model' or 'model' for an external provider seat (e.g. 'native:gemini-3.8-flash-high,nw/glm-5.3-flash')")
@@ -42,11 +43,23 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 		rootFlag       = flags.String("root", ".", "Workspace root directory for tool execution")
 		toolsFlag      = flags.String("tools", "read,search", "Allowed tools: read,search,write,exec (closed set; unknown tokens are rejected)")
 		maxTurnsFlag   = flags.Int("max-turns", 10, "Maximum turns for agentic tool loop")
-		timeoutFlag    = flags.Int("timeout", DefaultTimeoutSec, "Swarm execution timeout in seconds")
+		timeoutFlag    = flags.Int("timeout", DefaultTimeoutSec, "Swarm execution timeout in seconds (with --units and no explicit --timeout, the default auto-scales: 300 + 120 per unit, capped at 3600)")
 		outFlag        = flags.String("out", "", "Output directory for generated reports (default ./reports/fanout/<ts>)")
 		jsonFlag       = flags.Bool("json", false, "Output summary JSON to stdout")
 		setupFlag      = flags.Bool("setup", false, "Launch interactive provider setup wizard")
 	)
+	// B4-2a: repeatable --allow-host entries accumulate verbatim here;
+	// buildRunConfig normalizes them into RunConfig.AllowHosts.
+	var allowHosts []string
+	flags.Func("allow-host", "Hostname allowed for the read_url_content tool (repeatable; port ignored, matched lowercase). Provider seats get read_url_content only when at least one host is listed", func(v string) error {
+		allowHosts = append(allowHosts, v)
+		return nil
+	})
+	// B4-2b: the search_web source; the key VALUE lives only in the named
+	// environment variable and is read at call time, never by the CLI.
+	var searchEndpoint, searchKeyEnv string
+	flags.StringVar(&searchEndpoint, "search-endpoint", "", "Endpoint URL template for the search_web tool, containing one {query} placeholder (https only; http for loopback hosts). Provider seats get search_web only when this is set")
+	flags.StringVar(&searchKeyEnv, "search-key-env", "", "NAME of the environment variable holding the search endpoint's API key (the value is read at call time and never logged). Optional when the endpoint needs no key")
 
 	flags.Usage = func() {
 		fmt.Fprintln(errw, "Usage: agy pro fanout [options]")
@@ -68,6 +81,19 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 		return 2
 	}
 
+	// B7: detect whether --timeout was EXPLICITLY set. The flag default is the
+	// flat 300s, which is indistinguishable from `--timeout 300` by value;
+	// flags.Visit visits only flags present on the command line. A partition
+	// run (--units) without an explicit --timeout must get the unit-scaled
+	// default (see buildRunConfig), while any explicit --timeout is honored
+	// exactly.
+	timeoutSet := false
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == "timeout" {
+			timeoutSet = true
+		}
+	})
+
 	// 1. Setup Wizard flag check
 	if *setupFlag {
 		if err := providers.InteractiveSetupWizard(in, out); err != nil {
@@ -79,7 +105,17 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 
 	// 2. Resolve Prompt
 	promptText := *promptFlag
-	if *promptFileFlag != "" {
+	if *unitsFlag != "" {
+		// PARTITION mode (B2): the per-unit bodies come from the plan file, so
+		// the single-prompt sources are refused instead of read. Reading is not
+		// merely redundant here: `--prompt-file -` would block on stdin forever
+		// in a run whose real input is the plan file.
+		if *promptFlag != "" || *promptFileFlag != "" {
+			fmt.Fprintf(errw, "Error: --units cannot be combined with --prompt or --prompt-file (each unit carries its own body in the plan file)\n")
+			return 2
+		}
+	}
+	if *unitsFlag == "" && *promptFileFlag != "" {
 		if *promptFileFlag == "-" {
 			data, err := io.ReadAll(in)
 			if err != nil {
@@ -152,22 +188,29 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 	// buildRunConfig: the ONE choke point where raw flag values become an
 	// engine-ready config (A1/A3).
 	cfg, err := buildRunConfig(fanoutFlags{
-		task:      *taskFlag,
-		n:         *nFlag,
-		models:    *modelsFlag,
-		seats:     *seatsFlag,
-		maxNative: *maxNativeFlag,
-		root:      *rootFlag,
-		tools:     *toolsFlag,
-		maxTurns:  *maxTurnsFlag,
-		timeout:   *timeoutFlag,
-		out:       *outFlag,
+		task:           *taskFlag,
+		n:              *nFlag,
+		models:         *modelsFlag,
+		seats:          *seatsFlag,
+		units:          *unitsFlag,
+		maxNative:      *maxNativeFlag,
+		root:           *rootFlag,
+		tools:          *toolsFlag,
+		maxTurns:       *maxTurnsFlag,
+		timeout:        *timeoutFlag,
+		timeoutSet:     timeoutSet,
+		out:            *outFlag,
+		allowHosts:     allowHosts,
+		searchEndpoint: strings.TrimSpace(searchEndpoint),
+		searchKeyEnv:   strings.TrimSpace(searchKeyEnv),
 	}, promptText)
 	if err != nil {
 		// C2/D3: usage errors quote raw tokens from --seats/--tools (seat-spec
 		// and tool-token validators). Seed the redactor with the raw flag
 		// values so a planted secret is masked wherever the sentence echoes it.
-		fmt.Fprintf(errw, "Error: %v\n", maskOperandSentence(err.Error(), providers.FlagSeedOperands(*seatsFlag, *toolsFlag)...))
+		// --units joins the seeds: a plan-file path is an operand like any
+		// other and its read/parse errors quote it verbatim.
+		fmt.Fprintf(errw, "Error: %v\n", maskOperandSentence(err.Error(), providers.FlagSeedOperands(*seatsFlag, *toolsFlag, *unitsFlag)...))
 		return 2
 	}
 
@@ -213,6 +256,35 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 	// stay readable).
 	fmt.Fprintf(out, "Task:                  %s\n", providers.MaskOperand(summary.Task))
 	fmt.Fprintf(out, "Seats Evaluated:       %d / %d\n", summary.NCompleted, summary.NRequested)
+
+	// D1: PARTITION mode merges per-unit work products and runs NO findings
+	// reconciliation, so the cross-verification block below (confirmed/disputed
+	// counts, per-seat report lines, "all findings verified") is phantom
+	// language here: MergePartition never writes seat-*.md files. The
+	// partition banner names the merged deliverable, the unit count and the
+	// merge status instead. A failed partition run exits above (the engine
+	// error path), so this banner is only ever the success path.
+	if summary.Partition != nil {
+		p := summary.Partition
+		fmt.Fprintf(out, "Degraded Mode:         %v\n", summary.Degraded)
+		fmt.Fprintf(out, "Partition Units:       %d\n", len(p.Units))
+		fmt.Fprintf(out, "Partition Status:      %s\n", p.Status)
+		fmt.Fprintf(out, "Conflicts:             %d\n", len(p.Conflicts))
+		fmt.Fprintln(out)
+
+		fmt.Fprintln(out, "Artifacts Generated:")
+		fmt.Fprintf(out, "  Merged Deliverable:  %s\n", providers.MaskOperand(filepath.Join(cfg.OutDir, p.Artifact)))
+		fmt.Fprintf(out, "  Reconciliation:      %s\n", providers.MaskOperand(filepath.Join(cfg.OutDir, "reconciliation.md")))
+		fmt.Fprintf(out, "  Machine Summary:     %s\n", providers.MaskOperand(filepath.Join(cfg.OutDir, "summary.json")))
+		fmt.Fprintln(out)
+		if len(p.Conflicts) > 0 {
+			fmt.Fprintf(out, "⚠️ Notice: %d partition conflict(s) require plan arbitration in reconciliation.md\n", len(p.Conflicts))
+		} else {
+			fmt.Fprintln(out, "✅ Partition merge complete: every unit delivered and all scopes were disjoint.")
+		}
+		return 0
+	}
+
 	// Thin seats succeeded but reported no findings, so they are not in the
 	// numerator above. Naming them keeps the count honest instead of silently
 	// shrinking "Seats Evaluated" (the 2026-10-14 quality-variance gap).
@@ -259,12 +331,24 @@ type fanoutFlags struct {
 	n         int
 	models    string
 	seats     string
+	units     string
 	maxNative int
 	root      string
 	tools     string
 	maxTurns  int
 	timeout   int
-	out       string
+	// timeoutSet reports whether --timeout was explicitly present on the
+	// command line (flags.Visit in Run); the flag default is indistinguishable
+	// from `--timeout 300` by value alone.
+	timeoutSet bool
+	out        string
+	// allowHosts carries the raw repeatable --allow-host values (B4-2a);
+	// buildRunConfig normalizes them into RunConfig.AllowHosts.
+	allowHosts []string
+	// searchEndpoint / searchKeyEnv carry the raw B4-2b search_web source
+	// flags; buildRunConfig trims them into RunConfig.SearchSource.
+	searchEndpoint string
+	searchKeyEnv   string
 }
 
 // buildRunConfig turns the flag surface into a validated RunConfig. It is the
@@ -273,10 +357,32 @@ type fanoutFlags struct {
 //   - --tools is parsed fail-closed (S-8): an unknown token is an error, never
 //     a substring match ("nowrite" must not enable write_file);
 //   - --seats and --models are mutually exclusive (contract §2.1, exit 2);
+//   - --units (partition mode, B2) is mutually exclusive with the
+//     cross-verification seat sources --seats/--models AND with the
+//     single-prompt sources --prompt/--prompt-file: a partition run takes one
+//     body per unit from the plan file, so mixing either source in is a usage
+//     error, never a silently ignored flag;
+//   - the plan file is read and parsed here, so a missing file or a malformed
+//     plan is a clear usage error (exit 2) instead of an engine failure;
 //   - the native-seat concurrency is clamped through
 //     mode.ClampNativeSeatConcurrency, the same helper the state.json path
 //     uses, so no flag value can widen the native-seat pool past 8;
-//   - --seats wins over --n for the seat count (the spec list is the truth).
+//   - --timeout: an explicit value is honored exactly; a --units run WITHOUT
+//     an explicit --timeout leaves TimeoutSec at 0 so the engine scales the
+//     default with the unit count (B7); any other run keeps the flat flag
+//     default;
+//   - --seats wins over --n for the seat count (the spec list is the truth),
+//     and --units wins over both (the plan is the truth);
+//   - --allow-host (B4-2a, repeatable) accumulates verbatim and is
+//     normalized (lowercase, port-stripped, deduped) into RunConfig.
+//     AllowHosts; a non-empty list is what exposes read_url_content to the
+//     provider seats. It is a run-level switch, so partition mode accepts
+//     it for every provider seat; it never touches native seats.
+//   - --search-endpoint / --search-key-env (B4-2b) bind the search_web
+//     source into RunConfig.SearchSource (trimmed; the key is referenced by
+//     env-var NAME only, the value is never read here). A non-empty endpoint
+//     is what exposes search_web to the provider seats; partition mode
+//     accepts it for every provider seat; it never touches native seats.
 //
 // A returned error is a usage error: Run() prints it and exits 2.
 func buildRunConfig(f fanoutFlags, promptText string) (RunConfig, error) {
@@ -302,14 +408,64 @@ func buildRunConfig(f fanoutFlags, promptText string) (RunConfig, error) {
 		seatSpecs = specs
 	}
 
+	var units []Unit
+	if f.units != "" {
+		if f.seats != "" || f.models != "" {
+			return RunConfig{}, errors.New("--units cannot be combined with --seats or --models (partition mode assigns one seat per unit)")
+		}
+		if promptText != "" {
+			return RunConfig{}, errors.New("--units cannot be combined with --prompt or --prompt-file (each unit carries its own body in the plan file)")
+		}
+		data, err := os.ReadFile(f.units)
+		if err != nil {
+			return RunConfig{}, fmt.Errorf("failed to read units plan file: %w", err)
+		}
+		parsed, err := ParsePlan(data)
+		if err != nil {
+			return RunConfig{}, err
+		}
+		if len(parsed) == 0 {
+			return RunConfig{}, errors.New("units plan file contains no units")
+		}
+		units = parsed
+	}
+
 	normalizedTools, err := ParseToolTokens(f.tools)
 	if err != nil {
 		return RunConfig{}, err
 	}
 
+	// B6/B4-1: partition mode has no CLI-wide write switch. The per-unit scope
+	// filter bounds the path tools, and a unit that needs write capability opts
+	// in per plan ("write": true); a run-level --tools write/exec would grant
+	// every unit's seat write access, which the per-unit opt-in exists to
+	// prevent. Refuse the combination here (exit 2, matching the
+	// mutual-exclusion style above) instead of running an over-privileged
+	// seat. normalizedTools is the canonical closed-set join, so the substring
+	// test cannot misfire.
+	if len(units) > 0 {
+		lt := strings.ToLower(normalizedTools)
+		if strings.Contains(lt, "write") || strings.Contains(lt, "exec") {
+			return RunConfig{}, errors.New("--units (partition mode) is read-only by default and cannot be combined with --tools write/exec; a unit opts into write per plan (\"write\": true), there is no CLI-wide write switch")
+		}
+	}
+
 	nSeats := f.n
-	if len(seatSpecs) > 0 {
+	switch {
+	case len(units) > 0:
+		nSeats = len(units)
+	case len(seatSpecs) > 0:
 		nSeats = len(seatSpecs)
+	}
+
+	// B7: an explicit --timeout is honored exactly. A partition run WITHOUT
+	// one leaves TimeoutSec at 0 so the engine scales the default with the
+	// unit count (partitionDefaultTimeoutSec in withDefaults); the non-
+	// partition default stays the flat flag default (300) so the config
+	// surface the engine receives is unchanged there.
+	timeoutSec := f.timeout
+	if len(units) > 0 && !f.timeoutSet {
+		timeoutSec = 0
 	}
 
 	return RunConfig{
@@ -318,12 +474,18 @@ func buildRunConfig(f fanoutFlags, promptText string) (RunConfig, error) {
 		N:                    nSeats,
 		Models:               explicitModels,
 		Seats:                seatSpecs,
+		Units:                units,
 		MaxNativeConcurrency: resolveMaxNative(f.maxNative),
 		Root:                 f.root,
 		Tools:                normalizedTools,
 		MaxTurns:             f.maxTurns,
-		TimeoutSec:           f.timeout,
+		TimeoutSec:           timeoutSec,
 		OutDir:               f.out,
+		AllowHosts:           agenttools.NormalizeAllowHosts(f.allowHosts),
+		SearchSource: agenttools.SearchSource{
+			Endpoint: f.searchEndpoint,
+			KeyEnv:   f.searchKeyEnv,
+		},
 	}, nil
 }
 

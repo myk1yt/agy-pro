@@ -612,6 +612,31 @@ func SeedEligible(operand string) bool {
 	return seedShaped(operand)
 }
 
+// SeedList renders the redaction seeds for a caller-collected operand list
+// through the ONE shared SeedEligible rule: every eligible operand plus its
+// trimmed form is added, deduplicated, in first-seen order. This is the
+// single implementation every per-call seed-list builder uses (the URL tools,
+// the scope refusal, the merge plan-field seeding); callers only differ in how
+// they collect the operands.
+func SeedList(operands []string) []string {
+	seen := map[string]bool{}
+	var seeds []string
+	add := func(s string) {
+		if s != "" && !seen[s] {
+			seen[s] = true
+			seeds = append(seeds, s)
+		}
+	}
+	for _, op := range operands {
+		if !SeedEligible(op) {
+			continue
+		}
+		add(op)
+		add(strings.TrimSpace(op))
+	}
+	return seeds
+}
+
 // FlagSeedOperands returns the redactor seeds for multi-token flag values:
 // each whole value plus its comma/space/semicolon-separated tokens (newlines
 // and carriage returns split too, so a value pasted with a trailing newline

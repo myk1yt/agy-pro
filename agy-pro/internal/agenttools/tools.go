@@ -87,6 +87,20 @@ func ReadFile(root, path string, startLine, endLine int) (string, error) {
 
 // ListDir lists directory contents within root up to maxDepth.
 func ListDir(root, path string, recursive bool, maxDepth int) (string, error) {
+	return listDir(root, path, recursive, maxDepth, nil)
+}
+
+// ListDirScoped is ListDir with an additional per-unit scope filter (C1):
+// every entry the walk discovers is checked against the unit scope BEFORE it
+// is reported; entries whose lexical or symlink-resolved path lands outside
+// the scope are skipped and the skip is counted in the output, so a scoped
+// seat cannot enumerate another unit's files through an in-scope symlink. A
+// nil or empty scope is the legacy ListDir, byte-identical.
+func ListDirScoped(root, path string, recursive bool, maxDepth int, scope []string) (string, error) {
+	return listDir(root, path, recursive, maxDepth, scope)
+}
+
+func listDir(root, path string, recursive bool, maxDepth int, scope []string) (string, error) {
 	if path == "" {
 		path = "."
 	}
@@ -104,7 +118,13 @@ func ListDir(root, path string, recursive bool, maxDepth int) (string, error) {
 
 	var results []string
 	count := 0
+	skippedOutOfScope := 0
 	const maxEntries = 250
+
+	rootAbs, err := absCleanRoot(root)
+	if err != nil {
+		return "", err
+	}
 
 	startDepth := strings.Count(filepath.Clean(safePath), string(filepath.Separator))
 
@@ -147,6 +167,18 @@ func ListDir(root, path string, recursive bool, maxDepth int) (string, error) {
 			return fs.SkipDir
 		}
 
+		// C1: a scoped seat must not enumerate out-of-scope entries. Check
+		// every discovered entry (lexical and symlink-resolved) against the
+		// unit scope before reporting it; refused entries are skipped and
+		// counted so the skip is visible in the output, not silent.
+		if len(scope) > 0 && p != safePath && !walkEntryInScope(rootAbs, p, scope) {
+			skippedOutOfScope++
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+
 		rel, _ := filepath.Rel(safePath, p)
 		// Symlink/reparse entries are listed but marked: a link can point
 		// outside the workspace and the reader should see that at a glance
@@ -177,6 +209,9 @@ func ListDir(root, path string, recursive bool, maxDepth int) (string, error) {
 		return "", fmt.Errorf("list directory error: %w", err)
 	}
 
+	if skippedOutOfScope > 0 {
+		results = append(results, fmt.Sprintf("... (skipped %d entries outside unit scope)", skippedOutOfScope))
+	}
 	if len(results) == 0 {
 		return "(directory is empty)", nil
 	}
@@ -199,8 +234,36 @@ func guardWalkFile(root, p string) (safePath string, ok bool) {
 	return safe, true
 }
 
+// absCleanRoot renders root in cleaned absolute form, the shared base the
+// per-entry scope check (walkEntryInScope) compares discovered walk entries
+// against. It mirrors runner.rootAbs so the walk and the addressed-path check
+// never disagree about the base.
+func absCleanRoot(root string) (string, error) {
+	if strings.TrimSpace(root) == "" {
+		root = "."
+	}
+	abs, err := filepath.Abs(filepath.Clean(root))
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve root directory: %w", err)
+	}
+	return abs, nil
+}
+
 // Grep searches for regex pattern within workspace files.
 func Grep(root, pattern, path string, caseInsensitive bool, maxMatches int) (string, error) {
+	return grep(root, pattern, path, caseInsensitive, maxMatches, nil)
+}
+
+// GrepScoped is Grep with an additional per-unit scope filter (C1): every
+// entry the walk discovers is checked against the unit scope (lexical and
+// symlink-resolved) BEFORE its content is opened; refused entries are skipped
+// and the skip is counted in the output. A nil or empty scope is the legacy
+// Grep, byte-identical.
+func GrepScoped(root, pattern, path string, caseInsensitive bool, maxMatches int, scope []string) (string, error) {
+	return grep(root, pattern, path, caseInsensitive, maxMatches, scope)
+}
+
+func grep(root, pattern, path string, caseInsensitive bool, maxMatches int, scope []string) (string, error) {
 	if path == "" {
 		path = "."
 	}
@@ -225,6 +288,12 @@ func Grep(root, pattern, path string, caseInsensitive bool, maxMatches int) (str
 	var matches []string
 	matchCount := 0
 	skippedOutside := 0
+	skippedOutOfScope := 0
+
+	rootAbs, err := absCleanRoot(root)
+	if err != nil {
+		return "", err
+	}
 
 	err = filepath.WalkDir(safePath, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -262,6 +331,17 @@ func Grep(root, pattern, path string, caseInsensitive bool, maxMatches int) (str
 		// resolve outside the root and os.Open would follow it. ResolveSafePath
 		// refuses those; refused entries are skipped and counted so the tool
 		// output reports the skip instead of leaving a silent hole.
+		//
+		// C1: a scoped seat gets a second, stricter check first - the unit
+		// scope, lexical AND symlink-resolved. guardWalkFile alone validates
+		// against the workspace ROOT only, so an in-scope file symlink to an
+		// out-of-scope in-root target used to be opened and its content
+		// leaked into the walk output. Skipped entries are counted under
+		// "outside unit scope" so cross-scope opens are detectable.
+		if len(scope) > 0 && !walkEntryInScope(rootAbs, p, scope) {
+			skippedOutOfScope++
+			return nil
+		}
 		safeEntry, ok := guardWalkFile(root, p)
 		if !ok {
 			skippedOutside++
@@ -303,6 +383,9 @@ func Grep(root, pattern, path string, caseInsensitive bool, maxMatches int) (str
 	if skippedOutside > 0 {
 		matches = append(matches, fmt.Sprintf("... (skipped %d entries that resolve outside the workspace root)", skippedOutside))
 	}
+	if skippedOutOfScope > 0 {
+		matches = append(matches, fmt.Sprintf("... (skipped %d entries outside unit scope)", skippedOutOfScope))
+	}
 	if len(matches) == 0 {
 		return "(no matches found)", nil
 	}
@@ -314,6 +397,20 @@ func Grep(root, pattern, path string, caseInsensitive bool, maxMatches int) (str
 
 // Glob finds files matching wildcard pattern under path.
 func Glob(root, pattern, path string) (string, error) {
+	return glob(root, pattern, path, nil)
+}
+
+// GlobScoped is Glob with an additional per-unit scope filter (C1): every
+// entry the walk discovers is checked against the unit scope (lexical and
+// symlink-resolved) before it is reported, so a scoped seat cannot learn
+// another unit's file layout through an in-scope symlink; skipped entries are
+// counted in the output. A nil or empty scope is the legacy Glob,
+// byte-identical.
+func GlobScoped(root, pattern, path string, scope []string) (string, error) {
+	return glob(root, pattern, path, scope)
+}
+
+func glob(root, pattern, path string, scope []string) (string, error) {
 	if path == "" {
 		path = "."
 	}
@@ -324,7 +421,13 @@ func Glob(root, pattern, path string) (string, error) {
 
 	var matches []string
 	count := 0
+	skippedOutOfScope := 0
 	const maxMatches = 200
+
+	rootAbs, err := absCleanRoot(root)
+	if err != nil {
+		return "", err
+	}
 
 	err = filepath.WalkDir(safePath, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -349,6 +452,14 @@ func Glob(root, pattern, path string) (string, error) {
 			return fs.SkipAll
 		}
 
+		// C1: scope-check every discovered entry (lexical and symlink-
+		// resolved) before reporting it; a glob result naming an out-of-scope
+		// target is an information leak even though glob never opens content.
+		if len(scope) > 0 && !walkEntryInScope(rootAbs, p, scope) {
+			skippedOutOfScope++
+			return nil
+		}
+
 		matched, _ := filepath.Match(pattern, d.Name())
 		if !matched {
 			// Check full relative path pattern
@@ -371,6 +482,9 @@ func Glob(root, pattern, path string) (string, error) {
 		return "", fmt.Errorf("glob walk error: %w", err)
 	}
 
+	if skippedOutOfScope > 0 {
+		matches = append(matches, fmt.Sprintf("... (skipped %d entries outside unit scope)", skippedOutOfScope))
+	}
 	if len(matches) == 0 {
 		return "(no files matched pattern)", nil
 	}

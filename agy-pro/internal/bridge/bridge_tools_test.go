@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1576,5 +1577,267 @@ func TestToolLoop_OmitsAuthorizationWhenKeyEmpty(t *testing.T) {
 	}
 	if sawHeader {
 		t.Errorf("upstream Authorization = %q; want the header absent when the provider declares no key", gotAuth)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// sumUsage: cross-turn cache-token accounting (audit finding G5, F-04)
+// ---------------------------------------------------------------------------
+
+// G5/F-04: sumUsage summed prompt/completion/total across the tool loop's
+// turns but kept only the LAST turn's cache-token count, so a bridged request
+// whose early turns hit the cache and whose final turn missed reported the
+// final turn's hit count against the summed prompt size. Turn 1 and turn 2
+// below report DIFFERENT cached_tokens, so the aggregated block must carry
+// their sum, not the last turn's value.
+func TestSumUsage_SumsNestedCachedTokensAcrossTurns(t *testing.T) {
+	nested := func(prompt, cached int) map[string]any {
+		return map[string]any{
+			"prompt_tokens":     float64(prompt),
+			"completion_tokens": float64(1),
+			"total_tokens":      float64(prompt + 1),
+			"prompt_tokens_details": map[string]any{
+				"cached_tokens": float64(cached),
+				"audio_tokens":  0,
+			},
+		}
+	}
+	turn1, turn2 := nested(100, 64), nested(200, 16)
+
+	out := sumUsage([]map[string]any{turn1, turn2})
+	if out == nil {
+		t.Fatal("sumUsage returned nil for turns that reported a usage block")
+	}
+	// The plain counts were already cross-turn sums; the cache count joins them.
+	for _, tc := range []struct {
+		key  string
+		want float64
+	}{
+		{"prompt_tokens", 300},
+		{"completion_tokens", 2},
+		{"total_tokens", 302},
+	} {
+		if got, ok := usageNum(out, tc.key); !ok || got != tc.want {
+			t.Errorf("%s = %v; want %v summed across both turns", tc.key, out[tc.key], tc.want)
+		}
+	}
+	details, ok := out["prompt_tokens_details"].(map[string]any)
+	if !ok {
+		t.Fatalf("prompt_tokens_details missing from the aggregated block: %v", out)
+	}
+	if got, ok := usageNum(details, "cached_tokens"); !ok || got != 80 {
+		t.Errorf("prompt_tokens_details.cached_tokens = %v; want 80 (64+16 summed across turns, not the last turn's 16)", details["cached_tokens"])
+	}
+	// The rest of the last turn's details block survives untouched.
+	if v, ok := details["audio_tokens"]; !ok || v != 0 {
+		t.Errorf("prompt_tokens_details.audio_tokens = %v; want the last turn's 0 preserved", v)
+	}
+	// Aggregation must not rewrite the provider's own turn blocks.
+	for i, turn := range []map[string]any{turn1, turn2} {
+		d, ok := turn["prompt_tokens_details"].(map[string]any)
+		if !ok {
+			t.Fatalf("turn %d lost its details block", i+1)
+		}
+		want := float64(64)
+		if i == 1 {
+			want = 16
+		}
+		if got, _ := usageNum(d, "cached_tokens"); got != want {
+			t.Errorf("turn %d's own cached_tokens = %v; want %v (sumUsage must not mutate its input)", i+1, got, want)
+		}
+	}
+}
+
+// The DeepSeek-native spelling (top-level prompt_cache_hit_tokens) must be
+// summed in place, in that same spelling, and never folded into the nested
+// OpenAI shape.
+func TestSumUsage_SumsNativeCacheHitTokensAcrossTurns(t *testing.T) {
+	native := func(prompt, hit int) map[string]any {
+		return map[string]any{
+			"prompt_tokens":            float64(prompt),
+			"completion_tokens":        float64(1),
+			"total_tokens":             float64(prompt + 1),
+			"prompt_cache_hit_tokens":  float64(hit),
+			"prompt_cache_miss_tokens": float64(prompt - hit),
+		}
+	}
+	out := sumUsage([]map[string]any{native(100, 90), native(200, 20)})
+	if out == nil {
+		t.Fatal("sumUsage returned nil for turns that reported a usage block")
+	}
+	if got, ok := usageNum(out, "prompt_cache_hit_tokens"); !ok || got != 110 {
+		t.Errorf("prompt_cache_hit_tokens = %v; want 110 (90+20 summed across turns, not the last turn's 20)", out["prompt_cache_hit_tokens"])
+	}
+	if got, _ := usageNum(out, "prompt_tokens"); got != 300 {
+		t.Errorf("prompt_tokens = %v; want 300 summed across both turns", out["prompt_tokens"])
+	}
+	// The miss count is summed the same way (10+180=190), so hit+miss==prompt
+	// holds on the aggregated block.
+	if got, ok := usageNum(out, "prompt_cache_miss_tokens"); !ok || got != 190 {
+		t.Errorf("prompt_cache_miss_tokens = %v; want 190 (10+180 summed across turns, not the last turn's 180)", out["prompt_cache_miss_tokens"])
+	}
+	hit, _ := usageNum(out, "prompt_cache_hit_tokens")
+	miss, _ := usageNum(out, "prompt_cache_miss_tokens")
+	if prompt, _ := usageNum(out, "prompt_tokens"); hit+miss != prompt {
+		t.Errorf("hit+miss = %v; want == summed prompt_tokens %v on the aggregated block", hit+miss, prompt)
+	}
+	// No nested block is fabricated for a provider that uses the native shape.
+	if _, exists := out["prompt_tokens_details"]; exists {
+		t.Errorf("prompt_tokens_details = %v; want no nested block fabricated for the native shape", out["prompt_tokens_details"])
+	}
+}
+
+// A provider that mixes spellings across turns gets each summed within its own
+// spelling and written back in that spelling, so a consumer reading either
+// field sees the whole total for that field.
+func TestSumUsage_MixedCacheSpellingsEachSummedInPlace(t *testing.T) {
+	out := sumUsage([]map[string]any{
+		{"prompt_tokens": float64(100), "prompt_tokens_details": map[string]any{"cached_tokens": float64(64)}},
+		{"prompt_tokens": float64(100), "prompt_cache_hit_tokens": float64(50)},
+	})
+	if out == nil {
+		t.Fatal("sumUsage returned nil for turns that reported a usage block")
+	}
+	details, ok := out["prompt_tokens_details"].(map[string]any)
+	if !ok {
+		t.Fatalf("prompt_tokens_details missing from the aggregated block: %v", out)
+	}
+	if got, _ := usageNum(details, "cached_tokens"); got != 64 {
+		t.Errorf("nested cached_tokens = %v; want 64 (only turn 1 used the nested spelling)", details["cached_tokens"])
+	}
+	if got, _ := usageNum(out, "prompt_cache_hit_tokens"); got != 50 {
+		t.Errorf("native prompt_cache_hit_tokens = %v; want 50 (only turn 2 used the native spelling)", out["prompt_cache_hit_tokens"])
+	}
+}
+
+// A provider that reports no cache field at all keeps the prior behavior: the
+// summed plain counts plus the last turn's other keys, and no cache key
+// fabricated. A zero would read as "0 tokens cached" instead of "not reported".
+func TestSumUsage_NoCacheFieldFabricatesNothing(t *testing.T) {
+	out := sumUsage([]map[string]any{
+		{"prompt_tokens": float64(10), "completion_tokens": float64(2), "total_tokens": float64(12)},
+		{
+			"prompt_tokens": float64(30), "completion_tokens": float64(3), "total_tokens": float64(33),
+			"prompt_tokens_details": map[string]any{"audio_tokens": 5},
+		},
+	})
+	if out == nil {
+		t.Fatal("sumUsage returned nil for turns that reported a usage block")
+	}
+	if got, _ := usageNum(out, "prompt_tokens"); got != 40 {
+		t.Errorf("prompt_tokens = %v; want 40 summed across both turns", out["prompt_tokens"])
+	}
+	details, ok := out["prompt_tokens_details"].(map[string]any)
+	if !ok {
+		t.Fatalf("the last turn's prompt_tokens_details must survive: %v", out)
+	}
+	if _, exists := details["cached_tokens"]; exists {
+		t.Errorf("cached_tokens = %v; want no fabricated zero when no turn reported a cache count", details["cached_tokens"])
+	}
+	if v, ok := details["audio_tokens"]; !ok || v != 5 {
+		t.Errorf("prompt_tokens_details.audio_tokens = %v; want the last turn's 5 preserved", v)
+	}
+	if _, exists := out["prompt_cache_hit_tokens"]; exists {
+		t.Errorf("prompt_cache_hit_tokens = %v; want no fabricated zero when no turn reported a cache count", out["prompt_cache_hit_tokens"])
+	}
+}
+
+// The nil contract is unchanged: no usage block anywhere means no block out.
+func TestSumUsage_NilWhenNoTurnReportedUsage(t *testing.T) {
+	if out := sumUsage(nil); out != nil {
+		t.Errorf("sumUsage(nil) = %v; want nil", out)
+	}
+	if out := sumUsage([]map[string]any{}); out != nil {
+		t.Errorf("sumUsage of no turns = %v; want nil", out)
+	}
+	if out := sumUsage([]map[string]any{nil, nil}); out != nil {
+		t.Errorf("sumUsage of nil turns = %v; want nil", out)
+	}
+}
+
+// FIX 5: a negative count is treated as absent (never accumulated) and a summed
+// count saturates to +Inf instead of wrapping negative. usageNum is the single
+// gate; sumUsage inherits both properties from it.
+func TestUsageNumAndSumRejectNegativeAndSaturate(t *testing.T) {
+	// usageNum rejects a negative directly.
+	if _, ok := usageNum(map[string]any{"x": float64(-5)}, "x"); ok {
+		t.Error("usageNum accepted a negative count; want ok=false")
+	}
+	// A negative nested cache count does not drag a valid turn's sum down.
+	out := sumUsage([]map[string]any{
+		{"prompt_tokens": float64(100), "prompt_tokens_details": map[string]any{"cached_tokens": float64(64)}},
+		{"prompt_tokens": float64(100), "prompt_tokens_details": map[string]any{"cached_tokens": float64(-40)}},
+	})
+	if out == nil {
+		t.Fatal("sumUsage returned nil for turns that reported a usage block")
+	}
+	details, _ := out["prompt_tokens_details"].(map[string]any)
+	if got, _ := usageNum(details, "cached_tokens"); got != 64 {
+		t.Errorf("nested cached_tokens = %v; want 64 (the negative turn contributed nothing, not 64-40)", got)
+	}
+	// A negative native hit is ignored the same way.
+	native := sumUsage([]map[string]any{
+		{"prompt_tokens": float64(100), "prompt_cache_hit_tokens": float64(90)},
+		{"prompt_tokens": float64(100), "prompt_cache_hit_tokens": float64(-50)},
+	})
+	if got, _ := usageNum(native, "prompt_cache_hit_tokens"); got != 90 {
+		t.Errorf("prompt_cache_hit_tokens = %v; want 90 (the negative turn contributed nothing)", got)
+	}
+	// Overflow saturates to +Inf (positive), never wraps negative.
+	big := sumUsage([]map[string]any{
+		{"prompt_tokens": math.MaxFloat64},
+		{"prompt_tokens": math.MaxFloat64},
+	})
+	got, ok := usageNum(big, "prompt_tokens")
+	if !ok {
+		t.Fatal("prompt_tokens missing from the overflow block")
+	}
+	if math.Signbit(got) {
+		t.Errorf("prompt_tokens = %v; want a non-negative saturated value (no wrap to negative)", got)
+	}
+	if !math.IsInf(got, 1) {
+		t.Errorf("prompt_tokens = %v; want saturation to +Inf", got)
+	}
+}
+
+// End-to-end pin for G5/F-04 on the path agy actually consumes: a tool turn
+// that hit the cache followed by a final turn that missed is exactly the shape
+// the audit flagged, and the synthesized chat.completion body must carry the
+// summed cache count.
+func TestToolLoop_JSONBodyCarriesSummedCachedTokens(t *testing.T) {
+	ws := t.TempDir()
+	t.Setenv(envBridgeWorkspace, ws)
+
+	up := &scriptedUpstream{turns: []turnFunc{
+		jsonTurn(`{"id":"u1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"call_c","type":"function","function":{"name":"list_dir","arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105,"prompt_tokens_details":{"cached_tokens":64}}}`),
+		jsonTurn(`{"id":"u2","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"listed"},"finish_reason":"stop"}],"usage":{"prompt_tokens":200,"completion_tokens":7,"total_tokens":207,"prompt_tokens_details":{"cached_tokens":16}}}`),
+	}}
+	upstream := httptest.NewServer(up.handler())
+	defer upstream.Close()
+
+	reg := toolsTestRegistry(t, upstream.URL)
+	server := startToolsBridge(t, reg, BridgeToolsConfig{Enabled: true, Tools: []string{"read"}})
+
+	status, _, raw := postChat(t, server.URL, `{"model":"tool-model","messages":[{"role":"user","content":"list the dir"}]}`)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body %s)", status, raw)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		t.Fatalf("synthesized body is not JSON: %v", err)
+	}
+	usage, _ := parsed["usage"].(map[string]any)
+	if usage == nil {
+		t.Fatalf("usage missing from the synthesized body: %s", raw)
+	}
+	if got, _ := usageNum(usage, "prompt_tokens"); got != 300 {
+		t.Errorf("prompt_tokens = %v; want 300 summed across both turns", usage["prompt_tokens"])
+	}
+	details, ok := usage["prompt_tokens_details"].(map[string]any)
+	if !ok {
+		t.Fatalf("prompt_tokens_details missing from the surfaced usage: %v", usage)
+	}
+	if got, _ := usageNum(details, "cached_tokens"); got != 80 {
+		t.Errorf("cached_tokens = %v; want 80 (64+16 summed across the tool turn and the final turn)", details["cached_tokens"])
 	}
 }

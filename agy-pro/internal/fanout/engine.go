@@ -32,6 +32,27 @@ type RunConfig struct {
 	RegistryPath string
 	Client       *Client // optional injected client (for testing)
 
+	// AllowHosts is the B4-2a read_url_content host allow-list (normalized:
+	// lowercase hostnames, port ignored; see agenttools.NormalizeAllowHosts).
+	// Populated from the repeatable --allow-host flag in buildRunConfig. A
+	// non-empty list is ALSO the exposure gate: only then does every
+	// provider seat's tool list carry read_url_content and its runner this
+	// allow-list (cross-verification and partition alike; native seats are
+	// unaffected). nil/empty leaves the wire byte-identical to pre-B4-2a.
+	AllowHosts []string
+
+	// SearchSource is the B4-2b search_web source configuration (endpoint
+	// template with a {query} placeholder + the NAME of the environment
+	// variable holding the API key; the value is read at call time and never
+	// logged). Populated from --search-endpoint / --search-key-env in
+	// buildRunConfig. A non-empty endpoint is ALSO the exposure gate: only
+	// then does every provider seat's tool list carry search_web and its
+	// runner this source (cross-verification and partition alike; native
+	// seats are unaffected). An empty endpoint leaves the wire byte-identical
+	// to pre-B4-2b and every search_web call returns the honest
+	// not-configured error.
+	SearchSource agenttools.SearchSource
+
 	// ProgressOut receives one line per seat start/finish as events happen
 	// (nil = discard). Terminal runs wire stdout so the operator watches seats
 	// stream instead of a 15-minute silence; --json mode wires stderr so the
@@ -44,6 +65,17 @@ type RunConfig struct {
 	// from the seat specs in order, mixing native (real-agy subprocess) and
 	// provider (HTTP) seats in one swarm.
 	Seats []SeatSpec
+	// Units is the parsed partition plan (B2, `--units <planfile>`). When it
+	// is non-empty the engine runs PARTITION mode: exactly one seat per unit,
+	// each seat's user prompt is that unit's body (UnitBody), and each seat's
+	// ToolRunner is bounded to that unit's Scope (B3). nil/empty = the legacy
+	// single-prompt cross-verification path, which stays byte-identical: the
+	// shared system prompt is the preamble, so every unit keeps the same
+	// cacheable prefix and only the body varies.
+	//
+	// Units and Seats/Models are mutually exclusive at the CLI (buildRunConfig);
+	// a library caller that sets both gets partition mode (Units wins).
+	Units []Unit
 	// MaxNativeConcurrency caps simultaneous native seats; <=0 falls back to
 	// mode.DefaultNativeSeatConcurrency (contract §2.3). Resolution
 	// (flag > state.json > default) happens in cli.go.
@@ -74,9 +106,50 @@ type RunConfig struct {
 // a real review.
 const DefaultTimeoutSec = 300
 
+// B7 partition-mode budget scaling. A partition run runs one provider seat
+// PER UNIT, concurrently and uncapped (see the engine comment at the seat
+// loop), so the flat 300s cross-verification default starves any plan with
+// more than a couple of units: every seat shares the ONE swarm deadline, and
+// the deadline also has to absorb the rate-limit/failover storm that N
+// concurrent seats create on one provider account. The default therefore
+// grows with the plan: the flat 300s base plus a per-unit allowance, capped
+// so a pathological plan cannot book the machine for hours.
+const (
+	// partitionTimeoutPerUnitSec is the extra wall-clock budget each plan
+	// unit adds to the partition-mode default deadline. Linear, not sqrt:
+	// the allowance covers provider contention (retries, failover hops) that
+	// grows with the concurrent seat count, not the units' own work, which
+	// runs in parallel and is bounded by its scope.
+	partitionTimeoutPerUnitSec = 120
+	// partitionMaxTimeoutSec clamps the scaled default: the largest budget a
+	// partition run may book WITHOUT an explicit --timeout.
+	partitionMaxTimeoutSec = 3600
+)
+
+// partitionDefaultTimeoutSec is the B7 effective default deadline for a
+// partition run of nUnits units with no explicit --timeout:
+// DefaultTimeoutSec + partitionTimeoutPerUnitSec per unit, clamped to
+// partitionMaxTimeoutSec. An explicit --timeout never passes through here.
+func partitionDefaultTimeoutSec(nUnits int) int {
+	t := DefaultTimeoutSec + partitionTimeoutPerUnitSec*nUnits
+	if t > partitionMaxTimeoutSec {
+		return partitionMaxTimeoutSec
+	}
+	return t
+}
+
 // withDefaults returns cfg with the engine defaults applied, so a RunConfig
 // built outside the CLI (library caller, test, swarm delegation) resolves to
 // the same surface the flag defaults produce.
+//
+// B7 timeout resolution: TimeoutSec > 0 is ALWAYS honored exactly (it is an
+// explicit budget, from --timeout or a library caller). TimeoutSec <= 0 means
+// "no explicit budget": a partition run (cfg.Units non-empty) gets the
+// unit-scaled default (partitionDefaultTimeoutSec), anything else gets the
+// flat DefaultTimeoutSec. The CLI's buildRunConfig leaves TimeoutSec at 0 for
+// --units runs without an explicit --timeout (detected via flags.Visit), so
+// the scaling applies there too; a library caller that sets TimeoutSec
+// explicitly is by definition not relying on the default.
 func (cfg RunConfig) withDefaults() RunConfig {
 	if cfg.Task == "" {
 		cfg.Task = "review"
@@ -88,7 +161,11 @@ func (cfg RunConfig) withDefaults() RunConfig {
 		cfg.Root = "."
 	}
 	if cfg.TimeoutSec <= 0 {
-		cfg.TimeoutSec = DefaultTimeoutSec
+		if len(cfg.Units) > 0 {
+			cfg.TimeoutSec = partitionDefaultTimeoutSec(len(cfg.Units))
+		} else {
+			cfg.TimeoutSec = DefaultTimeoutSec
+		}
 	}
 	if cfg.MaxTurns <= 0 {
 		cfg.MaxTurns = 10
@@ -138,7 +215,24 @@ func Execute(ctx context.Context, cfg RunConfig) (*SummaryReport, error) {
 
 	var targets []providers.Target
 	var nativeSeats []bool // parallel to targets: true = native subprocess seat
-	if len(cfg.Seats) > 0 {
+	var units []Unit       // parallel to targets; non-nil ONLY in partition mode (one seat per unit)
+	if len(cfg.Units) > 0 {
+		// PARTITION mode (B2/B3): one seat per plan unit. The parallel slices
+		// follow the nativeSeats precedent above.
+		//
+		// B4: fail closed. cfg.Units can arrive from a library caller that never
+		// ran the CLI's ParsePlan. A unit with an empty, blank, or root-wide
+		// Scope would yield a nil ToolRunner scope filter: an UNRESTRICTED seat
+		// (fail-open). Re-check every unit's scope the way ParsePlan does before
+		// a single seat starts, and refuse a bad unit instead of running it.
+		if verr := validatePartitionUnits(cfg.Units); verr != nil {
+			return nil, verr
+		}
+		targets, nativeSeats, units, err = partitionTargets(cfg, reg, state, exclude)
+		if err != nil {
+			return nil, err
+		}
+	} else if len(cfg.Seats) > 0 {
 		targets = make([]providers.Target, 0, len(cfg.Seats))
 		nativeSeats = make([]bool, 0, len(cfg.Seats))
 		for _, spec := range cfg.Seats {
@@ -167,11 +261,43 @@ func Execute(ctx context.Context, cfg RunConfig) (*SummaryReport, error) {
 	allowWrite := strings.Contains(toolsSpec, "write")
 	allowExec := strings.Contains(toolsSpec, "exec")
 
+	// B6/B4-1: partition mode is read-only BY DEFAULT. The per-unit scope
+	// filter now bounds the write tools too (guard.go), but write/exec tools
+	// still need an explicit per-unit opt-in before a seat may use them. The
+	// run-level flags from --tools are therefore forced off here (the CLI
+	// gate refuses --units with write/exec outright; this clamp is the
+	// fail-closed backstop for a library caller that bypassed that gate), and
+	// the single deliberate carve-out below re-enables write ONLY for a unit
+	// that opted in per plan ("write": true).
+	if len(units) > 0 {
+		allowWrite = false
+		allowExec = false
+	}
+
 	home, _ := providers.Home()
 	logPath := filepath.Join(home, "logs", fmt.Sprintf("fanout-%s.jsonl", ts))
 	logger, _ := agenttools.NewLogger(logPath, reg.Redactor())
 
 	openAITools := agenttools.BuildOpenAITools(allowWrite, allowExec)
+
+	// B4-2a exposure gate: read_url_content joins every provider seat's tool
+	// list ONLY when the run carries a host allow-list (--allow-host). The
+	// runner re-checks the list on every call (an empty list refuses), so a
+	// schema that somehow reached a model still cannot fetch unlisted.
+	netTool := len(cfg.AllowHosts) > 0
+	if netTool {
+		openAITools = append(openAITools, agenttools.ReadURLContentToolDef())
+	}
+
+	// B4-2b exposure gate: search_web joins every provider seat's tool list
+	// ONLY when the run carries a search source (--search-endpoint). The
+	// runner re-checks the source on every call (a zero source returns the
+	// honest not-configured error), so a schema that somehow reached a model
+	// still cannot search without a configured source.
+	searchTool := strings.TrimSpace(cfg.SearchSource.Endpoint) != ""
+	if searchTool {
+		openAITools = append(openAITools, agenttools.SearchWebToolDef())
+	}
 
 	// Collect assigned families to inform failover exclusions
 	var assignedFamilies []string
@@ -203,7 +329,15 @@ func Execute(ctx context.Context, cfg RunConfig) (*SummaryReport, error) {
 		ViaStdin:   false, // kickoff verdict: multi-line argv verified (F-P)
 		scrubNames: realagy.ApiKeyEnvNames(reg),
 	}
-	nativePrompt := buildNativeSeatPrompt(cfg.Task, cfg.Prompt)
+	// The shared native-seat prompt for the cross-verification path (seat-role
+	// preamble + system preset + user text, see buildNativeSeatPrompt).
+	// Partition mode builds a per-unit prompt inside the seat goroutine
+	// instead: the preamble and preset stay byte-identical across units, only
+	// the unit body varies, so cross-unit prefix caching survives.
+	var nativePrompt string
+	if len(cfg.Units) == 0 {
+		nativePrompt = buildNativeSeatPrompt(cfg.Task, cfg.Prompt)
+	}
 	swarmDeadline, _ := ctxWithTimeout.Deadline()
 	redact := reg.Redactor()
 
@@ -260,19 +394,77 @@ func Execute(ctx context.Context, cfg RunConfig) (*SummaryReport, error) {
 				// "running" is emitted AFTER the semaphore acquire: a queued
 				// seat has not started yet.
 				progress.seatStarted(sID, len(targets), SeatKindNative, t)
-				outcome := nativeRunner.Run(ctx, cfg, spec, nativePrompt, swarmDeadline)
+				// Partition mode (B2/B3): this seat works on one unit, so it
+				// carries the unit id, the per-unit prompt (shared preamble +
+				// this unit's body) and a per-unit config copy. The legacy path
+				// passes the run-level prompt and cfg unchanged.
+				unitCfg, unitPrompt := cfg, nativePrompt
+				if len(units) > 0 {
+					u := units[idx]
+					spec.UnitID = u.ID
+					unitCfg = unitRunConfig(cfg, u)
+					unitPrompt = buildNativeSeatPrompt(cfg.Task, UnitBody(u))
+				}
+				outcome := nativeRunner.Run(ctx, unitCfg, spec, unitPrompt, swarmDeadline)
 				results[idx] = nativeSeatResult(sID, t, outcome, redact)
+				// B7: per-unit attribution, symmetric with the provider path.
+				// spec.UnitID is only set in partition mode, and B5 refuses
+				// native partition seats, so this is a no-op in practice today.
+				if spec.UnitID != "" {
+					results[idx].UnitID = spec.UnitID
+				}
 			}(i, seatID, tgt)
 			continue
 		}
 
+		// B4-1 carve-out: a write unit's seat gets AllowWrite=true and the
+		// write tools in its tool list; every other partition seat (and every
+		// cross-verification seat) keeps the run-level flags exactly. The
+		// write-scope guard inside the runner (the same dual-view rule as the
+		// reads) confines every write to the unit's scope, and the B6 claim
+		// walk catches cross-unit output conflicts at merge time.
+		seatAllowWrite := allowWrite
+		seatTools := openAITools
+		if len(units) > 0 && units[i].Write {
+			seatAllowWrite = true
+			seatTools = agenttools.BuildOpenAITools(true, false)
+			if netTool {
+				seatTools = append(seatTools, agenttools.ReadURLContentToolDef())
+			}
+			if searchTool {
+				seatTools = append(seatTools, agenttools.SearchWebToolDef())
+			}
+		}
 		// Build a dedicated ToolRunner per seat to allow per-model allowedTools filter
-		seatRunner := agenttools.NewRunner(cfg.Root, allowWrite, allowExec, logger)
+		seatRunner := agenttools.NewRunner(cfg.Root, seatAllowWrite, allowExec, logger)
+		// B4-2a: the host allow-list reaches EVERY provider seat's runner,
+		// cross-verification and partition alike (native seats spawn real agy
+		// and never build this runner).
+		seatRunner.AllowHosts = cfg.AllowHosts
+		// B4-2b: the search source reaches EVERY provider seat's runner,
+		// cross-verification and partition alike (native seats spawn real agy
+		// and never build this runner).
+		seatRunner.SearchSource = cfg.SearchSource
 		if len(tgt.Model.Capabilities.AllowedTools) > 0 {
 			seatRunner.AllowedModelTools = tgt.Model.Capabilities.AllowedTools
 		}
+		// Partition mode (B2/B3): this seat works on one unit, so its user
+		// prompt is that unit's body and its path-reading AND path-writing
+		// tools are bounded to that unit's scope (B4-1). On the legacy path
+		// every value below is the run-level one and Scope stays nil
+		// (dispatch byte-identical).
+		unitID := ""
+		userPrompt := BuildUserPrompt(cfg.Task, cfg.Prompt)
+		var unitScope []string
+		if len(units) > 0 {
+			u := units[i]
+			unitID = u.ID
+			userPrompt = UnitBody(u)
+			unitScope = u.Scope
+		}
+		seatRunner.Scope = unitScope
 
-		go func(idx, sID int, t providers.Target, r *agenttools.ToolRunner) {
+		go func(idx, sID int, t providers.Target, r *agenttools.ToolRunner, unitID, userPrompt string, tools []agenttools.ToolDef) {
 			defer wg.Done()
 			// Progress finish runs after the panic-recovery defer below (LIFO),
 			// so a panicked seat still emits its finish line.
@@ -308,16 +500,24 @@ func Execute(ctx context.Context, cfg RunConfig) (*SummaryReport, error) {
 				ExcludedFamilies:     assignedFamilies,
 				Exclude:              exclude,
 				Preset:               GetTaskPreset(cfg.Task),
-				UserPrompt:           BuildUserPrompt(cfg.Task, cfg.Prompt),
+				UserPrompt:           userPrompt,
+				UnitID:               unitID,
 				Runner:               r,
 				Client:               client,
 				MaxTurns:             cfg.MaxTurns,
-				Tools:                openAITools,
-				AllowToolsForSession: len(openAITools) > 0,
+				Tools:                tools,
+				AllowToolsForSession: len(tools) > 0,
 			}
 
 			results[idx] = worker.Run(ctxWithTimeout)
-		}(i, seatID, tgt, seatRunner)
+			// B7: surface the per-unit id for attribution only (it never enters
+			// the request/prompt). unitID is "" on the cross-verification path,
+			// so this is a partition-only write and the summary stays
+			// byte-identical without --units (UnitID is omitempty).
+			if unitID != "" {
+				results[idx].UnitID = unitID
+			}
+		}(i, seatID, tgt, seatRunner, unitID, userPrompt, seatTools)
 	}
 
 	wg.Wait()
@@ -338,10 +538,22 @@ func Execute(ctx context.Context, cfg RunConfig) (*SummaryReport, error) {
 	state.RecordRun(cfg.Task, seatRecords)
 	_ = SaveState(state)
 
-	// 8. Reconcile outputs, generate seat reports, summary.json & reconciliation.md
-	summary, err := Reconcile(cfg.Task, cfg.Root, cfg.OutDir, len(targets), results)
-	if err != nil {
-		return nil, fmt.Errorf("reconciliation failed: %w", err)
+	// 8. Produce the run outputs. PARTITION mode (B5/B6) MERGES the per-unit
+	// work products into one artifact with the authoritative disjointness
+	// scan; the cross-verification path RECONCILES findings. The
+	// cross-verification call stays byte-identical to the pre-partition
+	// behavior.
+	var summary *SummaryReport
+	if len(cfg.Units) > 0 {
+		summary, err = MergePartition(cfg.Task, cfg.Root, cfg.OutDir, cfg.Units, results)
+		if err != nil {
+			return nil, fmt.Errorf("partition merge failed: %w", err)
+		}
+	} else {
+		summary, err = Reconcile(cfg.Task, cfg.Root, cfg.OutDir, len(targets), results)
+		if err != nil {
+			return nil, fmt.Errorf("reconciliation failed: %w", err)
+		}
 	}
 
 	return summary, nil
@@ -431,6 +643,18 @@ func (p *progressEmitter) seatFinished(seatID, total int, initialKind SeatKind, 
 	line := fmt.Sprintf("[seat %d/%d] %s -> %s (%.1fs",
 		seatID, total, seatSpecLabel(res.Kind, res.FinalTarget), res.Status,
 		float64(res.DurationMs)/1000)
+	if res.UnitID != "" {
+		// B5: a partition seat's Content is a work product, not a findings
+		// list, so the findings parser and the thin classifier must never
+		// label it. The partition finish line reports the seat's real status
+		// (success/failed/degraded) and nothing else.
+		if res.Degraded {
+			line += ", degraded"
+		}
+		line += ")"
+		p.emit(line)
+		return
+	}
 	// The finding count reuses the reconciliation parser, so the number on the
 	// progress line matches what summary.json carries for this seat. The thin
 	// marker goes through the same classifier reconciliation applies (one
@@ -513,4 +737,79 @@ Do the assigned work yourself, in this single session:
 // position are test-pinned for every task preset.
 func buildNativeSeatPrompt(task, userPrompt string) string {
 	return nativeSeatPreamble + "\n\n" + GetTaskPreset(task).SystemPrompt + "\n\n" + BuildUserPrompt(task, userPrompt)
+}
+
+// partitionTargets builds the seat list for PARTITION mode (B2/B3): exactly one
+// seat per plan unit, in plan order. A unit that names a Seat is resolved
+// through the SAME ParseSeatSpecs grammar the cross-verification path uses (so
+// "native:<id>" and "provider/model" mean the same thing here); a unit with no
+// Seat gets the run default seat, one rotation-selected target shared by every
+// seatless unit so a plan that names no seats is still deterministic.
+//
+// The three returned slices are parallel: targets[i] is the seat that works on
+// units[i], and nativeSeats[i] says whether that seat is a native subprocess.
+//
+// E2: every refusal error below quotes a plan-authored value (the unit id,
+// the seat token), so it rides through maskPlanError before it leaves: these
+// errors run before the merge redactor exists and reach the CLI engine-error
+// path, which seeds only --seats/--models (empty in --units mode).
+func partitionTargets(cfg RunConfig, reg *providers.Registry, state *FanoutState, exclude func(providers.Model) bool) (targets []providers.Target, nativeSeats []bool, units []Unit, err error) {
+	var defaultTarget *providers.Target
+	for _, u := range cfg.Units {
+		spec := SeatSpec{UnitID: u.ID}
+		if strings.TrimSpace(u.Seat) != "" {
+			specs, perr := ParseSeatSpecs(u.Seat)
+			if perr != nil {
+				return nil, nil, nil, maskPlanError(cfg.Units, fmt.Errorf("unit %q: %w", u.ID, perr))
+			}
+			if len(specs) != 1 {
+				return nil, nil, nil, maskPlanError(cfg.Units, fmt.Errorf("unit %q: seat %q must name exactly one seat", u.ID, u.Seat))
+			}
+			spec = specs[0]
+			spec.UnitID = u.ID
+		}
+		if spec.Kind == "" && defaultTarget == nil {
+			sel, serr := SelectTargets(reg, state, 1, nil, exclude)
+			if serr != nil {
+				return nil, nil, nil, fmt.Errorf("partition default seat selection failed: %w", serr)
+			}
+			defaultTarget = &sel[0]
+		}
+		switch {
+		case spec.Kind == SeatKindNative:
+			// B5/B4-1: a native partition seat has NO code-level scope
+			// boundary. It runs real agy at the workspace root and can
+			// read/write across units; the per-unit write guard exists only in
+			// the provider ToolRunner. Refuse the run instead of blessing an
+			// unconfined seat, even when the unit opted into write.
+			return nil, nil, nil, maskPlanError(cfg.Units, fmt.Errorf("unit %q: partition mode supports provider seats only; native seats have no per-unit scope boundary and stay refused (also for write units)", u.ID))
+		case spec.Kind != "":
+			tgt, terr := reg.FindTarget(spec.ModelID)
+			if terr != nil {
+				return nil, nil, nil, maskPlanError(cfg.Units, fmt.Errorf("unit %q: failed to resolve model %q: %w", u.ID, providers.MaskOperand(spec.ModelID), terr))
+			}
+			targets = append(targets, tgt)
+			nativeSeats = append(nativeSeats, false)
+		default:
+			targets = append(targets, *defaultTarget)
+			nativeSeats = append(nativeSeats, false)
+		}
+		units = append(units, u)
+	}
+	return targets, nativeSeats, units, nil
+}
+
+// unitRunConfig returns the per-unit RunConfig copy a native seat runs with.
+// Root stays the workspace root for the read-only slice: the hard boundary for
+// a provider seat is the ToolRunner scope filter, and native write-scoping is a
+// later held work item. The copy is still taken per unit and threaded from the
+// single call site, so that work item lands in one place instead of touching
+// every seat construction.
+func unitRunConfig(cfg RunConfig, u Unit) RunConfig {
+	unitCfg := cfg
+	unitCfg.Root = cfg.Root
+	if strings.TrimSpace(unitCfg.Root) == "" {
+		unitCfg.Root = "."
+	}
+	return unitCfg
 }

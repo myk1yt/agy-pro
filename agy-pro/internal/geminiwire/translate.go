@@ -325,8 +325,10 @@ func (s *callScan) orphanID(respID string) string {
 //
 // supportsVision gates the multimodal mapping (§7.2): images become image_url
 // data-URI parts only on a vision-capable model, and every dropped non-text
-// part adds one line to the system message plus the returned audit notes. The
-// codec logs nothing itself; the caller decides where the notes go.
+// part adds one line to the returned audit notes. The notes never enter the
+// system message, so its bytes depend on the system instruction alone and the
+// cacheable prefix head stays stable whatever the request dropped. The codec
+// logs nothing itself; the caller decides where the notes go.
 func ToOpenAIMessages(req *GenerateContentRequest, supportsVision bool) ([]OpenAIMessage, []string) {
 	if req == nil {
 		return nil, nil
@@ -438,12 +440,11 @@ func ToOpenAIMessages(req *GenerateContentRequest, supportsVision bool) ([]OpenA
 	for _, d := range dropped {
 		systemNotes = append(systemNotes, fmt.Sprintf("[agy-pro] %d non-text part(s) of type %s omitted: model lacks support", d.n, d.mime))
 	}
-	if len(systemNotes) > 0 {
-		if systemText != "" {
-			systemText += "\n"
-		}
-		systemText += strings.Join(systemNotes, "\n")
-	}
+	// The notes stay off systemText on purpose: the system message is the head
+	// of the cacheable prefix, so folding a request-dependent dropped-part list
+	// into it would rewrite messages[0] bytes as the request grows and break
+	// prefix caching. The notes reach the caller's audit surface instead, and
+	// the model sees the system instruction and nothing else.
 	if systemText != "" {
 		out = append([]OpenAIMessage{{Role: "system", Content: systemText}}, out...)
 	}
@@ -558,11 +559,12 @@ const maxNoteMimeRunes = 64
 
 // sanitizeMime renders one request-controlled mime type safe for the outbound
 // body. The mime reaches the provider twice: inside the §7.2 data URI and inside
-// the drop note, which rides system-role text. The note is a single line by
-// contract, so an allow-list charset (RFC 6838 tokens plus the subtype
-// separator), a length cap and the implicit stripping of everything else keep a
-// crafted mime from forging extra system-message lines. A mime that sanitizes to
-// nothing becomes the literal "unknown".
+// the drop note, which rides the returned audit channel (never the system
+// message, post-A3). The note is a single line by contract, so an allow-list
+// charset (RFC 6838 tokens plus the subtype separator), a length cap and the
+// implicit stripping of everything else keep a crafted mime from forging extra
+// lines in the note. A mime that sanitizes to nothing becomes the literal
+// "unknown".
 func sanitizeMime(mime string) string {
 	var b strings.Builder
 	for _, r := range mime {
@@ -928,7 +930,13 @@ func MapFinishReason(raw string) string {
 
 // mapUsage maps the OpenAI usage block onto usageMetadata (§7.8). A missing
 // block yields nil rather than fabricated counts, and a missing total is
-// recomputed as prompt plus completion.
+// recomputed as prompt plus completion. The cache count has two provider
+// spellings, the DeepSeek-native top-level prompt_cache_hit_tokens and the
+// OpenAI nested prompt_tokens_details.cached_tokens. NATIVE-FIRST: the explicit
+// native hit wins when it is present and valid, otherwise the nested count is
+// the fallback; usageInt drops a negative as absent, so neither a missing nor an
+// invalid count fabricates a value. This is the same precedence the fanout
+// reader's cachedTokens() applies, so both cache readers agree.
 func mapUsage(u map[string]any) *UsageMetadata {
 	if len(u) == 0 {
 		return nil
@@ -952,10 +960,23 @@ func mapUsage(u map[string]any) *UsageMetadata {
 			um.ThoughtsTokenCount = v
 		}
 	}
-	if details, ok := u["prompt_tokens_details"].(map[string]any); ok {
-		if v, ok := usageInt(details, "cached_tokens"); ok {
-			um.CachedContentTokenCount = v
+	// NATIVE-FIRST: prefer the DeepSeek-native top-level hit when present and
+	// valid (usageInt already rejects a negative); fall back to the OpenAI
+	// nested prompt_tokens_details.cached_tokens only when the native hit is
+	// absent or invalid.
+	cached, hasCached := 0, false
+	if v, ok := usageInt(u, "prompt_cache_hit_tokens"); ok {
+		cached, hasCached = v, true
+	}
+	if !hasCached {
+		if details, ok := u["prompt_tokens_details"].(map[string]any); ok {
+			if v, ok := usageInt(details, "cached_tokens"); ok {
+				cached, hasCached = v, true
+			}
 		}
+	}
+	if hasCached {
+		um.CachedContentTokenCount = cached
 	}
 	return um
 }

@@ -59,15 +59,23 @@ type ChatResponse struct {
 
 // ChatUsage is the token accounting a provider returns alongside a completion.
 // Every field is optional and absent fields stay absent: a provider that does
-// not break out cached tokens leaves PromptTokensDetails nil, and a provider
-// that reports no usage at all leaves ChatResponse.Usage nil. Nothing is ever
-// defaulted to zero, because a missing number and a real zero mean different
-// things once the numbers become a cache-hit ratio.
+// not break out cached tokens leaves PromptTokensDetails and the native hit
+// fields nil, and a provider that reports no usage at all leaves
+// ChatResponse.Usage nil. Nothing is ever defaulted to zero, because a missing
+// number and a real zero mean different things once the numbers become a
+// cache-hit ratio.
 type ChatUsage struct {
 	PromptTokens        *int64                   `json:"prompt_tokens,omitempty"`
 	CompletionTokens    *int64                   `json:"completion_tokens,omitempty"`
 	TotalTokens         *int64                   `json:"total_tokens,omitempty"`
 	PromptTokensDetails *ChatPromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+	// PromptCacheHitTokens / PromptCacheMissTokens are the DeepSeek-native
+	// TOP-LEVEL cache counters (no prompt_tokens_details sub-object on that
+	// wire shape). Both stay nil on an OpenAI-shaped provider, and the nested
+	// shape stays nil on a DeepSeek-native one; cachedTokens() normalizes the
+	// two shapes into one count.
+	PromptCacheHitTokens  *int64 `json:"prompt_cache_hit_tokens,omitempty"`
+	PromptCacheMissTokens *int64 `json:"prompt_cache_miss_tokens,omitempty"`
 }
 
 // ChatPromptTokensDetails is the OpenAI prompt_tokens_details sub-object, where
@@ -76,13 +84,25 @@ type ChatPromptTokensDetails struct {
 	CachedTokens *int64 `json:"cached_tokens,omitempty"`
 }
 
-// cachedTokens lifts prompt_tokens_details.cached_tokens out of the nested
-// sub-object so callers do not repeat the two-level nil dance.
+// cachedTokens normalizes BOTH cache-reporting shapes into one internal
+// cache-token count so callers do not repeat the nil dance per shape.
+// NATIVE-FIRST: the DeepSeek-native top-level prompt_cache_hit_tokens when the
+// provider reports a valid (non-negative) one, otherwise the OpenAI nested
+// prompt_tokens_details.cached_tokens; a provider that reports neither, or only
+// a negative count, yields nil (never a defaulted zero). This is the same
+// precedence geminiwire's mapUsage applies, so the two cache readers agree, and
+// a missing count is never conflated with a real zero.
 func (u *ChatUsage) cachedTokens() *int64 {
-	if u == nil || u.PromptTokensDetails == nil {
+	if u == nil {
 		return nil
 	}
-	return u.PromptTokensDetails.CachedTokens
+	if u.PromptCacheHitTokens != nil && *u.PromptCacheHitTokens >= 0 {
+		return u.PromptCacheHitTokens
+	}
+	if u.PromptTokensDetails != nil && u.PromptTokensDetails.CachedTokens != nil && *u.PromptTokensDetails.CachedTokens >= 0 {
+		return u.PromptTokensDetails.CachedTokens
+	}
+	return nil
 }
 
 // ChatChoice represents an individual choice in the completion response.

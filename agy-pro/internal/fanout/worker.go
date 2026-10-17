@@ -3,6 +3,7 @@ package fanout
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -32,9 +33,15 @@ type SeatResult struct {
 	// seatIsThin). Reconcile computes it, and a thin seat is excluded from the
 	// consensus denominator. It is omitted from JSON when false, so a non-thin
 	// seat's summary entry stays byte-identical to before the field existed.
-	Thin      bool `json:"thin,omitempty"`
-	DurationMs int64 `json:"duration_ms"`
+	Thin       bool   `json:"thin,omitempty"`
+	DurationMs int64  `json:"duration_ms"`
 	Error      string `json:"error,omitempty"`
+	// UnitID names the partition unit this seat worked on (B7). Populated only
+	// in partition mode for per-unit attribution; it NEVER enters a seat request
+	// or prompt (a per-unit string in the shared preamble would break cross-unit
+	// prefix caching). Omitted from JSON when empty, so a cross-verification
+	// seat's summary entry stays byte-identical to before the field existed.
+	UnitID string `json:"unit_id,omitempty"`
 }
 
 // SeatUsage is one seat's token accounting. Every field is optional and is
@@ -76,16 +83,24 @@ func (u *usageTotals) addSeat(seat *SeatUsage) {
 	u.cached = addCount(u.cached, seat.CachedTokens)
 }
 
-// addCount returns total+add, or total unchanged when add is absent.
+// addCount returns total+add, or total unchanged when add is absent or negative.
+// A negative count is treated as absent (never accumulated), and the sum
+// saturates at math.MaxInt64 instead of wrapping negative on int64 overflow, so
+// a huge or summed count can never corrupt the totals. The missing-vs-zero
+// semantics are unchanged: a nil add leaves total exactly as it was.
 func addCount(total, add *int64) *int64 {
-	if add == nil {
+	if add == nil || *add < 0 {
 		return total
 	}
 	sum := int64(0)
 	if total != nil {
 		sum = *total
 	}
-	sum += *add
+	if *add > math.MaxInt64-sum {
+		sum = math.MaxInt64
+	} else {
+		sum += *add
+	}
 	return &sum
 }
 
@@ -141,6 +156,7 @@ type SeatWorker struct {
 	Exclude              func(providers.Model) bool // F-C failover exclusion seam (contract §2.5b)
 	Preset               TaskPreset
 	UserPrompt           string
+	UnitID               string // partition unit this seat works on (B2); empty on the cross-verification path (attribution only, never enters the request)
 	Runner               *agenttools.ToolRunner
 	Client               *Client
 	MaxTurns             int
@@ -359,16 +375,45 @@ func (w *SeatWorker) runChatLoop(ctx context.Context, target providers.Target, u
 		return "", totalToolCalls, fmt.Errorf("received empty content response from %s", target.FullName())
 	}
 
-	// If max turns reached, solicit final synthesis
+	// If max turns reached, solicit final synthesis. The synthesis carries the
+	// SAME effectiveTools the loop turns carried: it is the seat's largest
+	// request (full history plus the synthesis instruction), and a nil tool
+	// block here would make that request a guaranteed full cache miss on a
+	// provider that caches the prefix. Complete applies the identical
+	// tool_choice wiring ("auto" when the model can use tools and the list is
+	// non-empty), so the synthesis request matches the loop requests
+	// byte-for-byte on the tools block.
 	messages = append(messages, ChatMessage{
 		Role:    "user",
 		Content: "Maximum turns reached. Please synthesize your findings and output your final assessment with the '## Findings' section now.",
 	})
 
-	resp, err := w.Client.Complete(ctx, target, messages, nil)
+	resp, err := w.Client.Complete(ctx, target, messages, effectiveTools)
 	if err != nil {
 		return "", totalToolCalls, err
 	}
 	usage.add(resp)
-	return resp.Choices[0].Message.Content, totalToolCalls, nil
+
+	// A2 attached effectiveTools to the synthesis, so the model can now answer
+	// the synthesis request with a tool call (finish_reason "tool_calls") and
+	// empty content. Returning that empty content as seat "success" makes
+	// reconcile's seatIsThin drop the seat silently from consensus. Retry the
+	// synthesis EXACTLY ONCE with tools=nil (the same tool_choice-free request)
+	// to force a textual answer, accumulating that retry's usage too; a
+	// still-empty answer fails the seat visibly instead of going thin. One
+	// bounded retry, never a loop.
+	choice := resp.Choices[0]
+	if len(choice.Message.ToolCalls) > 0 || strings.TrimSpace(choice.Message.Content) == "" {
+		retry, err := w.Client.Complete(ctx, target, messages, nil)
+		if err != nil {
+			return "", totalToolCalls, err
+		}
+		usage.add(retry)
+		retryChoice := retry.Choices[0]
+		if strings.TrimSpace(retryChoice.Message.Content) == "" {
+			return "", totalToolCalls, fmt.Errorf("synthesis produced empty content from %s", target.FullName())
+		}
+		return retryChoice.Message.Content, totalToolCalls, nil
+	}
+	return choice.Message.Content, totalToolCalls, nil
 }

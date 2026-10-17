@@ -36,6 +36,13 @@ type SeatSpec struct {
 	Kind    SeatKind // native | provider
 	Raw     string   // original token, for reports/errors
 	ModelID string   // native: bare id; provider: the raw spec resolved later via FindTarget
+
+	// UnitID names the partition unit this seat works on (B2). Empty on the
+	// cross-verification path, where seats share one prompt instead of one
+	// unit each. It is carried for per-unit attribution only: it must NEVER
+	// reach a seat prompt, because a per-unit string in the shared preamble
+	// would break cross-unit prefix caching.
+	UnitID string
 }
 
 // ParseSeatSpecs parses+validates the --seats value. It performs NO registry

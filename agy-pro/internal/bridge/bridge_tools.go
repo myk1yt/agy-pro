@@ -395,15 +395,26 @@ func (lp *toolLoop) fallbackTurn(lastText, lastReasoning string) *openaiup.Turn 
 // sumUsage aggregates token usage across every turn of a bridged request (the
 // main turn plus every tool turn) so the usage surfaced to agy reflects the
 // whole tool-augmented generation, not just the final turn (M4 item 2).
-// prompt_tokens, completion_tokens and total_tokens are summed across turns;
-// the last turn's remaining keys (prompt_tokens_details, ...) are kept as the
-// base so the per-turn usage shape is preserved rather than broken. Returns
-// nil when no turn reported a usage block, matching the prior behavior for a
-// provider that sends none.
+// prompt_tokens, completion_tokens, total_tokens and the per-turn cache-token
+// counts are all summed across turns, so a cache ratio derived from the block
+// is measured against the same summed prompt size instead of mixing
+// granularities. The cache counts are written back in whichever spelling the
+// turns carried: the nested prompt_tokens_details.cached_tokens (OpenAI) and/or
+// the top-level prompt_cache_hit_tokens and prompt_cache_miss_tokens
+// (DeepSeek-native); each spelling is summed only over the turns that reported
+// it. The emitted hit and the emitted miss are therefore each a partial sum, so
+// hit+miss equals the summed prompt only when every turn reported both, and a
+// turn that omits miss contributes 0 to the miss sum. The last turn's remaining
+// keys are kept as the base so the per-turn usage shape is preserved rather than
+// broken, and a turn that reported no cache field contributes nothing (no zero
+// is fabricated). Returns nil when no turn reported a usage block, matching the
+// prior behavior for a provider that sends none.
 func sumUsage(turns []map[string]any) map[string]any {
 	var base map[string]any
 	var prompt, completion, total float64
 	var sawPrompt, sawCompletion, sawTotal bool
+	var cached, cacheHit, cacheMiss float64
+	var sawCached, sawCacheHit, sawCacheMiss bool
 	for _, m := range turns {
 		if m == nil {
 			continue
@@ -420,6 +431,23 @@ func sumUsage(turns []map[string]any) map[string]any {
 		if v, ok := usageNum(m, "total_tokens"); ok {
 			total += v
 			sawTotal = true
+		}
+		// OpenAI nested shape: usage.prompt_tokens_details.cached_tokens.
+		if details, ok := m["prompt_tokens_details"].(map[string]any); ok {
+			if v, ok := usageNum(details, "cached_tokens"); ok {
+				cached += v
+				sawCached = true
+			}
+		}
+		// DeepSeek-native shape: usage.prompt_cache_hit_tokens and its miss
+		// counterpart usage.prompt_cache_miss_tokens, both top-level.
+		if v, ok := usageNum(m, "prompt_cache_hit_tokens"); ok {
+			cacheHit += v
+			sawCacheHit = true
+		}
+		if v, ok := usageNum(m, "prompt_cache_miss_tokens"); ok {
+			cacheMiss += v
+			sawCacheMiss = true
 		}
 	}
 	if base == nil {
@@ -438,33 +466,68 @@ func sumUsage(turns []map[string]any) map[string]any {
 	if sawTotal {
 		out["total_tokens"] = total
 	}
+	// The details block is copied before the summed value lands in it: out
+	// starts as a shallow copy of the last turn's block, so writing through
+	// out["prompt_tokens_details"] would otherwise rewrite the provider's own
+	// turn map that is still referenced by the caller.
+	if sawCached {
+		details, _ := base["prompt_tokens_details"].(map[string]any)
+		merged := make(map[string]any, len(details)+1)
+		for k, v := range details {
+			merged[k] = v
+		}
+		merged["cached_tokens"] = cached
+		out["prompt_tokens_details"] = merged
+	}
+	if sawCacheHit {
+		out["prompt_cache_hit_tokens"] = cacheHit
+	}
+	// prompt_cache_miss_tokens is summed the same way, in the same top-level
+	// spelling the turns carried, so it is the sum over only the turns that
+	// reported a miss; hit+miss equals the summed prompt only when every turn
+	// reports both. float64 addition saturates to +Inf rather than wrapping, and
+	// usageNum drops a negative term, so a huge or bogus count cannot wrap the
+	// sum negative.
+	if sawCacheMiss {
+		out["prompt_cache_miss_tokens"] = cacheMiss
+	}
 	return out
 }
 
 // usageNum reads a token-count field from a usage block. A JSON-decoded usage
 // block carries float64; json.Number, int and int64 are accepted too so a
 // caller that builds a usage block directly (a test, a future non-JSON path)
-// still sums correctly.
+// still sums correctly. A NEGATIVE count is treated as absent (ok=false), the
+// same rule geminiwire's usageInt applies, so a bogus negative is never
+// accumulated into a summed total.
 func usageNum(m map[string]any, key string) (float64, bool) {
 	v, ok := m[key]
 	if !ok {
 		return 0, false
 	}
+	var f float64
 	switch n := v.(type) {
 	case float64:
-		return n, true
+		f = n
 	case float32:
-		return float64(n), true
+		f = float64(n)
 	case int:
-		return float64(n), true
+		f = float64(n)
 	case int64:
-		return float64(n), true
+		f = float64(n)
 	case json.Number:
-		f, err := n.Float64()
-		return f, err == nil
+		parsed, err := n.Float64()
+		if err != nil {
+			return 0, false
+		}
+		f = parsed
 	default:
 		return 0, false
 	}
+	if f < 0 {
+		return 0, false
+	}
+	return f, true
 }
 
 // upstreamTurn performs one raw HTTP call to the provider. The request keeps

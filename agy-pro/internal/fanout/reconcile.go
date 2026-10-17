@@ -74,6 +74,12 @@ type SummaryReport struct {
 	// seat answers and workspace quotes arrive here verbatim, and the main
 	// agent reads this file. Additive key; older readers ignore it.
 	UntrustedData string `json:"untrusted_data"`
+	// Partition is the merged manifest of a PARTITION-mode run (B5): the
+	// per-unit claimed files, the merged artifact reference, the conflict
+	// list and the verification verdict. It is nil on the cross-verification
+	// path, and the omitempty tag keeps a non-partition summary.json
+	// byte-identical to before the field existed.
+	Partition *PartitionManifest `json:"partition,omitempty"`
 }
 
 // RunUsage is the run-level token accounting in summary.json. Every field is
