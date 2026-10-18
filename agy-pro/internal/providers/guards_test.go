@@ -1287,6 +1287,64 @@ func TestMaskProviderForReport_BenignUnchanged(t *testing.T) {
 	}
 }
 
+// MaskBaseURL pins the layered URL mask: benign URLs stay byte-identical,
+// userinfo credentials are dropped while the endpoint host survives, an
+// AWS-secret-shaped userinfo (whose "/" makes url.Parse misread the
+// credential as a host) still cannot echo, and a credential planted in the
+// query or fragment slot of a well-formed URL (the round-2 re-review R3/R5
+// class) masks while scheme, host, and path stay readable. Benign queries
+// ("?q={query}") stay byte-identical. Mirrors the screen-level
+// TestMaskBaseURLQueryAndFragmentMasking pin, including the cross-package
+// parity assertion there.
+func TestMaskBaseURL(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"benign host", "https://example.com", "https://example.com"},
+		{"benign host with path", "https://gateway.example/v1", "https://gateway.example/v1"},
+		{"benign query byte-identical", "https://example.com/v1?q={query}", "https://example.com/v1?q={query}"},
+		{"benign multi-param query byte-identical", "https://example.com/v1?api-version=2&region=us-east-1", "https://example.com/v1?api-version=2&region=us-east-1"},
+		{"empty", "", ""},
+		{"userinfo dropped, host kept", "https://user:hunter2sekret@gw.example/v1", "https://gw.example/v1"},
+		{"aws-shaped userinfo cut at last at", "https://wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY@gateway.example/v1", "https://gateway.example/v1"},
+		{"userinfo with query", "https://user:hunter2sekret@gw.example/v1?api-version=2", "https://gw.example/v1?api-version=2"},
+		{"query api key masked, endpoint kept", "https://example.com/v1?api_key=ABCDEFGHIJKLMNOPQRST", "https://example.com/v1?api_key=ABCDE%2A%2A%2A%2A"},
+		{"sk-shaped query value masked", "https://gw.example/v1?key=sk-abcdefghijklmnop1234", "https://gw.example/v1?key=[REDACTED]"},
+		{"fragment credential masked", "https://example.com/v1#ABCDEFGHIJKLMNOPQRST", "https://example.com/v1#ABCDE****"},
+		{"userinfo and query secret both handled", "https://user:hunter2sekret@gw.example/v1?api_key=ABCDEFGHIJKLMNOPQRST", "https://gw.example/v1?api_key=ABCDE%2A%2A%2A%2A"},
+	}
+	for _, tc := range cases {
+		if got := MaskBaseURL(tc.in); got != tc.want {
+			t.Errorf("%s: MaskBaseURL(%q) = %q; want %q", tc.name, tc.in, got, tc.want)
+		}
+	}
+	// The credential material never survives, in any case.
+	leaky := []string{
+		"https://user:hunter2sekret@gw.example/v1",
+		"https://wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY@gateway.example/v1",
+		"https://example.com/v1?api_key=ABCDEFGHIJKLMNOPQRST",
+		"https://gw.example/v1?key=sk-abcdefghijklmnop1234",
+		"https://example.com/v1#ABCDEFGHIJKLMNOPQRST",
+	}
+	for _, in := range leaky {
+		if got := MaskBaseURL(in); strings.Contains(got, "hunter2sekret") || strings.Contains(got, "wJalrXUtnFEMI") ||
+			strings.Contains(got, "ABCDEFGHIJKLMNOPQRST") || strings.Contains(got, "sk-abcdefghijklmnop1234") {
+			t.Errorf("MaskBaseURL(%q) = %q; credential material survived", in, got)
+		}
+	}
+	// MaskProviderForReport routes the BaseURL slot through MaskBaseURL.
+	p := Provider{Name: "google", BaseURL: "https://user:hunter2sekret@gw.example/v1", APIKeyEnv: "GOOGLE_API_KEY"}
+	got := MaskProviderForReport(p)
+	if got.BaseURL != "https://gw.example/v1" {
+		t.Errorf("MaskProviderForReport BaseURL = %q; want https://gw.example/v1", got.BaseURL)
+	}
+	if p.BaseURL != "https://user:hunter2sekret@gw.example/v1" {
+		t.Errorf("MaskProviderForReport mutated the input BaseURL: %q", p.BaseURL)
+	}
+}
+
 // L1/F-2 — MaskModelForReport routes the reasoningEffort through the
 // registry-slot display authority (MaskRegistryValue), not plain MaskOperand,
 // so a location-shaped key-shaped effort masks in the report copy instead of

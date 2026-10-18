@@ -345,10 +345,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr 'https://raw.githubu
 ### 첫 실행
 
 ```bash
-agy pro setup          # 프로바이더 등록 (OpenRouter, DeepSeek, Groq, Google AI Studio 등)
+agy pro setup          # 전체 화면 설정 TUI: 프로바이더, 모델, 팬아웃 프리셋, 프롬프트, 언어
+agy pro setup --wizard # 어떤 환경에서든 고전 줄 단위 마법사
 agy                    # 기본: 지연 없이 네이티브 Gemini로 바로 실행
 AGY_LAUNCHER=1 agy     # 옵트인: 2초 픽커 [1] 네이티브 Gemini  [2] 외부 모델  [3] 스웜
 ```
+
+`agy pro setup`은 설정 TUI의 유일한 문입니다(Windows 콘솔에서). 파이프나 스크립트 환경에서는 예전과 바이트 단위로 같은 줄 단위 마법사로 자동 전환됩니다. 처음 열 때는 UI 언어를 고릅니다(12개 언어; 아랍어는 논리 순서 범위를 정직하게 표시). 허브에서 프로바이더 등록, diff 승인 게이트를 통한 모델 추가/수정/삭제, 팬아웃 프리셋, 프롬프트 작성까지 한 화면에서 처리합니다. `agy pro help` 맨 위에 이 TUI가 크게 안내됩니다.
 
 픽커는 **인자 없는** `agy`에 `AGY_LAUNCHER=1`을 설정했을 때만 뜹니다. 옵트인이 없으면 기본 실행은 메뉴 없이 지연 없이 네이티브로 바로 진행되고, 인자를 하나라도 주면 픽커를 건너뛰고 실제 바이너리로 바로 실행됩니다. 런처가 뜰 때는 커뮤니티 안내가 한 줄 함께 출력됩니다(`Visit https://www.reddit.com/r/GoogleAntigravityCLI/! A space for antigravity-cli users. Remember r/GoogleAntigravityCLI`). 이 줄은 대화형 런처에서만 나오고, `-p` 일회성 실행·파이프 입력·기계 판독 출력에는 나오지 않습니다. 외부 모델과 스웜은 런처 없이도 `AGY_PRO_BRIDGE=1 agy`, `agy pro swarm`, `agypro_swarm` 플러그인으로 사용할 수 있습니다. 프로필·실행 단위 오버라이드:
 
@@ -452,7 +455,7 @@ agy pro hybrid check     # wirecheck 리포트 출력; 효과 프로필이 NOGO�
 | 시작 프로필 고정 (native / gateway / prompt) | `agy pro config default-profile <값>` |
 | 외부 모델용 게이트웨이 도구 루프 (기본 읽기 전용) | `agy pro config bridge-tools read,search`, `agy pro config show` |
 | 프로필 전환 (full-stack / clean) | `agy pro mode full`, `agy pro mode clean` |
-| 프로바이더 & 모델 설정 마법사 | `agy pro setup` |
+| 전체 화면 설정 TUI (프로바이더, 모델, 프리셋, 프롬프트, 언어) | `agy pro setup` (고전 마법사는 `--wizard`) |
 | 번호로 고르는 스웜 빌더 (네이티브+외부 하이브리드 좌석) | `agy pro swarm`, `agy pro fanout --seats "native:<모델>,<프로바이더>/<모델>"` |
 | 멀티 모델 팬아웃 스웜 | `agy pro fanout -task=security -n=3` |
 | 설정 패널 / 세션 내 설정 | `agy pro settings`(TUI), `/setting_agypro`(플러그인 명령) |

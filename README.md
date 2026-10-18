@@ -423,10 +423,13 @@ Variants, appended to the same line or run from a clone: `-KeepState` removes th
 ### First run
 
 ```bash
-agy pro setup          # register a provider (OpenRouter, DeepSeek, Groq, Google AI Studio, ...)
+agy pro setup          # full-screen setup TUI: providers, models, fanout presets, prompts, language
+agy pro setup --wizard # the classic line wizard, on any host
 agy                    # default: straight to native Gemini, zero delay
 AGY_LAUNCHER=1 agy     # opt in: 2-second picker [1] Native Gemini  [2] External Models  [3] Swarm
 ```
+
+`agy pro setup` is the only door to the setup TUI (Windows console hosts; pipes and scripts get the same line wizard as before, byte-identically). First run asks for the UI language (12 languages; Arabic is honest logical-order scope, no bidi shaping), then the hub covers provider registration, per-model add/update/delete behind an exact-diff approval gate, fanout presets, and prompt authoring. Bare `agy pro help` advertises the TUI at the top.
 
 The picker belongs to a **bare** `agy` (no arguments) with `AGY_LAUNCHER=1` set: any argument skips it and goes straight to the real binary, and without the opt-in the bare launch is native with zero delay. The launcher also prints one community line at startup (`Visit https://www.reddit.com/r/GoogleAntigravityCLI/! A space for antigravity-cli users. Remember r/GoogleAntigravityCLI`); it appears only in the interactive launcher, never in `-p`/piped/machine output. External models and the swarm are also reachable without the launcher (`AGY_PRO_BRIDGE=1 agy`, `agy pro swarm`, the `agypro_swarm` plugin). Profile and per-run overrides:
 
@@ -491,7 +494,7 @@ The XOR boundary is unchanged and stated plainly: this is a command/tool action 
 | Default startup profile (native / gateway / prompt) | `agy pro config default-profile <value>` |
 | Gateway tool loop for external models (default read-only) | `agy pro config bridge-tools read,search`, `agy pro config show` |
 | Profile switcher (full-stack / clean) | `agy pro mode full`, `agy pro mode clean` |
-| Provider & model setup wizard | `agy pro setup` |
+| Full-screen setup TUI (providers, models, presets, prompts, language) | `agy pro setup` (`--wizard` for the classic line wizard) |
 | Numbered swarm builder (hybrid native + external seats) | `agy pro swarm`, `agy pro fanout --seats "native:<model>,<provider>/<model>"` |
 | Multi-model fanout swarm | `agy pro fanout -task=security -n=3` |
 | Settings panel / in-session settings | `agy pro settings` (TUI), `/setting_agypro` (plugin command) |

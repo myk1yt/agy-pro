@@ -2,6 +2,127 @@
 Antigravity-cli (agy-tools) Changelog
 ================================================================================
 
+Version: 0.10.9
+Release Date: 2026-10-18
+Previous Version: 0.10.8
+
+--------------------------------------------------------------------------------
+[Overview]
+--------------------------------------------------------------------------------
+Full-screen setup TUI for agy-pro: `agy pro setup` is now the single door to an
+interactive configuration surface that covers everything the agy pro features
+need, so nothing has to be configured inside agy. On a raw-console host the
+command opens the TUI (banner splash, first-run language screen, then the hub);
+on a non-console host (pipe, non-Windows TTY, mintty) it runs the existing
+line-mode wizard byte-identically, so scripted callers are unaffected. `agy pro
+setup --wizard` forces the classic wizard on any host, and any other setup
+argument fails closed with the masked operand, the help text, and exit code 2.
+Bare `agy pro help` advertises the TUI prominently. The hub manages providers,
+per-model add/update/delete behind an exact-diff approval gate (the only write
+path to providers.json), fanout presets, prompt authoring, and settings. New CLI
+twins `agy pro settings providers model-add-json|model-update|model-delete`
+mirror the model ops. The TUI ships with 12 UI languages, honest RTL scope for
+Arabic (logical-order text plus mirrored layout; no bidi shaping, no mid-string
+truncation, no inline RTL editing), a four-tier color banner (truecolor / 256 /
+16 / plain ASCII, NO_COLOR and AGY_PRO_COLOR aware), a persisted launcher-menu
+toggle (AGY_LAUNCHER still wins entirely when set), and fanout prompt authoring
+(prompts/ directory plus AGY_PRO_PROMPTS_DIR and AGY_PRO_SEAT_PREAMBLE). The
+fanout run config now resolves through a documented ladder: CLI flag >
+AGY_PRO_FANOUT_PRESET / active preset (--preset or the store default) >
+providers.json defaults block (consumed, read-only) > engine default, with a
+one-time stderr notice when the stored defaults drift from the engine defaults
+(timeoutSeconds 120 vs 300 is surfaced, never silently normalized).
+
+[Added]
+- `agy pro setup` full-screen setup TUI (Windows console hosts): banner splash
+  with a four-tier color degrade (truecolor, 256, 16-color bands, plain ASCII
+  figure; NO_COLOR forces plain, AGY_PRO_COLOR overrides the tier, and the
+  banner is suppressed entirely on non-console stdout), a first-run language
+  screen (12 languages, numbered rows plus arrows, persisted via state.json and
+  applied on the next frame with no restart), and a hub with numbered rows for
+  providers, models, fanout presets, prompts, settings, doctor, help, language,
+  and quit. Digits and arrows+Enter both work on every list.
+- Provider and model management in the TUI: model-level add, update, and delete
+  inside each provider, with an M4 approval modal showing the exact mutation
+  diff (provider, model count before/after, per-field changes) before any
+  providers.json write; every registry write goes through that approval gate.
+- CLI twins for the model ops: `agy pro settings providers model-add-json
+  <name> <file|->`, `model-update <name> <model-id> <file|->`, and
+  `model-delete <name> <model-id>`.
+- UI language selection: `agy pro settings set language <code>` and a settings
+  row (Appearance section), on top of the first-run language screen. 12-language
+  closed set (en, zh-Hans, zh-Hant, ko, ja, ru, hi, de, fr, it, vi, ar) with a
+  catalog fallback chain (requested language, then en, then the key ID, never
+  empty). Arabic renders logical-order strings with deterministic mirrored
+  layout; visual bidi reordering, Arabic shaping, mid-string truncation of
+  Arabic, and inline RTL cursor editing are documented as NOT provided. Hindi
+  rows are single-column (no fixed-width Devanagari columns, no cell
+  truncation); Vietnamese is NFC-precomposed by authoring rule. No language
+  env override in v1.
+- Fanout preset management in the TUI (named presets in
+  ~/.agy-pro/fanout-presets.json with a store-level default preset), consumed
+  by the new `--preset <name>` fanout flag and the AGY_PRO_FANOUT_PRESET env
+  var. Run-config resolution ladder per field: CLI flag > active preset >
+  providers.json defaults block (n, timeoutSeconds, maxTurns, tools; read-only,
+  tokenBudget/excludeFamilies stay reserved) > engine default. An explicitly
+  selected missing preset is a usage error (exit 2); a dangling store default
+  only warns. Defaults-block drift is surfaced, never normalized: one stderr
+  line per drifted field names the field, the stored value, and the engine
+  default (the live file's timeoutSeconds 120 vs engine 300 is the known
+  drift). A configured timeout from the preset or defaults rung counts as
+  explicit and is honored exactly (no --units auto-scaling).
+- Prompt authoring in the TUI: per-task prompt slots (review, security,
+  plan-audit, research, ideas, custom) plus the native seat-role preamble, stored
+  as one file per slot under ~/.agy-pro/prompts/ (0600, atomic). Resolution per
+  slot: AGY_PRO_PROMPTS_DIR (directory-only redirection) and
+  AGY_PRO_SEAT_PREAMBLE (inline seat preamble) over the slot file over the
+  compiled default; a slot with no override resolves byte-identically to the
+  compiled constant, so existing byte-identity pins stay green. An empty slot
+  file is a resolution error, never a silent empty prompt.
+- Launcher-menu persistence: state.json `launcher_menu` ("1"/"0") with a
+  settings row (show/hide, honest source column) and Core.Set accepting
+  on|off|1|0|true|false. Precedence: a non-empty AGY_LAUNCHER wins entirely
+  (today's opt-in semantics); the stored value decides only when the env is
+  unset or empty; absent means off.
+- `agy pro setup` degrade and guardrails: non-console hosts run the existing
+  line wizard byte-identically (no language step, English only, transcript pins
+  unchanged); unknown setup arguments exit 2 with a masked stderr line plus
+  help; `agy pro settings providers add-interactive` (alias `wizard`) is
+  unchanged.
+
+[Changed]
+- `agy pro help` and the bare `agy pro` help print a prominent plain-text block
+  advertising `agy pro setup` as the full-screen setup TUI, plus the `--wizard`
+  escape; the setup command row is rewritten. Six pre-existing substring-pinned
+  help lines are untouched.
+- `agy pro setup` with no arguments now dispatches on host capability (TUI on a
+  raw console, wizard elsewhere) instead of always starting the wizard.
+- Display-string cleanup: the pre-existing em-dash characters in the help
+  header line, the launcher banner line, and the settings panel wizard message
+  are replaced with hyphens (house rule: no em-dash in user-facing strings).
+
+[Limits]
+- The setup TUI targets Windows console hosts; macOS/Linux keep the CLI surface
+  and the line-mode wizard (coexistence, not replacement). The TUI is verified
+  by scripted key-injection tests and structural checks; the banner geometry
+  choice and per-language spot-check are the user's visual pass.
+- Arabic: logical-order text and mirrored layout only; no visual bidi, no
+  shaping, no mid-string truncation, no inline RTL editing. Hindi: single-
+  column rows only. Language selector rows 10-12 use arrows+Enter in v1
+  (single-key digits cover 1-9).
+- `run_command` stays OUT (separate held user decision, unchanged).
+- `go test -race` is not runnable on the dev machine (no C compiler) - an
+  environmental degradation, not a PASS.
+
+[Verification]
+- `go build ./...`, `go vet ./...`, `go test ./... -count=1 -p 1`: all
+  packages ok, 0 FAIL.
+- Docs drift-pins green: internal/fanout/docs_claims_test.go,
+  internal/swarm/docs_claims_test.go, and the providers docs claims test.
+- Docs updated: MANUAL.ko.md (setup TUI chapter), README.md, README.ko.md,
+  agy-pro/docs/fanout.md (resolution ladder and --preset), agy-pro/README.md
+  and agy-pro/docs/bridge-architecture.md (banner quote sync).
+
 Version: 0.10.8
 Release Date: 2026-10-17
 Previous Version: 0.10.7

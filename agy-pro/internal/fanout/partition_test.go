@@ -201,9 +201,16 @@ func TestPartitionModePerUnitBodySharedPreamble(t *testing.T) {
 // (seat-role control + task preset) is byte-identical across units and only the
 // tail carries the unit body.
 func TestPartitionModeNativePromptSharesPreambleAcrossUnits(t *testing.T) {
+	isolatePromptEnv(t) // pins compare against the compiled constants
 	units := partitionUnits()
-	pa := buildNativeSeatPrompt(partTask, UnitBody(units[0]))
-	pb := buildNativeSeatPrompt(partTask, UnitBody(units[1]))
+	pa, err := buildNativeSeatPrompt(partTask, UnitBody(units[0]))
+	if err != nil {
+		t.Fatalf("buildNativeSeatPrompt unit-alpha: %v", err)
+	}
+	pb, err := buildNativeSeatPrompt(partTask, UnitBody(units[1]))
+	if err != nil {
+		t.Fatalf("buildNativeSeatPrompt unit-beta: %v", err)
+	}
 
 	sharedPrefix := nativeSeatPreamble + "\n\n" + GetTaskPreset(partTask).SystemPrompt + "\n\n"
 	if !strings.HasPrefix(pa, sharedPrefix) || !strings.HasPrefix(pb, sharedPrefix) {

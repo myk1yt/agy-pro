@@ -301,7 +301,10 @@ func TestViewD2Coverage(t *testing.T) {
 				t.Errorf("item missing id/label in %s: %+v", sec.ID, it)
 			}
 			switch it.Source {
-			case "env", "state", "registry", "default", "constant":
+			case "env", "state", "registry", "default", "constant",
+				// Appearance rows (plan §4/§5) carry display-ready source
+				// text instead of the enum shorthand.
+				"state.json", "default: English", "default (off)", "env AGY_LAUNCHER (override)":
 			default:
 				t.Errorf("item %s has bogus source %q", it.ID, it.Source)
 			}

@@ -57,7 +57,7 @@ registered, it shows a 2-second picker instead:
 
 ```
 ===========================================================
-  agy Fast Launcher — default in 2s: [1] Native Gemini
+  agy Fast Launcher - default in 2s: [1] Native Gemini
 ===========================================================
 Visit https://www.reddit.com/r/GoogleAntigravityCLI/! A space for antigravity-cli users. Remember r/GoogleAntigravityCLI
   [1] Native Gemini (default)

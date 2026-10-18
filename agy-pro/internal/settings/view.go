@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"agypro/internal/fanout"
+	"agypro/internal/i18n"
 	"agypro/internal/mode"
 	"agypro/internal/providers"
 	"agypro/internal/realagy"
@@ -29,6 +30,13 @@ type Item struct {
 	Danger   bool     `json:"danger,omitempty"`  // destructive op → y/n confirmation
 	ReadOnly bool     `json:"readOnly,omitempty"`
 	Note     string   `json:"note,omitempty"` // precedence/override text
+	// MsgID joins the row to the i18n catalog: renderers resolve
+	// view.<MsgID>.label / view.<MsgID>.note at paint time and fall back to
+	// the compiled English Label/Note. View() sets it to the Item ID
+	// (dynamic provider-key rows use "provider.key", whose catalog entry
+	// carries the {{name}} slot). In-memory only: json:"-" keeps
+	// show / show --json byte-identical.
+	MsgID string `json:"-"`
 }
 
 // Section groups items into one TUI panel (P1..P6).
@@ -95,6 +103,17 @@ func (c *Core) View() (SettingsView, error) {
 		return SettingsView{}, fmt.Errorf("load state: %w", err)
 	}
 	reg, regErr := c.loadRegistry()
+	if regErr != nil {
+		// Blind-qa gate D: a hard registry load failure (e.g. the round-6
+		// control-rune guard rejecting a disk-borne ESC byte in a provider
+		// name) must surface as the same clean, masked error the model verbs
+		// emit, and fail the command - never panic on the nil registry in
+		// sectionProviders. loadRegistry only returns an error for a hard
+		// failure (missing/unconfigured registries degrade to an empty
+		// registry with a nil error), and the loader error names the field
+		// class only, never the offending value.
+		return SettingsView{}, fmt.Errorf("load providers registry: %w", regErr)
+	}
 
 	view.Sections = append(view.Sections, c.sectionLaunch(st))
 	view.Sections = append(view.Sections, c.sectionProviders(reg, regErr))
@@ -103,6 +122,19 @@ func (c *Core) View() (SettingsView, error) {
 	view.Sections = append(view.Sections, sectionDiagnostics())
 	view.Sections = append(view.Sections, c.sectionMaintenance())
 	view.Sections = append(view.Sections, sectionEnvDocs(st))
+	view.Sections = append(view.Sections, sectionAppearance(st))
+
+	// MsgID join (plan-v2 §3 extraction point 1): every row carries its
+	// catalog key stem for the renderer's view.<MsgID>.label/.note lookup.
+	// Rows that already set MsgID (the dynamic provider-key rows use
+	// "provider.key") keep their value.
+	for si := range view.Sections {
+		for ii := range view.Sections[si].Items {
+			if view.Sections[si].Items[ii].MsgID == "" {
+				view.Sections[si].Items[ii].MsgID = view.Sections[si].Items[ii].ID
+			}
+		}
+	}
 	return view, nil
 }
 
@@ -178,7 +210,7 @@ func (c *Core) sectionProviders(reg *providers.Registry, regErr error) Section {
 		{ID: "providers.rename", Label: "Rename Provider", Value: "rename <old> <new>", Source: "registry",
 			Note: "registry-entry rename only; key material untouched (F-PROV)"},
 		{ID: "providers.delete", Label: "Delete Provider", Value: "delete <name>", Source: "registry", Danger: true,
-			Note: "registry-entry removal ONLY — never touches env/registry key values, never deletes files (F-PROV)"},
+			Note: "registry-entry removal ONLY - never touches env/registry key values, never deletes files (F-PROV)"},
 		{ID: "models.inventory", Label: "Combined Model Inventory", Value: "(native + external)", Source: "registry", ReadOnly: true,
 			Note: "run `agy pro models --all` for the numbered combined view (contract §2.5)"},
 		{ID: "providers.presets", Label: "Provider Presets (catalog)", Value: presetCatalog(), Source: "constant", ReadOnly: true,
@@ -196,7 +228,7 @@ func (c *Core) sectionProviders(reg *providers.Registry, regErr error) Section {
 		// B4 display defense: a legacy registry can hold a credential in the
 		// name or env-name slot (short env-name-shaped values were accepted as
 		// apiKeyEnv before the LookupEnv-or-catalog guard). Anything key-shaped
-		// renders through providers.MaskOperand — first-5 + **** or pattern
+		// renders through providers.MaskOperand - first-5 + **** or pattern
 		// [REDACTED], never raw.
 		envName := providers.MaskOperand(p.APIKeyEnv)
 		if p.APIKeyEnv != "" {
@@ -209,7 +241,8 @@ func (c *Core) sectionProviders(reg *providers.Registry, regErr error) Section {
 		}
 		items = append(items, Item{
 			ID:     "provider.key." + providers.MaskOperand(p.Name),
-			Label:  "Key status — " + providers.MaskOperand(p.Name),
+			MsgID:  "provider.key", // catalog entry view.provider.key.label carries {{name}}
+			Label:  "Key status - " + providers.MaskOperand(p.Name),
 			Value:  status,
 			Source: "registry", ReadOnly: true,
 			Note: "resolved from process env then persistent stores; values never shown beyond the mask",
@@ -236,15 +269,15 @@ func (c *Core) sectionBridge(st *mode.State) Section {
 		{ID: "env.AGY_PRO_BRIDGE_TOOLS", Label: "AGY_PRO_BRIDGE_TOOLS Override", Value: envOr("AGY_PRO_BRIDGE_TOOLS", "(unset)"), Source: "env", ReadOnly: true,
 			Note: "precedence: env > stored state > default read,search"},
 		{ID: "budget.iterations", Label: "Budget: Iterations per Request", Value: fmt.Sprintf("%d", budgetIterations), Default: fmt.Sprintf("%d", budgetIterations), Source: "constant", ReadOnly: true,
-			Note: "compile-time constant (bridge_tools.go) — not configurable"},
+			Note: "compile-time constant (bridge_tools.go) - not configurable"},
 		{ID: "budget.wall", Label: "Budget: Wall Clock per Loop", Value: fmt.Sprintf("%ds", budgetWallSeconds), Default: fmt.Sprintf("%ds", budgetWallSeconds), Source: "constant", ReadOnly: true,
-			Note: "compile-time constant — not configurable"},
+			Note: "compile-time constant - not configurable"},
 		{ID: "budget.turn", Label: "Budget: Per Upstream Turn", Value: fmt.Sprintf("%ds", budgetTurnSeconds), Default: fmt.Sprintf("%ds", budgetTurnSeconds), Source: "constant", ReadOnly: true,
-			Note: "compile-time constant — not configurable"},
+			Note: "compile-time constant - not configurable"},
 		{ID: "budget.tool", Label: "Budget: Per Tool Execution", Value: fmt.Sprintf("%ds", budgetToolSeconds), Default: fmt.Sprintf("%ds", budgetToolSeconds), Source: "constant", ReadOnly: true,
-			Note: "compile-time constant — not configurable"},
+			Note: "compile-time constant - not configurable"},
 		{ID: "budget.tool_calls_per_turn", Label: "Budget: Tool Calls per Turn", Value: fmt.Sprintf("%d", budgetToolCallsPerTurn), Default: fmt.Sprintf("%d", budgetToolCallsPerTurn), Source: "constant", ReadOnly: true,
-			Note: "compile-time constant — not configurable"},
+			Note: "compile-time constant - not configurable"},
 		{ID: "budget.fallback", Label: "Budget: Fallback on Exhaustion", Value: "fixed apology line (never textless)", Source: "constant", ReadOnly: true,
 			Note: "bridge_tools.go apology constant"},
 	}
@@ -272,8 +305,8 @@ func (c *Core) sectionSwarm(st *mode.State) Section {
 			Note: "review|security|plan-audit|research|ideas|custom"},
 		{ID: "fanout.flags", Label: "Fanout Other Flags", Value: "--root . / --out ./reports/fanout/<ts> / --models \"\" / --json / --setup", Source: "constant", ReadOnly: true,
 			Note: "CLI truths surfaced here so nothing is reachable only via flags (D2)"},
-		{ID: "fanout.registry_defaults", Label: "Registry Defaults Block", Value: "(unwired)", Default: "n=3 timeout=120 maxTurns=10 tools=read,search", Source: "registry", ReadOnly: true,
-			Note: "E13/D-2: providers.json defaults block is currently UNCONSUMED — engine hardcodes fallbacks; shown honestly, not pretended to steer fanout"},
+		{ID: "fanout.registry_defaults", Label: "Registry Defaults Block", Value: "consumed (read-only)", Default: "n=3 timeout=120 maxTurns=10 tools=read,search", Source: "registry", ReadOnly: true,
+			Note: "D4: consumed as the rung below presets (CLI flag > preset via flag/AGY_PRO_FANOUT_PRESET/default key > providers.json defaults > engine default); read-only, written only via the M4 approval modal; drift from engine defaults is surfaced per run"},
 		{ID: "fanout.consensus", Label: "Reconciliation Consensus", Value: ">= 2 models agreed = CONFIRMED", Source: "constant", ReadOnly: true,
 			Note: "fanout reconcile threshold"},
 		{ID: "fanout.failover", Label: "Failover Policy", Value: "3-step (same model/other provider → other family → degraded seat)", Source: "constant", ReadOnly: true,
@@ -331,7 +364,7 @@ func (c *Core) sectionMaintenance() Section {
 		{ID: "version.real_agy", Label: "Real agy Path", Value: realAgy, Source: "constant", ReadOnly: true,
 			Note: "authentic Antigravity CLI resolved from AGY_PRO_REAL_AGY / PATH"},
 		{ID: "update.info", Label: "Update", Value: "agy update", Source: "constant", ReadOnly: true,
-			Note: "update is a real-agy subcommand (\"Update CLI\"); run it in your terminal — the shim delegates"},
+			Note: "update is a real-agy subcommand (\"Update CLI\"); run it in your terminal - the shim delegates"},
 		{ID: "uninstall.info", Label: "Uninstall", Value: "uninstall.cmd [-KeepState|-DryRun|-RestorePath|-Force]", Source: "constant", ReadOnly: true,
 			Note: "recycle-bin only; run `agy pro mode restore` first if profile backups exist (agy-pro/README.md)"},
 		{ID: "install.info", Label: "Install", Value: "install.cmd / scripts/install.ps1", Source: "constant", ReadOnly: true,
@@ -411,4 +444,66 @@ func formatTime(t time.Time) string {
 		return "(never)"
 	}
 	return t.Format("2006-01-02 15:04:05 MST")
+}
+
+// languageNativeNames returns the native display name of every UI language
+// in the catalog's canonical order (en first). The names are code constants
+// in internal/i18n (plan §3: every language can read every selector row),
+// not catalog entries, so the row resolves them without loading a bundle.
+func languageNativeNames() []string {
+	metas := i18n.Languages()
+	names := make([]string, 0, len(metas))
+	for _, m := range metas {
+		names = append(names, m.Endonym)
+	}
+	return names
+}
+
+// P8 Appearance (plan §4/§5): the persisted UI language and the
+// launcher-menu toggle. Labels/Notes stay English literals as the compiled
+// default (plan §3 extraction point 1: show/show --json stay byte-identical);
+// View() stamps MsgID on every row and the new TUI screen resolves
+// view.<MsgID>.label/.note through the catalog at paint time.
+func sectionAppearance(st *mode.State) Section {
+	lang := st.EffectiveLanguage()
+	langSource := "state.json"
+	if strings.TrimSpace(st.Language) == "" {
+		langSource = "default: English"
+	}
+	items := []Item{
+		{
+			ID: "appearance.language", Label: "Language",
+			Value: i18n.Endonym(lang), Default: i18n.Endonym(mode.DefaultLanguage),
+			Source: langSource, Choices: languageNativeNames(),
+			Note: "UI language (closed 12-code set); written via Core.Set language",
+		},
+	}
+
+	// AGY_LAUNCHER non-empty wins entirely (opt-in semantics: only "1"
+	// shows, anything else hides); env unset/empty -> stored toggle
+	// decides; no stored value -> off. Editing the stored toggle has no
+	// effect while the env override is set.
+	stored := st.EffectiveLauncherMenu()
+	launcher := Item{
+		ID: "appearance.launcher_menu", Label: "Launcher menu",
+		Value: "hide", Default: "hide", Choices: []string{"show", "hide"},
+	}
+	if v := strings.TrimSpace(os.Getenv("AGY_LAUNCHER")); v != "" {
+		launcher.Value = "hide"
+		if v == "1" {
+			launcher.Value = "show"
+		}
+		launcher.Source = "env AGY_LAUNCHER (override)"
+		launcher.Note = "env wins over the stored toggle; editing the stored toggle has no effect until the env is cleared"
+	} else if stored != "" {
+		launcher.Value = "hide"
+		if stored == mode.LauncherMenuOn {
+			launcher.Value = "show"
+		}
+		launcher.Source = "state.json"
+	} else {
+		launcher.Source = "default (off)"
+	}
+	items = append(items, launcher)
+	return Section{ID: "p8", Title: "[8] Appearance", Items: items}
 }

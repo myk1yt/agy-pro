@@ -200,7 +200,7 @@ agy -m gemini-2.5-flash
 A **bare** `agy` (no arguments) goes straight to the native session with zero menu and zero delay. With **`AGY_LAUNCHER=1`** set, at least one external model registered, and stdin an interactive terminal, it shows a 2-second picker instead:
 ```
 ===========================================================
-  agy Fast Launcher — default in 2s: [1] Native Gemini
+  agy Fast Launcher - default in 2s: [1] Native Gemini
 ===========================================================
 Visit https://www.reddit.com/r/GoogleAntigravityCLI/! A space for antigravity-cli users. Remember r/GoogleAntigravityCLI
   [1] Native Gemini (default)

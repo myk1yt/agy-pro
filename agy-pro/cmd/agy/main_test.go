@@ -282,6 +282,20 @@ func TestPrintProHelpReflectsStatusAndConfig(t *testing.T) {
 	}
 }
 
+// P12: the help emphasis block advertises the setup TUI directly under the
+// Usage line and names the --wizard escape for the classic line wizard.
+func TestPrintProHelpAdvertisesSetupTUI(t *testing.T) {
+	out := captureStdout(t, printProHelp)
+	for _, want := range []string{
+		">>> agy pro setup  opens the full-screen setup TUI <<<",
+		"agy pro setup --wizard",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("help missing setup TUI emphasis %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestInvalidModeArgMessage(t *testing.T) {
 	msg := invalidModeArgMessage("bogus")
 	for _, want := range []string{"Invalid mode argument", "\"bogus\"", "status", "list", "restore"} {

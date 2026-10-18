@@ -382,16 +382,140 @@ func secretShapedSchemeSegment(s string) string {
 	return ""
 }
 
+// OperandLooksSecret reports whether s matches the package's credential-shape
+// classifier (operandLooksSecret). It is exported so the TUI's screen-local
+// maskBaseURL copy (screen_providers.go) classifies URL query/fragment slots
+// with the SAME rule the shared MaskBaseURL uses, so the two maskers cannot
+// drift on what counts as credential material.
+func OperandLooksSecret(s string) bool { return operandLooksSecret(s) }
+
+// maskURLSecretParams masks credential-shaped material inside an already-parsed
+// URL's query and fragment in place, reporting whether it changed anything. A
+// query key or value that matches the credential-shape classifier renders as
+// MaskSecret (first-5 + ****) and the query is re-encoded; the scheme, host,
+// and path are never touched. A whole-fragment credential masks the same way.
+// Benign queries leave u.RawQuery byte-unchanged: the re-encode runs only when
+// a slot actually masked, so "?q={query}" and friends round-trip exactly (the
+// round-2 re-review R3/R5 class: the original round-1 PoC shape planted a key
+// in the query slot of a well-formed URL, which every earlier layer read as
+// benign because only the userinfo slot was stripped).
+func maskURLSecretParams(u *url.URL) bool {
+	changed := false
+	if q := u.Query(); len(q) > 0 {
+		qChanged := false
+		for key, vals := range q {
+			newKey := key
+			if operandLooksSecret(key) {
+				newKey = MaskSecret(key)
+				qChanged = true
+			}
+			for i, v := range vals {
+				if operandLooksSecret(v) {
+					vals[i] = MaskSecret(v)
+					qChanged = true
+				}
+			}
+			if newKey != key {
+				delete(q, key)
+			}
+			q[newKey] = vals
+		}
+		if qChanged {
+			u.RawQuery = q.Encode()
+			changed = true
+		}
+	}
+	if frag := strings.TrimSpace(u.Fragment); frag != "" && operandLooksSecret(frag) {
+		u.Fragment = MaskSecret(frag)
+		changed = true
+	}
+	return changed
+}
+
+// MaskBaseURL renders a registry BaseURL for a display sink (the `keys
+// list` banner, MaskProviderForReport). MaskOperand keeps a benign URL
+// readable, but its location exemption also lets credential material inside
+// the URL ride raw, so the URL slot layers structural masking on top of
+// MaskOperand, mirroring the TUI screen's maskBaseURL (screen_providers.go):
+//   - MaskOperand first (catches sk-/JWT/decorated shapes);
+//   - a url.Parse pass drops the userinfo it can see AND masks
+//     credential-shaped query keys/values plus a credential-shaped fragment
+//     (maskURLSecretParams), keeping scheme, host, and path readable while a
+//     benign query stays byte-identical;
+//   - a value still carrying "@" afterwards is malformed enough that
+//     url.Parse misreads the credential as a host (a "/" inside it reads as
+//     a path separator), so the authority is cut at the last "@" before any
+//     "?" / "#" and the remainder re-audited;
+//   - when even that cannot isolate the host, the registry-slot masker
+//     (MaskRegistryValue, the package's display authority for registry
+//     slots) gets the final say.
+//
+// Benign URLs ("https://example.com") stay byte-identical.
+func MaskBaseURL(raw string) string {
+	if m := MaskOperand(raw); m != raw {
+		return m
+	}
+	trimmed := strings.TrimSpace(raw)
+	if u, err := url.Parse(trimmed); err == nil {
+		changed := false
+		if u.User != nil {
+			u.User = nil
+			changed = true
+		}
+		if maskURLSecretParams(u) {
+			changed = true
+		}
+		if changed {
+			stripped := u.String()
+			if m := MaskOperand(stripped); m != stripped {
+				return m
+			}
+			return stripped
+		}
+	}
+	if strings.Contains(trimmed, "@") {
+		// cutUserinfo, inlined so the layered mask stays a single helper:
+		// rebuild scheme://host/path by cutting everything between "://" and
+		// the last "@" that appears before any "?" or "#".
+		cut := trimmed
+		if scheme := strings.Index(trimmed, "://"); scheme >= 0 {
+			rest := trimmed[scheme+3:]
+			end := len(rest)
+			for _, sep := range []string{"?", "#"} {
+				if i := strings.Index(rest, sep); i >= 0 && i < end {
+					end = i
+				}
+			}
+			if at := strings.LastIndex(rest[:end], "@"); at >= 0 {
+				cut = trimmed[:scheme+3] + rest[at+1:]
+			}
+		}
+		if cut != trimmed {
+			if m := MaskOperand(cut); m != cut {
+				return m
+			}
+			return cut
+		}
+		if m := MaskRegistryValue(trimmed); m != trimmed {
+			return m
+		}
+	}
+	return raw
+}
+
 // MaskProviderForReport renders a Provider for a report/JSON sink (S4):
 // every string field that can carry a registry value (Name, APIKeyEnv,
 // BaseURL, and every Model string field) routes through the operand masker,
 // so a nested Target.Provider serialized into summary.json or --json output
 // cannot leak a key-shaped value while benign names, env-var names, URLs,
-// and model IDs stay readable. The input is not mutated.
+// and model IDs stay readable. BaseURL routes through MaskBaseURL (the
+// layered URL mask) instead of plain MaskOperand, so credential material in
+// the userinfo slot cannot ride raw in the serialized registry copy. The
+// input is not mutated.
 func MaskProviderForReport(p Provider) Provider {
 	out := p
 	out.Name = MaskOperand(p.Name)
-	out.BaseURL = MaskOperand(p.BaseURL)
+	out.BaseURL = MaskBaseURL(p.BaseURL)
 	out.APIKeyEnv = MaskOperand(p.APIKeyEnv)
 	if p.Models != nil {
 		out.Models = make([]Model, len(p.Models))

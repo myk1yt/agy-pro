@@ -80,6 +80,11 @@ type SummaryReport struct {
 	// path, and the omitempty tag keeps a non-partition summary.json
 	// byte-identical to before the field existed.
 	Partition *PartitionManifest `json:"partition,omitempty"`
+	// Sources records which resolution rung supplied each config field
+	// (P8 ladder: preset|defaults). Flag, engine, and state rungs are omitted
+	// as the expected case (a state.json max_native fallback predates P8), so
+	// an unconfigured run's summary.json stays byte-identical.
+	Sources map[string]string `json:"sources,omitempty"`
 }
 
 // RunUsage is the run-level token accounting in summary.json. Every field is

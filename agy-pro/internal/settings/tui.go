@@ -105,7 +105,7 @@ func (t *TUI) Frame() Snapshot {
 	s := Snapshot{}
 	s.Banner = strings.Join([]string{
 		"===========================================================",
-		"  agy-pro Settings — full-screen panel (M2, native-style)",
+		"  agy-pro Settings - full-screen panel (M2, native-style)",
 		"===========================================================",
 	}, "\n")
 
@@ -363,7 +363,7 @@ func (t *TUI) activate(it Item) {
 		}
 		t.result = splitLines("     ", b.String())
 	case it.ID == "providers.add_interactive":
-		t.message = "interactive wizard: run `agy pro setup` (or `agy pro settings providers add-interactive`) — raw key echo is masked first-5 + ****"
+		t.message = "interactive wizard: run `agy pro setup` (or `agy pro settings providers add-interactive`) - raw key echo is masked first-5 + ****"
 	case it.ID == "providers.add_json":
 		t.runPrompt("JSON file path or - for stdin", func(s string) error {
 			return t.addJSON(s)
@@ -466,7 +466,7 @@ func (t *TUI) runPrompt(prompt string, fn func(string) error) {
 	case err != nil:
 		t.setMaskedError("error: "+err.Error(), input)
 	case t.pending != nil:
-		t.message = "confirm to proceed — " + prompt
+		t.message = "confirm to proceed - " + prompt
 	default:
 		t.message = "[SUCCESS] " + prompt
 	}

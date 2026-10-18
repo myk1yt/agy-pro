@@ -1,0 +1,705 @@
+package tui
+
+import (
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"agypro/internal/providers"
+	"agypro/internal/settings"
+)
+
+// modelsFixtureReg is the standard two-model provider every test here reads:
+// acme-fast (family, context, one granted tool, enabled) and acme-slow
+// (family, maxOut, explicitly disabled). All tests run against a temp
+// AGY_PRO_HOME + AGY_PRO_PROVIDERS; the live registry is never touched.
+func modelsFixtureReg() *providers.Registry {
+	disabled := false
+	return &providers.Registry{Providers: []providers.Provider{
+		{
+			Name:      "acme",
+			BaseURL:   "https://acme.example/v1",
+			APIKeyEnv: "ACME_KEY",
+			Models: []providers.Model{
+				{
+					ID:            "acme-fast",
+					Family:        "fast",
+					ContextLength: 128000,
+					Capabilities:  providers.Capabilities{SupportsTools: true, AllowedTools: []string{"read_file"}},
+				},
+				{
+					ID:              "acme-slow",
+					Family:          "slow",
+					MaxOutputTokens: 4096,
+					Enabled:         &disabled,
+				},
+			},
+		},
+	}}
+}
+
+// newModelsTestApp seeds the fixture into a temp providers.json and returns
+// an app whose top screen is the models screen for "acme", plus the core
+// and the on-disk path for byte-level assertions. SaveReg is left nil so the
+// Core uses the real saveRegistryFile seam (0600 atomic, reg.Path).
+func newModelsTestApp(t *testing.T, openForm func(mode string, modelID string, a *App)) (*App, *settings.Core, string) {
+	t.Helper()
+	return newModelsTestAppReg(t, modelsFixtureReg(), openForm)
+}
+
+// newModelsTestAppReg is newModelsTestApp over an arbitrary registry, for
+// tests that need a non-standard fixture (unlisted tool grants,
+// credential-shaped fields). The provider under test must be named "acme".
+func newModelsTestAppReg(t *testing.T, reg *providers.Registry, openForm func(mode string, modelID string, a *App)) (*App, *settings.Core, string) {
+	t.Helper()
+	tmp := t.TempDir()
+	t.Setenv(providers.EnvHome, tmp)
+	path := filepath.Join(tmp, "providers.json")
+	t.Setenv(providers.EnvProviders, path)
+	reg.Path = path
+	data, err := json.MarshalIndent(reg, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+	if err := providers.WriteFileAtomic(path, append(data, '\n'), 0o600); err != nil {
+		t.Fatalf("seed providers.json: %v", err)
+	}
+	core := settings.NewCore(settings.Deps{LoadReg: providers.Load})
+	app := NewApp(100, 24, DirLTR)
+	app.Push(NewModelsScreen(core, "acme", openForm))
+	return app, core, path
+}
+
+// reloadModels reads the on-disk registry and returns the acme models.
+func reloadModels(t *testing.T, path string) []providers.Model {
+	t.Helper()
+	reg, err := providers.LoadFrom(path)
+	if err != nil {
+		t.Fatalf("reload registry: %v", err)
+	}
+	p, ok := reg.Provider("acme")
+	if !ok {
+		t.Fatal("provider acme missing after reload")
+	}
+	return p.Models
+}
+
+// formCall is one recorded openForm invocation.
+type formCall struct {
+	mode    string
+	modelID string
+}
+
+// runModelsKeys drives one capture run with a form spy and returns the
+// captured frames plus the form calls the spy saw.
+func runModelsKeys(t *testing.T, keys []Key) (string, []formCall) {
+	t.Helper()
+	var calls []formCall
+	app, _, _ := newModelsTestApp(t, func(mode string, modelID string, a *App) {
+		calls = append(calls, formCall{mode: mode, modelID: modelID})
+	})
+	out := app.CaptureRun(&ScriptedKeys{Keys: keys})
+	return out, calls
+}
+
+// TestModelsRowsRender pins the row inventory: one row per model with the
+// family/context/maxOut/enabled/tool-count note, then the fixed action rows.
+func TestModelsRowsRender(t *testing.T) {
+	out, _ := runModelsKeys(t, nil)
+	for _, want := range []string{
+		"Models: acme",
+		"acme-fast", "acme-slow",
+		"fast", "slow",
+		"Context 128000", "Max Out 4096",
+		"Enabled", "Disabled",
+		"tools 1", "tools 0",
+		"Add model", "Edit", "Delete", "Enable / disable",
+		missingModelsActionTools, "Back",
+		"No models for this provider.",
+	} {
+		if want == "No models for this provider." {
+			if strings.Contains(out, want) {
+				t.Fatalf("empty-state line rendered for a provider with models; frames:\n%s", out)
+			}
+			continue
+		}
+		if !strings.Contains(out, want) {
+			t.Fatalf("frames missing %q; frames:\n%s", want, out)
+		}
+	}
+}
+
+// TestModelsTitleAndMode pins the surface contract: NAV mode and the
+// catalog title with the provider slot filled.
+func TestModelsTitleAndMode(t *testing.T) {
+	app, _, _ := newModelsTestApp(t, nil)
+	scr := app.Top()
+	if scr.Mode() != ModeNav {
+		t.Fatalf("models mode = %v, want ModeNav", scr.Mode())
+	}
+	if got, want := scr.Title(), "Models: acme"; got != want {
+		t.Fatalf("models title = %q, want %q", got, want)
+	}
+}
+
+// TestModelsDualNavModelRows pins the dual-navigation structural guarantee
+// on the model rows: digit 2 and arrows+Enter both open the edit form for
+// the same model.
+func TestModelsDualNavModelRows(t *testing.T) {
+	_, digitCalls := runModelsKeys(t, []Key{Digit(2)})
+	_, arrowCalls := runModelsKeys(t, []Key{KeyDown, KeyEnter})
+	if len(digitCalls) != 1 || len(arrowCalls) != 1 {
+		t.Fatalf("digit calls %v, arrow calls %v; want one form call each", digitCalls, arrowCalls)
+	}
+	if digitCalls[0] != arrowCalls[0] {
+		t.Fatalf("digit opened %+v, arrows opened %+v; want the same target", digitCalls[0], arrowCalls[0])
+	}
+	if digitCalls[0].mode != "edit" || digitCalls[0].modelID != "acme-slow" {
+		t.Fatalf("model row opened %+v, want edit/acme-slow", digitCalls[0])
+	}
+}
+
+// TestModelsDualNavActionRows pins the same guarantee on the action rows:
+// digit 3 and arrows+Enter both activate "Add model", and the injected form
+// factory receives mode "add" with an empty model ID.
+func TestModelsDualNavActionRows(t *testing.T) {
+	_, digitCalls := runModelsKeys(t, []Key{Digit(3)})
+	_, arrowCalls := runModelsKeys(t, []Key{KeyDown, KeyDown, KeyEnter})
+	if len(digitCalls) != 1 || len(arrowCalls) != 1 {
+		t.Fatalf("digit calls %v, arrow calls %v; want one form call each", digitCalls, arrowCalls)
+	}
+	if digitCalls[0] != arrowCalls[0] {
+		t.Fatalf("digit opened %+v, arrows opened %+v; want the same target", digitCalls[0], arrowCalls[0])
+	}
+	if digitCalls[0].mode != "add" || digitCalls[0].modelID != "" {
+		t.Fatalf("add row opened %+v, want add/empty", digitCalls[0])
+	}
+}
+
+// TestModelsEditActionRow pins that the Edit action opens the form in edit
+// mode for the model under the cursor.
+func TestModelsEditActionRow(t *testing.T) {
+	_, calls := runModelsKeys(t, []Key{Digit(4)})
+	if len(calls) != 1 || calls[0].mode != "edit" || calls[0].modelID != "acme-fast" {
+		t.Fatalf("edit action opened %v, want edit/acme-fast", calls)
+	}
+}
+
+// TestModelsDeleteApprovalSummary pins the M4 gate content: the exact
+// mutation summary (masked provider + model id from the catalog sentence,
+// model count N -> N-1) renders in the approval modal, without the
+// last-model warning for a two-model provider.
+func TestModelsDeleteApprovalSummary(t *testing.T) {
+	out, _ := runModelsKeys(t, []Key{Digit(5)})
+	for _, want := range []string{
+		"Delete Model?",
+		"Removes the registry entry for acme-fast in acme. Key values are untouched.",
+		"Model count: 2 -> 1",
+		"y approve write · n/Esc cancel",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("approval modal missing %q; frames:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, missingModelsDeleteLastWarning) {
+		t.Fatalf("last-model warning shown for a two-model provider; frames:\n%s", out)
+	}
+}
+
+// TestModelsDeleteConfirm pins the happy path: y runs the delete, the file
+// on disk loses the model, the sibling model is byte-identical after a full
+// save/reload cycle, and the success message carries the masked operands.
+func TestModelsDeleteConfirm(t *testing.T) {
+	app, _, path := newModelsTestApp(t, nil)
+	before, _ := json.Marshal(reloadModels(t, path)[1])
+
+	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{Digit(5), KeyYes}})
+
+	models := reloadModels(t, path)
+	if len(models) != 1 || models[0].ID != "acme-slow" {
+		t.Fatalf("models on disk = %+v, want only acme-slow", models)
+	}
+	after, _ := json.Marshal(models[0])
+	if string(after) != string(before) {
+		t.Errorf("sibling model changed:\nbefore: %s\nafter:  %s", before, after)
+	}
+	if !strings.Contains(out, "Deleted model acme-fast from acme.") {
+		t.Errorf("success message missing; frames:\n%s", out)
+	}
+	// The re-rendered list must show the surviving model and no orphan row.
+	if !strings.Contains(out, "acme-slow") || strings.Contains(out, "[1] acme-fast") {
+		t.Errorf("post-delete frames:\n%s", out)
+	}
+}
+
+// TestModelsDeleteCancel pins that n closes the gate with the
+// nothing-written message and leaves the on-disk file byte-identical.
+func TestModelsDeleteCancel(t *testing.T) {
+	app, _, path := newModelsTestApp(t, nil)
+	diskBefore, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read providers.json: %v", err)
+	}
+
+	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{Digit(5), KeyNo}})
+
+	if got, err := os.ReadFile(path); err != nil || string(got) != string(diskBefore) {
+		t.Fatalf("on-disk JSON changed after cancel (err %v)", err)
+	}
+	if models := reloadModels(t, path); len(models) != 2 {
+		t.Fatalf("models on disk = %d, want 2 after cancel", len(models))
+	}
+	if !strings.Contains(out, missingModelsCancelled) {
+		t.Errorf("cancel message missing; frames:\n%s", out)
+	}
+}
+
+// TestModelsDeleteLastModelWarning pins that deleting the provider's last
+// model surfaces the warning line in the approval summary.
+func TestModelsDeleteLastModelWarning(t *testing.T) {
+	// Cursor on acme-fast (row 1); delete it, then the provider has one
+	// model left. Approve, re-aim at the survivor, open the gate again.
+	out, _ := runModelsKeys(t, []Key{
+		Digit(5), KeyYes, // delete acme-fast (selection sticks on the model rows)
+		KeyHome, Digit(4), // selection follows the cursor onto acme-slow; Delete is now row 4
+	})
+	for _, want := range []string{
+		missingModelsDeleteLastWarning,
+		"Model count: 1 -> 0",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("last-model delete missing %q; frames:\n%s", want, out)
+		}
+	}
+}
+
+// TestModelsToggleEnabled pins the M4-gated toggle: the flip is proposed in
+// the approval modal (masked operands, enabled field before/after), y runs
+// Core.ModelSetEnabled so the file gains the explicit true, and the message
+// carries the masked operands.
+func TestModelsToggleEnabled(t *testing.T) {
+	app, _, path := newModelsTestApp(t, nil)
+
+	// Cursor on acme-slow (row 2), currently disabled.
+	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyDown, Digit(6), KeyYes}})
+
+	models := reloadModels(t, path)
+	if models[1].Enabled == nil || !*models[1].Enabled {
+		t.Fatalf("enabled flag on disk = %+v, want explicit true", models[1].Enabled)
+	}
+	if !strings.Contains(out, "Model acme-slow in acme: enabled set to Enabled.") {
+		t.Errorf("toggle message missing; frames:\n%s", out)
+	}
+}
+
+// TestModelsToggleApprovalGate pins that the toggle writes nothing until the
+// M4 modal is answered y: opening the gate alone leaves the on-disk file
+// byte-identical, and the approval body shows the exact field before/after.
+func TestModelsToggleApprovalGate(t *testing.T) {
+	app, _, path := newModelsTestApp(t, nil)
+	diskBefore, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read providers.json: %v", err)
+	}
+
+	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyDown, Digit(6)}})
+
+	if got, _ := os.ReadFile(path); string(got) != string(diskBefore) {
+		t.Fatal("on-disk JSON changed before the approval modal was answered")
+	}
+	for _, want := range []string{
+		missingModelsToggleTitle,
+		"Sets enabled for model acme-slow in acme.",
+		"Enabled: Disabled -> Enabled",
+		"y approve write · n/Esc cancel",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("toggle approval missing %q; frames:\n%s", want, out)
+		}
+	}
+
+	// n answers the gate with the nothing-written message and no byte change.
+	out = app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyDown, Digit(6), KeyNo}})
+	if got, _ := os.ReadFile(path); string(got) != string(diskBefore) {
+		t.Fatal("on-disk JSON changed after toggle cancel")
+	}
+	if !strings.Contains(out, missingModelsCancelled) {
+		t.Errorf("cancel message missing; frames:\n%s", out)
+	}
+}
+
+// TestModelsToggleActionNeedsModel pins that the toggle action on a
+// provider with no models reports the select-a-model message and writes
+// nothing.
+func TestModelsToggleActionNeedsModel(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv(providers.EnvHome, tmp)
+	path := filepath.Join(tmp, "providers.json")
+	t.Setenv(providers.EnvProviders, path)
+	reg := &providers.Registry{Providers: []providers.Provider{{
+		Name:    "acme",
+		BaseURL: "https://acme.example/v1",
+		Models:  []providers.Model{},
+	}}}
+	reg.Path = path
+	data, err := json.MarshalIndent(reg, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+	if err := providers.WriteFileAtomic(path, append(data, '\n'), 0o600); err != nil {
+		t.Fatalf("seed providers.json: %v", err)
+	}
+	diskBefore, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read providers.json: %v", err)
+	}
+
+	core := settings.NewCore(settings.Deps{LoadReg: providers.Load})
+	app := NewApp(100, 24, DirLTR)
+	app.Push(NewModelsScreen(core, "acme", nil))
+	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{Digit(5)}}) // Delete action row.
+
+	if !strings.Contains(out, "No models for this provider.") {
+		t.Fatalf("empty-state line missing; frames:\n%s", out)
+	}
+	if got, _ := os.ReadFile(path); string(got) != string(diskBefore) {
+		t.Fatal("on-disk JSON changed after no-model guard")
+	}
+	if app.Message() != missingModelsSelectModel {
+		t.Fatalf("message = %q, want %q", app.Message(), missingModelsSelectModel)
+	}
+}
+
+// TestModelsAddOpensForm pins that the Add row calls the injected form
+// factory with mode "add" and an empty model ID.
+func TestModelsAddOpensForm(t *testing.T) {
+	_, calls := runModelsKeys(t, []Key{Digit(3)})
+	if len(calls) != 1 || calls[0].mode != "add" || calls[0].modelID != "" {
+		t.Fatalf("add row calls = %v, want one add/empty call", calls)
+	}
+}
+
+// TestModelsToolsOverlay pins the M2 multi-select behind the M4 gate: the
+// overlay renders the known tool list with the current grant checked, Space
+// toggles, Enter proposes the new set in the approval modal (full before/
+// after grant diff), and only y persists through Core.ModelSetTools in
+// known-tool order. The overlay never routes through UpsertProvider
+// (SupportsTools stays untouched).
+func TestModelsToolsOverlay(t *testing.T) {
+	app, _, path := newModelsTestApp(t, nil)
+
+	// Cursor on acme-fast (row 1); open tools (row 7). Toggle list_dir on
+	// (row 2 of the overlay), then save, then approve.
+	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{Digit(7), KeyDown, KeySpace, KeyEnter, KeyYes}})
+
+	for _, want := range []string{
+		missingModelsToolsTitle, "[x] read_file", "[ ] grep", missingModelsToolsHint,
+		missingModelsToolsApprovalTitle,
+		"Updates tool grants for model acme-fast in acme.",
+		"tools: read_file -> read_file, list_dir",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("tools overlay missing %q; frames:\n%s", want, out)
+		}
+	}
+	models := reloadModels(t, path)
+	tools := models[0].Capabilities.AllowedTools
+	if len(tools) != 2 || tools[0] != "read_file" || tools[1] != "list_dir" {
+		t.Fatalf("AllowedTools on disk = %v, want [read_file list_dir]", tools)
+	}
+	if !models[0].Capabilities.SupportsTools {
+		t.Fatal("SetModelTools must not flip SupportsTools")
+	}
+	if !strings.Contains(out, "Tool grants for acme-fast updated: 2 tools.") {
+		t.Errorf("tools-saved message missing; frames:\n%s", out)
+	}
+}
+
+// TestModelsToolsApprovalGate pins that Enter on the overlay writes nothing
+// by itself: without a y the on-disk file is byte-identical.
+func TestModelsToolsApprovalGate(t *testing.T) {
+	app, _, path := newModelsTestApp(t, nil)
+	diskBefore, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read providers.json: %v", err)
+	}
+
+	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{Digit(7), KeyDown, KeySpace, KeyEnter}})
+
+	if got, _ := os.ReadFile(path); string(got) != string(diskBefore) {
+		t.Fatal("on-disk JSON changed before the tools approval modal was answered")
+	}
+	if !strings.Contains(out, missingModelsToolsApprovalTitle) {
+		t.Errorf("tools approval modal missing; frames:\n%s", out)
+	}
+}
+
+// TestModelsToolsUnionPreservesUnlisted pins the union semantics: grants
+// outside the known tool list (replace_in_file, read_url_content, search_web)
+// are not togglable in the overlay but pass through every save untouched,
+// and the M4 approval diff shows the FULL before/after lists so the
+// passthrough is visible, never hidden.
+func TestModelsToolsUnionPreservesUnlisted(t *testing.T) {
+	reg := modelsFixtureReg()
+	reg.Providers[0].Models[0].Capabilities.AllowedTools = []string{
+		"read_file", "replace_in_file", "read_url_content", "search_web",
+	}
+	app, _, path := newModelsTestAppReg(t, reg, nil)
+
+	// Open tools (row 7), grant list_dir (overlay row 2), save, approve.
+	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{Digit(7), KeyDown, KeySpace, KeyEnter, KeyYes}})
+
+	for _, want := range []string{
+		"tools: read_file, replace_in_file, read_url_content, search_web -> read_file, list_dir, replace_in_file, read_url_content, search_web",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("approval diff missing %q; frames:\n%s", want, out)
+		}
+	}
+	tools := reloadModels(t, path)[0].Capabilities.AllowedTools
+	want := []string{"read_file", "list_dir", "replace_in_file", "read_url_content", "search_web"}
+	if strings.Join(tools, ",") != strings.Join(want, ",") {
+		t.Fatalf("AllowedTools on disk = %v, want %v (unlisted grants must survive)", tools, want)
+	}
+}
+
+// TestModelsToolsApprovalMasksEachGrant pins the round-5 security fix: the
+// tools approval diff renders every grant through the per-item masker
+// (maskJoined), so a credential-shaped hand-edited grant planted in the
+// registry prints masked in both the before and the after column and the raw
+// value never appears in any frame. The write itself still persists the
+// grant verbatim (union semantics are unchanged; the fix is display-only).
+func TestModelsToolsApprovalMasksEachGrant(t *testing.T) {
+	const planted = "Ab3dEf7Gh9jK1mNpQr5t" // 20 runes, opaque, mixed letter/digit
+	const masked = "Ab3dE****"
+	reg := modelsFixtureReg()
+	reg.Providers[0].Models[0].Capabilities.AllowedTools = []string{"read_file", planted}
+	app, _, path := newModelsTestAppReg(t, reg, nil)
+
+	// Open tools (row 7), save untouched (Enter), approve (y).
+	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{Digit(7), KeyEnter, KeyYes}})
+
+	if strings.Contains(out, planted) {
+		t.Fatalf("raw credential-shaped grant rendered; frames:\n%s", out)
+	}
+	for _, want := range []string{
+		masked,
+		"tools: read_file, " + masked + " -> read_file, " + masked,
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("approval diff missing %q; frames:\n%s", want, out)
+		}
+	}
+	tools := reloadModels(t, path)[0].Capabilities.AllowedTools
+	if strings.Join(tools, ",") != "read_file,"+planted {
+		t.Fatalf("AllowedTools on disk = %v; want the grant preserved verbatim", tools)
+	}
+}
+
+// TestModelsToolsMinOne pins the empty-grant guard: with no unlisted grants
+// to preserve, unchecking the last known tool is refused with the
+// allow-every-tool explanation, and no approval can be opened on an empty
+// set (an empty AllowedTools means allow-EVERY-tool at runtime).
+func TestModelsToolsMinOne(t *testing.T) {
+	app, _, path := newModelsTestApp(t, nil)
+	diskBefore, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read providers.json: %v", err)
+	}
+
+	// Open tools (row 7); the overlay cursor starts on read_file, the only
+	// grant. Space tries to uncheck it and must be refused.
+	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{Digit(7), KeySpace, KeyEnter, KeyNo}})
+
+	if !strings.Contains(out, missingModelsToolsMinOne) {
+		t.Fatalf("min-one refusal missing; frames:\n%s", out)
+	}
+	if got, _ := os.ReadFile(path); string(got) != string(diskBefore) {
+		t.Fatal("on-disk JSON changed after refused empty-grant save")
+	}
+	tools := reloadModels(t, path)[0].Capabilities.AllowedTools
+	if len(tools) != 1 || tools[0] != "read_file" {
+		t.Fatalf("AllowedTools on disk = %v, want [read_file]", tools)
+	}
+}
+
+// TestModelsToolsOverlayCancel pins that Esc closes the overlay with the
+// nothing-written message and leaves the file byte-identical.
+func TestModelsToolsOverlayCancel(t *testing.T) {
+	app, _, path := newModelsTestApp(t, nil)
+	diskBefore, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read providers.json: %v", err)
+	}
+
+	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{Digit(7), KeySpace, KeyEsc}})
+
+	if got, _ := os.ReadFile(path); string(got) != string(diskBefore) {
+		t.Fatal("on-disk JSON changed after tools overlay cancel")
+	}
+	if !strings.Contains(out, missingModelsCancelled) {
+		t.Errorf("cancel message missing; frames:\n%s", out)
+	}
+}
+
+// TestModelsEscPopsToProviders pins that Esc falls through to the App
+// precedence: with the models screen pushed over a root screen, Esc pops it
+// back to the root.
+func TestModelsEscPopsToProviders(t *testing.T) {
+	app, _, _ := newModelsTestApp(t, nil)
+	root := &stubScreen{title: "Providers", mode: ModeNav}
+	app2 := NewApp(100, 24, DirLTR)
+	app2.Push(root)
+	app2.Push(app.Top())
+	if app2.Depth() != 2 {
+		t.Fatalf("depth = %d, want 2", app2.Depth())
+	}
+	if !app2.Step(KeyEsc) {
+		t.Fatal("Esc at depth 2 should keep the app running")
+	}
+	if app2.Top() != root || app2.Depth() != 1 {
+		t.Fatal("Esc did not pop back to the providers screen")
+	}
+}
+
+// TestModelsBackRowPops pins that the Back action row pops the screen.
+func TestModelsBackRowPops(t *testing.T) {
+	app, _, _ := newModelsTestApp(t, nil)
+	root := &stubScreen{title: "Providers", mode: ModeNav}
+	app2 := NewApp(100, 24, DirLTR)
+	app2.Push(root)
+	app2.Push(app.Top())
+	app2.CaptureRun(&ScriptedKeys{Keys: []Key{Digit(8)}})
+	if app2.Top() != root || app2.Depth() != 1 {
+		t.Fatal("Back row did not pop back to the providers screen")
+	}
+}
+
+// TestModelsReloadOnExternalChange pins the per-frame signature-check reload
+// (the prompts-screen pattern): a providers.json mutated behind the
+// screen's back (the path the model form returns through) shows up on the
+// next frame, with no stale row state.
+func TestModelsReloadOnExternalChange(t *testing.T) {
+	app, _, path := newModelsTestApp(t, nil)
+
+	first := app.CaptureRun(&ScriptedKeys{Keys: nil})
+	if !strings.Contains(first, "Context 128000 · Enabled · tools 1") {
+		t.Fatalf("pre-mutation frame missing the enabled acme-fast row; frames:\n%s", first)
+	}
+
+	// Mutate the registry behind the screen's back: flip acme-fast to
+	// explicitly disabled, exactly what the model form's commit would do.
+	reg, err := providers.LoadFrom(path)
+	if err != nil {
+		t.Fatalf("reload registry: %v", err)
+	}
+	disabled := false
+	reg.Providers[0].Models[0].Enabled = &disabled
+	data, err := json.MarshalIndent(reg, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal mutated registry: %v", err)
+	}
+	if err := providers.WriteFileAtomic(path, append(data, '\n'), 0o600); err != nil {
+		t.Fatalf("rewrite providers.json: %v", err)
+	}
+
+	second := app.CaptureRun(&ScriptedKeys{Keys: nil})
+	if !strings.Contains(second, "Context 128000 · Disabled · tools 1") {
+		t.Fatalf("post-mutation frame did not reload acme-fast; frames:\n%s", second)
+	}
+	if strings.Contains(second, "Context 128000 · Enabled · tools 1") {
+		t.Fatalf("stale enabled row survived the mutation; frames:\n%s", second)
+	}
+}
+
+// TestModelsMasksSecretShapedFields pins the masking discipline on the rows:
+// a credential-shaped model id renders masked (first-5 + ****), never raw,
+// in the row label; a credential-shaped explicit family renders masked
+// through the registry-slot masker. Benign ids and families stay readable.
+func TestModelsMasksSecretShapedFields(t *testing.T) {
+	reg := modelsFixtureReg()
+	reg.Providers[0].Models[0].ID = "AKIAIOSFODNN7EXAMPLE"
+	reg.Providers[0].Models[0].Family = "AKIAIOSFODNN7EXAMPLE"
+	app, _, _ := newModelsTestAppReg(t, reg, nil)
+
+	out := app.CaptureRun(&ScriptedKeys{Keys: nil})
+
+	if strings.Contains(out, "AKIAIOSFODNN7EXAMPLE") {
+		t.Fatalf("raw credential-shaped id/family rendered; frames:\n%s", out)
+	}
+	if !strings.Contains(out, "AKIAI****") {
+		t.Fatalf("masked form missing; frames:\n%s", out)
+	}
+	// The sibling model's benign id and family stay readable.
+	if !strings.Contains(out, "acme-slow") || !strings.Contains(out, "slow") {
+		t.Fatalf("benign sibling row lost; frames:\n%s", out)
+	}
+}
+
+// TestModelsVerbErrorTailMasked pins the round-6 security fix on the three
+// Core failure tails (delete / toggle / tools): a Core op error that embeds
+// a credential-shaped operand (for example via a redirected home path) must
+// render masked in the message line, matching the sibling screens. The save
+// failure also leaves the on-disk file byte-identical.
+func TestModelsVerbErrorTailMasked(t *testing.T) {
+	const planted = "AKIAIOSFODNN7EXAMPLE"
+	newFailingApp := func(t *testing.T) (*App, string) {
+		t.Helper()
+		tmp := t.TempDir()
+		t.Setenv(providers.EnvHome, tmp)
+		path := filepath.Join(tmp, "providers.json")
+		t.Setenv(providers.EnvProviders, path)
+		reg := modelsFixtureReg()
+		reg.Path = path
+		data, err := json.MarshalIndent(reg, "", "  ")
+		if err != nil {
+			t.Fatalf("marshal fixture: %v", err)
+		}
+		if err := providers.WriteFileAtomic(path, append(data, '\n'), 0o600); err != nil {
+			t.Fatalf("seed providers.json: %v", err)
+		}
+		// The Core save seam fails with a composite error carrying the
+		// credential-shaped operand, exactly the redirected-path shape the
+		// review flagged.
+		core := settings.NewCore(settings.Deps{
+			LoadReg: providers.Load,
+			SaveReg: func(*providers.Registry) error {
+				return errors.New("write " + planted + "/providers.json: access denied")
+			},
+		})
+		app := NewApp(100, 24, DirLTR)
+		app.Push(NewModelsScreen(core, "acme", nil))
+		return app, path
+	}
+
+	cases := []struct {
+		name string
+		keys []Key
+	}{
+		{"delete", []Key{Digit(5), KeyYes}},
+		{"toggle", []Key{KeyDown, Digit(6), KeyYes}},
+		{"tools", []Key{Digit(7), KeyEnter, KeyYes}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			app, path := newFailingApp(t)
+			diskBefore, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read providers.json: %v", err)
+			}
+			out := app.CaptureRun(&ScriptedKeys{Keys: tc.keys})
+			if strings.Contains(out, planted) {
+				t.Fatalf("raw credential-shaped operand echoed in the error tail; frames:\n%s", out)
+			}
+			if !strings.Contains(out, planted[:5]+"[REDACTED]") && !strings.Contains(out, "[REDACTED]") {
+				t.Fatalf("masked operand missing from the error tail; frames:\n%s", out)
+			}
+			if got, _ := os.ReadFile(path); string(got) != string(diskBefore) {
+				t.Fatal("failed Core op mutated the on-disk registry")
+			}
+		})
+	}
+}

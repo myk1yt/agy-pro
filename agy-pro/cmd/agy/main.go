@@ -19,6 +19,7 @@ import (
 	"agypro/internal/mode"
 	"agypro/internal/paths"
 	"agypro/internal/providers"
+	"agypro/internal/tui"
 	"agypro/internal/wirecheck"
 )
 
@@ -57,7 +58,7 @@ func handleProCommand(args []string) {
 
 	switch subcommand {
 	case "setup":
-		runSetup()
+		runSetup(subArgs)
 	case "mode":
 		runMode(subArgs)
 	case "status":
@@ -93,12 +94,16 @@ func handleProCommand(args []string) {
 
 func printProHelp() {
 	fmt.Println("===========================================================")
-	fmt.Printf("  agy-pro v%s — High-Performance CLI Shim & Orchestrator\n", Version)
+	fmt.Printf("  agy-pro v%s - High-Performance CLI Shim & Orchestrator\n", Version)
 	fmt.Println("===========================================================")
 	fmt.Println("Usage: agy pro <command> [arguments...]")
 	fmt.Println()
+	fmt.Println(">>> agy pro setup  opens the full-screen setup TUI <<<")
+	fmt.Println("    scope: providers, models, fanout presets, prompts, language")
+	fmt.Println("    classic line wizard: agy pro setup --wizard")
+	fmt.Println()
 	fmt.Println("Commands:")
-	fmt.Println("  setup           Interactive conversational setup wizard for LLM providers & keys")
+	fmt.Println("  setup           Full-screen setup TUI: providers, models, fanout presets, prompts, language")
 	fmt.Println("  mode            Switch profile between full-stack and clean (or restore)")
 	fmt.Println("  status          Display current mode, providers, and real agy status")
 	fmt.Println("  models          Configured providers & models; --all adds the numbered combined inventory")
@@ -113,10 +118,57 @@ func printProHelp() {
 	fmt.Println("All other commands (e.g., `agy agents`, `agy -m ...`) pass through to real agy.")
 }
 
-func runSetup() {
-	if err := providers.InteractiveSetupWizard(os.Stdin, os.Stdout); err != nil {
+// setup seams: the entry picks between the full-screen setup TUI and the
+// line-mode wizard by host capability, and every branch is indirected so
+// tests drive the dispatch without a console, the live registry, or a real
+// process exit (same pattern as the doctor seams below).
+var (
+	setupTUIRunner    = tui.RunSetup
+	setupWizardRunner = providers.InteractiveSetupWizard
+	setupConsoleCap   = tui.Detect
+	setupExit         = os.Exit
+)
+
+// runSetup handles `agy pro setup [arguments...]`. No arguments open the
+// setup TUI on a raw-console host and the classic line wizard everywhere
+// else; `--wizard` (hidden alias `wizard`) forces the wizard on any host;
+// any other argument fails closed with the masked operand, the help text,
+// and exit code 2 (today unknown flags were silently ignored).
+func runSetup(args []string) {
+	if len(args) > 0 {
+		// D2: the switch key is case-folded, but the masked echo takes the
+		// ORIGINAL-CASE operand so the uppercase-anchored credential class
+		// still fires on `agy pro setup AKIA...`.
+		sub := strings.ToLower(strings.TrimSpace(args[0]))
+		if sub == "--wizard" || sub == "wizard" {
+			runSetupWizard()
+			return
+		}
+		fmt.Fprintf(os.Stderr, "[agy-pro] Unknown setup argument: %q\n\n", providers.MaskOperand(args[0]))
+		printProHelp()
+		setupExit(2)
+		return
+	}
+
+	// Console gate: tui.Detect() runs the capability ladder once per
+	// process. SuppressBanner is the non-console signal (stdout is not a
+	// console: pipe, non-Windows TTY, or mintty-class host), and on those
+	// hosts the byte-stable degrade is the existing line-mode wizard, so
+	// piped and scripted callers keep today's transcript exactly.
+	if setupConsoleCap().SuppressBanner {
+		runSetupWizard()
+		return
+	}
+
+	setupExit(setupTUIRunner(os.Stdin, os.Stdout, os.Stderr))
+}
+
+// runSetupWizard runs the classic line-mode setup wizard, byte-identical to
+// the pre-TUI behavior on every host (plan v2 section 1).
+func runSetupWizard() {
+	if err := setupWizardRunner(os.Stdin, os.Stdout); err != nil {
 		fmt.Fprintf(os.Stderr, "[agy-pro] Setup failed: %v\n", err)
-		os.Exit(1)
+		setupExit(1)
 	}
 }
 
@@ -423,9 +475,12 @@ func printConfiguredProvidersAndModels(reg *providers.Registry) {
 		// D3: registry-driven display slots echo user-editable JSON fields; a
 		// misdirected paste can land a key-shaped value in a provider name,
 		// baseURL, env name, or model id. MaskOperand keeps benign values
-		// readable and masks credential-shaped ones.
+		// readable and masks credential-shaped ones. The BaseURL slot routes
+		// through MaskBaseURL (the layered URL mask) so credential material in
+		// the userinfo slot cannot ride raw under MaskOperand's location
+		// exemption.
 		fmt.Printf("[%d] %s (%s) [API Key: %s]\n", i+1,
-			providers.MaskOperand(p.Name), providers.MaskOperand(p.BaseURL), providers.MaskOperand(keyStatus))
+			providers.MaskOperand(p.Name), providers.MaskBaseURL(p.BaseURL), providers.MaskOperand(keyStatus))
 
 		if len(p.Models) == 0 {
 			fmt.Println("    (No models configured)")

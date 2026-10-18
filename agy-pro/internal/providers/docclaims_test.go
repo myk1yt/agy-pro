@@ -15,6 +15,7 @@ import (
 var realProvidersVerbs = map[string]bool{
 	"list": true, "add-json": true, "add-interactive": true,
 	"test": true, "rename": true, "delete": true, "wizard": true,
+	"model-add-json": true, "model-update": true, "model-delete": true,
 }
 
 // settingsProvidersVerbRe captures the verb of a documented
@@ -76,7 +77,7 @@ func TestDocs_NoNonexistentProvidersCommands(t *testing.T) {
 			}
 			for _, m := range settingsProvidersVerbRe.FindAllStringSubmatch(line, -1) {
 				if !realProvidersVerbs[strings.ToLower(m[1])] {
-					t.Errorf("%s:%d: documents providers verb %q the CLI does not implement (real verbs: list, add-json, add-interactive, wizard, test, rename, delete)", path, i+1, m[1])
+					t.Errorf("%s:%d: documents providers verb %q the CLI does not implement (real verbs: list, add-json, add-interactive, wizard, test, rename, delete, model-add-json, model-update, model-delete)", path, i+1, m[1])
 				}
 			}
 		}

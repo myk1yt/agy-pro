@@ -91,6 +91,16 @@ type RunConfig struct {
 	// NEVER applied to explicit user picks (--models / --seats provider
 	// tokens are honored as-is). nil -> providers.IsK3Family (contract §2.5b).
 	ExcludeModel func(providers.Model) bool
+
+	// Sources records which resolution rung supplied each config field
+	// (P8 ladder: flag|preset|defaults|engine|state). Set only by the CLI's
+	// buildRunConfig; nil for library callers. The summary keeps only the
+	// preset/defaults rungs (interestingSources); the engine never acts on it.
+	Sources map[string]string
+	// JSONOutput is the P8-resolved --json switch (--json flag > preset json
+	// field > false). Set only by the CLI's buildRunConfig; the engine never
+	// acts on it (Run() uses it to route the progress sink and the summary).
+	JSONOutput bool
 }
 
 // DefaultTimeoutSec is the swarm wall-clock budget when neither the --timeout
@@ -183,9 +193,25 @@ func Execute(ctx context.Context, cfg RunConfig) (*SummaryReport, error) {
 		cfg.OutDir = filepath.Join("reports", "fanout", ts)
 	}
 
+	// P9 prompt store: resolve the seat preamble and task preset ONCE per run
+	// (env > file > compiled default) so every seat in the run shares one
+	// resolution. A corrupt or empty slot file fails the run here, before a
+	// single seat spawns, with an error naming the path. With no file and no
+	// env the resolved values ARE the compiled constants, so every prompt
+	// byte stays identical to the pre-store behavior.
+	seatPreamble, err := ResolveSeatPreamble()
+	if err != nil {
+		return nil, err
+	}
+	presetText, err := ResolveTaskPreset(cfg.Task)
+	if err != nil {
+		return nil, err
+	}
+	seatPreset := GetTaskPreset(cfg.Task)
+	seatPreset.SystemPrompt = presetText
+
 	// 2. Load Registry
 	var reg *providers.Registry
-	var err error
 	if cfg.RegistryPath != "" {
 		reg, err = providers.LoadFrom(cfg.RegistryPath)
 	} else {
@@ -330,13 +356,14 @@ func Execute(ctx context.Context, cfg RunConfig) (*SummaryReport, error) {
 		scrubNames: realagy.ApiKeyEnvNames(reg),
 	}
 	// The shared native-seat prompt for the cross-verification path (seat-role
-	// preamble + system preset + user text, see buildNativeSeatPrompt).
+	// preamble + system preset + user text, assembled by assembleSeatPrompt
+	// from the once-per-run prompt-store resolution).
 	// Partition mode builds a per-unit prompt inside the seat goroutine
 	// instead: the preamble and preset stay byte-identical across units, only
 	// the unit body varies, so cross-unit prefix caching survives.
 	var nativePrompt string
 	if len(cfg.Units) == 0 {
-		nativePrompt = buildNativeSeatPrompt(cfg.Task, cfg.Prompt)
+		nativePrompt = assembleSeatPrompt(seatPreamble, presetText, cfg.Task, cfg.Prompt)
 	}
 	swarmDeadline, _ := ctxWithTimeout.Deadline()
 	redact := reg.Redactor()
@@ -403,7 +430,7 @@ func Execute(ctx context.Context, cfg RunConfig) (*SummaryReport, error) {
 					u := units[idx]
 					spec.UnitID = u.ID
 					unitCfg = unitRunConfig(cfg, u)
-					unitPrompt = buildNativeSeatPrompt(cfg.Task, UnitBody(u))
+					unitPrompt = assembleSeatPrompt(seatPreamble, presetText, cfg.Task, UnitBody(u))
 				}
 				outcome := nativeRunner.Run(ctx, unitCfg, spec, unitPrompt, swarmDeadline)
 				results[idx] = nativeSeatResult(sID, t, outcome, redact)
@@ -499,7 +526,7 @@ func Execute(ctx context.Context, cfg RunConfig) (*SummaryReport, error) {
 				Registry:             reg,
 				ExcludedFamilies:     assignedFamilies,
 				Exclude:              exclude,
-				Preset:               GetTaskPreset(cfg.Task),
+				Preset:               seatPreset,
 				UserPrompt:           userPrompt,
 				UnitID:               unitID,
 				Runner:               r,
@@ -556,7 +583,35 @@ func Execute(ctx context.Context, cfg RunConfig) (*SummaryReport, error) {
 		}
 	}
 
+	// P8: surface the resolution rung per field in the machine summary. Only
+	// rungs that actually supplied a value are kept (preset and defaults;
+	// flag/engine/state are the expected case), so an unconfigured run's
+	// summary.json stays byte-identical.
+	if s := interestingSources(cfg.Sources); len(s) > 0 {
+		summary.Sources = s
+	}
+
 	return summary, nil
+}
+
+// interestingSources keeps only the preset and defaults rungs from the P8
+// resolution map: flag, engine, and state rungs are the expected case (a
+// state.json max_native fallback is pre-P8 behavior, not a supplied value) and
+// stay invisible, so an unconfigured run's summary.json stays byte-identical.
+// Returns nil when nothing interesting remains (map length 0 stays nil, so the
+// summary's omitempty key disappears).
+func interestingSources(src map[string]string) map[string]string {
+	var out map[string]string
+	for field, rung := range src {
+		if rung != "preset" && rung != "defaults" {
+			continue
+		}
+		if out == nil {
+			out = map[string]string{}
+		}
+		out[field] = rung
+	}
+	return out
 }
 
 // progressFileName is the live per-seat progress log written inside the run's
@@ -731,12 +786,29 @@ Do the assigned work yourself, in this single session:
 - Write the COMPLETE final report before the time budget runs out. A status
   update, a plan, or a promise to report later counts as a failed seat.`
 
-// buildNativeSeatPrompt assembles the native-seat prompt: the seat-role
-// preamble FIRST (anti-nesting control), then the task preset system prompt
-// and the user text. Kept as one function so the preamble's presence and
-// position are test-pinned for every task preset.
-func buildNativeSeatPrompt(task, userPrompt string) string {
-	return nativeSeatPreamble + "\n\n" + GetTaskPreset(task).SystemPrompt + "\n\n" + BuildUserPrompt(task, userPrompt)
+// assembleSeatPrompt concatenates the resolved seat prompt parts in the
+// pinned order: the seat-role preamble FIRST (anti-nesting control), then
+// the task preset system prompt, then the user text, each pair separated by
+// a blank line.
+func assembleSeatPrompt(preamble, preset, task, userPrompt string) string {
+	return preamble + "\n\n" + preset + "\n\n" + BuildUserPrompt(task, userPrompt)
+}
+
+// buildNativeSeatPrompt resolves the prompt store (env > file > compiled
+// default, see prompt_store.go) and assembles the native-seat prompt via
+// assembleSeatPrompt. With no overrides the result is byte-identical to the
+// compiled constants. Kept as one function so the preamble's presence and
+// position stay test-pinned for every task preset.
+func buildNativeSeatPrompt(task, userPrompt string) (string, error) {
+	preamble, err := ResolveSeatPreamble()
+	if err != nil {
+		return "", err
+	}
+	preset, err := ResolveTaskPreset(task)
+	if err != nil {
+		return "", err
+	}
+	return assembleSeatPrompt(preamble, preset, task, userPrompt), nil
 }
 
 // partitionTargets builds the seat list for PARTITION mode (B2/B3): exactly one

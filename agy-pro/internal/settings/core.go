@@ -109,8 +109,10 @@ func NewCore(deps Deps) *Core {
 	return &Core{deps: deps}
 }
 
-// Set writes one settings key. Supported keys (contract §2.9):
-// default-profile | bridge-tools | native-seat-concurrency.
+// Set writes one settings key. Supported keys (contract §2.9, plus the
+// appearance keys from plan §4/§5):
+// default-profile | bridge-tools | native-seat-concurrency | language |
+// launcher_menu.
 func (c *Core) Set(key, value string) error {
 	st, err := c.deps.LoadState()
 	if err != nil {
@@ -139,8 +141,25 @@ func (c *Core) Set(key, value string) error {
 			return fmt.Errorf("native-seat-concurrency must be 1..8 (got %d)", n)
 		}
 		st.NativeSeatConcurrency = n
+	case "language":
+		lang := strings.TrimSpace(value)
+		if !mode.ValidLanguage(lang) {
+			// B2/U8: operands may be misdirected key pastes; mask before echo.
+			return fmt.Errorf("invalid language %q (want one of: en, zh-Hans, zh-Hant, ko, ja, ru, hi, de, fr, it, vi, ar)", providers.MaskOperand(value))
+		}
+		st.Language = mode.NormalizeLanguage(lang)
+	case "launcher_menu", "launcher-menu":
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "on", "1", "true":
+			st.LauncherMenu = mode.LauncherMenuOn
+		case "off", "0", "false":
+			st.LauncherMenu = mode.LauncherMenuOff
+		default:
+			// B2/U8: operands may be misdirected key pastes; mask before echo.
+			return fmt.Errorf("invalid launcher_menu %q (use on, off, 1, or 0)", providers.MaskOperand(value))
+		}
 	default:
-		return fmt.Errorf("unknown settings key %q (want default-profile, bridge-tools, or native-seat-concurrency)", providers.MaskOperand(key))
+		return fmt.Errorf("unknown settings key %q (want default-profile, bridge-tools, native-seat-concurrency, language, or launcher_menu)", providers.MaskOperand(key))
 	}
 	if err := c.deps.SaveState(st); err != nil {
 		return fmt.Errorf("save state: %w", err)

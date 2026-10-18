@@ -125,6 +125,33 @@ Run `agy pro fanout --setup` to configure providers interactively in the termina
    - Success: `✅ Connection and basic call test succeeded (latency: 142ms)`
    - Failure: Displays HTTP code and response body, opening an **interactive correction loop** allowing immediate live adjustments to Base URL, API Key, or Model ID without restarting the wizard.
 
+### 2.4 Run-config resolution ladder (presets and the defaults block)
+
+Every fanout flag that is NOT given explicitly on the command line resolves through
+one ladder inside the single `buildRunConfig` choke point:
+
+1. **CLI flag** (explicitly present on the command line) wins outright.
+2. **Preset selector**: `--preset <name>`, else the `AGY_PRO_FANOUT_PRESET`
+   environment variable, else the store's `default_preset` key in
+   `~/.agy-pro/fanout-presets.json`. An explicitly selected preset that does not
+   exist is a usage error (exit 2); a dangling `default_preset` key only warns
+   and runs preset-less.
+3. **The `providers.json` defaults block** (`n`, `timeoutSeconds`, `maxTurns`,
+   `tools`; `tokenBudget` / `excludeFamilies` stay reserved and are not consumed).
+   The block is read-only here: every `providers.json` write still goes through
+   the approval modal in the settings surface. When the block supplies a value
+   that differs from the engine default, one notice line per field on stderr
+   names the field, the stored value, and the engine default; the stored value
+   wins and the drift is surfaced, never silently normalized. (The live file
+   carries `timeoutSeconds: 120` while the engine default is `300`, so a run
+   with no explicit `--timeout` and no preset reports
+   `fanout: using providers.json default timeout_seconds=120 (engine default 300)`.)
+4. **Engine default** (the values in the flag table below).
+
+A configured timeout from the preset or defaults rung counts as explicit: it is
+honored exactly and a partition run does NOT auto-scale it. Only the
+engine-default rung leaves the timeout open to the `--units` scaling of §8.3.
+
 ---
 
 ## 3. CLI Command Reference
@@ -136,6 +163,7 @@ agy pro fanout [options]
 | Flag | Default | Description |
 |---|---|---|
 | `--task <name>` | `review` | Task preset: `review`, `security`, `plan-audit`, `research`, `ideas`, `custom`. |
+| `--preset <name>` | `""` | Name of a saved fanout preset from `~/.agy-pro/fanout-presets.json`. Fields not set by explicit flags resolve from the preset, then the providers.json defaults block, then the engine default (§2.4). The `AGY_PRO_FANOUT_PRESET` env var selects a preset when the flag is absent. |
 | `--prompt <text>` | `""` | Inline prompt text passed to the swarm. |
 | `--prompt-file <path>` | `""` | File path containing prompt text, or `-` for stdin. |
 | `--units <planfile>` | `""` | PARTITION mode: JSON plan of disjoint work units; one provider seat per unit, merged into one deliverable. Mutually exclusive with `--prompt`, `--prompt-file`, `--seats`, `--models`. See §8. |
@@ -153,6 +181,10 @@ agy pro fanout [options]
 | `--out <dir>` | `./reports/fanout/<ts>` | Output directory for seat reports and reconciliation matrix. |
 | `--json` | `false` | Emits machine-readable `summary.json` directly to stdout. |
 | `--setup` | `false` | Runs the interactive provider configuration wizard. |
+
+The `Default` column above is the engine default (the last ladder rung, §2.4):
+an unset flag resolves from the active preset first and from the providers.json
+defaults block before falling back to these values.
 
 ---
 

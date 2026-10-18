@@ -47,6 +47,7 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 		outFlag        = flags.String("out", "", "Output directory for generated reports (default ./reports/fanout/<ts>)")
 		jsonFlag       = flags.Bool("json", false, "Output summary JSON to stdout")
 		setupFlag      = flags.Bool("setup", false, "Launch interactive provider setup wizard")
+		presetFlag     = flags.String("preset", "", "Name of a saved fanout preset from ~/.agy-pro/fanout-presets.json (fields not set by explicit flags resolve from the preset, then the providers.json defaults block, then the engine default)")
 	)
 	// B4-2a: repeatable --allow-host entries accumulate verbatim here;
 	// buildRunConfig normalizes them into RunConfig.AllowHosts.
@@ -81,14 +82,16 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 		return 2
 	}
 
-	// B7: detect whether --timeout was EXPLICITLY set. The flag default is the
-	// flat 300s, which is indistinguishable from `--timeout 300` by value;
-	// flags.Visit visits only flags present on the command line. A partition
-	// run (--units) without an explicit --timeout must get the unit-scaled
-	// default (see buildRunConfig), while any explicit --timeout is honored
-	// exactly.
+	// B7/P8: detect which flags were EXPLICITLY set. The flag defaults are
+	// indistinguishable from an explicit `--flag <default>` by value alone
+	// (e.g. `--timeout 300` vs the flat 300 default); flags.Visit visits only
+	// flags present on the command line. timeoutSet feeds the B7 partition
+	// scaling; the full set feeds the P8 resolution ladder (an unset flag
+	// falls through to preset > providers.json defaults > engine default).
 	timeoutSet := false
+	set := map[string]bool{}
 	flags.Visit(func(f *flag.Flag) {
+		set[f.Name] = true
 		if f.Name == "timeout" {
 			timeoutSet = true
 		}
@@ -203,6 +206,10 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 		allowHosts:     allowHosts,
 		searchEndpoint: strings.TrimSpace(searchEndpoint),
 		searchKeyEnv:   strings.TrimSpace(searchKeyEnv),
+		jsonVal:        *jsonFlag,
+		preset:         strings.TrimSpace(*presetFlag),
+		set:            set,
+		errw:           errw,
 	}, promptText)
 	if err != nil {
 		// C2/D3: usage errors quote raw tokens from --seats/--tools (seat-spec
@@ -210,7 +217,11 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 		// values so a planted secret is masked wherever the sentence echoes it.
 		// --units joins the seeds: a plan-file path is an operand like any
 		// other and its read/parse errors quote it verbatim.
-		fmt.Fprintf(errw, "Error: %v\n", maskOperandSentence(err.Error(), providers.FlagSeedOperands(*seatsFlag, *toolsFlag, *unitsFlag)...))
+		// F5: --preset and EnvFanoutPreset join the seeds too; the ladder's
+		// not-found error and the dangling-default warning quote the selected
+		// preset name, and a misdirected key paste in that operand must not
+		// reach stderr raw.
+		fmt.Fprintf(errw, "Error: %v\n", maskOperandSentence(err.Error(), providers.FlagSeedOperands(*seatsFlag, *toolsFlag, *unitsFlag, *presetFlag, os.Getenv(EnvFanoutPreset))...))
 		return 2
 	}
 
@@ -218,8 +229,9 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 	// start/finish (the same lines land in <out>/progress.log). Terminal runs
 	// watch stdout next to the final banner; --json keeps stdout pure (progress
 	// rides stderr) so the machine summary stays parseable - the swarm builder
-	// consumes that JSON.
-	if *jsonFlag {
+	// consumes that JSON. cfg.JSONOutput is the LADDER-resolved json switch
+	// (--json flag > preset json field > false), not the raw flag value.
+	if cfg.JSONOutput {
 		cfg.ProgressOut = errw
 	} else {
 		cfg.ProgressOut = out
@@ -239,7 +251,7 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 	}
 
 	// 6. Output formatting
-	if *jsonFlag {
+	if cfg.JSONOutput {
 		enc := json.NewEncoder(out)
 		enc.SetIndent("", "  ")
 		_ = enc.Encode(summary)
@@ -254,7 +266,18 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 	// misdirected paste must not reach stdout, so every echoed slot routes
 	// through providers.MaskOperand (credential shapes mask, benign values
 	// stay readable).
-	fmt.Fprintf(out, "Task:                  %s\n", providers.MaskOperand(summary.Task))
+	// P8: when the task came from the preset rung of the resolution ladder,
+	// the banner names the rung so the operator sees where the value came
+	// from. The machine summary's sources map is narrower (interestingSources
+	// in engine.go): it keeps only rungs that actually supplied a value from
+	// a P8-introduced source, i.e. preset and defaults; flag, engine, and
+	// state rungs stay invisible there, so an unconfigured run's summary.json
+	// keeps its pre-P8 omitempty shape.
+	taskLine := providers.MaskOperand(summary.Task)
+	if cfg.Sources["task"] == "preset" {
+		taskLine += " (preset)"
+	}
+	fmt.Fprintf(out, "Task:                  %s\n", taskLine)
 	fmt.Fprintf(out, "Seats Evaluated:       %d / %d\n", summary.NCompleted, summary.NRequested)
 
 	// D1: PARTITION mode merges per-unit work products and runs NO findings
@@ -339,7 +362,8 @@ type fanoutFlags struct {
 	timeout   int
 	// timeoutSet reports whether --timeout was explicitly present on the
 	// command line (flags.Visit in Run); the flag default is indistinguishable
-	// from `--timeout 300` by value alone.
+	// from `--timeout 300` by value alone. Used by the legacy (nil set)
+	// buildRunConfig path; ladder mode derives it from set["timeout"].
 	timeoutSet bool
 	out        string
 	// allowHosts carries the raw repeatable --allow-host values (B4-2a);
@@ -349,6 +373,25 @@ type fanoutFlags struct {
 	// flags; buildRunConfig trims them into RunConfig.SearchSource.
 	searchEndpoint string
 	searchKeyEnv   string
+	// jsonVal carries the raw --json value; the ladder resolves the effective
+	// JSON output mode (--json flag > preset json field > false) because a
+	// preset may pin it.
+	jsonVal bool
+	// preset carries the raw --preset name (P8). Empty means no explicit
+	// selection; buildRunConfig then consults EnvFanoutPreset and the store's
+	// default_preset key.
+	preset string
+	// set names the flags EXPLICITLY present on the command line
+	// (flags.Visit in Run). A nil map means "constructed by hand / library
+	// caller": every raw value is authoritative and the ladder is skipped,
+	// which keeps the pre-P8 buildRunConfig behavior (and its direct tests)
+	// byte-identical. A non-nil map engages the resolution ladder: a flag
+	// absent from set resolves through active preset > providers.json
+	// defaults block > engine default.
+	set map[string]bool
+	// errw receives the P8 stderr notices (defaults-rung drift lines, corrupt
+	// preset file warning, dangling default_preset warning). nil discards.
+	errw io.Writer
 }
 
 // buildRunConfig turns the flag surface into a validated RunConfig. It is the
@@ -383,12 +426,35 @@ type fanoutFlags struct {
 //     env-var NAME only, the value is never read here). A non-empty endpoint
 //     is what exposes search_web to the provider seats; partition mode
 //     accepts it for every provider seat; it never touches native seats.
+//   - P8 resolution ladder (only when f.set is non-nil, i.e. Run() built the
+//     struct): a flag NOT explicitly present on the command line resolves
+//     through the active preset (--preset flag > EnvFanoutPreset env >
+//     the store's default_preset key) > the providers.json defaults block
+//     (n, timeout_seconds, max_turns, tools; tokenBudget/excludeFamilies
+//     stay reserved, read-only here) > the engine default. A nil f.set keeps
+//     the legacy behavior: every raw value is authoritative. With no preset
+//     file and no defaults values the resolved config equals the pre-P8 flag
+//     defaults.
+//   - an explicitly selected preset (--preset or EnvFanoutPreset) that does
+//     not exist is a usage error (exit 2), never a silent fallback to another
+//     preset; a dangling default_preset key only warns and runs preset-less.
+//   - defaults-rung drift is surfaced, never normalized (D4): when the
+//     providers.json defaults block supplies a value that differs from the
+//     engine default, one notice line per field on f.errw names the field,
+//     the stored value and the engine default.
 //
 // A returned error is a usage error: Run() prints it and exits 2.
 func buildRunConfig(f fanoutFlags, promptText string) (RunConfig, error) {
+	lad, err := resolveLadder(f)
+	if err != nil {
+		return RunConfig{}, err
+	}
+	g := lad.flags
+	src := lad.sources
+
 	var explicitModels []string
-	if f.models != "" {
-		for _, m := range strings.Split(f.models, ",") {
+	if g.models != "" {
+		for _, m := range strings.Split(g.models, ",") {
 			m = strings.TrimSpace(m)
 			if m != "" {
 				explicitModels = append(explicitModels, m)
@@ -397,12 +463,20 @@ func buildRunConfig(f fanoutFlags, promptText string) (RunConfig, error) {
 	}
 
 	var seatSpecs []SeatSpec
-	if f.seats != "" {
-		if f.models != "" {
+	if g.seats != "" {
+		if g.models != "" {
 			return RunConfig{}, errors.New("--seats and --models cannot be combined")
 		}
-		specs, err := ParseSeatSpecs(f.seats)
+		specs, err := ParseSeatSpecs(g.seats)
 		if err != nil {
+			// P8: a preset-sourced --seats string is not in Run()'s flag
+			// seed list, so the error is masked HERE with the preset's raw
+			// seat/model/tool strings as seeds (ParseSeatSpecs quotes the
+			// offending token; a planted credential in a hand-edited preset
+			// file must not ride the echo).
+			if src["seats"] == "preset" {
+				return RunConfig{}, errors.New(providers.MaskSentence(err.Error(), g.seats, g.models, g.tools))
+			}
 			return RunConfig{}, err
 		}
 		seatSpecs = specs
@@ -410,7 +484,7 @@ func buildRunConfig(f fanoutFlags, promptText string) (RunConfig, error) {
 
 	var units []Unit
 	if f.units != "" {
-		if f.seats != "" || f.models != "" {
+		if g.seats != "" || g.models != "" {
 			return RunConfig{}, errors.New("--units cannot be combined with --seats or --models (partition mode assigns one seat per unit)")
 		}
 		if promptText != "" {
@@ -430,7 +504,7 @@ func buildRunConfig(f fanoutFlags, promptText string) (RunConfig, error) {
 		units = parsed
 	}
 
-	normalizedTools, err := ParseToolTokens(f.tools)
+	normalizedTools, err := ParseToolTokens(g.tools)
 	if err != nil {
 		return RunConfig{}, err
 	}
@@ -450,7 +524,7 @@ func buildRunConfig(f fanoutFlags, promptText string) (RunConfig, error) {
 		}
 	}
 
-	nSeats := f.n
+	nSeats := g.n
 	switch {
 	case len(units) > 0:
 		nSeats = len(units)
@@ -458,35 +532,335 @@ func buildRunConfig(f fanoutFlags, promptText string) (RunConfig, error) {
 		nSeats = len(seatSpecs)
 	}
 
-	// B7: an explicit --timeout is honored exactly. A partition run WITHOUT
+	// B7: an explicit timeout is honored exactly. A partition run WITHOUT
 	// one leaves TimeoutSec at 0 so the engine scales the default with the
 	// unit count (partitionDefaultTimeoutSec in withDefaults); the non-
 	// partition default stays the flat flag default (300) so the config
-	// surface the engine receives is unchanged there.
-	timeoutSec := f.timeout
-	if len(units) > 0 && !f.timeoutSet {
+	// surface the engine receives is unchanged there. P8: "explicit" now
+	// covers the preset and defaults rungs too (a configured timeout is
+	// intentional and is honored exactly, no partition scaling); only the
+	// engine-default rung leaves TimeoutSec at 0 for --units scaling.
+	timeoutSec := g.timeout
+	if len(units) > 0 && !lad.timeoutSet {
 		timeoutSec = 0
 	}
 
 	return RunConfig{
-		Task:                 f.task,
+		Task:                 g.task,
 		Prompt:               promptText,
 		N:                    nSeats,
 		Models:               explicitModels,
 		Seats:                seatSpecs,
 		Units:                units,
-		MaxNativeConcurrency: resolveMaxNative(f.maxNative),
-		Root:                 f.root,
+		MaxNativeConcurrency: resolveMaxNative(g.maxNative),
+		Root:                 g.root,
 		Tools:                normalizedTools,
-		MaxTurns:             f.maxTurns,
+		MaxTurns:             g.maxTurns,
 		TimeoutSec:           timeoutSec,
-		OutDir:               f.out,
-		AllowHosts:           agenttools.NormalizeAllowHosts(f.allowHosts),
+		OutDir:               g.out,
+		AllowHosts:           agenttools.NormalizeAllowHosts(g.allowHosts),
 		SearchSource: agenttools.SearchSource{
-			Endpoint: f.searchEndpoint,
-			KeyEnv:   f.searchKeyEnv,
+			Endpoint: g.searchEndpoint,
+			KeyEnv:   g.searchKeyEnv,
 		},
+		Sources:    src,
+		JSONOutput: lad.jsonOut,
 	}, nil
+}
+
+// Engine-default rung values for the P8 ladder. They mirror the flag defaults
+// registered in Run() and the engine's withDefaults literals; naming them
+// keeps the drift notices and the fall-through branches honest.
+const (
+	defaultFanoutN        = 3
+	defaultFanoutMaxTurns = 10
+	defaultFanoutTools    = "read,search"
+)
+
+// ladderResult is resolveLadder's output: the effective (post-ladder) flag
+// values, the B7 explicit-timeout flag for the effective values, the
+// per-field rung map, and the resolved --json switch.
+type ladderResult struct {
+	flags      fanoutFlags
+	timeoutSet bool
+	sources    map[string]string
+	jsonOut    bool
+}
+
+// resolveLadder applies the P8 resolution ladder to the parsed flag surface
+// and returns the effective raw values:
+//
+//	CLI flag (explicitly set) > active preset > providers.json defaults
+//	block > engine default
+//
+// The active preset is selected by --preset, else the EnvFanoutPreset
+// environment variable (the ladder's env rung for the preset as a whole;
+// per-field env spellings were deliberately not added, D6 reserves env
+// names), else the store's default_preset key. A nil f.set means the struct
+// was constructed by hand (direct buildRunConfig callers, pre-P8 tests):
+// every raw value is authoritative and the ladder is skipped, which keeps the
+// legacy behavior byte-identical.
+func resolveLadder(f fanoutFlags) (ladderResult, error) {
+	if f.set == nil {
+		return ladderResult{flags: f, timeoutSet: f.timeoutSet}, nil
+	}
+	w := f.errw
+	if w == nil {
+		w = io.Discard
+	}
+
+	preset, err := loadActivePreset(f, w)
+	if err != nil {
+		return ladderResult{}, err
+	}
+
+	// Rung 4: the providers.json defaults block, READ-ONLY here (D4: every
+	// providers.json write stays gated by the M4 approval modal). A missing
+	// or unreadable registry simply contributes no defaults; TokenBudget and
+	// ExcludeFamilies stay reserved and are not consumed.
+	def := providers.Defaults{}
+	if reg, lerr := providers.Load(); lerr == nil && reg != nil {
+		def = reg.Defaults
+	}
+
+	// defaultsNotice surfaces rung-4 drift, never normalizes it (D4: the live
+	// file carries timeoutSeconds 120 while the engine default is 300; the
+	// stored value wins and the operator sees why).
+	defaultsNotice := func(field string, stored, engineDefault any) {
+		// F5: the stored value is file-sourced (a hand-edited providers.json
+		// can plant a credential-shaped value), so the operand slot rides the
+		// shared masker like every other echo in this file.
+		fmt.Fprintf(w, "fanout: using providers.json default %s=%s (engine default %v)\n", field, providers.MaskOperand(fmt.Sprint(stored)), engineDefault)
+	}
+
+	g := f
+	src := map[string]string{}
+
+	// task
+	switch {
+	case f.set["task"]:
+		src["task"] = "flag"
+	case preset != nil && preset.Task != "":
+		g.task = preset.Task
+		src["task"] = "preset"
+	default:
+		g.task = "review"
+		src["task"] = "engine"
+	}
+
+	// n (the --seats/--units seat-count override applies afterwards,
+	// unchanged).
+	switch {
+	case f.set["n"]:
+		src["n"] = "flag"
+	case preset != nil && preset.N > 0:
+		g.n = preset.N
+		src["n"] = "preset"
+	case def.N > 0:
+		g.n = def.N
+		src["n"] = "defaults"
+		if def.N != defaultFanoutN {
+			defaultsNotice("n", def.N, defaultFanoutN)
+		}
+	default:
+		g.n = defaultFanoutN
+		src["n"] = "engine"
+	}
+
+	// models / seats (raw spec strings; parsed downstream, so a preset-sourced
+	// parse error is masked at the parse site).
+	switch {
+	case f.set["models"]:
+		src["models"] = "flag"
+	case preset != nil && preset.Models != "":
+		g.models = preset.Models
+		src["models"] = "preset"
+	default:
+		g.models = ""
+		src["models"] = "engine"
+	}
+	switch {
+	case f.set["seats"]:
+		src["seats"] = "flag"
+	case preset != nil && preset.Seats != "":
+		g.seats = preset.Seats
+		src["seats"] = "preset"
+	default:
+		g.seats = ""
+		src["seats"] = "engine"
+	}
+
+	// root / out
+	switch {
+	case f.set["root"]:
+		src["root"] = "flag"
+	case preset != nil && preset.Root != "":
+		g.root = preset.Root
+		src["root"] = "preset"
+	default:
+		g.root = "."
+		src["root"] = "engine"
+	}
+	switch {
+	case f.set["out"]:
+		src["out"] = "flag"
+	case preset != nil && preset.OutDir != "":
+		g.out = preset.OutDir
+		src["out"] = "preset"
+	default:
+		g.out = ""
+		src["out"] = "engine"
+	}
+
+	// tools
+	switch {
+	case f.set["tools"]:
+		src["tools"] = "flag"
+	case preset != nil && preset.Tools != "":
+		g.tools = preset.Tools
+		src["tools"] = "preset"
+	case def.Tools != "":
+		g.tools = def.Tools
+		src["tools"] = "defaults"
+		if def.Tools != defaultFanoutTools {
+			defaultsNotice("tools", def.Tools, defaultFanoutTools)
+		}
+	default:
+		g.tools = defaultFanoutTools
+		src["tools"] = "engine"
+	}
+
+	// max-turns
+	switch {
+	case f.set["max-turns"]:
+		src["max_turns"] = "flag"
+	case preset != nil && preset.MaxTurns > 0:
+		g.maxTurns = preset.MaxTurns
+		src["max_turns"] = "preset"
+	case def.MaxTurns > 0:
+		g.maxTurns = def.MaxTurns
+		src["max_turns"] = "defaults"
+		if def.MaxTurns != defaultFanoutMaxTurns {
+			defaultsNotice("max_turns", def.MaxTurns, defaultFanoutMaxTurns)
+		}
+	default:
+		g.maxTurns = defaultFanoutMaxTurns
+		src["max_turns"] = "engine"
+	}
+
+	// timeout
+	timeoutSet := false
+	switch {
+	case f.set["timeout"]:
+		timeoutSet = true
+		src["timeout"] = "flag"
+	case preset != nil && preset.TimeoutSeconds > 0:
+		g.timeout = preset.TimeoutSeconds
+		timeoutSet = true
+		src["timeout"] = "preset"
+	case def.TimeoutSeconds > 0:
+		g.timeout = def.TimeoutSeconds
+		timeoutSet = true
+		src["timeout"] = "defaults"
+		if def.TimeoutSeconds != DefaultTimeoutSec {
+			defaultsNotice("timeout_seconds", def.TimeoutSeconds, DefaultTimeoutSec)
+		}
+	default:
+		g.timeout = DefaultTimeoutSec
+		src["timeout"] = "engine"
+	}
+
+	// max-native: 0/negative keeps the existing state.json fallback rung
+	// (flag > state.json > default 2); the preset sits between them.
+	switch {
+	case f.set["max-native"]:
+		src["max_native"] = "flag"
+	case preset != nil && preset.MaxNative > 0:
+		g.maxNative = preset.MaxNative
+		src["max_native"] = "preset"
+	default:
+		g.maxNative = 0
+		src["max_native"] = "state"
+	}
+
+	// allow-hosts (the repeatable flag accumulates verbatim; the preset list
+	// fills in only when the flag supplied none).
+	if len(g.allowHosts) > 0 {
+		src["allow_hosts"] = "flag"
+	} else if preset != nil && len(preset.AllowHosts) > 0 {
+		g.allowHosts = preset.AllowHosts
+		src["allow_hosts"] = "preset"
+	}
+
+	// search_web source (endpoint + key env NAME)
+	if g.searchEndpoint != "" || g.searchKeyEnv != "" {
+		src["search"] = "flag"
+	} else if preset != nil && (preset.SearchEndpoint != "" || preset.SearchKeyEnv != "") {
+		g.searchEndpoint = strings.TrimSpace(preset.SearchEndpoint)
+		g.searchKeyEnv = strings.TrimSpace(preset.SearchKeyEnv)
+		src["search"] = "preset"
+	}
+
+	// json output switch
+	jsonOut := false
+	switch {
+	case f.set["json"]:
+		jsonOut = f.jsonVal
+		src["json"] = "flag"
+	case preset != nil && preset.JSON:
+		jsonOut = true
+		src["json"] = "preset"
+	default:
+		src["json"] = "engine"
+	}
+
+	return ladderResult{flags: g, timeoutSet: timeoutSet, sources: src, jsonOut: jsonOut}, nil
+}
+
+// loadActivePreset resolves the preset for this run (P8 rung 3) and loads it.
+// Selection order: --preset flag > EnvFanoutPreset env > the store's
+// default_preset key. An explicitly selected name (--preset or env) that does
+// not exist is an honest usage error, never a silent fallback to another
+// preset; a dangling default_preset key only warns on w and runs preset-less.
+// An unavailable presets home or a missing file yields no preset (the store's
+// create-on-demand contract); a corrupt file is the store's one-line-warning
+// fallback.
+func loadActivePreset(f fanoutFlags, w io.Writer) (*Preset, error) {
+	name := strings.TrimSpace(f.preset)
+	if name == "" {
+		name = strings.TrimSpace(os.Getenv(EnvFanoutPreset))
+	}
+	st, err := NewPresetFileStore()
+	if err != nil {
+		return nil, nil
+	}
+	st.WarnOut = w
+	pf, err := st.LoadPresets()
+	if err != nil {
+		return nil, fmt.Errorf("cannot load fanout presets: %w", err)
+	}
+	fromDefaultKey := false
+	if name == "" {
+		name = strings.TrimSpace(pf.DefaultPreset)
+		fromDefaultKey = name != ""
+	}
+	if name == "" {
+		return nil, nil
+	}
+	if p, ok := pf.FindPreset(name); ok {
+		return p, nil
+	}
+	if fromDefaultKey {
+		// F5/round-6 M1: the name is file-sourced (a hand-edited
+		// fanout-presets.json can plant a credential-shaped default_preset), so
+		// the slot is masked. MaskRegistryValue, not MaskOperand: a preset name
+		// is never a legitimate location, so the "://" location exemption must
+		// not let a userinfo credential ("https://user:pass@host/x") ride raw
+		// in this echo.
+		fmt.Fprintf(w, "fanout: warning: default preset %q not found in fanout-presets.json; running without a preset\n", providers.MaskRegistryValue(name))
+		return nil, nil
+	}
+	return nil, fmt.Errorf("preset %q not found in fanout-presets.json", providers.MaskRegistryValue(name))
 }
 
 // resolveMaxNative applies the native-seat concurrency precedence of contract

@@ -337,7 +337,7 @@ func (r *stdinRelay) waitDone(timeout time.Duration) bool {
 //     never stall a session past MenuTimeout.
 func ShowMenu(out io.Writer, consoleIn *os.File, lines lineSource, modelCount int, providerSummary string, timeout time.Duration) Route {
 	fmt.Fprintln(out, "===========================================================")
-	fmt.Fprintln(out, "  agy Fast Launcher — default in 2s: [1] Native Gemini")
+	fmt.Fprintln(out, "  agy Fast Launcher - default in 2s: [1] Native Gemini")
 	fmt.Fprintln(out, "===========================================================")
 	fmt.Fprintln(out, CommunityBanner)
 	fmt.Fprintln(out, "  [1] Native Gemini (default)")

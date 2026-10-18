@@ -254,18 +254,22 @@ var envNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // providerNameRe is the closed provider-name charset (B5): a name is one
 // shell-safe token starting with an alphanumeric, so a name interpolated into
 // a run_command line cannot smuggle quotes, spaces, $-expansions, or other
-// metacharacters (indirect prompt injection / confused-deputy class).
-var providerNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+// metacharacters (indirect prompt injection / confused-deputy class). Letters
+// and digits are Unicode classes (a CJK provider name is legitimate and the
+// doctor screen pins one loading; the shell-dangerous characters are all
+// ASCII, so the ban list is unchanged).
+var providerNameRe = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N}._-]{0,63}$`)
 
-// ValidateProviderName vets a provider NAME operand (registry ops + settings).
-// The error never echoes the operand (B2/U8: a misdirected paste may be a key).
+// ValidateProviderName vets a provider NAME operand (registry ops + settings +
+// the load-time name loop in Registry.Validate). The error never echoes the
+// operand (B2/U8: a misdirected paste may be a key).
 func ValidateProviderName(name string) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return fmt.Errorf("provider name is required")
 	}
 	if !providerNameRe.MatchString(name) {
-		return fmt.Errorf("provider name must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ (letters, digits, dot, underscore, hyphen; no spaces or shell metacharacters)")
+		return fmt.Errorf("provider name must be 1-64 runes, start with a letter or digit, then only letters, digits, dot, underscore, hyphen (no spaces or shell metacharacters)")
 	}
 	return nil
 }
@@ -328,7 +332,30 @@ func isLoopbackHost(host string) bool {
 // Validate checks structural rules. It never echoes apiKeyEnv values because a
 // mistaken paste of a real key must not leak into logs; provider names pass
 // through MaskOperand for the same reason (B2/U8).
+//
+// Load-time control-rune rule (round-5 R9/seat3-R3, extended round-6 F1): a
+// registry file with disk-borne C0/C1 control bytes must fail here, at the
+// registry boundary, rather than load junk that later renders raw through
+// sinks outside the TUI frame strip (the legacy line-mode settings panel, CLI
+// echoes). Model fields reuse checkModelFields and the model loop also checks
+// capabilities.reasoningEffort; the provider-level free-text fields, the
+// defaults block strings (tools, excludeFamilies), and the closed provider
+// name charset (ValidateProviderName) are checked below. No message may embed
+// the offending value: a control byte in the error text would re-introduce
+// the exact rendering hazard.
 func (r *Registry) Validate() error {
+	// Round-6 F1: the defaults block strings ride CLI echoes that have no TUI
+	// frame strip (the fanout defaults-drift notice, the legacy panel), so a
+	// disk-borne control rune there would execute in the operator's terminal.
+	// The errors name the field class only and never embed the offending byte.
+	if hasControlRunes(r.Defaults.Tools) {
+		return fmt.Errorf("defaults: tools contains control characters")
+	}
+	for _, fam := range r.Defaults.ExcludeFamilies {
+		if hasControlRunes(fam) {
+			return fmt.Errorf("defaults: excludeFamilies contains control characters")
+		}
+	}
 	seen := map[string]bool{}
 	for i, p := range r.Providers {
 		if strings.TrimSpace(p.Name) == "" {
@@ -341,11 +368,27 @@ func (r *Registry) Validate() error {
 		if strings.Contains(p.Name, "/") {
 			return fmt.Errorf("provider %q: name must not contain '/'", MaskOperand(p.Name))
 		}
+		if hasControlRunes(p.Name) {
+			return fmt.Errorf("providers[%d]: name contains control characters", i)
+		}
+		// Round-6 seat1-R8: enforce the closed provider-name charset at load,
+		// not only at mutation ops and the wizard. The helper's error never
+		// echoes the operand. Without this, a name with spaces, quotes, or $
+		// loads and reaches non-TUI sinks.
+		if err := ValidateProviderName(p.Name); err != nil {
+			return fmt.Errorf("providers[%d]: %w", i, err)
+		}
 		if strings.TrimSpace(p.BaseURL) == "" {
 			return fmt.Errorf("provider %q: baseURL is required", MaskOperand(p.Name))
 		}
+		if hasControlRunes(p.BaseURL) {
+			return fmt.Errorf("provider %q: baseURL contains control characters", MaskOperand(p.Name))
+		}
 		if err := validateBaseURL(p.BaseURL); err != nil {
 			return fmt.Errorf("provider %q: %w", MaskOperand(p.Name), err)
+		}
+		if p.APIKeyEnv != "" && hasControlRunes(p.APIKeyEnv) {
+			return fmt.Errorf("provider %q: apiKeyEnv contains control characters", MaskOperand(p.Name))
 		}
 		if p.APIKeyEnv != "" && !envNameRe.MatchString(p.APIKeyEnv) {
 			return fmt.Errorf("provider %q: apiKeyEnv must be an environment variable NAME, not a key (value hidden)", MaskOperand(p.Name))
@@ -359,6 +402,18 @@ func (r *Registry) Validate() error {
 				return fmt.Errorf("provider %q: model %q is listed twice", MaskOperand(p.Name), MaskOperand(m.ID))
 			}
 			mseen[m.ID] = true
+			if err := checkModelFields(p.Name, m); err != nil {
+				return err
+			}
+			// Round-6 F1: reasoningEffort is registry-persisted free text that
+			// reaches CLI echoes with no frame strip (CapabilitySummary via
+			// `agy pro status` / `agy pro models --all`, the wizard list, the
+			// fanout defaults notice), so a disk-borne control rune there must
+			// fail the load, with the same non-echoing error style as
+			// checkModelFields.
+			if hasControlRunes(m.Capabilities.ReasoningEffort) {
+				return fmt.Errorf("provider %q: reasoningEffort contains control characters", MaskOperand(p.Name))
+			}
 		}
 	}
 	return nil

@@ -54,6 +54,60 @@ const DefaultNativeSeatConcurrency = 2
 // EffectiveHybridProfile for a missing, blank, or unrecognized stored key.
 const HybridProfileNone = "none"
 
+// DefaultLanguage is the fallback UI language code when the stored language
+// key is missing, blank, or unrecognized.
+const DefaultLanguage = "en"
+
+// LauncherMenuOn and LauncherMenuOff are the canonical stored launcher_menu
+// toggle values: "1" shows the fast launcher menu, "0" hides it. The values
+// are strings (not bool) so an explicit off round-trips through omitempty.
+const (
+	LauncherMenuOn  = "1"
+	LauncherMenuOff = "0"
+)
+
+// ValidLanguage reports whether s names one of the 12 supported UI language
+// codes (case-insensitive, surrounding whitespace ignored).
+func ValidLanguage(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "en", "zh-hans", "zh-hant", "ko", "ja", "ru", "hi", "de", "fr", "it", "vi", "ar":
+		return true
+	}
+	return false
+}
+
+// NormalizeLanguage canonicalizes a user-supplied language code against the
+// closed 12-code set (case-insensitive, surrounding whitespace ignored).
+// Unknown or blank values fall back to DefaultLanguage.
+func NormalizeLanguage(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "zh-hans":
+		return "zh-Hans"
+	case "zh-hant":
+		return "zh-Hant"
+	case "ko":
+		return "ko"
+	case "ja":
+		return "ja"
+	case "ru":
+		return "ru"
+	case "hi":
+		return "hi"
+	case "de":
+		return "de"
+	case "fr":
+		return "fr"
+	case "it":
+		return "it"
+	case "vi":
+		return "vi"
+	case "ar":
+		return "ar"
+	default:
+		return DefaultLanguage
+	}
+}
+
 // MaxNativeSeatConcurrency is the upper bound of the native-seat concurrency
 // clamp (contract §2.3). The stored value AND the --max-native flag share it.
 const MaxNativeSeatConcurrency = 8
@@ -141,6 +195,19 @@ type State struct {
 	// resolved by hybrid.ResolveProfile, not by EffectiveHybridProfile (which
 	// reads the persisted value only).
 	HybridProfile string `json:"hybrid_profile,omitempty"`
+	// Language is the persisted UI language code (one of the closed 12-code
+	// set). Additive key with the same forward-compatibility contract as
+	// DefaultProfile: a state file written before it existed keeps loading
+	// and re-saving without the key; absent means DefaultLanguage at run time.
+	Language string `json:"language,omitempty"`
+	// LauncherMenu is the persisted launcher-menu toggle ("1" shows, "0"
+	// hides; stored as a string so an explicit off round-trips). Additive key
+	// with the same forward-compatibility contract as DefaultProfile: absent
+	// means no stored decision and the AGY_LAUNCHER env opt-in alone decides.
+	// The AGY_LAUNCHER environment override takes precedence over this stored
+	// value; that precedence is resolved by the launcher, not by
+	// EffectiveLauncherMenu (which reads the persisted value only).
+	LauncherMenu string `json:"launcher_menu,omitempty"`
 }
 
 // EffectiveDefaultProfile returns the stored launch profile, or ProfilePrompt
@@ -195,6 +262,35 @@ func (s *State) EffectiveHybridProfile() string {
 		return "p2"
 	default:
 		return HybridProfileNone
+	}
+}
+
+// EffectiveLanguage returns the stored UI language code normalized against
+// the closed 12-code set, or DefaultLanguage when the key is missing
+// (pre-existing state files), blank, or unrecognized.
+func (s *State) EffectiveLanguage() string {
+	if s == nil {
+		return DefaultLanguage
+	}
+	return NormalizeLanguage(s.Language)
+}
+
+// EffectiveLauncherMenu returns the stored launcher-menu toggle normalized to
+// LauncherMenuOn ("1") or LauncherMenuOff ("0"), or "" when the key is
+// absent, blank, or invalid. The empty return distinguishes "no stored
+// decision" from an explicit off: only the launcher layers the AGY_LAUNCHER
+// env override on top of this persisted value.
+func (s *State) EffectiveLauncherMenu() string {
+	if s == nil {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(s.LauncherMenu)) {
+	case LauncherMenuOn, "on", "true":
+		return LauncherMenuOn
+	case LauncherMenuOff, "off", "false":
+		return LauncherMenuOff
+	default:
+		return ""
 	}
 }
 

@@ -71,7 +71,7 @@ func ExecutePassthrough(realAgyPath string, args []string) (int, error) {
 	forceBridge := false
 	forcedNativeID := ""
 	hybridProfile := hybrid.ResolveProfile(os.Getenv, loadHybridProfile())
-	switch Decide(args, os.Getenv, stdinIsTTY(), modelCount, loadDefaultProfile(), hybridProfile.String()) {
+	switch Decide(args, launcherEnvLookup(loadLauncherMenu()), stdinIsTTY(), modelCount, loadDefaultProfile(), hybridProfile.String()) {
 	case RouteMenu:
 		names := EnabledProviderNames(reg)
 		choice := ShowMenu(os.Stdout, os.Stdin, rel, modelCount, ProviderSummary(names), MenuTimeout)
@@ -378,6 +378,41 @@ func loadHybridProfile() string {
 		return mode.HybridProfileNone
 	}
 	return st.EffectiveHybridProfile()
+}
+
+// loadLauncherMenu reads the persisted launcher-menu toggle once per launch.
+// Unreadable or corrupt state, or a key with no stored decision, reads as ""
+// (no stored decision): only a stored "1" opts in, so the env-only opt-in
+// default from before this toggle existed is preserved when nothing is set.
+func loadLauncherMenu() string {
+	st, err := mode.LoadState()
+	if err != nil || st == nil {
+		return ""
+	}
+	return st.EffectiveLauncherMenu()
+}
+
+// launcherEnvLookup wraps the process environment lookup Decide consumes with
+// the persisted launcher-menu toggle. Env wins entirely: an AGY_LAUNCHER that
+// is set to any non-empty value passes through unchanged (including "0"), so
+// today's opt-in semantics are preserved exactly. Only when AGY_LAUNCHER is
+// unset or empty does the stored value apply: a stored "1" opts in and
+// anything else (stored "0" or no stored decision) reads as unset, so the menu
+// stays opt-in unless a stored decision or the env says otherwise. Every other
+// key passes straight to os.Getenv.
+func launcherEnvLookup(stored string) func(string) string {
+	return func(key string) string {
+		if key != "AGY_LAUNCHER" {
+			return os.Getenv(key)
+		}
+		if v := os.Getenv(key); v != "" {
+			return v
+		}
+		if stored == "1" {
+			return "1"
+		}
+		return ""
+	}
 }
 
 // CountEnabledModels counts distinct enabled model entries across all

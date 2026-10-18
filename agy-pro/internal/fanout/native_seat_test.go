@@ -1242,6 +1242,7 @@ func TestCmdWrap_RoundTripBothTransports(t *testing.T) {
 // literal preamble text so the test fails if the preamble is removed or
 // emptied, and HasPrefix so it fails if the preamble stops opening the prompt.
 func TestBuildNativeSeatPrompt_PreambleForEveryTaskPreset(t *testing.T) {
+	isolatePromptEnv(t) // pins compare against the compiled constants
 	tasks := []string{"review", "security", "plan-audit", "research", "ideas", "custom"}
 	// Literal markers quoted from nativeSeatPreamble (engine.go).
 	markers := []string{
@@ -1253,7 +1254,10 @@ func TestBuildNativeSeatPrompt_PreambleForEveryTaskPreset(t *testing.T) {
 		"Write the COMPLETE final report before the time budget runs out",
 	}
 	for _, task := range tasks {
-		p := buildNativeSeatPrompt(task, "user task text")
+		p, err := buildNativeSeatPrompt(task, "user task text")
+		if err != nil {
+			t.Fatalf("task %q: buildNativeSeatPrompt: %v", task, err)
+		}
 		if !strings.HasPrefix(p, nativeSeatPreamble) {
 			t.Errorf("task %q: native seat prompt must OPEN with the seat-role preamble, got:\n%s", task, p)
 		}
@@ -1281,7 +1285,10 @@ func TestBuildNativeSeatPrompt_PreambleForEveryTaskPreset(t *testing.T) {
 		}
 	}
 	// The empty-user-prompt fallback still carries the preamble.
-	empty := buildNativeSeatPrompt("review", "   ")
+	empty, err := buildNativeSeatPrompt("review", "   ")
+	if err != nil {
+		t.Fatalf("empty user prompt: buildNativeSeatPrompt: %v", err)
+	}
 	if !strings.HasPrefix(empty, nativeSeatPreamble) {
 		t.Errorf("empty user prompt: native seat prompt must still open with the preamble")
 	}
@@ -1303,7 +1310,11 @@ func TestNativeRunner_SpawnArgsCarryDisableSlashCommands(t *testing.T) {
 			"AGY_PRO_STUB_STDOUT":    "OK",
 		}),
 	}
-	out := r.Run(context.Background(), RunConfig{Root: dir}, SeatSpec{Kind: SeatKindNative, ModelID: "m"}, buildNativeSeatPrompt("review", "p"), time.Now().Add(30*time.Second))
+	prompt, err := buildNativeSeatPrompt("review", "p")
+	if err != nil {
+		t.Fatalf("buildNativeSeatPrompt: %v", err)
+	}
+	out := r.Run(context.Background(), RunConfig{Root: dir}, SeatSpec{Kind: SeatKindNative, ModelID: "m"}, prompt, time.Now().Add(30*time.Second))
 	if out.SpawnErr != nil {
 		t.Fatalf("spawn error: %v", out.SpawnErr)
 	}

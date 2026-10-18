@@ -389,7 +389,7 @@ func TestFetchRemoteModels(t *testing.T) {
 	}))
 	defer server.Close()
 
-	models := FetchRemoteModels(server.URL, "mock-test-key-123")
+	models := FetchRemoteModels(server.URL, "test-synthetic-key-0123456789abcdef")
 	if len(models) != 2 || models[0] != "remote-model-1" || models[1] != "remote-model-2" {
 		t.Fatalf("unexpected fetched models: %+v", models)
 	}
@@ -416,13 +416,13 @@ func TestInteractiveSetupWizard_DeepSeekPreset(t *testing.T) {
 	// Simulate selecting DeepSeek:
 	// 1. Provider name: deepseek
 	// 2. Base URL: server.URL + "/v1"
-	// 3. API Key: mock-test-key-123
+	// 3. API Key: test-synthetic-key-0123456789abcdef
 	// 4. Select preset 1: deepseek-chat
 	// 5. Add another model: N
 	input := strings.Join([]string{
 		"deepseek",
 		server.URL + "/v1",
-		"mock-test-key-123",
+		"test-synthetic-key-0123456789abcdef",
 		"1",
 		"N",
 	}, "\n") + "\n"

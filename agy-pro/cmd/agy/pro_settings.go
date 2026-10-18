@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"agypro/internal/providers"
@@ -16,7 +20,10 @@ import (
 //	agy pro settings --panel <id>         deep-link one TUI panel
 //	agy pro settings show [--json]        SettingsView snapshot (non-interactive)
 //	agy pro settings set <key> <value>    default-profile | bridge-tools | native-seat-concurrency
-//	agy pro settings providers ...        list | add-json | add-interactive | test | rename | delete
+//	agy pro settings providers ...        list | add-json | add-interactive | test | rename | delete |
+//	                                      model-add-json | model-update | model-delete
+//	                                      (the model twins gate the write: console stdin prompts y/n,
+//	                                      non-interactive stdin requires the explicit --yes flag)
 //	agy pro settings mode ...             switch | restore | list | status
 //	agy pro settings doctor ...           diagnose | fix-keys | rollback-keys
 //	agy pro settings update-info | uninstall-info | version-info
@@ -25,7 +32,9 @@ import (
 // os.Exit(runSettingsCmd(subArgs, os.Stdin, os.Stdout, os.Stderr)).
 
 const proSettingsUsage = `Usage: agy pro settings [--panel <id>] | show [--json] | set <key> <value> |
-       providers <list|add-json <file|->|add-interactive|test <name>|rename <old> <new>|delete <name>> |
+       providers <list|add-json <file|->|add-interactive|test <name>|rename <old> <new>|delete <name>|
+                  model-add-json <name> <file|-> [--yes]|model-update <name> <model-id> <file|-> [--yes]|
+                  model-delete <name> <model-id> [--yes]> |
        mode <switch <full|clean>|restore|list|status> |
        doctor <diagnose [--strict]|fix-keys [targets]|rollback-keys <dir>> |
        update-info | uninstall-info | version-info`
@@ -145,7 +154,7 @@ func settingsProvidersCmd(core *settings.Core, args []string, in io.Reader, out,
 			fmt.Fprintf(errw, "[agy-pro] add-json failed: %v\n", err)
 			return 1
 		}
-		fmt.Fprintf(out, "[SUCCESS] provider %s saved (apiKeyEnv %s — env-var NAME only)\n", providers.MaskOperand(spec.Name), providers.MaskOperand(spec.APIKeyEnv))
+		fmt.Fprintf(out, "[SUCCESS] provider %s saved (apiKeyEnv %s - env-var NAME only)\n", providers.MaskOperand(spec.Name), providers.MaskOperand(spec.APIKeyEnv))
 		return 0
 	case "add-interactive", "wizard":
 		if err := core.RunWizard(in, out); err != nil {
@@ -185,6 +194,61 @@ func settingsProvidersCmd(core *settings.Core, args []string, in io.Reader, out,
 			return 1
 		}
 		fmt.Fprintf(out, "[SUCCESS] provider %s removed from the registry (key values untouched)\n", providers.MaskOperand(args[1]))
+		return 0
+	case "model-add-json":
+		if len(args) < 3 {
+			fmt.Fprintf(errw, "[agy-pro] model-add-json requires a provider name and a file path or -\n%s\n", proSettingsUsage)
+			return 2
+		}
+		yes := hasYesFlag(args[3:])
+		m, code := readModelSpec(args[1], args[2], in, errw)
+		if code != 0 {
+			return code
+		}
+		proceed, code := confirmRegistryMutation(in, out, errw, modelAddDiff(args[1], m), yes)
+		if !proceed {
+			return code
+		}
+		if err := core.ModelAdd(args[1], m); err != nil {
+			fmt.Fprintf(errw, "[agy-pro] %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(out, "[SUCCESS] provider %s: model %s added\n", providers.MaskOperand(args[1]), providers.MaskOperand(m.ID))
+		return 0
+	case "model-update":
+		if len(args) < 4 {
+			fmt.Fprintf(errw, "[agy-pro] model-update requires a provider name, a model id, and a file path or -\n%s\n", proSettingsUsage)
+			return 2
+		}
+		yes := hasYesFlag(args[4:])
+		m, code := readModelSpec(args[1], args[3], in, errw)
+		if code != 0 {
+			return code
+		}
+		proceed, code := confirmRegistryMutation(in, out, errw, modelUpdateDiff(args[1], args[2], m), yes)
+		if !proceed {
+			return code
+		}
+		if err := core.ModelUpdate(args[1], args[2], m); err != nil {
+			fmt.Fprintf(errw, "[agy-pro] %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(out, "[SUCCESS] provider %s: model %s updated\n", providers.MaskOperand(args[1]), providers.MaskOperand(m.ID))
+		return 0
+	case "model-delete":
+		if len(args) < 3 {
+			fmt.Fprintf(errw, "[agy-pro] model-delete requires a provider name and a model id\n%s\n", proSettingsUsage)
+			return 2
+		}
+		proceed, code := confirmRegistryMutation(in, out, errw, modelDeleteDiff(args[1], args[2]), hasYesFlag(args[3:]))
+		if !proceed {
+			return code
+		}
+		if err := core.ModelDelete(args[1], args[2]); err != nil {
+			fmt.Fprintf(errw, "[agy-pro] %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(out, "[SUCCESS] provider %s: model %s removed\n", providers.MaskOperand(args[1]), providers.MaskOperand(args[2]))
 		return 0
 	default:
 		fmt.Fprintf(errw, "[agy-pro] unknown providers subcommand %q\n%s\n", providers.MaskOperand(args[0]), proSettingsUsage)
@@ -311,6 +375,336 @@ func readSettingsSpec(path string, in io.Reader) ([]byte, error) {
 		return io.ReadAll(in)
 	}
 	return os.ReadFile(path)
+}
+
+// readModelSpec loads and parses one model record for the model-add-json /
+// model-update twins. The file read error goes through the same composite
+// masking as add-json (C2/D1: the path operand can be a misdirected key paste).
+func readModelSpec(provider, path string, in io.Reader, errw io.Writer) (providers.Model, int) {
+	data, err := readSettingsSpec(path, in)
+	if err != nil {
+		fmt.Fprintf(errw, "[agy-pro] %v\n", maskOperandSentence(err.Error(), providers.FlagSeedOperands(path)...))
+		return providers.Model{}, 1
+	}
+	m, err := parseModelSpecJSON(data)
+	if err != nil {
+		fmt.Fprintf(errw, "[agy-pro] %v\n", err)
+		return providers.Model{}, 1
+	}
+	return m, 0
+}
+
+// parseModelSpecJSON decodes one model record (the providers.Model wire
+// shape). The ID is required; everything else is optional. Errors never echo
+// the record body (B2/U8).
+//
+// Secret-shaped guard (the F2/F4 CLI gap the TUI form closes with
+// looksSecretValue): the registry stores env-var NAMES only, so a free-text
+// field carrying credential material (a misdirected paste) is refused here,
+// before Core ever sees the record. The classifier mirrors the TUI form
+// guard in internal/tui/screen_model_form.go (secretValuePrefixes plus
+// credentialTokenShaped) verbatim, so the CLI ingest and the TUI form cannot
+// drift apart: known credential prefixes at any length, plus one
+// uninterrupted opaque run of 16+ runes carrying BOTH letters and digits.
+// Separators and single-class runs (long words, all-letter ids, serials)
+// stay readable on both paths.
+func parseModelSpecJSON(data []byte) (providers.Model, error) {
+	var m providers.Model
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if err := dec.Decode(&m); err != nil {
+		return providers.Model{}, fmt.Errorf("invalid model spec JSON: %w", err)
+	}
+	m.ID = strings.TrimSpace(m.ID)
+	if m.ID == "" {
+		return providers.Model{}, fmt.Errorf("model spec: id is required")
+	}
+	if modelSpecValueLooksSecret(m.ID) {
+		return providers.Model{}, fmt.Errorf("model spec: field %q looks like secret material (value hidden)", "id")
+	}
+	if modelSpecValueLooksSecret(m.Family) {
+		return providers.Model{}, fmt.Errorf("model spec: field %q looks like secret material (value hidden)", "family")
+	}
+	for i, tag := range m.Tags {
+		if modelSpecValueLooksSecret(tag) {
+			return providers.Model{}, fmt.Errorf("model spec: tag %d looks like secret material (value hidden)", i+1)
+		}
+	}
+	for i, tool := range m.Capabilities.AllowedTools {
+		if modelSpecValueLooksSecret(tool) {
+			return providers.Model{}, fmt.Errorf("model spec: tool %d looks like secret material (value hidden)", i+1)
+		}
+	}
+	if modelSpecValueLooksSecret(m.Capabilities.ReasoningEffort) {
+		return providers.Model{}, fmt.Errorf("model spec: field %q looks like secret material (value hidden)", "reasoningEffort")
+	}
+	return m, nil
+}
+
+// modelSpecSecretPrefixes mirrors secretValuePrefixes in
+// internal/tui/screen_model_form.go: a value starting with any of these
+// reads as key material in any slot, at any length.
+var modelSpecSecretPrefixes = []string{
+	"sk-", "key-", "gsk_", "nvapi-", "live_", "secret_",
+	"ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_",
+	"xox", "glpat-", "npm_", "dckr_pat-", "dckr_pat_", "bearer ", "eyj",
+}
+
+// modelSpecValueLooksSecret reports whether a free-text model field carries
+// credential material rather than a name: a known credential prefix at any
+// length (still a secret behind the prefix), or one uninterrupted run of the
+// base64 alphabet of 16+ runes with BOTH letter and digit classes present
+// and no other separator (the AKIA/AWS-secret-class opaque token). This is
+// credentialTokenShaped from the TUI form, kept rune-for-rune so the two
+// guards agree on every input.
+func modelSpecValueLooksSecret(v string) bool {
+	t := strings.TrimSpace(v)
+	if t == "" {
+		return false
+	}
+	lower := strings.ToLower(t)
+	for _, p := range modelSpecSecretPrefixes {
+		if strings.HasPrefix(lower, p) {
+			return true
+		}
+	}
+	return modelSpecOpaqueToken(t)
+}
+
+// modelSpecOpaqueToken mirrors credentialTokenShaped in
+// internal/tui/screen_model_form.go: one uninterrupted run of the base64
+// alphabet (ASCII letters, digits, and the + / = pad runes), at least 16
+// runes long, with both letter and digit classes present. Any other
+// separator rune (- . _ : whitespace and friends) or a single-class run
+// fails the shape and stays readable. Round-6 F-01: the + / = runes are
+// admitted (a 16+ rune base64 AWS-secret-class credential carries them);
+// the body stays rune-for-rune identical to the TUI twin.
+func modelSpecOpaqueToken(s string) bool {
+	n := 0
+	letter, digit := false, false
+	for _, r := range s {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z':
+			letter = true
+		case r >= '0' && r <= '9':
+			digit = true
+		case r == '+', r == '/', r == '=':
+		default:
+			return false
+		}
+		n++
+	}
+	return n >= 16 && letter && digit
+}
+
+// hasYesFlag reports whether the verb operands carry the explicit --yes
+// consent token, the non-interactive stand-in for the console y prompt.
+func hasYesFlag(args []string) bool {
+	for _, a := range args {
+		if strings.TrimSpace(a) == "--yes" {
+			return true
+		}
+	}
+	return false
+}
+
+// modelWriteAtomicSentence is the pre-write presentation's atomic-0600 line,
+// the same sentence the M4 approval modal carries (modal.approval.body).
+const modelWriteAtomicSentence = "providers.json will be written (0600, atomic) with this exact diff:"
+
+// confirmRegistryMutation presents the exact masked diff and gates the write
+// (the never-silent hard rule for the CLI twins: a registry write is presented
+// before it happens, never reported after the fact).
+//
+// Console stdin prompts y/n: n, Esc, or an empty answer aborts with nothing
+// written. Piped or CI stdin has no one to ask, so the verb requires the
+// explicit --yes flag: without it the diff still prints and the verb refuses
+// with an honest error naming the flag. Console detection rides the stdinIsTTY
+// seam (pro_swarm.go), the same swappable seam the other entry units use. The
+// seam alone cannot tell a real console from /dev/null or NUL (both are
+// character devices), so an immediate EOF at the prompt (zero bytes, read
+// error) takes the same refusal as a pipe instead of a silent cancel.
+func confirmRegistryMutation(in io.Reader, out, errw io.Writer, diff []string, yes bool) (proceed bool, code int) {
+	fmt.Fprintln(out, "[agy-pro] Approve Registry Write")
+	for _, line := range diff {
+		fmt.Fprintln(out, "  "+line)
+	}
+	if yes {
+		return true, 0
+	}
+	if stdinIsTTY(in) {
+		fmt.Fprint(out, "Apply this write to providers.json? [y/N]: ")
+		// Round-6 seat2-F4: bound the prompt read. A character device without
+		// a newline (for example /dev/zero or NUL) would otherwise buffer
+		// memory without limit (CWE-400, local self-DoS). 64 bytes is far past
+		// any y/n answer: an over-long line is read up to the cap and then
+		// treated exactly like any non-y answer, so nothing writes. The
+		// immediate-EOF refusal below is unchanged (answer == "" with an error).
+		answer, err := bufio.NewReader(io.LimitReader(in, 64)).ReadString('\n')
+		if err != nil && answer == "" {
+			fmt.Fprintln(errw, "[agy-pro] refusal: non-interactive stdin cannot consent to a registry write; re-run with --yes after reviewing the diff above (nothing written)")
+			return false, 1
+		}
+		if strings.EqualFold(strings.TrimSpace(answer), "y") {
+			return true, 0
+		}
+		fmt.Fprintln(out, "[CANCELLED] nothing written")
+		return false, 0
+	}
+	fmt.Fprintln(errw, "[agy-pro] refusal: non-interactive stdin cannot consent to a registry write; re-run with --yes after reviewing the diff above (nothing written)")
+	return false, 1
+}
+
+// lookupRegistryModel reads the on-disk registry (the same file the Core
+// verbs save) to render before/after diff lines and model counts in the
+// pre-write presentation. found reports the provider; modelFound reports the
+// exact model ID. Either false renders the diff without that slice; the write
+// itself always goes through the Core seam under test.
+func lookupRegistryModel(providerName, modelID string) (before providers.Model, count int, found, modelFound bool) {
+	reg, err := providers.Load()
+	if err != nil || reg == nil {
+		return providers.Model{}, 0, false, false
+	}
+	p := findProviderCI(reg, providerName)
+	if p == nil {
+		return providers.Model{}, 0, false, false
+	}
+	for _, m := range p.Models {
+		if m.ID == modelID {
+			before = m
+			modelFound = true
+		}
+	}
+	return before, len(p.Models), true, modelFound
+}
+
+// findProviderCI resolves a provider exact-first, then case-insensitively
+// (the Core verbs resolve case-insensitively; the diff presentation must see
+// the same record the write will touch).
+func findProviderCI(reg *providers.Registry, name string) *providers.Provider {
+	for i := range reg.Providers {
+		if reg.Providers[i].Name == name {
+			return &reg.Providers[i]
+		}
+	}
+	for i := range reg.Providers {
+		if strings.EqualFold(reg.Providers[i].Name, name) {
+			return &reg.Providers[i]
+		}
+	}
+	return nil
+}
+
+// modelAddDiff renders the masked pre-write presentation for model-add-json:
+// the mutation sentence, the model count before/after when the on-disk
+// provider resolves, the atomic-0600 sentence, and one "+ field: value" line
+// per set field (every operand masked).
+func modelAddDiff(providerName string, m providers.Model) []string {
+	lines := []string{
+		fmt.Sprintf("Adds model %s to provider %s. Key values are untouched.", providers.MaskOperand(m.ID), providers.MaskOperand(providerName)),
+	}
+	if _, count, found, _ := lookupRegistryModel(providerName, m.ID); found {
+		lines = append(lines, fmt.Sprintf("Model count: %d -> %d", count, count+1))
+	}
+	lines = append(lines, modelWriteAtomicSentence)
+	return append(lines, modelAddDiffLines(m)...)
+}
+
+// modelUpdateDiff renders the masked pre-write presentation for model-update:
+// the mutation sentence, the count line, the atomic-0600 sentence, and one
+// "  field: before -> after" line per changed field against the on-disk
+// record. When the on-disk record is unavailable the diff falls back to
+// after-only lines so the presentation never invents before values.
+func modelUpdateDiff(providerName, modelID string, m providers.Model) []string {
+	lines := []string{
+		fmt.Sprintf("Updates model %s in provider %s. Key values are untouched.", providers.MaskOperand(m.ID), providers.MaskOperand(providerName)),
+	}
+	before, count, found, modelFound := lookupRegistryModel(providerName, modelID)
+	if found {
+		lines = append(lines, fmt.Sprintf("Model count: %d -> %d", count, count))
+	}
+	lines = append(lines, modelWriteAtomicSentence)
+	if found && modelFound {
+		return append(lines, modelChangedDiffLines(before, m)...)
+	}
+	return append(lines, modelAddDiffLines(m)...)
+}
+
+// modelDeleteDiff renders the masked pre-write presentation for model-delete.
+func modelDeleteDiff(providerName, modelID string) []string {
+	lines := []string{
+		fmt.Sprintf("Removes model %s from provider %s. Key values are untouched.", providers.MaskOperand(modelID), providers.MaskOperand(providerName)),
+	}
+	if _, count, found, _ := lookupRegistryModel(providerName, modelID); found {
+		lines = append(lines, fmt.Sprintf("Model count: %d -> %d", count, count-1))
+	}
+	lines = append(lines, modelWriteAtomicSentence)
+	return append(lines, "- model "+providers.MaskOperand(modelID))
+}
+
+// maskJoined masks each list item individually before joining, the TUI
+// maskJoined rule (screen_model_form.go) ported to the CLI twins: one
+// credential-shaped entry cannot hide behind the join separator of its
+// neighbors, and MaskOperand on an already-joined string would see the
+// separators and stay readable.
+func maskJoined(items []string, sep string) string {
+	parts := make([]string, len(items))
+	for i, it := range items {
+		parts[i] = providers.MaskOperand(it)
+	}
+	return strings.Join(parts, sep)
+}
+
+// modelAddDiffLines renders one "+ field: value" line per set field of the
+// incoming record (mirrors the M4 modal's addedDiffLines).
+func modelAddDiffLines(m providers.Model) []string {
+	lines := []string{}
+	add := func(field, value string) {
+		lines = append(lines, "+ "+field+": "+providers.MaskOperand(value))
+	}
+	add("id", m.ID)
+	if m.Family != "" {
+		add("family", m.Family)
+	}
+	if len(m.Tags) > 0 {
+		add("tags", maskJoined(m.Tags, ", "))
+	}
+	if m.Enabled != nil && !*m.Enabled {
+		add("enabled", "false")
+	}
+	if m.ContextLength > 0 {
+		add("contextLength", strconv.Itoa(m.ContextLength))
+	}
+	if m.MaxOutputTokens > 0 {
+		add("maxOutputTokens", strconv.Itoa(m.MaxOutputTokens))
+	}
+	if len(m.Capabilities.AllowedTools) > 0 {
+		add("tools", maskJoined(m.Capabilities.AllowedTools, ", "))
+	}
+	return lines
+}
+
+// modelChangedDiffLines renders one "  field: before -> after" line per
+// changed field (mirrors the M4 modal's changedDiffLines), or the no-changes
+// marker.
+func modelChangedDiffLines(before, m providers.Model) []string {
+	lines := []string{}
+	chg := func(field, b, a string) {
+		if b == a {
+			return
+		}
+		lines = append(lines, "  "+field+": "+providers.MaskOperand(b)+" -> "+providers.MaskOperand(a))
+	}
+	chg("id", before.ID, m.ID)
+	chg("family", before.Family, m.Family)
+	chg("tags", maskJoined(before.Tags, ", "), maskJoined(m.Tags, ", "))
+	chg("enabled", strconv.FormatBool(before.IsEnabled()), strconv.FormatBool(m.IsEnabled()))
+	chg("contextLength", strconv.Itoa(before.ContextLength), strconv.Itoa(m.ContextLength))
+	chg("maxOutputTokens", strconv.Itoa(before.MaxOutputTokens), strconv.Itoa(m.MaxOutputTokens))
+	chg("tools", maskJoined(before.Capabilities.AllowedTools, ", "), maskJoined(m.Capabilities.AllowedTools, ", "))
+	if len(lines) == 0 {
+		lines = append(lines, "(no field changes)")
+	}
+	return lines
 }
 
 func dirOf(p string) string {
