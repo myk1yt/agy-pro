@@ -36,8 +36,25 @@ func doctorTestEnv(t *testing.T) string {
 	t.Setenv("AGY_PRO_PROVIDERS", "")
 	t.Setenv("AGY_PRO_REAL_AGY", "")
 
+	doctorWriteState(t, home, "full")
+
+	reg := `{"providers":[
+		{"name":"alpha","baseURL":"https://alpha.example.com","apiKeyEnv":"` + doctorAlphaEnv + `","models":[{"id":"a1"},{"id":"a2"}]},
+		{"name":"プロバイダ","baseURL":"https://beta.example.com","apiKeyEnv":"` + doctorUnsetEnv + `","models":[{"id":"b1"}]}
+	]}`
+	if err := os.WriteFile(filepath.Join(home, "providers.json"), []byte(reg), 0o600); err != nil {
+		t.Fatalf("write providers.json: %v", err)
+	}
+	return home
+}
+
+// doctorWriteState overwrites state.json in home with the given current mode
+// (profile native, the default managed-item set), so a refresh test can change
+// the state under an open screen and prove the Status snapshot is retaken.
+func doctorWriteState(t *testing.T, home, modeName string) {
+	t.Helper()
 	st := mode.State{
-		CurrentMode:    "full",
+		CurrentMode:    modeName,
 		DefaultProfile: "native",
 		ManagedItems:   append([]string(nil), mode.DefaultManagedItems...),
 		UpdatedAt:      time.Now().UTC(),
@@ -49,15 +66,6 @@ func doctorTestEnv(t *testing.T) string {
 	if err := os.WriteFile(filepath.Join(home, "state.json"), data, 0o600); err != nil {
 		t.Fatalf("write state.json: %v", err)
 	}
-
-	reg := `{"providers":[
-		{"name":"alpha","baseURL":"https://alpha.example.com","apiKeyEnv":"` + doctorAlphaEnv + `","models":[{"id":"a1"},{"id":"a2"}]},
-		{"name":"プロバイダ","baseURL":"https://beta.example.com","apiKeyEnv":"` + doctorUnsetEnv + `","models":[{"id":"b1"}]}
-	]}`
-	if err := os.WriteFile(filepath.Join(home, "providers.json"), []byte(reg), 0o600); err != nil {
-		t.Fatalf("write providers.json: %v", err)
-	}
-	return home
 }
 
 // unsetDoctorEnv guarantees the named variable resolves empty for the test
@@ -196,6 +204,7 @@ func TestDoctorScreenNeverWrites(t *testing.T) {
 	app.CaptureRun(&ScriptedKeys{Keys: []Key{
 		KeyTab, KeyEnter, Digit(1), Digit(9), KeyYes, KeyNo, KeySpace, KeyCtrlS,
 		KeyDown, KeyUp, KeyPgDn, KeyPgUp, KeyHome, KeyEnd,
+		RuneKey('r'), Key("r"), RuneKey('R'),
 	}})
 
 	afterReg, err := os.ReadFile(filepath.Join(home, "providers.json"))
@@ -273,6 +282,115 @@ func TestDoctorStructuralFailureTail(t *testing.T) {
 	}
 }
 
+// TestDoctorRefreshKeyRerunsDiagnose pins the D9-9B refresh fix: r re-runs the
+// injected diagnose seam and the Doctor pane shows the fresh run instead of
+// the construction snapshot, without leaving the screen. Both key spellings
+// the seams produce (the console rune carrier and the plain spelling) are
+// driven.
+func TestDoctorRefreshKeyRerunsDiagnose(t *testing.T) {
+	doctorTestEnv(t)
+	calls := 0
+	core := settings.NewCore(settings.Deps{
+		Doctor: func(out io.Writer, strict bool) error {
+			calls++
+			fmt.Fprintf(out, "DIAG-RUN-%d", calls)
+			return nil
+		},
+	})
+	scr := NewDoctorScreen(core)
+	app := NewApp(80, 24, DirLTR)
+	app.Push(scr)
+
+	app.Frame() // the construction snapshot
+	app.Step(KeyTab)
+	if calls != 1 {
+		t.Fatalf("diagnose ran %d times before any r press, want 1", calls)
+	}
+	before := app.Frame().String()
+	if !strings.Contains(before, "DIAG-RUN-1") {
+		t.Fatalf("Doctor pane missing the construction snapshot; frames:\n%s", before)
+	}
+
+	for _, key := range []Key{RuneKey('r'), Key("r")} {
+		app.Step(key)
+	}
+	if calls != 3 {
+		t.Fatalf("diagnose ran %d times after two r presses, want 3", calls)
+	}
+	after := app.Frame().String()
+	if !strings.Contains(after, "DIAG-RUN-3") {
+		t.Fatalf("Doctor pane missing the refreshed diagnose output; frames:\n%s", after)
+	}
+	if strings.Contains(after, "DIAG-RUN-2") || strings.Contains(after, "DIAG-RUN-1") {
+		t.Fatalf("Doctor pane still carries a stale diagnose line; frames:\n%s", after)
+	}
+	if app.Depth() != 1 || app.Top() != scr {
+		t.Fatalf("r must not close the screen (depth %d)", app.Depth())
+	}
+}
+
+// TestDoctorRefreshRetakesStatusSnapshot pins the other half of the refresh: r
+// recomposes the Status pane from state.json, so a state change made while the
+// screen is open is visible after one press on the Status pane.
+func TestDoctorRefreshRetakesStatusSnapshot(t *testing.T) {
+	home := doctorTestEnv(t)
+	app := NewApp(80, 24, DirLTR)
+	app.Push(NewDoctorScreen(doctorTestCore([]string{"DIAG-X"}, nil)))
+
+	label := Bundle().T("view.current_mode.label")
+	before := app.Frame().String()
+	if line := doctorLineContaining(t, before, label); !strings.Contains(line, "full") {
+		t.Fatalf("Status pane does not show the stored mode before the refresh: %q", line)
+	}
+
+	doctorWriteState(t, home, "clean")
+	app.Step(RuneKey('r'))
+
+	after := app.Frame().String()
+	line := doctorLineContaining(t, after, label)
+	if !strings.Contains(line, "clean") {
+		t.Fatalf("Status pane was not recomposed by r: %q\n%s", line, after)
+	}
+	if strings.Contains(line, "full") {
+		t.Fatalf("Status pane still carries the stale mode: %q", line)
+	}
+}
+
+// TestDoctorFixHintNamesTUIAndCLIPaths pins the D9-9B rewording: the repair
+// hint names the in-TUI settings path first and keeps the CLI commands as the
+// alternative, so this screen and the settings screen no longer disagree about
+// whether repair is possible inside the TUI. The tab bar and the scroll hint
+// stay unchanged, and the same block makes the refresh gesture discoverable.
+func TestDoctorFixHintNamesTUIAndCLIPaths(t *testing.T) {
+	doctorTestEnv(t)
+	scr := NewDoctorScreen(doctorTestCore(nil, nil)).(*doctorScreen)
+	app := NewApp(80, 24, DirLTR)
+	app.Push(scr)
+	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyTab}})
+
+	for _, want := range []string{
+		doctorFixTUIPath,
+		"Hub > Settings > [5] Diagnostics & Keys > Repair Key Names (--fix-keys)",
+		doctorFixCLI,
+		doctorFixKeysCmd,
+		doctorRollbackCmd,
+		"press r to re-run diagnose",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("repair hint missing %q; frames:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "This screen is read-only. To repair key names, run in your terminal:") {
+		t.Fatalf("the old CLI-only repair hint is still rendered; frames:\n%s", out)
+	}
+	if got, want := scr.tabBar(), " Status  | [Doctor]"; got != want {
+		t.Fatalf("tab bar = %q, want %q (the refresh fix must not touch it)", got, want)
+	}
+	if !strings.Contains(out, scr.bundle.T("doctor.scroll_hint")) {
+		t.Fatalf("scroll hint changed or missing; frames:\n%s", out)
+	}
+}
+
 // doctorLineContaining returns the single frame line containing s.
 func doctorLineContaining(t *testing.T, out, s string) string {
 	t.Helper()
@@ -283,4 +401,73 @@ func doctorLineContaining(t *testing.T, out, s string) string {
 	}
 	t.Fatalf("no line contains %q; frames:\n%s", s, out)
 	return ""
+}
+
+// TestDoctorProviderNameSinkUsesSlotAuthority (fix7-D) pins the doctor screen's
+// provider-NAME sink against the registry-slot display authority. Identity
+// half: the benign corpus (openai, gemini, deepseek, nw, charm) renders as a
+// Status label byte-identically. Credential half: the underscore-headed plant,
+// which providers.MaskOperand leaves raw (its "_" breaks the contiguous-run
+// test and its head is not in the shared prefix list), renders masked
+// first-5 + **** and never raw in any frame.
+func TestDoctorProviderNameSinkUsesSlotAuthority(t *testing.T) {
+	const (
+		plant = "sk_live_0123456789abcdef"
+		mask  = "sk_li****"
+	)
+	// The required names plus the separator-bearing forms the pre-existing
+	// doctor pins exercise (anthropic, acme-corp, my_provider, cedar.2024).
+	corpus := []string{
+		"openai", "gemini", "deepseek", "nw", "charm",
+		"anthropic", "acme-corp", "my_provider", "cedar.2024",
+	}
+
+	home := t.TempDir()
+	t.Setenv("AGY_PRO_HOME", home)
+	t.Setenv("AGY_PRO_PROVIDERS", "")
+	t.Setenv("AGY_PRO_REAL_AGY", "")
+	doctorWriteState(t, home, "full")
+
+	var entries []string
+	for _, n := range append(corpus, plant) {
+		entries = append(entries, `{"name":"`+n+`","baseURL":"https://gw.example/v1","models":[{"id":"m1"}]}`)
+	}
+	reg := `{"providers":[` + strings.Join(entries, ",") + `]}`
+	if err := os.WriteFile(filepath.Join(home, "providers.json"), []byte(reg), 0o600); err != nil {
+		t.Fatalf("write providers.json: %v", err)
+	}
+
+	scr := NewDoctorScreen(doctorTestCore(nil, nil)).(*doctorScreen)
+	labels := make(map[string]bool, len(scr.status))
+	for _, f := range scr.status {
+		labels[f.label] = true
+	}
+	for _, n := range corpus {
+		if !labels[n] {
+			t.Errorf("Status pane lost the %q provider label", n)
+		}
+	}
+	if !labels[mask] {
+		t.Errorf("Status pane lacks the masked provider label %q (labels: %v)", mask, labels)
+	}
+	for label := range labels {
+		if strings.Contains(label, plant) {
+			t.Errorf("Status pane renders the credential-shaped provider name raw: %q", label)
+		}
+	}
+
+	app := NewApp(120, 40, DirLTR)
+	app.Push(scr)
+	out := app.CaptureRun(&ScriptedKeys{})
+	if strings.Contains(out, plant) {
+		t.Fatalf("the plant rendered raw in a doctor frame\n%s", out)
+	}
+	// The frame is a window over the Status rows (an overflowing pane scrolls),
+	// so the frame check carries the plant's mask and one benign neighbour;
+	// every corpus label is pinned above, from the composed snapshot itself.
+	for _, want := range []string{mask, "gemini"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("doctor frame missing %q\n%s", want, out)
+		}
+	}
 }

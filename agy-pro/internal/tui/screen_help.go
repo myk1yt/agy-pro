@@ -50,8 +50,10 @@ const (
 	helpColorTitle = "Color Tier"
 	// catalog-resolved, fallback kept: help.color.note
 	helpColorNote = "Detected once at startup: a non-console output or NO_COLOR forces plain, a VT probe gates color at all, then WT_SESSION or COLORTERM=truecolor picks truecolor and every other console gets 256 colors. Set AGY_PRO_COLOR to truecolor, 256, 16, or off to force a tier."
-	// catalog-resolved, fallback kept: help.close_hint
-	helpCloseHint = "PgUp/PgDn/Home/End scroll; any other key closes this overlay."
+	// English chrome (decision 6B keeps chrome English, so this hint carries
+	// no catalog key). The line names both halves of the close contract: the
+	// six scroll keys and the three keys that close the overlay.
+	helpCloseHint = "Up/Down/PgUp/PgDn/Home/End scroll; Esc/q/Enter close this overlay."
 )
 
 // helpLine is one row of a help section: a left key/path column plus a
@@ -72,13 +74,16 @@ type helpSection struct {
 // full key map, the storage file locations, the RTL scope note, the
 // color-tier note, and the numbered-selection reminder.
 //
-// Close contract (documented choice): the overlay closes on any key other
-// than PgUp/PgDn/Home/End. HandleKey calls a.Pop() as the primary
-// mechanism, which the shell satisfies because it pushes the overlay over
-// the calling screen. When help is the root screen (a degenerate standalone
-// use with nothing beneath), Pop reports false and a.Exit() closes the app
-// instead, so the invariant holds in every stack shape. Esc never reaches
-// HandleKey: the App-level precedence pops the overlay one step earlier.
+// Close contract (decision D5-5B): Up/Down scroll by one line and
+// PgUp/PgDn by one page, Home/End jump to either edge, Esc/q/Enter close the
+// overlay, and every other key is inert so a stray press cannot dismiss the
+// document the operator is reading. HandleKey calls a.Pop() as the primary
+// close mechanism, which the shell satisfies because it pushes the overlay
+// over the calling screen. When help is the root screen (a degenerate
+// standalone use with nothing beneath), Pop reports false and a.Exit()
+// closes the app instead, so the invariant holds in every stack shape. Esc
+// normally never reaches HandleKey: the App-level precedence pops the overlay
+// one step earlier, so the KeyEsc case covers the direct-drive path only.
 type helpScreen struct {
 	bundle   *i18n.Bundle
 	sections []helpSection
@@ -86,9 +91,10 @@ type helpScreen struct {
 	page     int // last window height derived in Draw
 }
 
-// NewHelpScreen builds the help overlay. All user-facing strings resolve
-// through the catalog; storage paths are resolved (read-only) at
-// construction.
+// NewHelpScreen builds the help overlay. Strings resolve through the catalog
+// where a key exists; the key-map rows, the color-tier note, and the close
+// hint are English consts (decision 6B keeps shared chrome English). Storage
+// paths are resolved (read-only) at construction.
 func NewHelpScreen() Screen {
 	h := &helpScreen{
 		bundle: Bundle(),
@@ -214,11 +220,17 @@ func (h *helpScreen) Draw(a *App) []string {
 	return append(out, "", helpCloseHint)
 }
 
-// HandleKey implements the close contract documented on helpScreen: the
-// four scroll keys page the window, every other key closes the overlay
-// (a.Pop, with a.Exit as the root-screen fallback).
+// HandleKey implements the close contract documented on helpScreen: Up/Down
+// scroll one line, PgUp/PgDn one page, Home/End jump to either edge, and only
+// Esc/q/Enter close the overlay (a.Pop, with a.Exit as the root-screen
+// fallback). Any other key is inert, so the arrows the footer advertises
+// scroll the document instead of dismissing it.
 func (h *helpScreen) HandleKey(k Key, a *App) {
 	switch k {
+	case KeyUp:
+		h.sc.scrollLines(-1, h.page)
+	case KeyDown:
+		h.sc.scrollLines(1, h.page)
 	case KeyPgUp:
 		h.sc.scroll(-1, h.page)
 	case KeyPgDn:
@@ -228,10 +240,29 @@ func (h *helpScreen) HandleKey(k Key, a *App) {
 	case KeyEnd:
 		h.sc.end(h.page)
 	default:
-		if !a.Pop() {
-			a.Exit()
+		if isHelpCloseKey(k) {
+			if !a.Pop() {
+				a.Exit()
+			}
 		}
 	}
+}
+
+// isHelpCloseKey reports whether k closes the overlay: Esc, Enter, or q. Esc
+// normally never reaches HandleKey (the App-level precedence pops it first),
+// so this is the direct-drive path. The console reader delivers a printable
+// letter as the rune carrier (Caps Lock included) and the scripted and
+// line-mode seams hand over the plain spelling, so both forms resolve here.
+func isHelpCloseKey(k Key) bool {
+	switch k {
+	case KeyEsc, KeyEnter:
+		return true
+	}
+	if k == Key("q") {
+		return true
+	}
+	r, ok := RuneOf(k)
+	return ok && (r == 'q' || r == 'Q')
 }
 
 // wrapCells word-wraps one paragraph to w display cells. Long single words

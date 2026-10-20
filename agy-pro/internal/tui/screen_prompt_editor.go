@@ -419,14 +419,13 @@ func (s *promptEditorScreen) resetFile(a *App) {
 		map[string]string{"path": providers.MaskOperand(s.filePath)}))
 }
 
-// Draw renders the slot status (display name plus source badge), the
-// read-only-reference label when no override exists, the seat guardrail,
-// the editor viewport, the action rows, and the hint. The hint is
-// rendered by the guard modal while it is armed, so it is skipped here in
-// that case. All cell math goes through cellwidth.
-func (s *promptEditorScreen) Draw(a *App) []string {
-	s.app = a
-	s.ed.SetPageSize(pageSizeFor(a.Height(), 9))
+// headerLines returns the lines Draw renders above the blank separator and
+// the editor window: the resolve-error line when one was recorded, the slot
+// status (display name plus source badge), the read-only-reference note
+// when no override file exists, and the seat guardrail. Draw and Caret
+// share it, so the caret's body line cannot drift from the rendered layout
+// when one of those conditional blocks appears or disappears.
+func (s *promptEditorScreen) headerLines(a *App) []string {
 	var lines []string
 	if s.loadErr != "" {
 		lines = append(lines, cellwidth.Truncate(s.b.T("common.error")+": "+s.loadErr, a.Width()))
@@ -442,6 +441,69 @@ func (s *promptEditorScreen) Draw(a *App) []string {
 	if s.slot == "seat" {
 		lines = append(lines, cellwidth.Truncate(missingOr(s.b, "prompts.editor.guardrail.seat", promptsEditorSeatGuardrail), a.Width()))
 	}
+	return lines
+}
+
+// Caret implements CaretSource: the screen's first-consumer half of the
+// caret rendering contract. It reports the caret only while the editor is
+// the live editing surface, which takes all of the following:
+//
+//   - the screen is the app's top screen (a covered or popped screen owns
+//     no frame, so it has no line to point at);
+//   - the action rows do not hold the keys (ModeNav: arrows and digits
+//     navigate rows there, so a text caret would promise an insert that
+//     does not happen);
+//   - no opaque modal is live: the save gate, the credential gate, the
+//     discard gate, and the reset gate draw over the body and own the
+//     frame;
+//   - the slot resolved cleanly. With loadErr set the buffer is not the
+//     effective text, so the screen does not advertise a caret on it.
+//
+// The dirty guard is the one modal that does NOT clear the caret. It is a
+// transparent gate that forwards every key to the editor dispatch, and it
+// is armed for as long as the buffer is dirty (from the first keystroke
+// on), so clearing the caret there would hide it exactly while the user is
+// typing.
+//
+// bodyLine is the caret row's index within Draw's own output: the header
+// lines (headerLines, shared with Draw), the blank separator, and View's
+// caret row inside the scrolled window. cell is Editor.CaretCell, the
+// display-cell offset within that line (CJK counts 2). A caret row outside
+// the window reports ok=false rather than a line that is not drawn.
+//
+// Caret is a pure getter and reads the window Draw last set up, so it is
+// queried after Draw, which is exactly the order ComposeFrame uses (the
+// body is drawn, then the caret is asked for). The editor's own key path
+// always keeps the caret inside the window through ensureVisible; the
+// out-of-window branch is a structural guard on that invariant, not a
+// state the key surface can reach.
+func (s *promptEditorScreen) Caret() (int, int, bool) {
+	a := s.app
+	if a == nil || s.ed == nil || s.b == nil {
+		return 0, 0, false
+	}
+	if a.Top() != Screen(s) || s.onAction || s.loadErr != "" {
+		return 0, 0, false
+	}
+	if m := a.Modal(); m != nil && m != Modal(s.guard) {
+		return 0, 0, false
+	}
+	rows, caretRow := s.ed.View()
+	if caretRow < 0 || caretRow >= len(rows) {
+		return 0, 0, false
+	}
+	return len(s.headerLines(a)) + 1 + caretRow, s.ed.CaretCell(), true
+}
+
+// Draw renders the slot status (display name plus source badge), the
+// read-only-reference label when no override exists, the seat guardrail,
+// the editor viewport, the action rows, and the hint. The hint is
+// rendered by the guard modal while it is armed, so it is skipped here in
+// that case. All cell math goes through cellwidth.
+func (s *promptEditorScreen) Draw(a *App) []string {
+	s.app = a
+	s.ed.SetPageSize(pageSizeFor(a.Height(), 9))
+	lines := s.headerLines(a)
 	lines = append(lines, "")
 	rows, _ := s.ed.View()
 	for _, r := range rows {

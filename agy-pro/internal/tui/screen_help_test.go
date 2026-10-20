@@ -149,17 +149,110 @@ func TestHelpScrollsByPgDn(t *testing.T) {
 	}
 }
 
-// TestHelpClosesOnNonScrollKey pins the close contract: any key other than
-// the four scroll keys pops the overlay back to the screen beneath.
-func TestHelpClosesOnNonScrollKey(t *testing.T) {
+// TestHelpArrowsScrollWithoutClosing pins the D5-5B fix: Up/Down scroll the
+// overlay by one line each and never dismiss it, so the gesture the footer
+// advertises reads the document instead of closing it.
+func TestHelpArrowsScrollWithoutClosing(t *testing.T) {
 	helpTestEnv(t)
-	for _, k := range []Key{KeyEnter, KeyYes, KeySpace, Digit(1), RuneKey('x')} {
+	root := &stubScreen{title: "Hub", mode: ModeNav}
+	helpScr := NewHelpScreen().(*helpScreen)
+	app := NewApp(80, 10, DirLTR)
+	app.Push(root)
+	app.Push(helpScr)
+
+	top := app.Frame().String() // the first draw derives page = 4
+	keysTitle := Bundle().T("help.section.keys")
+	if !strings.Contains(top, keysTitle) {
+		t.Fatalf("the first window must open on the key map; frames:\n%s", top)
+	}
+	if off := helpScr.sc.off; off != 0 {
+		t.Fatalf("scroll offset = %d before any press, want 0", off)
+	}
+
+	for i := 0; i < 3; i++ {
+		app.Step(KeyDown)
+	}
+	if app.Depth() != 2 || app.Top() != helpScr {
+		t.Fatalf("Down closed the overlay; arrows must scroll (depth %d)", app.Depth())
+	}
+	if off := helpScr.sc.off; off != 3 {
+		t.Fatalf("scroll offset = %d after three Down presses, want 3", off)
+	}
+	scrolled := app.Frame().String()
+	if scrolled == top {
+		t.Fatalf("three Down presses did not change the window; frames:\n%s", scrolled)
+	}
+	if strings.Contains(scrolled, keysTitle) {
+		t.Fatalf("the key-map title is still on screen after three Down presses; the window did not move:\n%s", scrolled)
+	}
+
+	app.Step(KeyUp)
+	if app.Depth() != 2 || app.Top() != helpScr {
+		t.Fatalf("Up closed the overlay; arrows must scroll (depth %d)", app.Depth())
+	}
+	if off := helpScr.sc.off; off != 2 {
+		t.Fatalf("scroll offset = %d after one Up press, want 2", off)
+	}
+}
+
+// TestHelpCloseKeysClose pins the three keys that close the overlay: Enter and
+// q through the App dispatch, Esc on the direct-drive path (App.Step pops Esc
+// before HandleKey sees it, which TestHelpEscCloses covers).
+func TestHelpCloseKeysClose(t *testing.T) {
+	helpTestEnv(t)
+	for _, k := range []Key{KeyEnter, RuneKey('q'), Key("q"), RuneKey('Q')} {
 		root := &stubScreen{title: "Hub", mode: ModeNav}
 		app := newHelpApp(root)
 		app.CaptureRun(&ScriptedKeys{Keys: []Key{k}})
 		if app.Depth() != 1 || app.Top() != root {
-			t.Fatalf("key %q did not close the overlay (depth %d)", k, app.Depth())
+			t.Fatalf("close key %q did not close the overlay (depth %d)", k, app.Depth())
 		}
+	}
+
+	root := &stubScreen{title: "Hub", mode: ModeNav}
+	app := NewApp(80, 48, DirLTR)
+	app.Push(root)
+	helpScr := NewHelpScreen()
+	app.Push(helpScr)
+	helpScr.HandleKey(KeyEsc, app)
+	if app.Depth() != 1 || app.Top() != root {
+		t.Fatalf("direct-drive Esc did not close the overlay (depth %d)", app.Depth())
+	}
+}
+
+// TestHelpIgnoresKeysOutsideTheContract pins the other half of the contract:
+// keys that used to close the overlay are inert now, so a stray press cannot
+// dismiss the document. These are the keys the retired any-key-closes pin
+// drove, re-pinned to the new outcome.
+func TestHelpIgnoresKeysOutsideTheContract(t *testing.T) {
+	helpTestEnv(t)
+	for _, k := range []Key{KeyYes, KeySpace, Digit(1), RuneKey('x'), KeyTab, KeyLeft, KeyCtrlS} {
+		root := &stubScreen{title: "Hub", mode: ModeNav}
+		app := newHelpApp(root)
+		helpScr := app.Top()
+		app.Step(k)
+		if app.Depth() != 2 || app.Top() != helpScr {
+			t.Fatalf("key %q closed the overlay; only Esc/q/Enter may (depth %d)", k, app.Depth())
+		}
+	}
+}
+
+// TestHelpCloseHintMatchesContract pins the hint line under the window against
+// the new close contract: it names the six scroll keys and the three close
+// keys, and drops the retired any-other-key promise.
+func TestHelpCloseHintMatchesContract(t *testing.T) {
+	helpTestEnv(t)
+	out := newHelpApp(nil).CaptureRun(&ScriptedKeys{})
+	if !strings.Contains(out, helpCloseHint) {
+		t.Fatalf("close hint %q missing from the overlay; frames:\n%s", helpCloseHint, out)
+	}
+	for _, want := range []string{"Up/Down", "PgUp/PgDn", "Home/End", "Esc", "q", "Enter"} {
+		if !strings.Contains(helpCloseHint, want) {
+			t.Fatalf("close hint %q does not name %q", helpCloseHint, want)
+		}
+	}
+	if strings.Contains(helpCloseHint, "any other key") {
+		t.Fatalf("close hint still promises the retired any-key contract: %q", helpCloseHint)
 	}
 }
 
@@ -175,10 +268,10 @@ func TestHelpEscCloses(t *testing.T) {
 	}
 }
 
-// TestHelpAnyKeyClosesAtRoot pins the degenerate standalone case: help as
-// the root screen has nothing beneath it, so the non-scroll key closes the
-// app (the documented Pop-fallback-to-Exit choice) instead of hanging.
-func TestHelpAnyKeyClosesAtRoot(t *testing.T) {
+// TestHelpCloseKeyClosesAtRoot pins the degenerate standalone case: help as
+// the root screen has nothing beneath it, so a close key closes the app (the
+// documented Pop-fallback-to-Exit choice) instead of hanging.
+func TestHelpCloseKeyClosesAtRoot(t *testing.T) {
 	helpTestEnv(t)
 	app := newHelpApp(nil)
 	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyEnter}})

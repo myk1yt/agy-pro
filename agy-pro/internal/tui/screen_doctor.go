@@ -14,9 +14,11 @@ import (
 	"agypro/internal/settings"
 )
 
-// English fallbacks for catalog keys this screen resolves through missingOr.
-// en.json now carries every key below (catalog-resolved); each const names
-// its key and stays as the fallback for a catalog lacking the translation.
+// English chrome constants for this screen. The doctor pane renders each of
+// them directly instead of resolving through the catalog (decision 6B keeps
+// shared chrome English, and the settings screen reads the translatable
+// doctor.structural_fail key itself); a "catalog-resolved" comment only names
+// the en.json entry that carries the same wording.
 const (
 	// catalog-resolved, fallback kept: doctor.tab.status
 	doctorTabStatus = "Status"
@@ -30,11 +32,21 @@ const (
 	doctorEmptyProviders = "No providers registered."
 	// catalog-resolved, fallback kept: doctor.not_found
 	doctorNotFound = "not found"
-	// catalog-resolved, fallback kept: doctor.fix.hint
-	doctorFixHint = "This screen is read-only. To repair key names, run in your terminal:"
-	// catalog-resolved, fallback kept: doctor.fix.keys_cmd
+	// English chrome (decision 6B keeps chrome English, so this hint carries
+	// no catalog key). The first line names the refresh gesture so the key is
+	// discoverable, the next two lines name the in-TUI repair path, and the
+	// CLI pair below stays as the terminal alternative.
+	doctorFixHint = "This screen is read-only; press r to re-run diagnose."
+	// English chrome, wrapped so every hint line fits an 80-cell frame.
+	doctorFixTUIPath = "To repair key names, use the in-TUI path:"
+	// English chrome: the settings grid path with its section title and item
+	// label exactly as the settings screen renders them, under the M4 gate.
+	doctorFixTUIWhere = "  Hub > Settings > [5] Diagnostics & Keys > Repair Key Names (--fix-keys)"
+	// English chrome.
+	doctorFixCLI = "Or run in your terminal:"
+	// English chrome (decision 6B).
 	doctorFixKeysCmd = "agy pro settings doctor fix-keys all"
-	// catalog-resolved, fallback kept: doctor.rollback_cmd
+	// English chrome (decision 6B).
 	doctorRollbackCmd = "agy pro settings doctor rollback-keys <backup-dir>"
 	// catalog-resolved, fallback kept: doctor.structural_fail
 	doctorStructuralFail = "Doctor reported structural failures: {{err}}"
@@ -129,9 +141,10 @@ func (t *textScroller) window(page int) []string {
 // are strictly read-only: the Status pane renders state.json fields, the
 // resolved real agy binary path, and a registry summary (env-var NAMES with
 // resolved/unset status, never values); the Doctor pane renders the output
-// of Core.DoctorDiagnose into a scrollable window. The only "actions" are
-// printed CLI command hints; nothing on this screen ever writes a file or
-// executes a fix.
+// of Core.DoctorDiagnose into a scrollable window. The actions are a refresh
+// gesture that retakes both snapshots (r) and printed repair hints that name
+// the in-TUI settings path and the CLI twins; nothing on this screen ever
+// writes a file or executes a fix.
 type doctorScreen struct {
 	core   *settings.Core
 	bundle *i18n.Bundle
@@ -145,8 +158,9 @@ type doctorScreen struct {
 
 // NewDoctorScreen builds the Doctor / Status screen over core. A nil core
 // builds one with the real (read-only here) defaults. The diagnose run and
-// the status snapshot happen once, at construction, so the screen shows a
-// point-in-time report while it stays open.
+// the status snapshot happen at construction and again on every r press, so
+// the screen opens on a point-in-time report the operator can retake without
+// leaving it.
 func NewDoctorScreen(core *settings.Core) Screen {
 	if core == nil {
 		core = settings.NewCore(settings.Deps{})
@@ -169,8 +183,10 @@ func (s *doctorScreen) Title() string { return s.bundle.T("doctor.screen.title")
 func (s *doctorScreen) Mode() Mode { return ModeNav }
 
 // composeStatus snapshots state.json, the real agy path, and the registry
-// summary into label/value rows. Every operand passes through the masker;
-// key VALUES are never touched (KeyAvailable reports presence only).
+// summary into label/value rows. The provider NAME is a registry slot and
+// routes through the slot authority (MaskSlot); the env-var NAME and every
+// error detail keep MaskOperand; key VALUES are never touched (KeyAvailable
+// reports presence only).
 func (s *doctorScreen) composeStatus() {
 	var fields []statusField
 	st, err := mode.LoadState()
@@ -210,7 +226,7 @@ func (s *doctorScreen) composeStatus() {
 			s.bundle.Tn("menu.count.providers", len(reg.Providers)) + " · " +
 				s.bundle.Tn("menu.count.models", modelCount)})
 		for _, p := range reg.Providers {
-			fields = append(fields, statusField{providers.MaskOperand(p.Name), s.keyStatus(p)})
+			fields = append(fields, statusField{providers.MaskSlot(p.Name), s.keyStatus(p)})
 		}
 	}
 	s.status = fields
@@ -230,8 +246,9 @@ func (s *doctorScreen) keyStatus(p providers.Provider) string {
 }
 
 // runDiagnose captures Core.DoctorDiagnose into the scrollable window and
-// appends the read-only fix command hints plus a structural-failure tail
-// when the diagnose run returned an error.
+// appends the read-only repair hints (the in-TUI settings path first, the CLI
+// twins as the terminal alternative) plus a structural-failure tail when the
+// diagnose run returned an error.
 func (s *doctorScreen) runDiagnose() {
 	var buf bytes.Buffer
 	diagErr := s.core.DoctorDiagnose(&buf, false)
@@ -239,13 +256,38 @@ func (s *doctorScreen) runDiagnose() {
 	if trimmed := strings.TrimRight(buf.String(), "\n"); trimmed != "" {
 		lines = append(lines, strings.Split(trimmed, "\n")...)
 	}
-	lines = append(lines, "", doctorFixHint, "  "+doctorFixKeysCmd, "  "+doctorRollbackCmd)
+	lines = append(lines, "",
+		doctorFixHint, doctorFixTUIPath, doctorFixTUIWhere, doctorFixCLI,
+		"  "+doctorFixKeysCmd, "  "+doctorRollbackCmd)
 	if diagErr != nil {
 		lines = append(lines, "", fillHubSlots(doctorStructuralFail, map[string]string{
 			"err": providers.MaskOperand(diagErr.Error()),
 		}))
 	}
 	s.diag.setLines(lines)
+}
+
+// refresh retakes both read-only snapshots: the Status fields are recomposed
+// and the Doctor pane re-runs the diagnose seam, with the Status window
+// rewound to the top (setLines already rewinds the Doctor window) so the fresh
+// report is read from its first line. Only the read-only seams run here;
+// nothing is written and no repair is executed.
+func (s *doctorScreen) refresh() {
+	s.composeStatus()
+	s.runDiagnose()
+	s.off = 0
+}
+
+// isRefreshKey reports whether k is the refresh gesture. The console reader
+// delivers a printable letter as the rune carrier (Caps Lock included), while
+// the scripted and line-mode seams hand over the plain spelling, so both forms
+// resolve here.
+func isRefreshKey(k Key) bool {
+	if k == Key("r") {
+		return true
+	}
+	r, ok := RuneOf(k)
+	return ok && (r == 'r' || r == 'R')
 }
 
 // tabBar renders the two pane tabs with the active one in brackets.
@@ -308,8 +350,9 @@ func (s *doctorScreen) statusLines(w int) []string {
 }
 
 // HandleKey routes one key. Tab toggles the pane (resetting the scroll
-// window); Up/Down/PgUp/PgDn/Home/End scroll the active pane; every other
-// key is ignored because the screen is read-only.
+// window); Up/Down/PgUp/PgDn/Home/End scroll the active pane; r retakes both
+// snapshots on either pane; every other key is ignored because the screen is
+// read-only.
 func (s *doctorScreen) HandleKey(k Key, a *App) {
 	up := func() {
 		if s.pane == paneStatus {
@@ -357,6 +400,10 @@ func (s *doctorScreen) HandleKey(k Key, a *App) {
 		s.off = len(s.status)
 		s.clampStatus()
 		s.diag.end(s.page)
+	default:
+		if isRefreshKey(k) {
+			s.refresh()
+		}
 	}
 }
 

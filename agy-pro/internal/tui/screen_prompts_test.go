@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -150,5 +151,147 @@ func TestPromptsLibraryBadgeFlipsAfterEditorSave(t *testing.T) {
 	// line must count the override that the editor just wrote.
 	if !strings.Contains(out, "1 of 7 slots have an active override.") {
 		t.Fatalf("library frame after save missing the override count; frames:\n%s", out)
+	}
+}
+
+// promptsAppAt pushes the prompt library over a stub root at one console
+// geometry and returns the screen handle alongside the app.
+func promptsAppAt(w, h int) (*App, *promptsScreen) {
+	app := NewApp(w, h, DirLTR)
+	app.Push(&stubScreen{title: "root", mode: ModeNav})
+	scr := NewPromptsScreen(nil).(*promptsScreen)
+	app.Push(scr)
+	return app, scr
+}
+
+// TestPromptsBaseFooterSurvivesFullPage pins audit F7 on the prompt library.
+// The library holds seven slot rows, so its window fills exactly at the
+// heights below: 80x12 and 80x14 cannot show all seven rows, and the pre-fix
+// window (height - 5) overran the frame there and dropped the shared base
+// footer. The body shape is the same status-plus-list shape the presets list
+// uses (title, separator, status line, blank, rows, blank, hint, separator,
+// footer), so every case must end with the base footer and keep the hint.
+// 80x24 is the standard console and must carry the same chrome.
+func TestPromptsBaseFooterSurvivesFullPage(t *testing.T) {
+	for _, h := range []int{12, 14, 24} {
+		t.Run(strconv.Itoa(h)+"rows", func(t *testing.T) {
+			promptTestHome(t)
+			app, scr := promptsAppAt(80, h)
+			app.CaptureRun(&ScriptedKeys{})
+
+			frame := app.Frame()
+			body := strings.Join(frame.Lines, "\n")
+			if got, want := scr.list.PageSize(), h-promptsListChrome; got != want {
+				t.Fatalf("page size = %d, want %d (80x%d minus %d chrome rows)", got, want, h, promptsListChrome)
+			}
+			if len(frame.Lines) > h {
+				t.Fatalf("frame = %d lines, want at most %d; frames:\n%s", len(frame.Lines), h, body)
+			}
+			if last := frame.Lines[len(frame.Lines)-1]; last != baseFooter {
+				t.Fatalf("base footer cut; last line = %q; frames:\n%s", last, body)
+			}
+			if !strings.Contains(body, scr.list.FooterHint()) {
+				t.Fatalf("list hint missing; frames:\n%s", body)
+			}
+		})
+	}
+}
+
+// TestPromptsChromeSurvivesMessageBlock pins the same class for the app
+// message line: a library frame that carries a message spends a blank
+// separator plus the message line below the body, so the window reserves
+// those two rows too. Without the reservation the message and the base footer
+// both fell off a full-page frame.
+func TestPromptsChromeSurvivesMessageBlock(t *testing.T) {
+	promptTestHome(t)
+	app, scr := promptsAppAt(80, 14)
+	app.SetMessage("Prompt review saved.")
+	app.CaptureRun(&ScriptedKeys{})
+
+	frame := app.Frame()
+	body := strings.Join(frame.Lines, "\n")
+	if !strings.Contains(body, "Prompt review saved.") {
+		t.Fatalf("message line cut; frames:\n%s", body)
+	}
+	if !strings.Contains(body, scr.list.FooterHint()) {
+		t.Fatalf("list hint cut by the message block; frames:\n%s", body)
+	}
+	if last := frame.Lines[len(frame.Lines)-1]; last != baseFooter {
+		t.Fatalf("base footer cut by the message block; last line = %q; frames:\n%s", last, body)
+	}
+	if len(frame.Lines) > 14 {
+		t.Fatalf("frame = %d lines, want at most 14; frames:\n%s", len(frame.Lines), body)
+	}
+}
+
+// TestPromptsLastSlotReachable pins the paging check: at a height where the
+// seven slots do not fit the window, End and PgDn both reach the last slot
+// (the native seat preamble), the window scrolls to keep it visible, and the
+// chrome survives the scroll.
+func TestPromptsLastSlotReachable(t *testing.T) {
+	promptTestHome(t)
+	app, scr := promptsAppAt(80, 14)
+
+	app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyEnd}})
+	if got, want := scr.list.Cursor(), len(promptSlots)-1; got != want {
+		t.Fatalf("End cursor = %d, want %d (last slot)", got, want)
+	}
+	if c, o, p := scr.list.Cursor(), scr.list.Offset(), scr.list.PageSize(); c < o || c >= o+p {
+		t.Fatalf("last slot %d outside the window [%d,%d) after End", c, o, o+p)
+	}
+	body := strings.Join(app.Frame().Lines, "\n")
+	if !strings.Contains(body, "Native seat preamble") {
+		t.Fatalf("last slot row not visible after End; frames:\n%s", body)
+	}
+	if !strings.Contains(body, baseFooter) || !strings.Contains(body, scr.list.FooterHint()) {
+		t.Fatalf("chrome cut after End; frames:\n%s", body)
+	}
+
+	app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyHome}})
+	if c := scr.list.Cursor(); c != 0 {
+		t.Fatalf("Home cursor = %d, want 0", c)
+	}
+	app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyPgDn}})
+	if got, want := scr.list.Cursor(), len(promptSlots)-1; got != want {
+		t.Fatalf("PgDn cursor = %d, want %d (last slot)", got, want)
+	}
+	if c, o, p := scr.list.Cursor(), scr.list.Offset(), scr.list.PageSize(); c < o || c >= o+p {
+		t.Fatalf("last slot %d outside the window [%d,%d) after PgDn", c, o, o+p)
+	}
+}
+
+// TestPromptsCursorSurvivesBadgeFlip pins the selection check on the read-only
+// library: every frame re-resolves the slots, so a save from the editor flips a
+// row badge and rebuilds the row inventory under the screen. The row order is
+// fixed (promptSlots), so the cursor must come back on the slot the user
+// opened, with the flipped badge and the new override count on the frame.
+func TestPromptsCursorSurvivesBadgeFlip(t *testing.T) {
+	promptTestHome(t)
+	app := NewApp(110, 30, DirLTR)
+	app.Push(&stubScreen{title: "root", mode: ModeNav})
+	scr := NewPromptsScreen(func(slot string, a *App) {
+		a.Push(NewPromptEditorScreen(slot))
+	}).(*promptsScreen)
+	app.Push(scr)
+
+	// Down lands on the security slot (row 2), Enter opens its editor, the
+	// typed text is saved through the confirm gate.
+	keys := []Key{KeyDown, KeyEnter}
+	keys = append(keys, typeRunes("pinned override")...)
+	keys = append(keys, KeyCtrlS, KeyYes)
+	app.CaptureRun(&ScriptedKeys{Keys: keys})
+
+	if c := scr.list.Cursor(); c != 1 {
+		t.Fatalf("cursor = %d after the editor save, want 1 (security slot)", c)
+	}
+	body := strings.Join(app.Frame().Lines, "\n")
+	if !strings.Contains(body, "security task prompt") {
+		t.Fatalf("cursor row not visible after the rebuild; frames:\n%s", body)
+	}
+	if !strings.Contains(body, "1 of 7 slots have an active override.") {
+		t.Fatalf("override count did not follow the save; frames:\n%s", body)
+	}
+	if !strings.Contains(body, baseFooter) || !strings.Contains(body, scr.list.FooterHint()) {
+		t.Fatalf("chrome cut after the badge flip; frames:\n%s", body)
 	}
 }

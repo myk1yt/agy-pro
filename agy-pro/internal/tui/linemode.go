@@ -12,8 +12,11 @@ import (
 // reader, so the screen tree and key semantics are identical on every host
 // (degrade matrix). The mandated word vocabulary is:
 //
-//	up down left right pgup pgdn home end enter esc y n 1-9 quit redraw
+//	up down left right pgup pgdn home end enter esc y n r 1-9 quit redraw
 //	del space help
+//
+// (`r` is the doctor screen's refresh gesture; without it the gesture is
+// unreachable on every host that reads keys as text lines.)
 //
 // plus the legacy settings-panel aliases (k/j, back, yes/no, q/exit,
 // ctrl-c, ctrl-l, tab) and an empty line for Enter. Unknown words are
@@ -30,7 +33,10 @@ func NewLineKeys(r io.Reader) *LineKeys {
 
 // ReadKey returns the next mapped key, skipping unmapped lines. A final
 // empty read at EOF ends the stream (an empty LINE, with its newline, is
-// Enter).
+// Enter). Line-mode keys are deliberately NOT marked as console-paced: the
+// gate arm delay exists for paste remainders in the raw console stream, and a
+// typed text line is a deliberate answer, so y / yes / n / no answer a gate
+// immediately, exactly as before the delay existed.
 func (l *LineKeys) ReadKey() (Key, bool) {
 	for {
 		line, err := l.r.ReadString('\n')
@@ -81,6 +87,8 @@ func mapLineWord(tok string) (Key, bool) {
 		return KeyYes, true
 	case "n", "no":
 		return KeyNo, true
+	case "r":
+		return Key("r"), true
 	case "ctrl-c", "quit", "exit", "q":
 		return KeyCtrlC, true
 	case "ctrl-l", "redraw":

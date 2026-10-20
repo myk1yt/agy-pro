@@ -3,12 +3,14 @@ package tui
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"agypro/internal/cellwidth"
 	"agypro/internal/i18n"
 	"agypro/internal/mode"
 	"agypro/internal/providers"
@@ -32,6 +34,9 @@ type settingsTestCore struct {
 	presets  []swarm.SavedPreset
 	fixed    string
 	rolled   string
+	// probe overrides the audit seam's verdict when non-nil (the fix7
+	// probe-failure pin needs an invalid verdict with a detail).
+	probe *providers.KeyProbeResult
 }
 
 // testPresetStore is the in-memory swarm.Store behind the harness.
@@ -86,11 +91,15 @@ func newSettingsTestCore(t *testing.T) *settingsTestCore {
 			if len(reg.Providers) > 0 {
 				h.tested = append(h.tested, reg.Providers[0].Name)
 			}
+			probe := providers.KeyProbeResult{Status: providers.ProbeValid}
+			if h.probe != nil {
+				probe = *h.probe
+			}
 			return []providers.KeyAudit{{
 				Provider: "alpha",
 				Env:      "AGY_P11_SET_KEY",
 				Resolved: true,
-				Probe:    providers.KeyProbeResult{Status: providers.ProbeValid},
+				Probe:    probe,
 			}}
 		},
 		Doctor: func(out io.Writer, strict bool) error {
@@ -167,6 +176,135 @@ func newSettingsApp(h *settingsTestCore) *App {
 	app := NewApp(110, 44, DirLTR)
 	app.Push(NewSettingsScreen(h.core))
 	return app
+}
+
+// newSettingsAppSized pushes a fresh settings screen over the harness core at
+// an explicit frame geometry. The approval-bound pins need the standard 80x24
+// console frame, which is smaller than the 110x44 default harness frame.
+func newSettingsAppSized(h *settingsTestCore, w, ht int) *App {
+	app := NewApp(w, ht, DirLTR)
+	app.Push(NewSettingsScreen(h.core))
+	return app
+}
+
+// seedDoctorProviders replaces the harness registry with n providers, each
+// declaring its own API key variable, so the fix-keys target "all" resolves n
+// per-entry diff lines. The Core seam and the on-disk providers.json the
+// approval diff reads are updated together.
+func (h *settingsTestCore) seedDoctorProviders(t *testing.T, n int) {
+	t.Helper()
+	reg := &providers.Registry{Providers: make([]providers.Provider, 0, n)}
+	for i := 1; i <= n; i++ {
+		reg.Providers = append(reg.Providers, providers.Provider{
+			Name:      fmt.Sprintf("p%02d", i),
+			BaseURL:   fmt.Sprintf("https://p%02d.example.com", i),
+			APIKeyEnv: fmt.Sprintf("AGY_P11_SET_%02d", i),
+			Models:    []providers.Model{{ID: fmt.Sprintf("m%02d", i)}},
+		})
+	}
+	h.reg = reg
+	if err := h.persistReg(reg); err != nil {
+		t.Fatalf("seed %d providers: %v", n, err)
+	}
+}
+
+// seedRollbackBackup writes one key backup (the on-disk shape the rollback
+// gate diffs) and returns its directory. names[i] is entry i+1 and existing[i]
+// says whether it restores (true) or deletes (false).
+func seedRollbackBackup(t *testing.T, names []string, existing []bool) string {
+	t.Helper()
+	var b strings.Builder
+	for i, n := range names {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		fmt.Fprintf(&b, `{"root":"user","name":%q,"existed":%t}`, n, existing[i])
+	}
+	backup := `{"version":2,"createdAt":"2026-01-01T00:00:00Z","tool":"agypro/internal/providers.RepairWindowsKeyNames","entries":[` + b.String() + `]}`
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+string(os.PathSeparator)+"registry-keys.v2.json", []byte(backup), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// openFixKeysGate drives the settings screen to the doctor section, activates
+// the fix-keys row, answers the target prompt with target, and returns the
+// live modal. app must already carry the settings screen.
+func openFixKeysGate(t *testing.T, app *App, target string) Modal {
+	t.Helper()
+	for i := 0; i < 4; i++ { // p1 -> p5
+		app.Step(KeyRight)
+	}
+	app.Step(Digit(2)) // doctor.fix_keys
+	for _, k := range append(typeKeys(target), KeyCtrlS) {
+		app.Step(k)
+	}
+	m := app.Modal()
+	if m == nil {
+		t.Fatal("fix-keys approval modal did not open")
+	}
+	return m
+}
+
+// openRollbackGate is the rollback-keys counterpart of openFixKeysGate.
+func openRollbackGate(t *testing.T, app *App, dir string) Modal {
+	t.Helper()
+	for i := 0; i < 4; i++ { // p1 -> p5
+		app.Step(KeyRight)
+	}
+	app.Step(Digit(3)) // doctor.rollback_keys
+	for _, k := range append(typeKeys(dir), KeyCtrlS) {
+		app.Step(k)
+	}
+	m := app.Modal()
+	if m == nil {
+		t.Fatal("rollback approval modal did not open")
+	}
+	return m
+}
+
+// gateFrame asserts the shared gate frame contract and returns the composed
+// frame with the gate block bounds. The gate block must be CONTIGUOUS and
+// COMPLETE (its first line is the gate title, its last line is the gate
+// legend, and it carries every body line the modal reports), the frame must
+// fit the height, and the shared footer must be the last frame line: those
+// four together are "nothing was cut off-frame".
+func gateFrame(t *testing.T, app *App, m Modal) (Frame, int, int) {
+	t.Helper()
+	c := app.ComposeFrame(nil)
+	f := c.Frame
+	if len(f.Lines) > app.Height() {
+		t.Fatalf("gate frame = %d rows, want at most %d:\n%s", len(f.Lines), app.Height(), f.String())
+	}
+	first, last, rows := -1, -1, 0
+	for i, k := range c.Kinds {
+		if k != BlockModal {
+			continue
+		}
+		if first < 0 {
+			first = i
+		}
+		rows++
+		if last >= 0 && i != last+1 {
+			t.Fatalf("gate block is not contiguous at row %d:\n%s", i, f.String())
+		}
+		last = i
+	}
+	if first < 0 {
+		t.Fatalf("no gate block in the frame:\n%s", f.String())
+	}
+	body := m.Body(app.Width())
+	if want := len(body) + 2; rows != want {
+		t.Fatalf("gate block rows = %d, want %d (title + %d body lines + legend):\n%s", rows, want, len(body), f.String())
+	}
+	if f.Lines[first] != m.Title() || f.Lines[last] != m.Footer() {
+		t.Fatalf("gate block is cut: first %q, last %q:\n%s", f.Lines[first], f.Lines[last], f.String())
+	}
+	if got := f.Lines[len(f.Lines)-1]; got != baseFooter {
+		t.Fatalf("shared footer missing: last frame line = %q:\n%s", got, f.String())
+	}
+	return f, first, last
 }
 
 // TestSettingsViewMsgIDAndEnByteIdentity is the plan-v2 section 3 golden
@@ -671,19 +809,102 @@ func TestSettingsScreenReadOnlyMessage(t *testing.T) {
 	}
 }
 
-// TestSettingsScreenWizardRow pins the interactive-wizard row: it points at
-// the CLI wizard and never writes.
-func TestSettingsScreenWizardRow(t *testing.T) {
+// TestSettingsScreenAddProviderGuidance pins the reworded provider-add
+// guidance (audit gap G1). The old message pointed at `agy pro setup`, which on
+// a console host opens this very TUI, so following the row sent the user in a
+// circle. Moved pin: the row now names the in-TUI add path as the primary route
+// and keeps the classic wizard as the documented terminal alternative, and it
+// still never writes.
+func TestSettingsScreenAddProviderGuidance(t *testing.T) {
+	// The guidance is English chrome (decision 6B) and its catalog key
+	// resolves in all twelve locales, so bind en explicitly: the assertions
+	// below quote the English sentence and must stay deterministic.
+	SetLanguage("en")
 	h := newSettingsTestCore(t)
 	app := newSettingsApp(h)
 
 	app.Step(KeyRight)
 	app.Step(Digit(2)) // providers.add_interactive
-	if got := app.Message(); !strings.Contains(got, "agy pro setup") {
-		t.Errorf("message = %q; want the wizard pointer", got)
+	got := app.Message()
+
+	const tuiPath = "Hub > Providers > Add provider"
+	if !strings.Contains(got, tuiPath) {
+		t.Fatalf("message = %q; want the in-TUI add path %q named", got, tuiPath)
+	}
+	for _, want := range []string{
+		"Terminal alternative:",
+		"`agy pro setup --wizard`",
+		"`agy pro settings providers add-interactive`",
+		"Raw key echo is masked first-5 + ****",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("message = %q; missing %q", got, want)
+		}
+	}
+	// The in-TUI route is the primary clause, so it precedes the terminal
+	// alternative; and the circular form (plain `agy pro setup`, the command
+	// that opens this TUI on a console host) is never named as the route.
+	if strings.Index(got, tuiPath) > strings.Index(got, "Terminal alternative:") {
+		t.Errorf("message = %q; want the in-TUI path before the terminal alternative", got)
+	}
+	if strings.Contains(got, "run `agy pro setup`") {
+		t.Errorf("message = %q; still routes to the circular command", got)
 	}
 	if len(h.saved) != 0 || len(h.added) != 0 {
-		t.Error("wizard row wrote state or registry")
+		t.Error("guidance row wrote state or registry")
+	}
+}
+
+// TestSettingsScreenAddProviderGuidanceFitsFrame pins the width behavior of the
+// new guidance at the standard 80x24 console frame: the message is one line, so
+// the shared composer clamps it there (no composed line over the frame width and
+// no wrapped row), and the in-TUI clause survives the cut because it comes
+// first.
+func TestSettingsScreenAddProviderGuidanceFitsFrame(t *testing.T) {
+	h := newSettingsTestCore(t)
+	app := newSettingsAppSized(h, 80, 24)
+
+	app.Step(KeyRight)
+	app.Step(Digit(2)) // providers.add_interactive
+	full := app.Message()
+	if cells := cellwidth.String(full); cells <= app.Width() {
+		t.Fatalf("guidance = %d cells; want an over-wide line the composer clamps", cells)
+	}
+	clamped := cellwidth.Truncate(full, app.Width())
+	if !strings.Contains(clamped, "Hub > Providers > Add provider") {
+		t.Fatalf("clamped guidance = %q; the in-TUI clause must survive the cut", clamped)
+	}
+	frame := app.Frame()
+	if !frameHasLine(frame.String(), clamped) {
+		t.Fatalf("frame carries no clamped guidance line %q:\n%s", clamped, frame.String())
+	}
+	for i, line := range frame.Lines {
+		if cells := cellwidth.String(line); cells > app.Width() {
+			t.Fatalf("composed line %d = %d cells, want <= %d: %q", i, cells, app.Width(), line)
+		}
+	}
+}
+
+// TestSettingsScreenAddProviderGuidancePlainTier pins the render policy: the
+// guidance is plain text, so a plain-tier paint of the frame (the NO_COLOR and
+// VT-enable-failure console path) emits zero escape bytes.
+func TestSettingsScreenAddProviderGuidancePlainTier(t *testing.T) {
+	h := newSettingsTestCore(t)
+	app := newSettingsAppSized(h, 80, 24)
+
+	app.Step(KeyRight)
+	app.Step(Digit(2)) // providers.add_interactive
+
+	var out bytes.Buffer
+	p := NewPainter(&out, plainTestCap())
+	if code := paintLoop(app, &ScriptedKeys{}, p, nil); code != 0 {
+		t.Fatalf("plain-tier paint exit = %d, want 0", code)
+	}
+	if strings.Contains(out.String(), "\x1b") {
+		t.Fatalf("plain-tier paint emitted escape bytes:\n%q", out.String())
+	}
+	if !strings.Contains(out.String(), "Hub > Providers > Add provider") {
+		t.Fatalf("plain-tier paint lost the guidance line:\n%q", out.String())
 	}
 }
 
@@ -866,5 +1087,564 @@ func TestSettingsScreenRollbackKeysApprovalGate(t *testing.T) {
 	app.Step(KeyYes)
 	if h.rolled != dir {
 		t.Fatalf("DoctorRollbackKeys = %q; want %q", h.rolled, dir)
+	}
+}
+
+// TestCapApprovalEntries pins the tail arithmetic of the bounded approval
+// summary at the unit level: an exact fit keeps every entry and adds nothing,
+// one entry over the budget keeps the leading lines plus ONE tail line naming
+// the exact remainder, and a budget that cannot hold a single entry still
+// renders the tail (an honest empty diff) instead of entries it has no room
+// for.
+func TestCapApprovalEntries(t *testing.T) {
+	entries := []string{"e1", "e2", "e3", "e4", "e5"}
+	tail := func(hidden int) string {
+		return fmt.Sprintf("  ... %d more entries NOT shown (the diff above is partial)", hidden)
+	}
+	cases := []struct {
+		name   string
+		fixed  int
+		budget int
+		want   []string
+	}{
+		{"exact fit", 3, 8, []string{"e1", "e2", "e3", "e4", "e5"}},
+		{"one over budget", 3, 7, []string{"e1", "e2", "e3", tail(2)}},
+		{"prefix only", 3, 4, []string{tail(5)}},
+		{"no room at all", 6, 2, []string{tail(5)}},
+	}
+	for _, c := range cases {
+		got := capApprovalEntries(entries, c.fixed, c.budget)
+		if strings.Join(got, "\n") != strings.Join(c.want, "\n") {
+			t.Errorf("%s: capApprovalEntries(fixed=%d, budget=%d) =\n%q\nwant\n%q",
+				c.name, c.fixed, c.budget, got, c.want)
+		}
+	}
+	// The caller's slice is never mutated in place: entries stays the full
+	// diff so a later gate over the same data still starts from all of it.
+	if strings.Join(entries, ",") != "e1,e2,e3,e4,e5" {
+		t.Errorf("capApprovalEntries mutated its input: %q", entries)
+	}
+}
+
+// TestSettingsApprovalBoundFixKeysAt80x24 is the F-1 pin for the settings half
+// of the fence. With 21 resolved fix-keys targets at the standard 80x24 frame
+// the gate's per-entry diff is bounded to the frame budget, so the composed
+// frame keeps the gate title, the visible diff lines, the exact
+// "N more entries NOT shown" tail, the gate legend and the shared footer, and
+// never exceeds 24 rows. Unbounded, the same summary is 24 body lines and does
+// not fit: the composer either trims the last diff lines with no marker (the
+// current cut ladder: 17 of 21 targets visible) or, on the tail cut it
+// replaced, takes the gate legend and the shared footer off-frame.
+func TestSettingsApprovalBoundFixKeysAt80x24(t *testing.T) {
+	h := newSettingsTestCore(t)
+	const targets = 21
+	h.seedDoctorProviders(t, targets)
+	app := newSettingsAppSized(h, 80, 24)
+	m := openFixKeysGate(t, app, "all")
+
+	f, first, last := gateFrame(t, app, m)
+	frame := f.String()
+	if !strings.Contains(frame, m.Title()) {
+		t.Errorf("gate title %q missing from the frame:\n%s", m.Title(), frame)
+	}
+	if !strings.Contains(frame, m.Footer()) {
+		t.Errorf("gate legend %q missing from the frame:\n%s", m.Footer(), frame)
+	}
+
+	// Exactness: the visible diff lines plus the tail count add up to the
+	// number of resolved targets, so the operator can tell exactly how much of
+	// the write scope is not on screen.
+	visible := 0
+	for i := first; i <= last; i++ {
+		if strings.Contains(f.Lines[i], " (provider ") {
+			visible++
+		}
+	}
+	hidden := targets - visible
+	if visible < 1 || hidden < 1 {
+		t.Fatalf("bounded gate shows %d of %d targets and hides %d; want a partial diff with a tail:\n%s",
+			visible, targets, hidden, frame)
+	}
+	if want := fmt.Sprintf("%d more entries NOT shown", hidden); !strings.Contains(frame, want) {
+		t.Errorf("tail %q missing from the frame:\n%s", want, frame)
+	}
+
+	// The gate keeps the LEADING targets, so the hidden scope is the tail of
+	// the resolved list, never an arbitrary subset.
+	firstShown := "AGY_P11_SET_01 (provider p01)"
+	lastShown := fmt.Sprintf("AGY_P11_SET_%02d (provider p%02d)", visible, visible)
+	firstHidden := fmt.Sprintf("AGY_P11_SET_%02d (provider p%02d)", visible+1, visible+1)
+	if !strings.Contains(frame, firstShown) {
+		t.Errorf("first target %q missing from the visible diff:\n%s", firstShown, frame)
+	}
+	if !strings.Contains(frame, lastShown) {
+		t.Errorf("last visible target %q missing:\n%s", lastShown, frame)
+	}
+	if strings.Contains(frame, firstHidden) {
+		t.Errorf("hidden target %q rendered anyway:\n%s", firstHidden, frame)
+	}
+}
+
+// TestSettingsApprovalBoundRollbackAt80x24 is the rollback-keys arm of the
+// same pin: 24 backup entries at 80x24 render a bounded diff with one exact
+// tail line, and the gate legend plus the shared footer stay on frame.
+func TestSettingsApprovalBoundRollbackAt80x24(t *testing.T) {
+	h := newSettingsTestCore(t)
+	const entries = 24
+	names := make([]string, 0, entries)
+	existing := make([]bool, 0, entries)
+	for i := 1; i <= entries; i++ {
+		names = append(names, fmt.Sprintf("E%02d", i))
+		existing = append(existing, i%2 == 1)
+	}
+	dir := seedRollbackBackup(t, names, existing)
+	app := newSettingsAppSized(h, 80, 24)
+	m := openRollbackGate(t, app, dir)
+
+	f, first, last := gateFrame(t, app, m)
+	frame := f.String()
+	visible := 0
+	for i := first; i <= last; i++ {
+		if strings.Contains(f.Lines[i], ": restore recorded value") ||
+			strings.Contains(f.Lines[i], ": delete (recorded as absent)") {
+			visible++
+		}
+	}
+	hidden := entries - visible
+	if visible < 1 || hidden < 1 {
+		t.Fatalf("bounded rollback gate shows %d of %d entries and hides %d:\n%s",
+			visible, entries, hidden, frame)
+	}
+	if want := fmt.Sprintf("%d more entries NOT shown", hidden); !strings.Contains(frame, want) {
+		t.Errorf("tail %q missing from the frame:\n%s", want, frame)
+	}
+	if !strings.Contains(frame, "E01: restore recorded value") {
+		t.Errorf("first backup entry missing from the visible diff:\n%s", frame)
+	}
+	firstHidden := fmt.Sprintf("E%02d", visible+1)
+	if strings.Contains(frame, firstHidden) {
+		t.Errorf("hidden backup entry %q rendered anyway:\n%s", firstHidden, frame)
+	}
+}
+
+// TestSettingsApprovalBoundReservesMessageRowAt80x24 pins the message-line
+// reservation of the bound: a live message line is one more frame section, so
+// the gate body budget shrinks by its cost and the 80x24 frame still ends with
+// the shared footer. Without the reservation the frame would be two rows over
+// and the gate legend plus the footer would be cut.
+func TestSettingsApprovalBoundReservesMessageRowAt80x24(t *testing.T) {
+	h := newSettingsTestCore(t)
+	h.seedDoctorProviders(t, 21)
+	app := NewApp(80, 24, DirLTR)
+	scr := NewSettingsScreen(h.core).(*settingsScreen)
+	app.Push(scr)
+	app.SetMessage("last action: provider added")
+	scr.approveFixKeys("Repair Key Names (--fix-keys)", "all", app)
+	m := app.Modal()
+	if m == nil {
+		t.Fatal("fix-keys approval modal did not open")
+	}
+
+	f, first, last := gateFrame(t, app, m)
+	frame := f.String()
+	if !strings.Contains(frame, "last action: provider added") {
+		t.Errorf("live message line missing from the frame:\n%s", frame)
+	}
+	visible := 0
+	for i := first; i <= last; i++ {
+		if strings.Contains(f.Lines[i], " (provider ") {
+			visible++
+		}
+	}
+	hidden := 21 - visible
+	if want := fmt.Sprintf("%d more entries NOT shown", hidden); hidden < 1 || !strings.Contains(frame, want) {
+		t.Errorf("tail %q missing (visible=%d, hidden=%d):\n%s", want, visible, hidden, frame)
+	}
+}
+
+// TestSettingsApprovalBoundFollowsFrameHeight pins that the bound is derived
+// from the frame geometry instead of a fixed entry cap: the same 21 targets
+// that are bounded at 80x24 render in full at 80x40, with no tail line.
+func TestSettingsApprovalBoundFollowsFrameHeight(t *testing.T) {
+	h := newSettingsTestCore(t)
+	const targets = 21
+	h.seedDoctorProviders(t, targets)
+	app := newSettingsAppSized(h, 80, 40)
+	m := openFixKeysGate(t, app, "all")
+
+	body := strings.Join(m.Body(app.Width()), "\n")
+	if strings.Contains(body, "NOT shown") {
+		t.Fatalf("tall frame bounded a summary it can hold:\n%s", body)
+	}
+	if got := strings.Count(body, " (provider "); got != targets {
+		t.Fatalf("visible targets = %d, want %d in an 80x40 frame:\n%s", got, targets, body)
+	}
+	if f := app.Frame(); len(f.Lines) > app.Height() {
+		t.Fatalf("frame = %d rows, want at most %d", len(f.Lines), app.Height())
+	}
+}
+
+// TestSettingsApprovalSummaryUnchangedForFewEntries pins the small-count arm
+// of the bound: a one-target fix-keys gate at 80x24 renders exactly the
+// pre-bound body, byte for byte, and carries no tail line.
+func TestSettingsApprovalSummaryUnchangedForFewEntries(t *testing.T) {
+	h := newSettingsTestCore(t)
+	app := newSettingsAppSized(h, 80, 24)
+	m := openFixKeysGate(t, app, "all")
+
+	want := []string{
+		"Repair BOM-variant key names for all; an entry is rewritten only when its clean name probes dead and a BOM variant probes valid.",
+		"Models before: 1, after: 1",
+		"A DPAPI-encrypted backup of every touched value is written (0600, atomic) before any change; providers.json is not modified.",
+		"  AGY_P11_SET_KEY (provider alpha)",
+	}
+	if got := m.Body(app.Width()); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("small-gate body changed:\n--- got ---\n%s\n--- want ---\n%s",
+			strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if strings.Contains(m.Footer(), "NOT shown") || strings.Contains(app.Frame().String(), "NOT shown") {
+		t.Error("a tail line appeared on a gate that fits")
+	}
+}
+
+// TestSettingsApprovalSummaryUnchangedForSmallRollback is the rollback-side
+// small-count pin: three backup entries at 80x24 render exactly the pre-bound
+// body, byte for byte, with no tail line.
+func TestSettingsApprovalSummaryUnchangedForSmallRollback(t *testing.T) {
+	h := newSettingsTestCore(t)
+	dir := seedRollbackBackup(t,
+		[]string{"FOO_API_KEY", "BAR_API_KEY", "BAZ_API_KEY"},
+		[]bool{true, false, true})
+	app := newSettingsAppSized(h, 80, 24)
+	m := openRollbackGate(t, app, dir)
+
+	want := []string{
+		"Restore registry key names from backup " + providers.MaskOperand(dir) + "; entries recorded as absent are deleted, the rest are rewritten.",
+		"Models before: 1, after: 1",
+		"No file is written; the user environment store is mutated in place.",
+		"  FOO_API_KEY: restore recorded value",
+		"- BAR_API_KEY: delete (recorded as absent)",
+		"  BAZ_API_KEY: restore recorded value",
+	}
+	if got := m.Body(app.Width()); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("small rollback body changed:\n--- got ---\n%s\n--- want ---\n%s",
+			strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if strings.Contains(app.Frame().String(), "NOT shown") {
+		t.Error("a tail line appeared on a rollback gate that fits")
+	}
+}
+
+// TestSettingsApprovalBoundedRollbackKeepsMasking pins the masking discipline
+// on both sides of the bound: a secret-shaped backup entry name inside the
+// visible window still renders through MaskOperand (first-5 + ****), the
+// secret-shaped entry that the bound hides never reaches the frame, and no raw
+// value survives anywhere in the composed frame.
+func TestSettingsApprovalBoundedRollbackKeepsMasking(t *testing.T) {
+	h := newSettingsTestCore(t)
+	const entries = 22
+	const shownSecret = "AKIAABCDEFGHIJKLMNOP"
+	const hiddenSecret = "AKIAZZZZZZZZZZZZZZZZ"
+	names := make([]string, 0, entries)
+	existing := make([]bool, 0, entries)
+	for i := 1; i <= entries; i++ {
+		switch i {
+		case 1:
+			names = append(names, shownSecret)
+			existing = append(existing, true)
+		case entries:
+			names = append(names, hiddenSecret)
+			existing = append(existing, false)
+		default:
+			names = append(names, fmt.Sprintf("E%02d", i))
+			existing = append(existing, i%2 == 1)
+		}
+	}
+	dir := seedRollbackBackup(t, names, existing)
+	app := newSettingsAppSized(h, 80, 24)
+	m := openRollbackGate(t, app, dir)
+
+	f, first, last := gateFrame(t, app, m)
+	frame := f.String()
+	if strings.Contains(frame, shownSecret) || strings.Contains(frame, hiddenSecret) {
+		t.Fatalf("a raw secret-shaped entry name reached the frame:\n%s", frame)
+	}
+	if !strings.Contains(frame, providers.MaskOperand(shownSecret)) {
+		t.Errorf("visible secret-shaped name is not masked first-5 + ****:\n%s", frame)
+	}
+	if want := providers.MaskOperand(shownSecret); want != "AKIAA****" {
+		t.Fatalf("masking authority changed: MaskOperand(%q) = %q", shownSecret, want)
+	}
+	// The bound hid the last entry, so only its (masked) absence is on frame.
+	if strings.Contains(frame, providers.MaskOperand(hiddenSecret)) {
+		t.Errorf("hidden secret-shaped entry rendered anyway:\n%s", frame)
+	}
+	visible := 0
+	for i := first; i <= last; i++ {
+		if strings.Contains(f.Lines[i], ": restore recorded value") ||
+			strings.Contains(f.Lines[i], ": delete (recorded as absent)") {
+			visible++
+		}
+	}
+	hidden := entries - visible
+	if hidden < 1 {
+		t.Fatalf("bound did not fire for %d entries:\n%s", entries, frame)
+	}
+	if want := fmt.Sprintf("%d more entries NOT shown", hidden); !strings.Contains(frame, want) {
+		t.Errorf("tail %q missing from the frame:\n%s", want, frame)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// fix7 - the legacy settings screen composes every provider NAME operand
+// through the registry-slot authority (providers.MaskSlot).
+// ---------------------------------------------------------------------------
+
+const (
+	settingsPlantName   = "sk_live_0123456789abcdef"
+	settingsPlantMasked = "sk_li****"
+	settingsPlantTail   = "0123456789abcdef"
+)
+
+// seedProviderName appends one registry record and mirrors it into the temp
+// providers.json the approval diff reads.
+func seedProviderName(t *testing.T, h *settingsTestCore, name, baseURL, env string) {
+	t.Helper()
+	h.reg.Providers = append(h.reg.Providers, providers.Provider{
+		Name:      name,
+		BaseURL:   baseURL,
+		APIKeyEnv: env,
+		Models:    []providers.Model{{ID: "p1"}},
+	})
+	if err := h.persistReg(h.reg); err != nil {
+		t.Fatalf("seed provider %q: %v", name, err)
+	}
+}
+
+// assertNoPlantedName fails when haystack carries the planted name or the
+// alphanumeric tail that a partial mask would leave behind.
+func assertNoPlantedName(t *testing.T, haystack string) {
+	t.Helper()
+	if strings.Contains(haystack, settingsPlantName) {
+		t.Errorf("output echoes the planted provider name raw: %q", haystack)
+	}
+	if strings.Contains(haystack, settingsPlantTail) {
+		t.Errorf("output leaks the planted name tail: %q", haystack)
+	}
+}
+
+// TestSettingsScreenProviderNameOperandsSlotMasked pins every name sink of the
+// legacy settings screen: the credential-shaped name masks in the delete,
+// rename, add, test and fix-keys compositions, and no raw fragment survives.
+func TestSettingsScreenProviderNameOperandsSlotMasked(t *testing.T) {
+	t.Run("delete gate masks the removed name", func(t *testing.T) {
+		h := newSettingsTestCore(t)
+		seedProviderName(t, h, settingsPlantName, "https://plant.example.com", "AGY_PLANT_KEY")
+		app := newSettingsApp(h)
+		app.Step(KeyRight)
+		app.Step(Digit(6)) // providers.delete
+		for _, k := range append(typeKeys(settingsPlantName), KeyCtrlS) {
+			app.Step(k)
+		}
+		m := app.Modal()
+		if m == nil {
+			t.Fatal("delete approval modal did not open")
+		}
+		body := strings.Join(m.Body(110), "\n")
+		for _, want := range []string{
+			"Removes the registry entry for " + settingsPlantMasked + " only.",
+			"- provider " + settingsPlantMasked + " (https://plant.example.com, 1 model)",
+		} {
+			if !strings.Contains(body, want) {
+				t.Errorf("approval body missing %q\n%s", want, body)
+			}
+		}
+		assertNoPlantedName(t, body)
+	})
+
+	t.Run("rename gate masks both name operands", func(t *testing.T) {
+		h := newSettingsTestCore(t)
+		seedProviderName(t, h, settingsPlantName, "https://plant.example.com", "AGY_PLANT_KEY")
+		app := newSettingsApp(h)
+
+		// old operand: the planted record is the rename source.
+		app.Step(KeyRight)
+		app.Step(Digit(5)) // providers.rename
+		for _, k := range append(typeKeys(settingsPlantName), KeyCtrlS) {
+			app.Step(k)
+		}
+		for _, k := range append(typeKeys("beta"), KeyCtrlS) {
+			app.Step(k)
+		}
+		m := app.Modal()
+		if m == nil {
+			t.Fatal("rename approval modal did not open (planted source)")
+		}
+		body := strings.Join(m.Body(110), "\n")
+		for _, want := range []string{
+			"Rename provider " + settingsPlantMasked + " to beta;",
+			"- provider " + settingsPlantMasked + " (https://plant.example.com, 1 model)",
+		} {
+			if !strings.Contains(body, want) {
+				t.Errorf("rename body missing %q\n%s", want, body)
+			}
+		}
+		assertNoPlantedName(t, body)
+		app.Step(KeyNo)
+
+		// new operand: the planted name is the rename destination.
+		app.Step(Digit(5))
+		for _, k := range append(typeKeys("alpha"), KeyCtrlS) {
+			app.Step(k)
+		}
+		for _, k := range append(typeKeys(settingsPlantName), KeyCtrlS) {
+			app.Step(k)
+		}
+		m = app.Modal()
+		if m == nil {
+			t.Fatal("rename approval modal did not open (planted destination)")
+		}
+		body = strings.Join(m.Body(110), "\n")
+		for _, want := range []string{
+			"Rename provider alpha to " + settingsPlantMasked + ";",
+			"+ provider " + settingsPlantMasked + " (https://alpha.example.com, 1 model)",
+		} {
+			if !strings.Contains(body, want) {
+				t.Errorf("rename body missing %q\n%s", want, body)
+			}
+		}
+		assertNoPlantedName(t, body)
+	})
+
+	t.Run("add gate masks the spec name", func(t *testing.T) {
+		h := newSettingsTestCore(t)
+		app := newSettingsApp(h)
+		raw := `{"name":"` + settingsPlantName + `","baseURL":"https://plant2.example.com","apiKeyEnv":"AGY_PLANT_KEY","models":[{"id":"p1"}]}`
+
+		// The JSON add door refuses the underscore-head name at ingest
+		// (providers.NameCarriesCredential), so this name can no longer reach
+		// the approval through the prompt. The screen sink is still pinned by
+		// handing the approval the spec shape the door would accept, which is
+		// where a disk-borne record could arrive out of band.
+		if _, err := settings.ParseProviderSpecJSON([]byte(raw)); err == nil {
+			t.Fatalf("the add door accepted the credential-shaped name %q", settingsPlantName)
+		}
+
+		spec := settings.ProviderSpec{
+			Name:      settingsPlantName,
+			BaseURL:   "https://plant2.example.com",
+			APIKeyEnv: "AGY_PLANT_KEY",
+			Models:    []providers.Model{{ID: "p1"}},
+		}
+		scr, ok := app.Top().(*settingsScreen)
+		if !ok {
+			t.Fatalf("top screen is %T; want *settingsScreen", app.Top())
+		}
+		scr.approveProviderAdd("providers.add.label", spec, "plant.json", app)
+		m := app.Modal()
+		if m == nil {
+			t.Fatalf("add approval modal did not open; message %q", app.Message())
+		}
+		body := strings.Join(m.Body(110), "\n")
+		for _, want := range []string{
+			"Add provider " + settingsPlantMasked + " to the registry.",
+			"+ provider " + settingsPlantMasked + " (https://plant2.example.com, 1 model)",
+		} {
+			if !strings.Contains(body, want) {
+				t.Errorf("approval body missing %q\n%s", want, body)
+			}
+		}
+		assertNoPlantedName(t, body)
+	})
+
+	t.Run("provider test verdict masks the name", func(t *testing.T) {
+		h := newSettingsTestCore(t)
+		seedProviderName(t, h, settingsPlantName, "https://plant.example.com", "AGY_PLANT_KEY")
+		app := newSettingsApp(h)
+		app.Step(KeyRight)
+		app.Step(Digit(4)) // providers.test
+		for _, k := range append(typeKeys(settingsPlantName), KeyCtrlS) {
+			app.Step(k)
+		}
+		want := settingsPlantMasked + ": connection OK"
+		if got := app.Message(); got != want {
+			t.Errorf("test verdict drifted:\ngot:  %q\nwant: %q", got, want)
+		}
+		assertNoPlantedName(t, app.Message())
+	})
+
+	t.Run("provider test failure masks the name in the detail", func(t *testing.T) {
+		h := newSettingsTestCore(t)
+		seedProviderName(t, h, settingsPlantName, "https://plant.example.com", "AGY_PLANT_KEY")
+		invalid := providers.KeyProbeResult{Status: providers.ProbeInvalid, Detail: "dest plant.example: rejected by upstream"}
+		h.probe = &invalid
+		app := newSettingsApp(h)
+		app.Step(KeyRight)
+		app.Step(Digit(4)) // providers.test
+		for _, k := range append(typeKeys(settingsPlantName), KeyCtrlS) {
+			app.Step(k)
+		}
+		want := settingsPlantMasked + ": test failed. Details (English, redacted): " +
+			`provider "` + settingsPlantMasked + `": key probe status invalid (dest plant.example: rejected by upstream)`
+		if got := app.Message(); got != want {
+			t.Errorf("failure sentence drifted:\ngot:  %q\nwant: %q", got, want)
+		}
+		assertNoPlantedName(t, app.Message())
+	})
+
+	t.Run("fix-keys entry masks the provider name", func(t *testing.T) {
+		h := newSettingsTestCore(t)
+		seedProviderName(t, h, settingsPlantName, "https://plant.example.com", "AGY_PLANT_KEY")
+		app := newSettingsApp(h)
+		m := openFixKeysGate(t, app, "all")
+		body := strings.Join(m.Body(110), "\n")
+		want := "AGY_PLANT_KEY (provider " + settingsPlantMasked + ")"
+		if !strings.Contains(body, want) {
+			t.Errorf("fix-keys body missing %q\n%s", want, body)
+		}
+		if !strings.Contains(body, "AGY_P11_SET_KEY (provider alpha)") {
+			t.Errorf("benign fix-keys entry stopped rendering readable\n%s", body)
+		}
+		assertNoPlantedName(t, body)
+	})
+}
+
+// TestSettingsScreenBenignProviderNamesByteIdentical pins the identity half of
+// the fix7 contract: every corpus name renders exactly as the pre-fix screen
+// did, in both the sentence and the diff line.
+func TestSettingsScreenBenignProviderNamesByteIdentical(t *testing.T) {
+	corpus := []string{"openai", "gemini", "deepseek", "nw", "charm", "acme-corp", "alpha", "beta"}
+	h := newSettingsTestCore(t)
+	for _, name := range corpus {
+		if name == "alpha" {
+			continue // already seeded by the harness
+		}
+		seedProviderName(t, h, name, "https://"+name+".example.com", "AGY_CORPUS_KEY")
+	}
+	app := newSettingsApp(h)
+	app.Step(KeyRight) // p1 -> p2
+
+	for _, name := range corpus {
+		app.Step(Digit(6)) // providers.delete
+		for _, k := range append(typeKeys(name), KeyCtrlS) {
+			app.Step(k)
+		}
+		m := app.Modal()
+		if m == nil {
+			t.Fatalf("delete approval modal did not open for %q", name)
+		}
+		body := strings.Join(m.Body(110), "\n")
+		for _, want := range []string{
+			"Removes the registry entry for " + name + " only.",
+			"- provider " + name + " (https://" + name + ".example.com, 1 model)",
+		} {
+			if !strings.Contains(body, want) {
+				t.Errorf("benign name %q stopped rendering byte-identically; missing %q\n%s", name, want, body)
+			}
+		}
+		if strings.Contains(body, "****") {
+			t.Errorf("benign name %q was masked:\n%s", name, body)
+		}
+		app.Step(KeyNo)
 	}
 }

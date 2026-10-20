@@ -4,22 +4,17 @@ import (
 	"agypro/internal/i18n"
 )
 
-// langNameKeyPrefix addresses each language's display name in the current
-// UI language. None of the 12 keys exist in en.json yet (en.json is owned
-// by another unit); until the catalog pass the parenthetical falls back to
-// the registry English name so the row is never empty.
-//
-// MISSING-KEY: lang.name.<code> (12 keys: lang.name.en, lang.name.zh-Hans,
-// lang.name.zh-Hant, lang.name.ko, lang.name.ja, lang.name.ru,
-// lang.name.hi, lang.name.de, lang.name.fr, lang.name.it, lang.name.vi,
-// lang.name.ar)
-const langNameKeyPrefix = "lang.name."
-
 // languageScreen is screen 0 of the setup flow: the 12-language selector.
-// Rows show the endonym first (a code constant, readable before any catalog
-// loads) plus the name in the current UI language in parentheses; the Arabic
-// row carries the honest "(logical order)" qualifier. The stored language's
-// row is preselected (English on first run).
+// Each row shows the endonym alone (a code constant, readable before any
+// catalog loads); the Arabic row adds the honest "(logical order)"
+// qualifier. The stored language's row is preselected (English on first
+// run).
+//
+// The row carries no second name on purpose: lang.name.<code> exists in
+// none of the 12 catalogs, and an always-English parenthetical beside an
+// endonym states something the endonym already says while pretending to be
+// the current UI language. The endonym is the row's identifier; the row ID
+// (m.Code) is the stored value.
 //
 // The screen renders with the bundle it was constructed with and never
 // writes state itself: activation delegates to onChoose, and the app shell
@@ -57,17 +52,11 @@ func NewLanguageScreen(b *i18n.Bundle, current string, onChoose func(code string
 	return s
 }
 
-// rowLabel composes one selector row: endonym first, then the name in the
-// current UI language in parentheses (the registry English name stands in
-// while lang.name.* is missing), then the RTL qualifier for Arabic.
+// rowLabel composes one selector row: the endonym, then the RTL qualifier
+// for Arabic. The endonym is the identifier (unique across the closed
+// registry and readable in its own script), so no second name is appended.
 func (s *languageScreen) rowLabel(m i18n.LangMeta) string {
 	label := m.Endonym
-	key := langNameKeyPrefix + m.Code
-	if name := s.b.T(key); name != key {
-		label += " (" + name + ")"
-	} else {
-		label += " (" + m.English + ")"
-	}
 	if m.Dir == "rtl" {
 		label += " " + s.b.T("lang.logical_order")
 	}
@@ -93,19 +82,33 @@ func (s *languageScreen) Title() string { return s.b.T("lang.screen.title") }
 // Mode is ModeNav: digits and arrows both navigate.
 func (s *languageScreen) Mode() Mode { return ModeNav }
 
-// Draw renders the numbered rows and the footer line: the first-run hint, or
-// the keep line on a returning run (a language is already stored).
+// Draw renders the numbered rows and the footer: the first-run hint, or the
+// keep line on a returning run (a language is already stored). The closed
+// registry holds 12 languages and digits reach rows 1-9 only, so a list
+// longer than 9 rows adds the shared rows-past-9 clause on its own footer
+// line (same clause, same threshold, and the same English fallback as
+// stepList.FooterHint; the key the help overlay uses makes it follow the UI
+// language).
+//
+// Height budget: the frame is title + blank + rows + blank + footer lines +
+// blank + base footer, so the page holds Height - 5 - len(footer) rows. The
+// clause line is paid for out of the page, so the frame height is unchanged
+// and a 24-row first frame still fits end to end.
 func (s *languageScreen) Draw(a *App) []string {
-	page := a.Height() - 6
+	line := s.b.T("lang.screen.hint")
+	if s.current != "" {
+		line = s.b.T("lang.screen.keep")
+	}
+	footer := []string{line}
+	if s.list.Len() > 9 {
+		footer = append(footer, missingOr(s.b, "help.keys.rows_past_9", helpKeysRowsPast9))
+	}
+	page := a.Height() - 5 - len(footer)
 	if page < 1 {
 		page = 1
 	}
 	s.list.SetPageSize(page)
-	footer := s.b.T("lang.screen.hint")
-	if s.current != "" {
-		footer = s.b.T("lang.screen.keep")
-	}
-	return append(s.list.Render(a.Width()), "", footer)
+	return append(append(s.list.Render(a.Width()), ""), footer...)
 }
 
 // HandleKey delegates to the shared stepList, so digits select+activate and

@@ -1,8 +1,12 @@
 package tui
 
 import (
+	"fmt"
+	"io"
 	"strings"
 	"testing"
+
+	"agypro/internal/settings"
 )
 
 // TestLineModeWordParity pins the mandated word vocabulary: every word the
@@ -24,6 +28,7 @@ func TestLineModeWordParity(t *testing.T) {
 		{"esc", KeyEsc},
 		{"y", KeyYes},
 		{"n", KeyNo},
+		{"r", Key("r")},
 		{"quit", KeyCtrlC},
 		{"redraw", KeyCtrlL},
 		{"del", KeyDelete},
@@ -67,6 +72,41 @@ func TestLineModeReader(t *testing.T) {
 	}
 	if k, ok := lk.ReadKey(); !ok || k != KeyYes {
 		t.Fatalf("unterminated Y = %q,%v; want y,true", k, ok)
+	}
+
+	// The doctor refresh spelling survives the reader lower-casing: the
+	// screen accepts the bare "r" key, so "R" must arrive as that key.
+	lk = NewLineKeys(strings.NewReader("R\n"))
+	if k, ok := lk.ReadKey(); !ok || k != Key("r") {
+		t.Fatalf("R = %q,%v; want the bare r key,true", k, ok)
+	}
+}
+
+// TestLineModeDeliversDoctorRefresh pins the reachability half of the r
+// mapping: on a host that reads keys as text lines (pipes, non-Windows TTYs,
+// mintty) the doctor screen's refresh gesture is the only way to re-run the
+// diagnose seam, and before the mapping existed a piped "r" was skipped as an
+// unknown word.
+func TestLineModeDeliversDoctorRefresh(t *testing.T) {
+	doctorTestEnv(t)
+	calls := 0
+	core := settings.NewCore(settings.Deps{
+		Doctor: func(out io.Writer, strict bool) error {
+			calls++
+			fmt.Fprintf(out, "DIAG-RUN-%d", calls)
+			return nil
+		},
+	})
+	app := NewApp(80, 24, DirLTR)
+	app.Push(NewDoctorScreen(core))
+
+	app.CaptureRun(NewLineKeys(strings.NewReader("r\n")))
+	if calls != 2 {
+		t.Fatalf("diagnose ran %d times, want 2 (construction snapshot + line-mode r)", calls)
+	}
+	app.Step(KeyTab)
+	if frame := app.Frame().String(); !strings.Contains(frame, "DIAG-RUN-2") {
+		t.Fatalf("Doctor pane did not show the refreshed run; frames:\n%s", frame)
 	}
 }
 

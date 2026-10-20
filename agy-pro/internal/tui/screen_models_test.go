@@ -1,13 +1,16 @@
 package tui
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
+	"agypro/internal/cellwidth"
 	"agypro/internal/providers"
 	"agypro/internal/settings"
 )
@@ -180,9 +183,11 @@ func TestModelsDualNavActionRows(t *testing.T) {
 }
 
 // TestModelsEditActionRow pins that the Edit action opens the form in edit
-// mode for the model under the cursor.
+// mode for the model under the cursor. The selection gesture (KeyUp rests
+// the cursor on model row 1) is required first: the sticky selection starts
+// at -1 since user decision 2A, so firing Edit on entry would refuse.
 func TestModelsEditActionRow(t *testing.T) {
-	_, calls := runModelsKeys(t, []Key{Digit(4)})
+	_, calls := runModelsKeys(t, []Key{KeyUp, Digit(4)})
 	if len(calls) != 1 || calls[0].mode != "edit" || calls[0].modelID != "acme-fast" {
 		t.Fatalf("edit action opened %v, want edit/acme-fast", calls)
 	}
@@ -193,7 +198,9 @@ func TestModelsEditActionRow(t *testing.T) {
 // model count N -> N-1) renders in the approval modal, without the
 // last-model warning for a two-model provider.
 func TestModelsDeleteApprovalSummary(t *testing.T) {
-	out, _ := runModelsKeys(t, []Key{Digit(5)})
+	// KeyUp first: the sticky selection starts at -1 (user decision 2A), so
+	// the Delete row refuses until the cursor rested on a model row.
+	out, _ := runModelsKeys(t, []Key{KeyUp, Digit(5)})
 	for _, want := range []string{
 		"Delete Model?",
 		"Removes the registry entry for acme-fast in acme. Key values are untouched.",
@@ -216,7 +223,8 @@ func TestModelsDeleteConfirm(t *testing.T) {
 	app, _, path := newModelsTestApp(t, nil)
 	before, _ := json.Marshal(reloadModels(t, path)[1])
 
-	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{Digit(5), KeyYes}})
+	// KeyUp first: select acme-fast (selection starts at -1, decision 2A).
+	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyUp, Digit(5), KeyYes}})
 
 	models := reloadModels(t, path)
 	if len(models) != 1 || models[0].ID != "acme-slow" {
@@ -244,7 +252,8 @@ func TestModelsDeleteCancel(t *testing.T) {
 		t.Fatalf("read providers.json: %v", err)
 	}
 
-	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{Digit(5), KeyNo}})
+	// KeyUp first: select acme-fast (selection starts at -1, decision 2A).
+	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyUp, Digit(5), KeyNo}})
 
 	if got, err := os.ReadFile(path); err != nil || string(got) != string(diskBefore) {
 		t.Fatalf("on-disk JSON changed after cancel (err %v)", err)
@@ -260,10 +269,12 @@ func TestModelsDeleteCancel(t *testing.T) {
 // TestModelsDeleteLastModelWarning pins that deleting the provider's last
 // model surfaces the warning line in the approval summary.
 func TestModelsDeleteLastModelWarning(t *testing.T) {
-	// Cursor on acme-fast (row 1); delete it, then the provider has one
-	// model left. Approve, re-aim at the survivor, open the gate again.
+	// Select acme-fast first (KeyUp rests the cursor on model row 1; the
+	// sticky selection starts at -1 since user decision 2A), delete it, then
+	// the provider has one model left. Approve, re-aim at the survivor, open
+	// the gate again.
 	out, _ := runModelsKeys(t, []Key{
-		Digit(5), KeyYes, // delete acme-fast (selection sticks on the model rows)
+		KeyUp, Digit(5), KeyYes, // delete acme-fast (selection sticks on the model rows)
 		KeyHome, Digit(4), // selection follows the cursor onto acme-slow; Delete is now row 4
 	})
 	for _, want := range []string{
@@ -391,9 +402,10 @@ func TestModelsAddOpensForm(t *testing.T) {
 func TestModelsToolsOverlay(t *testing.T) {
 	app, _, path := newModelsTestApp(t, nil)
 
-	// Cursor on acme-fast (row 1); open tools (row 7). Toggle list_dir on
-	// (row 2 of the overlay), then save, then approve.
-	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{Digit(7), KeyDown, KeySpace, KeyEnter, KeyYes}})
+	// Cursor on acme-fast (row 1, selected via KeyUp since the sticky
+	// selection starts at -1, decision 2A); open tools (row 7). Toggle
+	// list_dir on (row 2 of the overlay), then save, then approve.
+	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyUp, Digit(7), KeyDown, KeySpace, KeyEnter, KeyYes}})
 
 	for _, want := range []string{
 		missingModelsToolsTitle, "[x] read_file", "[ ] grep", missingModelsToolsHint,
@@ -427,7 +439,7 @@ func TestModelsToolsApprovalGate(t *testing.T) {
 		t.Fatalf("read providers.json: %v", err)
 	}
 
-	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{Digit(7), KeyDown, KeySpace, KeyEnter}})
+	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyUp, Digit(7), KeyDown, KeySpace, KeyEnter}})
 
 	if got, _ := os.ReadFile(path); string(got) != string(diskBefore) {
 		t.Fatal("on-disk JSON changed before the tools approval modal was answered")
@@ -450,13 +462,31 @@ func TestModelsToolsUnionPreservesUnlisted(t *testing.T) {
 	app, _, path := newModelsTestAppReg(t, reg, nil)
 
 	// Open tools (row 7), grant list_dir (overlay row 2), save, approve.
-	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{Digit(7), KeyDown, KeySpace, KeyEnter, KeyYes}})
+	// KeyUp first selects acme-fast (selection starts at -1, decision 2A).
+	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyUp, Digit(7), KeyDown, KeySpace, KeyEnter, KeyYes}})
 
-	for _, want := range []string{
-		"tools: read_file, replace_in_file, read_url_content, search_web -> read_file, list_dir, replace_in_file, read_url_content, search_web",
-	} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("approval diff missing %q; frames:\n%s", want, out)
+	// Moved pin: the width clamp moved to the shared composition path
+	// (phase-3 fix-2), so the approval diff reaches App.Frame already cut at
+	// the frame width. The old expectation asserted the pre-clamp content (the
+	// 133-cell diff at width 100), reachable only on the unclamped test path;
+	// the byte-exact expectation is now the clamped form of the full frame
+	// line (two-space indent included, as the catalog sentence renders it), and
+	// the raw line must be absent.
+	full := "  tools: read_file, replace_in_file, read_url_content, search_web -> read_file, list_dir, replace_in_file, read_url_content, search_web"
+	clamped := cellwidth.Truncate(full, app.Width())
+	if clamped == full || !strings.Contains(clamped, "->") {
+		t.Fatalf("clamped diff = %q; want the width-%d cut that keeps the arrow", clamped, app.Width())
+	}
+	if !strings.Contains(out, clamped) {
+		t.Fatalf("approval diff missing %q; frames:\n%s", clamped, out)
+	}
+	if strings.Contains(out, full) {
+		t.Fatalf("unclamped approval diff reached the frame: %q", full)
+	}
+	// No composed line may exceed the frame width.
+	for _, line := range app.Frame().Lines {
+		if cells := cellwidth.String(line); cells > app.Width() {
+			t.Fatalf("composed line = %d cells, want <= %d: %q", cells, app.Width(), line)
 		}
 	}
 	tools := reloadModels(t, path)[0].Capabilities.AllowedTools
@@ -479,8 +509,9 @@ func TestModelsToolsApprovalMasksEachGrant(t *testing.T) {
 	reg.Providers[0].Models[0].Capabilities.AllowedTools = []string{"read_file", planted}
 	app, _, path := newModelsTestAppReg(t, reg, nil)
 
-	// Open tools (row 7), save untouched (Enter), approve (y).
-	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{Digit(7), KeyEnter, KeyYes}})
+	// Open tools (row 7), save untouched (Enter), approve (y). KeyUp first
+	// selects acme-fast (selection starts at -1, decision 2A).
+	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyUp, Digit(7), KeyEnter, KeyYes}})
 
 	if strings.Contains(out, planted) {
 		t.Fatalf("raw credential-shaped grant rendered; frames:\n%s", out)
@@ -511,8 +542,9 @@ func TestModelsToolsMinOne(t *testing.T) {
 	}
 
 	// Open tools (row 7); the overlay cursor starts on read_file, the only
-	// grant. Space tries to uncheck it and must be refused.
-	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{Digit(7), KeySpace, KeyEnter, KeyNo}})
+	// grant. Space tries to uncheck it and must be refused. KeyUp first
+	// selects acme-fast (selection starts at -1, decision 2A).
+	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyUp, Digit(7), KeySpace, KeyEnter, KeyNo}})
 
 	if !strings.Contains(out, missingModelsToolsMinOne) {
 		t.Fatalf("min-one refusal missing; frames:\n%s", out)
@@ -535,7 +567,7 @@ func TestModelsToolsOverlayCancel(t *testing.T) {
 		t.Fatalf("read providers.json: %v", err)
 	}
 
-	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{Digit(7), KeySpace, KeyEsc}})
+	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyUp, Digit(7), KeySpace, KeyEsc}})
 
 	if got, _ := os.ReadFile(path); string(got) != string(diskBefore) {
 		t.Fatal("on-disk JSON changed after tools overlay cancel")
@@ -679,9 +711,12 @@ func TestModelsVerbErrorTailMasked(t *testing.T) {
 		name string
 		keys []Key
 	}{
-		{"delete", []Key{Digit(5), KeyYes}},
+		// KeyUp selects acme-fast first on the delete/tools paths (the
+		// sticky selection starts at -1, decision 2A); the toggle path
+		// selects acme-slow with KeyDown.
+		{"delete", []Key{KeyUp, Digit(5), KeyYes}},
 		{"toggle", []Key{KeyDown, Digit(6), KeyYes}},
-		{"tools", []Key{Digit(7), KeyEnter, KeyYes}},
+		{"tools", []Key{KeyUp, Digit(7), KeyEnter, KeyYes}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -701,5 +736,490 @@ func TestModelsVerbErrorTailMasked(t *testing.T) {
 				t.Fatal("failed Core op mutated the on-disk registry")
 			}
 		})
+	}
+}
+
+// TestModelsCapabilitiesNote pins defect-A companion item 1: a model with
+// thinking + effort + vision + video renders all four flags in the row
+// note, with the effort in parentheses after the thinking label (the CLI
+// twin's Capabilities.Summary shape).
+func TestModelsCapabilitiesNote(t *testing.T) {
+	reg := modelsFixtureReg()
+	reg.Providers[0].Models[0].Capabilities = providers.Capabilities{
+		SupportsTools:    true,
+		AllowedTools:     []string{"read_file"},
+		SupportsThinking: true,
+		ReasoningEffort:  "high",
+		SupportsVision:   true,
+		SupportsVideo:    true,
+	}
+	app, _, _ := newModelsTestAppReg(t, reg, nil)
+
+	out := app.CaptureRun(&ScriptedKeys{Keys: nil})
+
+	for _, want := range []string{"thinking(high)", "vision", "video"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("capability note missing %q; frames:\n%s", want, out)
+		}
+	}
+	// The unselected sibling row still renders (it carries no flags).
+	if !strings.Contains(out, "acme-slow") {
+		t.Fatalf("frames lost the sibling row; frames:\n%s", out)
+	}
+}
+
+// TestModelsCapabilitiesExternalRefresh pins defect-A companion item 2: an
+// external change to SupportsThinking / ReasoningEffort / SupportsVision /
+// SupportsVideo moves modelsSig, so the row note refreshes on the next
+// frame without any key press.
+func TestModelsCapabilitiesExternalRefresh(t *testing.T) {
+	reg := modelsFixtureReg()
+	reg.Providers[0].Models[0].Capabilities = providers.Capabilities{
+		SupportsThinking: true,
+		ReasoningEffort:  "high",
+		SupportsVision:   true,
+		SupportsVideo:    true,
+	}
+	app, _, path := newModelsTestAppReg(t, reg, nil)
+
+	first := app.CaptureRun(&ScriptedKeys{Keys: nil})
+	for _, want := range []string{"thinking(high)", "vision", "video"} {
+		if !strings.Contains(first, want) {
+			t.Fatalf("pre-mutation frame missing %q; frames:\n%s", want, first)
+		}
+	}
+
+	// Mutate the registry behind the screen's back: flip vision and video
+	// off and lower the effort, exactly what a hand edit would do.
+	reg2, err := providers.LoadFrom(path)
+	if err != nil {
+		t.Fatalf("reload registry: %v", err)
+	}
+	caps := &reg2.Providers[0].Models[0].Capabilities
+	caps.SupportsVision = false
+	caps.SupportsVideo = false
+	caps.ReasoningEffort = "low"
+	data, err := json.MarshalIndent(reg2, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal mutated registry: %v", err)
+	}
+	if err := providers.WriteFileAtomic(path, append(data, '\n'), 0o600); err != nil {
+		t.Fatalf("rewrite providers.json: %v", err)
+	}
+
+	second := app.CaptureRun(&ScriptedKeys{Keys: nil})
+	for _, want := range []string{"thinking(low)"} {
+		if !strings.Contains(second, want) {
+			t.Fatalf("post-mutation frame missing %q; frames:\n%s", want, second)
+		}
+	}
+	for _, stale := range []string{"thinking(high)", "vision", "video"} {
+		if strings.Contains(second, stale) {
+			t.Fatalf("stale capability text %q survived the mutation; frames:\n%s", stale, second)
+		}
+	}
+}
+
+// TestModelsActionRefusesWithoutSelection pins user decision 2A: entering
+// the screen and firing a Delete-row digit with no selection refuses with
+// the select-a-model message, opens no gate, and writes nothing.
+func TestModelsActionRefusesWithoutSelection(t *testing.T) {
+	app, _, path := newModelsTestApp(t, nil)
+	diskBefore, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read providers.json: %v", err)
+	}
+
+	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{Digit(5)}}) // Delete action row.
+
+	if strings.Contains(out, "Delete Model?") {
+		t.Fatalf("delete gate opened without a selection; frames:\n%s", out)
+	}
+	if got := app.Message(); got != missingModelsSelectModel {
+		t.Fatalf("message = %q, want %q", got, missingModelsSelectModel)
+	}
+	if got, _ := os.ReadFile(path); string(got) != string(diskBefore) {
+		t.Fatal("on-disk JSON changed after the refused no-selection delete")
+	}
+	if strings.Contains(out, "●") {
+		t.Fatalf("selection marker rendered while nothing is selected; frames:\n%s", out)
+	}
+}
+
+// TestModelsCursorIdentityAfterDelete pins audit F9: after a delete the
+// cursor is restored by row ID onto the Delete action row it was on, so the
+// next Enter reopens the gate for the surviving model (the sticky selection
+// clamps onto it), never for a different verb or model than the user saw.
+// The surviving row also carries the visible selection marker.
+func TestModelsCursorIdentityAfterDelete(t *testing.T) {
+	app, _, path := newModelsTestApp(t, nil)
+
+	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyUp, Digit(5), KeyYes, KeyEnter}})
+
+	models := reloadModels(t, path)
+	if len(models) != 1 || models[0].ID != "acme-slow" {
+		t.Fatalf("models on disk = %+v, want only acme-slow", models)
+	}
+	// The stray Enter after the delete must reopen the delete gate for the
+	// survivor, not act on whatever row happened to land at the old index.
+	if !strings.Contains(out, "Removes the registry entry for acme-slow in acme.") {
+		t.Fatalf("post-delete Enter did not reopen the gate for acme-slow; frames:\n%s", out)
+	}
+	if !strings.Contains(out, "● acme-slow") {
+		t.Fatalf("surviving row carries no selection marker; frames:\n%s", out)
+	}
+}
+
+// TestModelsSelectionMarker pins the visible selection marker: resting the
+// cursor on a model row marks exactly that row, and only that row.
+func TestModelsSelectionMarker(t *testing.T) {
+	out, _ := runModelsKeys(t, []Key{KeyDown})
+	if !strings.Contains(out, "● acme-slow") {
+		t.Fatalf("selected row missing the marker; frames:\n%s", out)
+	}
+	if strings.Contains(out, "● acme-fast") {
+		t.Fatalf("unselected row carries the marker; frames:\n%s", out)
+	}
+}
+
+// TestModelsPageSizeGrowsWithHeight pins audit F8: the list window derives
+// from the frame height (pageSizeFor, same formula as the sibling list
+// screens) instead of staying at the 10-row default, so a provider with
+// more than 10 models shows them all on a tall console.
+func TestModelsPageSizeGrowsWithHeight(t *testing.T) {
+	reg := modelsFixtureReg()
+	models := make([]providers.Model, 0, 15)
+	for i := 1; i <= 15; i++ {
+		models = append(models, providers.Model{ID: "acme-m" + strconv.Itoa(i)})
+	}
+	reg.Providers[0].Models = models
+
+	tmp := t.TempDir()
+	t.Setenv(providers.EnvHome, tmp)
+	path := filepath.Join(tmp, "providers.json")
+	t.Setenv(providers.EnvProviders, path)
+	reg.Path = path
+	data, err := json.MarshalIndent(reg, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+	if err := providers.WriteFileAtomic(path, append(data, '\n'), 0o600); err != nil {
+		t.Fatalf("seed providers.json: %v", err)
+	}
+	core := settings.NewCore(settings.Deps{LoadReg: providers.Load})
+	app := NewApp(100, 40, DirLTR)
+	scr := NewModelsScreen(core, "acme", nil)
+	app.Push(scr)
+
+	out := app.CaptureRun(&ScriptedKeys{Keys: nil})
+
+	ms, ok := scr.(*modelsScreen)
+	if !ok {
+		t.Fatalf("screen type = %T, want *modelsScreen", scr)
+	}
+	if got, want := ms.list.PageSize(), 40-6; got != want {
+		t.Fatalf("page size = %d, want %d (height - 6 chrome)", got, want)
+	}
+	if !strings.Contains(out, "[11]") {
+		t.Fatalf("row 11 not visible on a 40-row console; frames:\n%s", out)
+	}
+}
+
+// TestModelsSelectionMoveKeepsWindow pins review finding F-S1: moving the
+// sticky selection (the marker follow) must not reset the stepList scroll
+// window. On a 26-row list (20 models + 6 action rows) with page size 14,
+// sixteen KeyDowns slide the window to offset 3; one KeyUp then moves the
+// selection and the offset must stay 3 (the pre-fix rebuild() reset the
+// window through SetRows and the offset jumped).
+func TestModelsSelectionMoveKeepsWindow(t *testing.T) {
+	reg := modelsFixtureReg()
+	models := make([]providers.Model, 0, 20)
+	for i := 1; i <= 20; i++ {
+		models = append(models, providers.Model{ID: "acme-m" + strconv.Itoa(i)})
+	}
+	reg.Providers[0].Models = models
+
+	tmp := t.TempDir()
+	t.Setenv(providers.EnvHome, tmp)
+	path := filepath.Join(tmp, "providers.json")
+	t.Setenv(providers.EnvProviders, path)
+	reg.Path = path
+	data, err := json.MarshalIndent(reg, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+	if err := providers.WriteFileAtomic(path, append(data, '\n'), 0o600); err != nil {
+		t.Fatalf("seed providers.json: %v", err)
+	}
+	core := settings.NewCore(settings.Deps{LoadReg: providers.Load})
+	app := NewApp(100, 20, DirLTR)
+	scr := NewModelsScreen(core, "acme", nil)
+	app.Push(scr)
+	ms, ok := scr.(*modelsScreen)
+	if !ok {
+		t.Fatalf("screen type = %T, want *modelsScreen", scr)
+	}
+
+	downs := make([]Key, 0, 16)
+	for i := 0; i < 16; i++ {
+		downs = append(downs, KeyDown)
+	}
+	app.CaptureRun(&ScriptedKeys{Keys: downs})
+	if got, want := ms.list.PageSize(), 14; got != want {
+		t.Fatalf("page size = %d, want %d", got, want)
+	}
+	if c := ms.list.Cursor(); c != 16 {
+		t.Fatalf("cursor = %d, want 16 after sixteen KeyDown", c)
+	}
+	if got, want := ms.list.Offset(), 3; got != want {
+		t.Fatalf("offset = %d, want %d before the selection-move check", got, want)
+	}
+
+	// One KeyUp moves the sticky selection onto acme-m16 (model index 15):
+	// the window must not jump, the cursor row must stay visible, and the
+	// marker must follow onto the new selection.
+	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyUp}})
+	if got, want := ms.list.Offset(), 3; got != want {
+		t.Fatalf("window jumped on selection move: offset = %d, want %d", got, want)
+	}
+	if c := ms.list.Cursor(); c != 15 {
+		t.Fatalf("cursor = %d, want 15 after KeyUp", c)
+	}
+	if c, o, p := ms.list.Cursor(), ms.list.Offset(), ms.list.PageSize(); c < o || c >= o+p {
+		t.Fatalf("cursor %d outside window [%d,%d) after selection move", c, o, o+p)
+	}
+	if !strings.Contains(out, "● acme-m16") {
+		t.Fatalf("marker did not follow the selection; frames:\n%s", out)
+	}
+	// CaptureRun emits one frame per key, so the stale-marked earlier frame
+	// is still in the output; only the LAST frame must carry no stale
+	// marker.
+	last := out
+	if i := strings.LastIndex(out, "Models: acme"); i >= 0 {
+		last = out[i:]
+	}
+	if strings.Contains(last, "● acme-m17") {
+		t.Fatalf("stale marker on the previous selection in the final frame; frames:\n%s", out)
+	}
+
+	// Repeated moves around the same spot keep the window pinned.
+	out = app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyDown, KeyUp, KeyDown, KeyUp}})
+	if got, want := ms.list.Offset(), 3; got != want {
+		t.Fatalf("window jumped on repeated selection moves: offset = %d, want %d", got, want)
+	}
+}
+
+// --- Masking convergence round (H-3, H-6) ---------------------------------
+
+// TestModelsDecoratedRegistrySlotMasked pins H-3: the row label and the
+// delete/toggle/tools approval sentences render a disk-borne model id through
+// the slot masker. A hand-edited marker-decorated id rode
+// providers.MaskOperand's location exemption raw in the row and in every
+// sentence, because on this screen no validator ever sees the id. The
+// look-alike plant is identity under providers.MaskOperand on every platform,
+// so that case discriminates regardless of GOOS; the display masking never
+// rewrites the on-disk id.
+func TestModelsDecoratedRegistrySlotMasked(t *testing.T) {
+	plants := []struct{ name, id string }{
+		{"drive decorated id", `C:\wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY`},
+		{"look-alike decorated id", "\u2025/ab3def7gh9jk1mnpqr5t"},
+	}
+	for _, tc := range plants {
+		t.Run(tc.name, func(t *testing.T) {
+			want := maskSlotOperand(tc.id)
+			if want == tc.id {
+				t.Fatalf("test premise broken: the id plant is not masked (%q)", want)
+			}
+			reg := modelsFixtureReg()
+			reg.Providers[0].Models[0].ID = tc.id
+			app, _, path := newModelsTestAppReg(t, reg, nil)
+
+			// Row label, plus the benign sibling row and its note.
+			out := app.CaptureRun(&ScriptedKeys{Keys: nil})
+			if strings.Contains(out, tc.id) {
+				t.Fatalf("row label echoes the raw decorated id; frames:\n%s", out)
+			}
+			if !strings.Contains(out, want) {
+				t.Fatalf("row label missing the masked id %q; frames:\n%s", want, out)
+			}
+			if !strings.Contains(out, "acme-slow") || !strings.Contains(out, "Max Out 4096") {
+				t.Fatalf("benign sibling row lost its label or note; frames:\n%s", out)
+			}
+
+			// Delete approval sentence (KeyNo closes the gate again, so the next
+			// key reaches the screen and not the live modal).
+			out = app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyUp, Digit(5), KeyNo}})
+			if strings.Contains(out, tc.id) {
+				t.Fatalf("delete approval echoes the raw decorated id; frames:\n%s", out)
+			}
+			if wantLine := "Removes the registry entry for " + want + " in acme. Key values are untouched."; !strings.Contains(out, wantLine) {
+				t.Fatalf("delete approval missing the masked id sentence %q; frames:\n%s", wantLine, out)
+			}
+
+			// Toggle approval sentence.
+			out = app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyUp, Digit(6), KeyNo}})
+			if strings.Contains(out, tc.id) {
+				t.Fatalf("toggle approval echoes the raw decorated id; frames:\n%s", out)
+			}
+			if wantLine := "Sets enabled for model " + want + " in acme."; !strings.Contains(out, wantLine) {
+				t.Fatalf("toggle approval missing the masked id sentence %q; frames:\n%s", wantLine, out)
+			}
+
+			// Tools approval sentence.
+			out = app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyUp, Digit(7), KeyEnter, KeyNo}})
+			if strings.Contains(out, tc.id) {
+				t.Fatalf("tools approval echoes the raw decorated id; frames:\n%s", out)
+			}
+			if wantLine := "Updates tool grants for model " + want + " in acme."; !strings.Contains(out, wantLine) {
+				t.Fatalf("tools approval missing the masked id sentence %q; frames:\n%s", wantLine, out)
+			}
+
+			if got := reloadModels(t, path)[0].ID; got != tc.id {
+				t.Fatalf("on-disk id = %q, want the planted raw id %q (masking is display-only)", got, tc.id)
+			}
+		})
+	}
+}
+
+// TestModelsCapabilitiesSoloSigMutation pins every modelsSig entry on its own: an
+// external mutation of one signed field must refresh the row note without a key
+// press. The earlier refresh pin mutated vision, video, and effort together, so
+// deleting any single signature entry still left the suite green; each subtest
+// here mutates exactly one field, so a missing entry leaves the stale note and
+// fails.
+func TestModelsCapabilitiesSoloSigMutation(t *testing.T) {
+	base := func() *providers.Registry {
+		reg := modelsFixtureReg()
+		reg.Providers[0].Models[0].Capabilities = providers.Capabilities{
+			SupportsTools:    true,
+			AllowedTools:     []string{"read_file"},
+			SupportsThinking: true,
+			ReasoningEffort:  "high",
+			SupportsVision:   true,
+			SupportsVideo:    true,
+		}
+		return reg
+	}
+	cases := []struct {
+		field  string
+		mutate func(*providers.Capabilities)
+		before string
+		after  string
+	}{
+		{"tools", func(c *providers.Capabilities) { c.AllowedTools = []string{"read_file", "grep"} }, "tools 1", "tools 2"},
+		{"thinking", func(c *providers.Capabilities) { c.SupportsThinking = false }, "thinking(high)", ""},
+		{"vision", func(c *providers.Capabilities) { c.SupportsVision = false }, "vision", ""},
+		{"video", func(c *providers.Capabilities) { c.SupportsVideo = false }, "video", ""},
+		{"effort", func(c *providers.Capabilities) { c.ReasoningEffort = "low" }, "thinking(high)", "thinking(low)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.field, func(t *testing.T) {
+			app, _, path := newModelsTestAppReg(t, base(), nil)
+			first := app.CaptureRun(&ScriptedKeys{Keys: nil})
+			if !strings.Contains(first, tc.before) {
+				t.Fatalf("base frame missing the pinned note text %q; frames:\n%s", tc.before, first)
+			}
+
+			reg, err := providers.LoadFrom(path)
+			if err != nil {
+				t.Fatalf("reload registry: %v", err)
+			}
+			tc.mutate(&reg.Providers[0].Models[0].Capabilities)
+			data, err := json.MarshalIndent(reg, "", "  ")
+			if err != nil {
+				t.Fatalf("marshal mutated registry: %v", err)
+			}
+			if err := providers.WriteFileAtomic(path, append(data, '\n'), 0o600); err != nil {
+				t.Fatalf("rewrite providers.json: %v", err)
+			}
+
+			second := app.CaptureRun(&ScriptedKeys{Keys: nil})
+			if tc.after != "" && !strings.Contains(second, tc.after) {
+				t.Fatalf("row note did not refresh to %q; frames:\n%s", tc.after, second)
+			}
+			if strings.Contains(second, tc.before) {
+				t.Fatalf("stale note text %q survived the single-field mutation; frames:\n%s", tc.before, second)
+			}
+		})
+	}
+}
+
+// TestModelsMessageRoles pins user decision D7-7B at the models screen: the
+// delete success opens with the localized common.success label and the Core
+// write failure with common.error, so the two compose DIFFERENT palette roles
+// (RoleSuccess vs RoleDanger) instead of the neutral amber every message used
+// to get. Both frames go through the same composition path the app-level pin
+// uses, and the plain tier still emits zero escape bytes for them.
+func TestModelsMessageRoles(t *testing.T) {
+	newRolesApp := func(t *testing.T, save func(*providers.Registry) error) *App {
+		t.Helper()
+		tmp := t.TempDir()
+		t.Setenv(providers.EnvHome, tmp)
+		path := filepath.Join(tmp, "providers.json")
+		t.Setenv(providers.EnvProviders, path)
+		reg := modelsFixtureReg()
+		reg.Path = path
+		data, err := json.MarshalIndent(reg, "", "  ")
+		if err != nil {
+			t.Fatalf("marshal fixture: %v", err)
+		}
+		if err := providers.WriteFileAtomic(path, append(data, '\n'), 0o600); err != nil {
+			t.Fatalf("seed providers.json: %v", err)
+		}
+		deps := settings.Deps{LoadReg: providers.Load}
+		if save != nil {
+			deps.SaveReg = save
+		}
+		app := NewApp(100, 24, DirLTR)
+		app.Push(NewModelsScreen(settings.NewCore(deps), "acme", nil))
+		return app
+	}
+	// KeyUp first selects acme-fast (the sticky selection starts at -1,
+	// decision 2A); the Delete row is 5 and y approves the write.
+	deleteKeys := []Key{KeyUp, Digit(5), KeyYes}
+
+	success := newRolesApp(t, nil)
+	success.CaptureRun(&ScriptedKeys{Keys: deleteKeys})
+	successMsg := success.Message()
+	successLabel := Bundle().T("common.success")
+	if !strings.HasPrefix(successMsg, successLabel+": ") {
+		t.Fatalf("delete success message = %q, want the %q label prefix", successMsg, successLabel)
+	}
+	successRole := roleOfLine(t, composeFrame(success, nil), successMsg)
+	if successRole != RoleSuccess {
+		t.Fatalf("success message role = %v, want RoleSuccess", successRole)
+	}
+
+	failure := newRolesApp(t, func(*providers.Registry) error {
+		return errors.New("registry write refused")
+	})
+	failure.CaptureRun(&ScriptedKeys{Keys: deleteKeys})
+	failureMsg := failure.Message()
+	errorLabel := Bundle().T("common.error")
+	if !strings.HasPrefix(failureMsg, errorLabel+": ") {
+		t.Fatalf("write failure message = %q, want the %q label prefix", failureMsg, errorLabel)
+	}
+	failureRole := roleOfLine(t, composeFrame(failure, nil), failureMsg)
+	if failureRole != RoleDanger {
+		t.Fatalf("write failure role = %v, want RoleDanger", failureRole)
+	}
+	if successRole == failureRole {
+		t.Fatalf("success and write failure both paint %v; want different roles", successRole)
+	}
+
+	// Plain tier: the same frames resolve to no bytes at all.
+	frames := []struct {
+		name string
+		app  *App
+	}{{"success", success}, {"failure", failure}}
+	for _, f := range frames {
+		var out bytes.Buffer
+		p := NewPainter(&out, plainTestCap())
+		if code := paintLoop(f.app, &ScriptedKeys{}, p, nil); code != 0 {
+			t.Fatalf("%s frame paintLoop exit = %d, want 0", f.name, code)
+		}
+		if strings.Contains(out.String(), "\x1b") {
+			t.Fatalf("%s plain-tier paint emitted escape bytes:\n%q", f.name, out.String())
+		}
 	}
 }

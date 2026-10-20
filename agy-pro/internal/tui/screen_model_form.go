@@ -28,6 +28,10 @@ const (
 	fEnabled
 	fContext
 	fMaxOut
+	fThinking
+	fEffort
+	fVision
+	fVideo
 	fCaps
 	fCount
 )
@@ -65,74 +69,82 @@ const (
 	missingModelFormDiscardBody = "The edits on this form are dropped and nothing is written to providers.json."
 	// catalog-resolved, fallback kept: models.form.model_missing
 	missingModelFormModelMissing = "Model {{id}} not found in provider {{provider}}."
+	// catalog-resolved, fallback kept: models.form.thinking
+	missingModelFormThinkingLabel = "Thinking (y/n)"
+	// catalog-resolved, fallback kept: models.form.effort
+	missingModelFormEffortLabel = "Reasoning effort"
+	// catalog-resolved, fallback kept: models.form.vision
+	missingModelFormVisionLabel = "Vision (y/n)"
+	// catalog-resolved, fallback kept: models.form.video
+	missingModelFormVideoLabel = "Video (y/n)"
+	// catalog-resolved, fallback kept: models.validation.effort
+	missingModelFormEffortInvalid = "Reasoning effort must be one of: default, none, low, medium, high, xhigh, max."
+	// catalog-resolved, fallback kept: models.validation.yes_no. The three
+	// y/n fields (thinking, vision, video) share one generic refusal
+	// message; the phase's catalog work shipped the key in all 12 catalogs
+	// and the const stays as the documented fallback.
+	missingModelFormYesNoInvalid = "Value must be y or n."
+	// catalog-resolved, fallback kept: models.form.stale_base. The stale-base
+	// refusal shipped in this phase and the catalog work landed the key in all
+	// 12 catalogs; the const stays as the documented fallback. The message
+	// carries no operands, so nothing untrusted can echo through it.
+	missingModelFormStaleBase = "The model changed on disk since this form opened. Close and reopen the form; nothing was written."
 )
 
-// secretValuePrefixes is the known credential-head list, aligned with the
-// operandLooksSecret classifier in internal/providers/keyaudit.go: a value
-// starting with any of these reads as key material in any slot, at any
-// length.
-var secretValuePrefixes = []string{
-	"sk-", "key-", "gsk_", "nvapi-", "live_", "secret_",
-	"ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_",
-	"xox", "glpat-", "npm_", "dckr_pat-", "dckr_pat_", "bearer ", "eyj",
-}
-
-// looksSecretValue is the conservative local guard for free-text model
-// fields. providers.LooksLikeAPIKey cannot be used here verbatim: it flags
-// ANY operand containing "-" or "." (correct for env-var names, fatal for
-// ordinary model ids such as "acme-fast" and for hyphenated tags). The guard
-// mirrors the credential-shape precedent of providers.operandLooksSecret
-// (keyaudit.go): known credential prefixes at any length, plus an opaque
-// token of 16+ runes of the base64 alphabet carrying BOTH letters and digits
-// with no other separator.
-// Model ids and tags carry separators (anthropic/claude-3.5-sonnet,
-// meta-llama/Llama-3.3-70B-Instruct-Turbo), so they pass; a 20-rune
-// AKIA-class key (AKIAIOSFODNN7EXAMPLE) is one uninterrupted mixed run and
-// is rejected. The error path never echoes the value.
-func looksSecretValue(val string) bool {
-	v := strings.TrimSpace(val)
-	if v == "" {
-		return false
-	}
-	lower := strings.ToLower(v)
-	for _, p := range secretValuePrefixes {
-		if strings.HasPrefix(lower, p) {
-			return true
-		}
-	}
-	return credentialTokenShaped(v)
-}
-
-// credentialTokenShaped reports whether v is one uninterrupted run of the
-// base64 alphabet (ASCII letters, digits, and the + / = pad runes), at least
-// 16 runes long, with both letter and digit classes present: the shape of an
-// opaque credential (AWS secret access keys, which typically carry "/" or
-// "+", API tokens). Any other separator rune (- . _ : whitespace and
-// friends) or a single-class run (a long word, an all-digit serial) fails
-// the shape and stays readable.
+// looksSecretValue is the model form's ingest guard: it answers whether a
+// free-text model field carries credential material rather than a name.
+// providers.LooksLikeAPIKey cannot be used here: it flags ANY operand
+// containing "-" or "." (correct for env-var names, fatal for ordinary model
+// ids such as "acme-fast" and for hyphenated tags).
 //
-// Round-6 F-01: the + / = runes were dropped in the round-5 narrowing and a
-// 16+ rune base64 credential carrying them passed this guard; they are
-// admitted again, mirroring providers.contiguousSecretRun (the display
-// classifier) rune for rune. The CLI twin modelSpecOpaqueToken in
-// cmd/agy/pro_settings.go is a rune-for-rune copy of this function and must
-// stay identical.
+// The guard is a delegation, not an implementation. Both doors (this form and
+// the CLI model verbs) and every display sink now share ONE policy in
+// internal/providers (SecretShaped / MaskSlot): a category-based separator
+// class instead of an enumerated marker list, the invisible classes deleted
+// first, a fixpoint strip of the leading decoration, and the same shape test
+// over the raw value and its stripped core. The four earlier rounds each grew
+// a local list here and in the CLI twin and the two drifted apart; a local list
+// in this file would re-open that class, and the parity pin fails if one
+// reappears. The error path never echoes the value.
+//
+// The body is the NAME authority (providers.NameCarriesCredential), the union
+// of all three shared arms: SecretShaped OR MaskOperand changed OR MaskSlot
+// changed. SecretShaped alone left this screen with two disagreeing answers for
+// one value (FIX-7): it is false for the underscore-head class
+// ("sk_live_0123456789abcdef"), while the grid row and the M4 diff already
+// render that value through providers.MaskSlot ("sk_li****"), so the form
+// accepted a value its own frames masked as a key and the M4 y persisted it RAW
+// into models[].id. With the union the two answers cannot disagree: the
+// accepted set is exactly the set every sink on this screen renders
+// byte-identically (MaskSlot is the identity), and a refused value is one the
+// same authority masks. The union is the expression the provider form's name
+// arm has used since FIX-K, so both forms now carry one rule.
+//
+// The consequence is wider than the key class on purpose: a value the slot
+// authority re-renders for ANY reason is refused, including a 16+ rune
+// single-class word, a 16-digit serial, and a drive-decorated, relative or URL
+// location (whose rendering is the stripped core rather than the typed bytes).
+// Accepting those while the frames show something else is the same
+// masked-display/raw-persist divergence in a milder dress. The accept side is
+// pinned against the realistic model-ID corpus in
+// TestModelFormIDAuthorityAddsOnlyCredentialClass.
+func looksSecretValue(val string) bool {
+	return providers.NameCarriesCredential(val)
+}
+
+// secretValuePrefixes is a VIEW of the shared policy's credential-head list
+// (providers.SlotSecretPrefixes), not a list kept in this package: the prompt
+// editor (screen_prompt_editor.go) scans a multi-line buffer line by line
+// against it. The list itself lives once, in internal/providers, and the
+// parity pin fails if a literal prefix list reappears here.
+var secretValuePrefixes = providers.SlotSecretPrefixes()
+
+// credentialTokenShaped is the policy's opaque-run shape test
+// (providers.OpaqueRunShaped) under the name the prompt editor uses: one
+// uninterrupted base64-alphabet run at the shared floor with both letter and
+// digit classes. It carries no local implementation for the same reason.
 func credentialTokenShaped(v string) bool {
-	n := 0
-	letter, digit := false, false
-	for _, r := range v {
-		switch {
-		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z':
-			letter = true
-		case r >= '0' && r <= '9':
-			digit = true
-		case r == '+', r == '/', r == '=':
-		default:
-			return false
-		}
-		n++
-	}
-	return n >= 16 && letter && digit
+	return providers.OpaqueRunShaped(v)
 }
 
 // modelFormScreen is the model add/edit form (architect-report section 5,
@@ -170,6 +182,17 @@ type modelFormScreen struct {
 	errMsg       string
 	app          *App
 	guard        *formGuard
+
+	// effortTouched latches a real edit of the reasoning effort field (G-M5):
+	// a backspace, a forward delete, or a rune insertion that actually changed
+	// the field text. The seed is normalized, so the field value alone cannot
+	// tell an untouched seed from a normalized-equal retype ("HIGH" on disk,
+	// "high" retyped); the latch is what lets buildModel persist the retyped
+	// bytes and the approval diff show them. Edge keys are no-ops in the Form
+	// (backspace at the value start, delete at the value end), so the latch
+	// follows the text, not the key: a keystroke that wrote nothing must not
+	// rewrite pristine raw bytes on the next save.
+	effortTouched bool
 }
 
 // NewModelFormScreen builds the add/edit form for one provider. mode is
@@ -188,7 +211,7 @@ func NewModelFormScreen(core *settings.Core, providerName, modeName, modelID str
 		s.loadErr = err.Error()
 	} else if p := findProviderCI(reg, providerName); p == nil {
 		s.loadErr = fillHubSlots(missingOr(s.b, "models.provider_missing", missingModelsProviderMissing),
-			map[string]string{"provider": providers.MaskOperand(providerName)})
+			map[string]string{"provider": maskSlotOperand(providerName)})
 	} else {
 		s.count = len(p.Models)
 		for _, m := range p.Models {
@@ -203,7 +226,7 @@ func NewModelFormScreen(core *settings.Core, providerName, modeName, modelID str
 			}
 			if !s.origFound {
 				s.loadErr = fillHubSlots(missingOr(s.b, "models.form.model_missing", missingModelFormModelMissing),
-					map[string]string{"id": providers.MaskOperand(modelID), "provider": providers.MaskOperand(providerName)})
+					map[string]string{"id": maskSlotOperand(modelID), "provider": maskSlotOperand(providerName)})
 			}
 		}
 	}
@@ -225,6 +248,22 @@ func NewModelFormScreen(core *settings.Core, providerName, modeName, modelID str
 		}
 		if s.orig.MaxOutputTokens > 0 {
 			vals[fMaxOut] = strconv.Itoa(s.orig.MaxOutputTokens)
+		}
+		c := s.orig.Capabilities
+		if c.SupportsThinking {
+			vals[fThinking] = "y"
+		}
+		// Seeded normalized so an uppercase or padded hand-edited registry
+		// value neither dirties the form nor diffs against its own save
+		// (F-M2); the raw original still persists untouched (buildModel).
+		if e := normEffort(c.ReasoningEffort); e != "" {
+			vals[fEffort] = e
+		}
+		if c.SupportsVision {
+			vals[fVision] = "y"
+		}
+		if c.SupportsVideo {
+			vals[fVideo] = "y"
 		}
 	}
 	vals[fCaps] = s.capsDisplay()
@@ -306,14 +345,44 @@ func unlistedTools(tools []string) []string {
 	return out
 }
 
+// stripDiffControls removes control runes (the Cc class) and the format class
+// (Cf: bidi overrides, zero-width joiners and spaces, BOM) from a value before
+// it reaches the M4 approval body. The painter strips control runes from
+// untrusted frame lines at render time, but the approval summary is composed
+// here as screen content, and a Cf rune inside a credential defeats the
+// classifier before any painter sees it. The rule lives in the shared policy
+// (providers.StripSlotControls) and the CLI twin delegates to the same one, so
+// the two doors cannot drift.
+func stripDiffControls(s string) string {
+	return providers.StripSlotControls(s)
+}
+
+// maskSlotOperand renders one registry-slot operand for this screen. It is a
+// delegation to providers.MaskSlot, the single registry-slot display authority:
+// control-run strip, then MaskRegistryValue (a registry slot is never a
+// legitimate path, so MaskOperand's deliberate location exemption must not let
+// a marker-decorated credential ride raw into the approval frame), then the
+// shared policy's identity-fallback (fold + strip + mask the core) for the
+// decoration classes the authority's ASCII marker set cannot see. A value the
+// policy does not flag is returned byte-identical, so the diff stays
+// byte-stable.
+//
+// The name stays because every model-screen sink already calls it; the body is
+// one delegation and the parity pin fails if a local list or a local strip
+// reappears here.
+func maskSlotOperand(v string) string {
+	return providers.MaskSlot(v)
+}
+
 // maskJoined masks each item individually before joining, so one
 // credential-shaped entry cannot hide behind the join separator of its
-// neighbors (MaskOperand on the already-joined string would see the
-// separators and stay readable).
+// neighbors (MaskRegistryValue on the already-joined string would see the
+// separators and stay readable). Every item is a registry slot (a model tag, a
+// tool grant), so each one routes through maskSlotOperand.
 func maskJoined(items []string, sep string) string {
 	parts := make([]string, len(items))
 	for i, it := range items {
-		parts[i] = providers.MaskOperand(it)
+		parts[i] = maskSlotOperand(it)
 	}
 	return strings.Join(parts, sep)
 }
@@ -364,6 +433,10 @@ func (s *modelFormScreen) buildFields(vals []string) []Field {
 		{Label: s.b.T("models.form.enabled"), Value: vals[fEnabled], Validate: s.validateEnabled},
 		{Label: s.b.T("models.form.context"), Value: vals[fContext], Validate: s.validateContext},
 		{Label: s.b.T("models.form.max_out"), Value: vals[fMaxOut], Validate: s.validateMaxOut},
+		{Label: missingOr(s.b, "models.form.thinking", missingModelFormThinkingLabel), Value: vals[fThinking], Validate: s.validateYesNo},
+		{Label: missingOr(s.b, "models.form.effort", missingModelFormEffortLabel), Value: vals[fEffort], Validate: s.validateEffort},
+		{Label: missingOr(s.b, "models.form.vision", missingModelFormVisionLabel), Value: vals[fVision], Validate: s.validateYesNo},
+		{Label: missingOr(s.b, "models.form.video", missingModelFormVideoLabel), Value: vals[fVideo], Validate: s.validateYesNo},
 		{Label: s.b.T("models.form.capabilities"), Value: vals[fCaps]},
 	}
 }
@@ -375,8 +448,11 @@ func (s *modelFormScreen) idTaken(id string) bool {
 	return s.existing[id]
 }
 
+// dupMessage renders the duplicate-id refusal. The id is a registry slot (it
+// names an existing on-disk model), so it routes through the slot masker, not
+// MaskOperand's location exemption.
 func (s *modelFormScreen) dupMessage(id string) string {
-	return s.b.Tf("models.validation.id_exists", map[string]string{"id": providers.MaskOperand(id)})
+	return s.b.Tf("models.validation.id_exists", map[string]string{"id": maskSlotOperand(id)})
 }
 
 func (s *modelFormScreen) validateID(v string) error {
@@ -393,15 +469,30 @@ func (s *modelFormScreen) validateID(v string) error {
 	return nil
 }
 
+// validateFamily classifies the family value as buildModel stores it, trimmed:
+// the shared name authority refuses any value the registry-slot authority
+// re-renders, and MaskSlot trims, so an untrimmed read refused a padded benign
+// family (" swift") as secret/key material while storage would have kept
+// "swift". Same class as FIX-8a, one field over.
 func (s *modelFormScreen) validateFamily(v string) error {
-	if looksSecretValue(v) {
+	if looksSecretValue(strings.TrimSpace(v)) {
 		return errors.New(missingOr(s.b, "models.validation.secret", missingModelFormSecret))
 	}
 	return nil
 }
 
+// validateTags classifies every tag of the comma-separated field. The split is
+// splitTags — the storage splitter itself — not a local strings.Split: edit mode
+// prefills this field with strings.Join(tags, ", "), so an untrimmed split
+// handed the classifier " tools" for every tag after the first, and the shared
+// name authority refuses any value the registry-slot display authority
+// re-renders (MaskSlot trims, so it re-renders a padded tag). That refused the
+// wizard-default 2+ tag record on every save and a natural "beta, fast" add.
+// Reading one splitter closes the validation/storage asymmetry by construction:
+// a tag this accepts is a tag splitTags stores byte-identically, and the
+// trim-and-drop-empty rules stay the storage ones.
 func (s *modelFormScreen) validateTags(v string) error {
-	for _, part := range strings.Split(v, ",") {
+	for _, part := range splitTags(v) {
 		if looksSecretValue(part) {
 			return errors.New(missingOr(s.b, "models.validation.secret", missingModelFormSecret))
 		}
@@ -415,6 +506,56 @@ func (s *modelFormScreen) validateEnabled(v string) error {
 		return nil
 	}
 	return errors.New(missingOr(s.b, "models.validation.enabled", missingModelFormEnabledInvalid))
+}
+
+// validateYesNo mirrors validateEnabled for the capability flag fields
+// (thinking, vision, video): empty means off, y/yes on, n/no off.
+func (s *modelFormScreen) validateYesNo(v string) error {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "y", "n", "yes", "no":
+		return nil
+	}
+	return errors.New(missingOr(s.b, "models.validation.yes_no", missingModelFormYesNoInvalid))
+}
+
+// validEffortValues is the closed reasoning-effort set the gateway
+// understands (internal/openaiup/effort.go ValidReasoningEfforts; the test
+// file pins the two sets identical). An empty value is accepted and means
+// runtime default (EffectiveReasoningEffort).
+var validEffortValues = map[string]bool{
+	"default": true,
+	"none":    true,
+	"low":     true,
+	"medium":  true,
+	"high":    true,
+	"xhigh":   true,
+	"max":     true,
+}
+
+// normEffort applies the validator's normalization (trim + lowercase) to a
+// reasoning-effort value. Every comparison site (validator, dirty/diff
+// path, buildModel) routes through it so a non-normalized on-disk value
+// cannot phantom-diff against its own save (F-M2).
+func normEffort(v string) string {
+	return strings.ToLower(strings.TrimSpace(v))
+}
+
+// validateEffort accepts empty (runtime default) or one of
+// validEffortValues, case-insensitively. The secret guard runs before the
+// set check so a pasted key is refused with the secret message (never
+// echoed), the same treatment every other free-text field gets.
+func (s *modelFormScreen) validateEffort(v string) error {
+	e := normEffort(v)
+	if e == "" {
+		return nil
+	}
+	if looksSecretValue(e) {
+		return errors.New(missingOr(s.b, "models.validation.secret", missingModelFormSecret))
+	}
+	if !validEffortValues[e] {
+		return errors.New(missingOr(s.b, "models.validation.effort", missingModelFormEffortInvalid))
+	}
+	return nil
 }
 
 func (s *modelFormScreen) validateContext(v string) error {
@@ -472,9 +613,16 @@ func (s *modelFormScreen) messageLine() string {
 			}
 		}
 	case fFamily:
-		return secret(s.form.Value(fFamily))
+		// Trimmed as validateFamily and buildModel read it: padding alone must
+		// not raise a warning the save path would accept.
+		return secret(strings.TrimSpace(s.form.Value(fFamily)))
 	case fTags:
-		return secret(strings.Split(s.form.Value(fTags), ",")...)
+		// Same splitter as validateTags and buildModel: the live check must
+		// judge the tags the save would store, not their padded text.
+		return secret(splitTags(s.form.Value(fTags))...)
+	case fEffort:
+		// Same normalization as validateEffort and buildModel (trim + lower).
+		return secret(normEffort(s.form.Value(fEffort)))
 	}
 	return ""
 }
@@ -538,7 +686,28 @@ func (s *modelFormScreen) dispatch(k Key) {
 			return
 		}
 	}
+	if s.form.Cursor() == fEffort && fieldEditKey(k) {
+		before := s.form.Value(fEffort)
+		s.form.HandleKey(k)
+		if s.form.Value(fEffort) != before {
+			s.effortTouched = true
+		}
+		return
+	}
 	s.form.HandleKey(k)
+}
+
+// fieldEditKey reports whether k is one of the keys Form.HandleKey writes the
+// focused text field on: a backspace, a forward delete, or a rune insertion.
+// The Form drops the edge cases (backspace at the value start, forward delete
+// at the value end), so the caller confirms the write by comparing the field
+// text around the call instead of trusting the key set alone.
+func fieldEditKey(k Key) bool {
+	if k == KeyBackspace || k == KeyDelete {
+		return true
+	}
+	_, ok := EditRune(k)
+	return ok
 }
 
 // rearmGuard (re)opens the dirty guard. Callers run inside a modal key
@@ -556,6 +725,12 @@ func (s *modelFormScreen) rearmGuard(a *App) {
 // askDiscard opens the discard-confirm over a dirty form. y restores the
 // construction values (Snapshot/Restore) and pops back to the caller; n/Esc
 // returns to the form with field state preserved and the guard re-armed.
+//
+// H-4: the restore also clears the effort latch. The latch is a screen-level
+// bit that the Form does not own, so Restore alone left it set; a save of the
+// restored (pristine-looking) form then persisted the normalized bytes over a
+// raw original. Restore is the one path that returns the form to its
+// construction values, so the latch is cleared here, next to it.
 func (s *modelFormScreen) askDiscard() {
 	a := s.app
 	if a == nil {
@@ -571,6 +746,7 @@ func (s *modelFormScreen) askDiscard() {
 			}
 			s.form.Restore(s.baseVals)
 			s.tools = append([]string(nil), s.baseTools...)
+			s.effortTouched = false
 			a.Pop()
 			a.SetMessage(missingOr(s.b, "models.msg.cancelled", missingModelsCancelled))
 		}))
@@ -642,16 +818,26 @@ func (s *modelFormScreen) trySave() {
 		}
 		if err := f.Validate(s.form.Value(i)); err != nil {
 			s.errMsg = err.Error()
+			// Leave the Save row and focus the first failing field so the
+			// error points at the repair site (round-2 F3).
+			s.onSaveRow = false
+			s.form.SetCursor(i)
 			return
 		}
 	}
 	m, tools := s.buildModel()
 	var summary []string
+	// The header sentences name two registry slots: the model id and the
+	// provider name. Both come from providers.json (the id from the form or the
+	// disk record, the provider from the caller's row), so both route through
+	// the slot masker (H-2): MaskOperand's location exemption printed a
+	// drive-decorated credential raw into the consent header while the field
+	// line below it masked the same value.
 	if s.mode == modelFormModeAdd {
 		summary = append(summary,
 			fillHubSlots(missingOr(s.b, "models.form.approval.add", missingModelFormApprovalAdd), map[string]string{
-				"id":       providers.MaskOperand(m.ID),
-				"provider": providers.MaskOperand(s.providerName),
+				"id":       maskSlotOperand(m.ID),
+				"provider": maskSlotOperand(s.providerName),
 			}),
 			fillHubSlots(missingOr(s.b, "models.delete.count", missingModelsDeleteCount), map[string]string{
 				"before": strconv.Itoa(s.count),
@@ -662,8 +848,8 @@ func (s *modelFormScreen) trySave() {
 	} else {
 		summary = append(summary,
 			fillHubSlots(missingOr(s.b, "models.form.approval.update", missingModelFormApprovalUpdate), map[string]string{
-				"id":       providers.MaskOperand(m.ID),
-				"provider": providers.MaskOperand(s.providerName),
+				"id":       maskSlotOperand(m.ID),
+				"provider": maskSlotOperand(s.providerName),
 			}),
 			fillHubSlots(missingOr(s.b, "models.delete.count", missingModelsDeleteCount), map[string]string{
 				"before": strconv.Itoa(s.count),
@@ -690,8 +876,9 @@ func (s *modelFormScreen) trySave() {
 
 // buildModel composes the model record from the field values. Enabled "y"
 // stores nil (default) unless the original was an explicit true; "n" stores
-// an explicit false. Other capability flags (vision, thinking, ...) are
-// preserved from the original in edit mode.
+// an explicit false. The capability flags (thinking, effort, vision, video)
+// are read from the form in both modes: add mode must not zero them, and
+// edit mode must not pass them through invisibly from the original.
 func (s *modelFormScreen) buildModel() (providers.Model, []string) {
 	enabled := parseEnabled(s.form.Value(fEnabled))
 	disabled := false
@@ -702,10 +889,28 @@ func (s *modelFormScreen) buildModel() (providers.Model, []string) {
 		tr := true
 		enabledPtr = &tr
 	}
-	caps := providers.Capabilities{SupportsTools: len(s.tools) > 0}
+	caps := providers.Capabilities{
+		SupportsTools:    len(s.tools) > 0,
+		SupportsThinking: parseYesNo(s.form.Value(fThinking)),
+		ReasoningEffort:  normEffort(s.form.Value(fEffort)),
+		SupportsVision:   parseYesNo(s.form.Value(fVision)),
+		SupportsVideo:    parseYesNo(s.form.Value(fVideo)),
+	}
 	if s.origFound {
 		caps = s.orig.Capabilities
 		caps.SupportsTools = caps.SupportsTools || len(s.tools) > 0
+		caps.SupportsThinking = parseYesNo(s.form.Value(fThinking))
+		// F-M2 + G-M5: when the effort field is untouched (its normalized form
+		// value equals the normalized original), persist the RAW original bytes
+		// so a pristine save of a "HIGH"/padded on-disk value does not rewrite
+		// the registry. A field the user edited stores the normalized typed
+		// value even when it is normalized-equal, so the approval diff (which
+		// compares raw bytes, G-M5) and the persisted bytes cannot disagree.
+		if e := normEffort(s.form.Value(fEffort)); s.effortTouched || e != normEffort(s.orig.Capabilities.ReasoningEffort) {
+			caps.ReasoningEffort = e
+		}
+		caps.SupportsVision = parseYesNo(s.form.Value(fVision))
+		caps.SupportsVideo = parseYesNo(s.form.Value(fVideo))
 		caps.AllowedTools = nil
 	}
 	m := providers.Model{
@@ -728,6 +933,17 @@ func parseEnabled(v string) bool {
 	return true
 }
 
+// parseYesNo interprets a capability-flag field: only an explicit y/yes is
+// on, everything else (empty, n, no) is off. Unlike parseEnabled the flags
+// default to off.
+func parseYesNo(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "y", "yes":
+		return true
+	}
+	return false
+}
+
 func parsePositiveInt(v string) int {
 	n, err := strconv.Atoi(strings.TrimSpace(v))
 	if err != nil || n < 0 {
@@ -747,18 +963,22 @@ func splitTags(v string) []string {
 }
 
 // addedDiffLines renders one "+ field: value" line per set field (add mode).
-// Every operand passes through MaskOperand.
+// Every operand is display-safe before the template sees it: the registry slots
+// (id, family, the joined tag and tool lists, reasoning effort) route through
+// maskSlotOperand or the per-item maskJoined, so a marker-decorated credential
+// cannot ride MaskOperand's location exemption (F-M1/G-M1). The numeric and
+// boolean operands are literals.
 func (s *modelFormScreen) addedDiffLines(m providers.Model, tools []string) []string {
 	lines := []string{}
 	add := func(field, value string) {
 		lines = append(lines, fillHubSlots(missingOr(s.b, "models.form.diff_added", missingModelFormDiffAdded), map[string]string{
 			"field": field,
-			"value": providers.MaskOperand(value),
+			"value": value,
 		}))
 	}
-	add("id", m.ID)
+	add("id", maskSlotOperand(m.ID))
 	if m.Family != "" {
-		add("family", m.Family)
+		add("family", maskSlotOperand(m.Family))
 	}
 	if len(m.Tags) > 0 {
 		add("tags", maskJoined(m.Tags, ", "))
@@ -775,34 +995,133 @@ func (s *modelFormScreen) addedDiffLines(m providers.Model, tools []string) []st
 	if len(tools) > 0 {
 		add("tools", maskJoined(tools, ", "))
 	}
+	// G-M3: buildModel OR-derives SupportsTools from the grant list, so a
+	// record can save tool use under a diff that names no field at all. The
+	// line mirrors the CLI twin (cmd/agy/pro_settings.go).
+	if m.Capabilities.SupportsTools {
+		add("supportsTools", "true")
+	}
+	if m.Capabilities.SupportsThinking {
+		add("thinking", "true")
+	}
+	if m.Capabilities.ReasoningEffort != "" {
+		add("reasoningEffort", maskSlotOperand(m.Capabilities.ReasoningEffort))
+	}
+	if m.Capabilities.SupportsVision {
+		add("vision", "true")
+	}
+	if m.Capabilities.SupportsVideo {
+		add("video", "true")
+	}
 	return lines
 }
 
 // changedDiffLines renders one "  field: before -> after" line per changed
-// field (edit mode), or the no-changes marker.
+// field (edit mode), or the no-changes marker. Two rules decide emission and
+// rendering:
+//   - emission compares the RAW operands (G-M5): a value that differs only by
+//     case or padding still moves the persisted bytes, so the approval must
+//     show it. Raw difference is strictly wider than normalized difference, so
+//     the pristine normalized-equal case still emits nothing (F-M2).
+//   - rendering masks the RAW bytes (G-M4): normalizing before the mask
+//     lowercases the operand first, which defeats the case-sensitive secret
+//     classes and let a separator-carrying plant render raw.
 func (s *modelFormScreen) changedDiffLines(m providers.Model, tools []string) []string {
 	lines := []string{}
+	emit := func(field, before, after string) {
+		lines = append(lines, fillHubSlots(missingOr(s.b, "models.form.diff_changed", missingModelFormDiffChanged), map[string]string{
+			"field":  field,
+			"before": before,
+			"after":  after,
+		}))
+	}
+	// chg emits when the raw operands differ and renders both through the
+	// registry-slot authority (a literal operand such as "true" is identity).
 	chg := func(field, before, after string) {
 		if before == after {
 			return
 		}
-		lines = append(lines, fillHubSlots(missingOr(s.b, "models.form.diff_changed", missingModelFormDiffChanged), map[string]string{
-			"field":  field,
-			"before": providers.MaskOperand(before),
-			"after":  providers.MaskOperand(after),
-		}))
+		emit(field, maskSlotOperand(before), maskSlotOperand(after))
+	}
+	// chgList compares the raw lists, so a difference the mask would fold away
+	// (two credentials sharing their first five runes) still emits, and renders
+	// each item masked individually.
+	chgList := func(field string, before, after []string) {
+		if equalKeyList(before, after) {
+			return
+		}
+		emit(field, maskJoined(before, ", "), maskJoined(after, ", "))
 	}
 	chg("id", s.orig.ID, m.ID)
 	chg("family", s.orig.Family, m.Family)
-	chg("tags", maskJoined(s.orig.Tags, ", "), maskJoined(m.Tags, ", "))
+	chgList("tags", s.orig.Tags, m.Tags)
 	chg("enabled", strconv.FormatBool(s.orig.IsEnabled()), strconv.FormatBool(m.IsEnabled()))
 	chg("contextLength", strconv.Itoa(s.orig.ContextLength), strconv.Itoa(m.ContextLength))
 	chg("maxOutputTokens", strconv.Itoa(s.orig.MaxOutputTokens), strconv.Itoa(m.MaxOutputTokens))
-	chg("tools", maskJoined(normalizeTools(s.orig.Capabilities.AllowedTools), ", "), maskJoined(tools, ", "))
+	// G-M3: the OR-derivation in buildModel can switch tool use on with no
+	// other field moving, so the flag signs in the diff like every other field.
+	chg("supportsTools", strconv.FormatBool(s.orig.Capabilities.SupportsTools), strconv.FormatBool(m.Capabilities.SupportsTools))
+	chg("thinking", strconv.FormatBool(s.orig.Capabilities.SupportsThinking), strconv.FormatBool(m.Capabilities.SupportsThinking))
+	// G-M4/G-M5: the operands are the RAW on-disk and raw built bytes, and the
+	// raw difference decides emission. The normalized forms stay the comparison
+	// key of the stale-base sign (sameSignedFields), not of this display.
+	chg("reasoningEffort", s.orig.Capabilities.ReasoningEffort, m.Capabilities.ReasoningEffort)
+	chg("vision", strconv.FormatBool(s.orig.Capabilities.SupportsVision), strconv.FormatBool(m.Capabilities.SupportsVision))
+	chg("video", strconv.FormatBool(s.orig.Capabilities.SupportsVideo), strconv.FormatBool(m.Capabilities.SupportsVideo))
+	chgList("tools", normalizeTools(s.orig.Capabilities.AllowedTools), tools)
 	if len(lines) == 0 {
 		lines = append(lines, missingOr(s.b, "models.form.diff_none", missingModelFormDiffNone))
 	}
 	return lines
+}
+
+// sameSignedFields reports whether two model records agree on every field the
+// M4 diff signs: id, family, tags, enabled, context, maxOut, the tool-use flag,
+// the four capability flags (effort compared normalized, F-M2) and the tool
+// grants (compared in normalized order, mirroring the diff's before column).
+// SupportsTools signs because it is the one flag the edit-mode write can move
+// from the snapshot alone (buildModel OR-derives it from the grant list, G-M3):
+// leaving it out let an external supportsTools flip pass the stale-base gate
+// and be silently reverted by the approved write (G-M2).
+func sameSignedFields(a, b providers.Model) bool {
+	return a.ID == b.ID &&
+		a.Family == b.Family &&
+		equalKeyList(a.Tags, b.Tags) &&
+		a.IsEnabled() == b.IsEnabled() &&
+		a.ContextLength == b.ContextLength &&
+		a.MaxOutputTokens == b.MaxOutputTokens &&
+		a.Capabilities.SupportsTools == b.Capabilities.SupportsTools &&
+		a.Capabilities.SupportsThinking == b.Capabilities.SupportsThinking &&
+		normEffort(a.Capabilities.ReasoningEffort) == normEffort(b.Capabilities.ReasoningEffort) &&
+		a.Capabilities.SupportsVision == b.Capabilities.SupportsVision &&
+		a.Capabilities.SupportsVideo == b.Capabilities.SupportsVideo &&
+		equalKeyList(normalizeTools(a.Capabilities.AllowedTools), normalizeTools(b.Capabilities.AllowedTools))
+}
+
+// baseChangedOnDisk reloads the registry and compares the current on-disk
+// record of the edited model against the form-open snapshot. It reports
+// true (the write must be refused) when the model or provider vanished, a
+// signed field drifted, or the registry cannot be located at all. A pure
+// load error reports false: Core.ModelUpdate runs its own load and
+// surfaces the error, so the refusal message would mislabel it.
+func (s *modelFormScreen) baseChangedOnDisk() bool {
+	if s.mode != modelFormModeEdit || !s.origFound {
+		return false
+	}
+	reg, err := providers.Load()
+	if err != nil {
+		return false
+	}
+	p := findProviderCI(reg, s.providerName)
+	if p == nil {
+		return true
+	}
+	for j := range p.Models {
+		if p.Models[j].ID == s.modelID {
+			return !sameSignedFields(s.orig, p.Models[j])
+		}
+	}
+	return true
 }
 
 // commit runs the approved write: Core.ModelAdd (add) or Core.ModelUpdate +
@@ -816,6 +1135,15 @@ func (s *modelFormScreen) commit(a *App, m providers.Model, tools []string) {
 		mm.Capabilities.AllowedTools = append([]string(nil), tools...)
 		err = s.core.ModelAdd(s.providerName, mm)
 	} else {
+		// F-M3 (CWE-367): the approval diff was signed against the
+		// form-open snapshot. Reload the registry and re-verify the base
+		// record before writing; an external edit to the same model while
+		// the form was open is refused, not silently reverted.
+		if s.baseChangedOnDisk() {
+			a.SetMessage(s.b.T("common.error") + ": " + missingOr(s.b, "models.form.stale_base", missingModelFormStaleBase))
+			s.rearmGuard(a)
+			return
+		}
 		mm := m
 		mm.Capabilities.AllowedTools = append([]string(nil), tools...)
 		if err = s.core.ModelUpdate(s.providerName, s.modelID, mm); err == nil {
@@ -829,16 +1157,21 @@ func (s *modelFormScreen) commit(a *App, m providers.Model, tools []string) {
 	}
 	s.reload()
 	a.Pop()
+	// The success sentences name the same two registry slots as the header, so
+	// they route through the slot masker for the same reason (H-7 sweep). Each
+	// one opens with the localized common.success label so the message line
+	// paints the success role, not the error amber (user decision D7-7B); the
+	// error paths above prefix common.error the same way.
 	if s.mode == modelFormModeAdd {
-		a.SetMessage(fillHubSlots(missingOr(s.b, "models.form.saved_add", missingModelFormSavedAdd), map[string]string{
-			"id":       providers.MaskOperand(m.ID),
-			"provider": providers.MaskOperand(s.providerName),
+		a.SetMessage(s.b.T("common.success") + ": " + fillHubSlots(missingOr(s.b, "models.form.saved_add", missingModelFormSavedAdd), map[string]string{
+			"id":       maskSlotOperand(m.ID),
+			"provider": maskSlotOperand(s.providerName),
 		}))
 		return
 	}
-	a.SetMessage(fillHubSlots(missingOr(s.b, "models.form.saved_edit", missingModelFormSavedEdit), map[string]string{
-		"id":       providers.MaskOperand(m.ID),
-		"provider": providers.MaskOperand(s.providerName),
+	a.SetMessage(s.b.T("common.success") + ": " + fillHubSlots(missingOr(s.b, "models.form.saved_edit", missingModelFormSavedEdit), map[string]string{
+		"id":       maskSlotOperand(m.ID),
+		"provider": maskSlotOperand(s.providerName),
 	}))
 }
 

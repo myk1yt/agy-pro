@@ -10,6 +10,14 @@ import (
 	"agypro/internal/mode"
 )
 
+// promptsListChrome is the non-list line count of the composed frame around
+// the slot list: the screen title, the separator under it, the status line,
+// the blank under the status line, the blank above the list hint, the hint,
+// the separator above the base footer, and the base footer itself (the same
+// body shape the presets list uses; the models screen has no status line and
+// needs 6).
+const promptsListChrome = 8
+
 // promptSlots is the fixed inventory of the prompt library, in display
 // order: the six task presets (matching fanout.GetTaskPreset slots) plus
 // the native seat preamble last. The slot ID doubles as the store file
@@ -176,11 +184,24 @@ func (s *promptsScreen) activate(idx int) {
 
 // Draw renders the override-count status line, the numbered slot rows
 // with source badges, and the two-handled footer hint. All cell math goes
-// through cellwidth.
+// through cellwidth. The window is sized against the real chrome of this
+// frame: the fixed chrome rows plus the message block the composer appends
+// under the body when a message is live, so the body fits the frame and the
+// overflow path (which shrinks the body from its tail) never runs on a
+// full-page list.
 func (s *promptsScreen) Draw(a *App) []string {
 	s.app = a
-	s.list.SetPageSize(pageSizeFor(a.Height(), 5))
 	s.syncRows()
+	// The app message line is its own block under the body (a blank separator
+	// plus the line) and the composer appends it after the body. The library
+	// inherits the message a slot save leaves behind, so a full-page list has
+	// to leave those two rows out of the window as well, or that frame cuts
+	// the list tail.
+	chrome := promptsListChrome
+	if a.Message() != "" {
+		chrome += 2
+	}
+	s.list.SetPageSize(pageSizeFor(a.Height(), chrome))
 	lines := []string{cellwidth.Truncate(s.statusLine(), a.Width()), ""}
 	lines = append(lines, s.list.Render(a.Width())...)
 	lines = append(lines, "", s.list.FooterHint())

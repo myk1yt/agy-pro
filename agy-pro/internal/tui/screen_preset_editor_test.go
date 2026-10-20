@@ -904,3 +904,146 @@ func TestEditorCorruptLatchRearmsOnNewEpisode(t *testing.T) {
 		t.Fatalf("declined re-gate mutated the file: %q, %v", data, err)
 	}
 }
+
+// editorFrameAt80x24 opens the named preset in an 80x24 editor over a stub
+// root and returns the app, the concrete screen, and the composed frame
+// lines.
+func editorFrameAt80x24(t *testing.T, name string) (*App, *presetEditorScreen, []string) {
+	t.Helper()
+	app := NewApp(80, 24, DirLTR)
+	app.Push(&stubScreen{title: "root", mode: ModeNav})
+	scr := NewPresetEditorScreen(name)
+	app.Push(scr)
+	return app, scr.(*presetEditorScreen), app.Frame().Lines
+}
+
+// frameLineMatches reports whether any frame line satisfies pred.
+func frameLineMatches(lines []string, pred func(string) bool) bool {
+	for _, l := range lines {
+		if pred(l) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestEditorHostsWindowFits80x24 pins audit F10: the allow_hosts window is
+// derived from the frame height instead of the retired fixed 7-row window, so
+// the hint and the last zone-B field stay on an 80x24 frame however many hosts
+// the preset carries. The 0-host and 1-host cases keep the audit's recorded
+// line counts (23 and 24) and render their whole row set, so the small-host
+// layout did not move.
+func TestEditorHostsWindowFits80x24(t *testing.T) {
+	all := []string{"a.example.com", "b.example.com", "c.example.com", "d.example.com",
+		"e.example.com", "f.example.com", "g.example.com", "h.example.com"}
+	seed := func(t *testing.T, n int) {
+		t.Helper()
+		path := editorHome(t)
+		seedEditorPresets(t, path, &fanout.PresetsFile{Presets: []fanout.Preset{
+			{Name: "p", AllowHosts: append([]string(nil), all[:n]...)},
+		}})
+	}
+	jsonOnFrame := func(l string) bool { return strings.HasPrefix(strings.TrimSpace(l), "json") }
+
+	cases := []struct {
+		name     string
+		hosts    int
+		wantLine int
+		whole    []string // rows of the host block that must all be on the frame
+	}{
+		{name: "0 hosts", hosts: 0, wantLine: 23, whole: []string{"[ 1] Add host", "[ 2] Remove host"}},
+		{name: "1 host", hosts: 1, wantLine: 24, whole: []string{"[ 1] a.example.com", "[ 2] Add host", "[ 3] Remove host"}},
+		{name: "8 hosts", hosts: 8, wantLine: 24},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			seed(t, tc.hosts)
+			_, scr, lines := editorFrameAt80x24(t, "p")
+			// 24 rows of frame minus the chrome this body shape spends
+			// (title, both separators, base footer, both 7-field grids, the
+			// allow_hosts header, the blank and the hint) leaves 3 rows.
+			if got := scr.hosts.PageSize(); got != 3 {
+				t.Fatalf("allow_hosts page size = %d, want 3", got)
+			}
+			if len(lines) != tc.wantLine {
+				t.Fatalf("frame = %d lines, want %d:\n%s", len(lines), tc.wantLine, strings.Join(lines, "\n"))
+			}
+			if lines[len(lines)-1] != baseFooter {
+				t.Fatalf("last frame line = %q, want the base footer", lines[len(lines)-1])
+			}
+			if !frameLineMatches(lines, func(l string) bool { return l == presetsEditorHint }) {
+				t.Fatalf("editor hint missing from the frame:\n%s", strings.Join(lines, "\n"))
+			}
+			if !frameLineMatches(lines, jsonOnFrame) {
+				t.Fatalf("the last zone-B field (json) is not on the frame:\n%s", strings.Join(lines, "\n"))
+			}
+			for _, row := range tc.whole {
+				if !frameLineMatches(lines, func(l string) bool { return strings.Contains(l, row) }) {
+					t.Fatalf("host row %q missing from the frame:\n%s", row, strings.Join(lines, "\n"))
+				}
+			}
+		})
+	}
+
+	// The audit repro: 8 hosts, the host window pages, and the action rows
+	// stay reachable through the window instead of falling off the frame.
+	t.Run("8 hosts page to the actions", func(t *testing.T) {
+		seed(t, 8)
+		app, scr, _ := editorFrameAt80x24(t, "p")
+		scr.hosts.SetCursor(scr.hosts.Len() - 1)
+		lines := app.Frame().Lines
+		if !frameLineMatches(lines, func(l string) bool { return strings.Contains(l, "[10] Remove host") }) {
+			t.Fatalf("the Remove row is unreachable in the shrunk window:\n%s", strings.Join(lines, "\n"))
+		}
+		if !frameLineMatches(lines, func(l string) bool { return l == presetsEditorHint }) {
+			t.Fatalf("hint lost after paging the host window:\n%s", strings.Join(lines, "\n"))
+		}
+		if len(lines) != 24 {
+			t.Fatalf("paged frame = %d lines, want 24", len(lines))
+		}
+	})
+
+	// The last zone-B field is not only visible but still the focused,
+	// editable row: the cursor marker sits on it with the frame intact.
+	t.Run("json stays focused and on-frame", func(t *testing.T) {
+		seed(t, 8)
+		app, scr, _ := editorFrameAt80x24(t, "p")
+		scr.zone = editorZoneB
+		scr.formB.SetCursor(scr.formB.Len() - 1)
+		lines := app.Frame().Lines
+		if !frameLineMatches(lines, func(l string) bool { return strings.HasPrefix(l, "▶ json") }) {
+			t.Fatalf("focused json row missing from the frame:\n%s", strings.Join(lines, "\n"))
+		}
+		if len(lines) != 24 {
+			t.Fatalf("focused frame = %d lines, want 24", len(lines))
+		}
+	})
+}
+
+// TestEditorCorruptEpisodeKeepsHint80x24 pins the one-off-row half of the
+// same budget: the corrupt-file warning renders both as a body row and as the
+// app message (its own frame section), and at 80x24 the frame still holds the
+// hint and the last zone-B field. The decorative blank above the hint is the
+// row that gives way when the budget cannot hold it.
+func TestEditorCorruptEpisodeKeepsHint80x24(t *testing.T) {
+	path := editorHome(t)
+	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+		t.Fatalf("seed corrupt preset file: %v", err)
+	}
+	_, scr, lines := editorFrameAt80x24(t, "")
+	if !scr.corruptWarn {
+		t.Fatal("corrupt file did not arm the warning")
+	}
+	if len(lines) != 24 {
+		t.Fatalf("frame = %d lines, want 24:\n%s", len(lines), strings.Join(lines, "\n"))
+	}
+	if !frameLineMatches(lines, func(l string) bool { return l == presetsEditorHint }) {
+		t.Fatalf("hint missing under the corrupt warning:\n%s", strings.Join(lines, "\n"))
+	}
+	if !frameLineMatches(lines, func(l string) bool { return strings.HasPrefix(strings.TrimSpace(l), "json") }) {
+		t.Fatalf("json row missing under the corrupt warning:\n%s", strings.Join(lines, "\n"))
+	}
+	if lines[len(lines)-1] != baseFooter {
+		t.Fatalf("last frame line = %q, want the base footer", lines[len(lines)-1])
+	}
+}

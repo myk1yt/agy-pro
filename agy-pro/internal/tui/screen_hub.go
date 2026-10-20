@@ -80,7 +80,10 @@ func (h *hubScreen) Title() string {
 
 // syncRows rebuilds the row labels when the UI language changed since the
 // last frame. The language row carries the current language endonym as its
-// note so the selector always shows what is active.
+// note so the selector always shows what is active. The cursor index is
+// preserved across the rebuild (SetRows resets it to the top), so the
+// position the operator was on, typically the Language row they just chose
+// from, survives the re-render; the sibling list screens do the same.
 func (h *hubScreen) syncRows() {
 	lang := i18n.Normalize(h.currentCounts().Language)
 	if lang == h.lang && h.rows != nil {
@@ -98,7 +101,9 @@ func (h *hubScreen) syncRows() {
 		{Label: b.T("view.appearance.language.label"), ID: hubIDLanguage, Note: i18n.Endonym(lang)},
 		{Label: b.T("menu.quit"), ID: hubIDExit},
 	}
+	cursor := h.list.Cursor()
 	h.list.SetRows(h.rows)
+	h.list.SetCursor(cursor)
 }
 
 // activate is the stepList onPick callback. The exit row quits the app;

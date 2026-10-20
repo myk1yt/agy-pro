@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -147,4 +148,75 @@ func TestHubRowsOrder(t *testing.T) {
 			t.Fatalf("row %d ID = %q, want %q (order: %v)", i+1, got[i], wantIDs[i], got)
 		}
 	}
+}
+
+// TestHubCursorSurvivesLanguageChange pins the F21 fix: syncRows rebuilds the
+// row labels when the UI language changes, and the cursor index survives that
+// rebuild instead of snapping back to row 1. The rows themselves still refresh
+// to the new language, so the position is kept by index and not by freezing
+// the old list.
+func TestHubCursorSurvivesLanguageChange(t *testing.T) {
+	lang := "en"
+	scr := NewHubScreen(func() HubCounts {
+		c := hubFixture
+		c.Language = lang
+		return c
+	}, nil)
+	hub, ok := scr.(*hubScreen)
+	if !ok {
+		t.Fatalf("NewHubScreen returned %T, want *hubScreen", scr)
+	}
+	app := NewApp(80, 24, DirLTR)
+	app.Push(hub)
+
+	app.Frame() // the first draw builds the English rows
+	// Row 7 is the Language row; six Down presses are the position a language
+	// round trip must hand back to the operator.
+	for i := 0; i < 6; i++ {
+		hub.HandleKey(KeyDown, app)
+	}
+	if got := hub.list.Cursor(); got != 6 {
+		t.Fatalf("cursor = %d after six Down presses, want 6", got)
+	}
+	before := app.Frame().String()
+	if line := hubFrameRowLine(t, before, 7); !strings.HasPrefix(line, "▶ ") {
+		t.Fatalf("cursor marker is not on row 7 before the language change: %q", line)
+	}
+
+	lang = "ko"
+	frame := app.Frame().String()
+
+	if got := hub.list.Cursor(); got != 6 {
+		t.Fatalf("cursor = %d after the language change, want 6 (syncRows must keep the position); frames:\n%s", got, frame)
+	}
+	if got, want := hub.list.Row(0).Label, i18n.Load("ko").T("menu.providers"); got != want {
+		t.Fatalf("row 1 label = %q, want %q (rows must still refresh)", got, want)
+	}
+	if got, want := hub.list.Row(6).Label, i18n.Load("ko").T("view.appearance.language.label"); got != want {
+		t.Fatalf("language row label = %q, want %q (rows must still refresh)", got, want)
+	}
+	if n := strings.Count(frame, "▶ "); n != 1 {
+		t.Fatalf("frame carries %d cursor markers, want exactly 1; frames:\n%s", n, frame)
+	}
+	line := hubFrameRowLine(t, frame, 7)
+	if !strings.HasPrefix(line, "▶ ") {
+		t.Fatalf("cursor marker left row 7 after the rebuild: %q\n%s", line, frame)
+	}
+	if !strings.Contains(line, i18n.Endonym("ko")) {
+		t.Fatalf("row 7 does not carry the new endonym %q: %q", i18n.Endonym("ko"), line)
+	}
+}
+
+// hubFrameRowLine returns the rendered frame line carrying the given 1-based
+// row number (the "[ 7]" column stepList.Render writes).
+func hubFrameRowLine(t *testing.T, frame string, n int) string {
+	t.Helper()
+	marker := fmt.Sprintf("[%2d]", n)
+	for _, line := range strings.Split(frame, "\n") {
+		if strings.Contains(line, marker) {
+			return line
+		}
+	}
+	t.Fatalf("no frame line carries row %d (%s); frames:\n%s", n, marker, frame)
+	return ""
 }

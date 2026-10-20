@@ -2,8 +2,10 @@ package tui
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -523,5 +525,261 @@ func TestPresetsCorruptLatchRearmsOnNewEpisode(t *testing.T) {
 	}
 	if data, err := os.ReadFile(path); err != nil || string(data) != "{still not json" {
 		t.Fatalf("declined re-gate mutated the file: %q, %v", data, err)
+	}
+}
+
+// presetsBulkStore seeds n presets behind the fixed rows (the read-only
+// built-in row plus the five action rows), so the list overflows a standard
+// 80x24 window instead of fitting it.
+func presetsBulkStore(t *testing.T, n int) *fanout.PresetFileStore {
+	t.Helper()
+	t.Setenv(providers.EnvHome, t.TempDir())
+	st := &fanout.PresetFileStore{Path: filepath.Join(t.TempDir(), "fanout-presets.json")}
+	pf := &fanout.PresetsFile{DefaultPreset: "p1"}
+	for i := 1; i <= n; i++ {
+		pf.Presets = append(pf.Presets, fanout.Preset{Name: "p" + strconv.Itoa(i), Task: "review", N: i})
+	}
+	if err := st.SavePresets(pf); err != nil {
+		t.Fatalf("seed bulk presets: %v", err)
+	}
+	return st
+}
+
+// presetsAppAt pushes the preset list over a stub root at one console
+// geometry and returns the screen handle alongside the app.
+func presetsAppAt(st fanout.PresetStore, w, h int) (*App, *presetsScreen) {
+	app := NewApp(w, h, DirLTR)
+	app.Push(&stubScreen{title: "root", mode: ModeNav})
+	scr := NewPresetsScreen(st, nil).(*presetsScreen)
+	app.Push(scr)
+	return app, scr
+}
+
+// TestPresetsBaseFooterSurvivesFullPage pins audit F7 on the preset list: at
+// 80x24 with more presets than the window holds, the composed frame still
+// ends with the shared base footer (the only line naming Esc, Ctrl+L and
+// Ctrl+C) and still carries the list hint. The window reserves every non-list
+// line of the body shape (title, separator, status line, the blank under it,
+// the blank above the hint, the hint, the separator above the footer, the
+// footer), so a full page can no longer push the footer off the frame.
+func TestPresetsBaseFooterSurvivesFullPage(t *testing.T) {
+	st := presetsBulkStore(t, 13)
+	app, scr := presetsAppAt(st, 80, 24)
+	app.CaptureRun(&ScriptedKeys{})
+
+	frame := app.Frame()
+	if got, want := scr.list.PageSize(), 24-presetsListChrome; got != want {
+		t.Fatalf("page size = %d, want %d (80x24 minus %d chrome rows)", got, want, presetsListChrome)
+	}
+	if len(scr.rows) <= scr.list.PageSize() {
+		t.Fatalf("fixture does not fill the window: %d rows, page %d", len(scr.rows), scr.list.PageSize())
+	}
+	if len(frame.Lines) != 24 {
+		t.Fatalf("full-page frame = %d lines, want 24; frames:\n%s", len(frame.Lines), strings.Join(frame.Lines, "\n"))
+	}
+	if last := frame.Lines[len(frame.Lines)-1]; last != baseFooter {
+		t.Fatalf("base footer cut on a full page; last line = %q; frames:\n%s", last, strings.Join(frame.Lines, "\n"))
+	}
+	if body := strings.Join(frame.Lines, "\n"); !strings.Contains(body, scr.list.FooterHint()) {
+		t.Fatalf("list hint missing from the full-page frame; frames:\n%s", body)
+	}
+}
+
+// TestPresetsChromeSurvivesNoticeBlocks pins the adjacent class on the one-off
+// lines Draw renders above the list: the corrupt-file warning and the empty
+// state are counted against the window, so on a short console they cannot
+// push the list hint or the base footer off the frame. Both cases sit at
+// heights where the pre-fix window (height - 5) overran the frame.
+func TestPresetsChromeSurvivesNoticeBlocks(t *testing.T) {
+	t.Run("corrupt warning", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv(providers.EnvHome, home)
+		path := filepath.Join(home, "fanout-presets.json")
+		if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+			t.Fatalf("seed corrupt preset file: %v", err)
+		}
+		app, scr := presetsAppAt(&fanout.PresetFileStore{Path: path}, 80, 16)
+		app.CaptureRun(&ScriptedKeys{})
+
+		frame := app.Frame()
+		body := strings.Join(frame.Lines, "\n")
+		if !scr.corruptWarn || !strings.Contains(body, "is corrupt") {
+			t.Fatalf("corrupt warning missing from the frame; frames:\n%s", body)
+		}
+		if !strings.Contains(body, scr.list.FooterHint()) {
+			t.Fatalf("list hint cut by the corrupt warning block; frames:\n%s", body)
+		}
+		if last := frame.Lines[len(frame.Lines)-1]; last != baseFooter {
+			t.Fatalf("base footer cut by the corrupt warning block; last line = %q; frames:\n%s", last, body)
+		}
+	})
+
+	t.Run("empty state", func(t *testing.T) {
+		t.Setenv(providers.EnvHome, t.TempDir())
+		st := &fanout.PresetFileStore{Path: filepath.Join(t.TempDir(), "fanout-presets.json")}
+		if err := st.SavePresets(&fanout.PresetsFile{}); err != nil {
+			t.Fatalf("seed empty store: %v", err)
+		}
+		app, scr := presetsAppAt(st, 80, 12)
+		app.CaptureRun(&ScriptedKeys{})
+
+		frame := app.Frame()
+		body := strings.Join(frame.Lines, "\n")
+		if !strings.Contains(body, "No presets yet.") {
+			t.Fatalf("empty-state line missing from the frame; frames:\n%s", body)
+		}
+		if !strings.Contains(body, scr.list.FooterHint()) {
+			t.Fatalf("list hint cut by the empty-state block; frames:\n%s", body)
+		}
+		if last := frame.Lines[len(frame.Lines)-1]; last != baseFooter {
+			t.Fatalf("base footer cut by the empty-state block; last line = %q; frames:\n%s", last, body)
+		}
+	})
+}
+
+// TestPresetsLastRowReachable pins the paging check: with more rows than the
+// window holds, End and PgDn both reach the last row, the window scrolls to
+// keep it visible, and the chrome survives the scroll.
+func TestPresetsLastRowReachable(t *testing.T) {
+	st := presetsBulkStore(t, 13)
+	app, scr := presetsAppAt(st, 80, 24)
+
+	app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyEnd}})
+	if got, want := scr.list.Cursor(), len(scr.rows)-1; got != want {
+		t.Fatalf("End cursor = %d, want %d (last row)", got, want)
+	}
+	if c, o, p := scr.list.Cursor(), scr.list.Offset(), scr.list.PageSize(); c < o || c >= o+p {
+		t.Fatalf("last row %d outside the window [%d,%d) after End", c, o, o+p)
+	}
+	if !strings.Contains(strings.Join(app.Frame().Lines, "\n"), scr.list.FooterHint()) {
+		t.Fatalf("list hint cut after End; frames:\n%s", strings.Join(app.Frame().Lines, "\n"))
+	}
+
+	// PgDn pages down to the same last row: 19 rows with a 16-row window is
+	// two pages, so the cursor must clamp onto the last row, not past it.
+	app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyHome}})
+	if c := scr.list.Cursor(); c != 0 {
+		t.Fatalf("Home cursor = %d, want 0", c)
+	}
+	app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyPgDn, KeyPgDn}})
+	if got, want := scr.list.Cursor(), len(scr.rows)-1; got != want {
+		t.Fatalf("PgDn cursor = %d, want %d (last row)", got, want)
+	}
+	if c, o, p := scr.list.Cursor(), scr.list.Offset(), scr.list.PageSize(); c < o || c >= o+p {
+		t.Fatalf("last row %d outside the window [%d,%d) after PgDn", c, o, o+p)
+	}
+}
+
+// TestPresetsStickySelectionAfterMutation pins the selection check: after
+// Duplicate, the sticky selection names the copy and the cursor stays on the
+// Duplicate row, so the next Enter repeats the gesture the user saw instead of
+// landing on a different verb. After Delete, the sticky index is clamped into
+// the shrunken list and names a preset that still exists.
+func TestPresetsStickySelectionAfterMutation(t *testing.T) {
+	st, _ := presetsFixture(t)
+	app, opened := newPresetsApp(st, nil)
+	scr := app.Top().(*presetsScreen)
+
+	// KeyDown arms alpha (row 2); digit 6 activates Duplicate on it.
+	app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyDown, Digit(6)}})
+	if len(*opened) != 0 {
+		t.Fatalf("duplicate opened the editor: %v", *opened)
+	}
+	if got, want := scr.selectedName(), "alpha copy"; got != want {
+		t.Fatalf("sticky selection after Duplicate = %q, want %q", got, want)
+	}
+	if c := scr.list.Cursor(); c < 0 || c >= len(scr.rows) {
+		t.Fatalf("cursor %d outside the row range %d", c, len(scr.rows))
+	}
+	if got, want := scr.rows[scr.list.Cursor()].ID, presetsRowIDDuplicate; got != want {
+		t.Fatalf("cursor drifted to row %q after Duplicate; want %q", got, want)
+	}
+
+	// The next Edit (digit 6 on the enlarged list) must target the copy.
+	app.CaptureRun(&ScriptedKeys{Keys: []Key{Digit(6)}})
+	if len(*opened) != 1 || (*opened)[0] != "alpha copy" {
+		t.Fatalf("Edit after Duplicate opened %v, want [alpha copy]", *opened)
+	}
+
+	// Delete the copy (digit 8 on the enlarged list) and confirm.
+	app.CaptureRun(&ScriptedKeys{Keys: []Key{Digit(8), KeyYes}})
+	pf := reloadPresets(t, st)
+	if _, ok := pf.FindPreset("alpha copy"); ok {
+		t.Fatalf("delete did not land: %+v", pf.Presets)
+	}
+	if got, want := scr.selectedName(), "beta"; got != want {
+		t.Fatalf("sticky selection after Delete = %q, want %q (clamped into the list)", got, want)
+	}
+	if _, ok := scr.pf.FindPreset(scr.selectedName()); !ok {
+		t.Fatalf("sticky selection %q names a preset that does not exist", scr.selectedName())
+	}
+	if got, want := scr.rows[scr.list.Cursor()].ID, presetsRowIDDelete; got != want {
+		t.Fatalf("cursor drifted to row %q after Delete; want %q", got, want)
+	}
+}
+
+// failingPresetStore serves the in-memory fixture but refuses every save, for
+// the write-failure message-role pin.
+type failingPresetStore struct{ pf *fanout.PresetsFile }
+
+func (s failingPresetStore) LoadPresets() (*fanout.PresetsFile, error) { return s.pf, nil }
+
+func (s failingPresetStore) SavePresets(*fanout.PresetsFile) error {
+	return errors.New("preset store is read-only")
+}
+
+// TestPresetsMessageRoles pins user decision D7-7B at the preset list: a
+// completed duplicate opens with the localized common.success label and a
+// refused store write with common.error, so the two compose DIFFERENT palette
+// roles (RoleSuccess vs RoleDanger) instead of the neutral amber every message
+// used to get. Both frames go through the same composition path the app-level
+// pin uses, and the plain tier still emits zero escape bytes for them.
+func TestPresetsMessageRoles(t *testing.T) {
+	success, _ := presetsFixture(t)
+	successApp, _ := newPresetsApp(success, nil)
+	// KeyDown arms alpha (row 2); digit 6 activates Duplicate.
+	successApp.CaptureRun(&ScriptedKeys{Keys: []Key{KeyDown, Digit(6)}})
+	successMsg := successApp.Message()
+	successLabel := Bundle().T("common.success")
+	if !strings.HasPrefix(successMsg, successLabel+": ") {
+		t.Fatalf("duplicate success message = %q, want the %q label prefix", successMsg, successLabel)
+	}
+	successRole := roleOfLine(t, composeFrame(successApp, nil), successMsg)
+	if successRole != RoleSuccess {
+		t.Fatalf("success message role = %v, want RoleSuccess", successRole)
+	}
+
+	// The same gesture over a store whose save always fails: the write-failure
+	// path must paint RoleDanger, not the neutral note role.
+	_, pf := presetsFixture(t)
+	failureApp, _ := newPresetsApp(failingPresetStore{pf: pf}, nil)
+	failureApp.CaptureRun(&ScriptedKeys{Keys: []Key{KeyDown, Digit(6)}})
+	failureMsg := failureApp.Message()
+	errorLabel := Bundle().T("common.error")
+	if !strings.HasPrefix(failureMsg, errorLabel+": ") {
+		t.Fatalf("write failure message = %q, want the %q label prefix", failureMsg, errorLabel)
+	}
+	failureRole := roleOfLine(t, composeFrame(failureApp, nil), failureMsg)
+	if failureRole != RoleDanger {
+		t.Fatalf("write failure role = %v, want RoleDanger", failureRole)
+	}
+	if successRole == failureRole {
+		t.Fatalf("success and write failure both paint %v; want different roles", successRole)
+	}
+
+	// Plain tier: the same frames resolve to no bytes at all.
+	frames := []struct {
+		name string
+		app  *App
+	}{{"success", successApp}, {"failure", failureApp}}
+	for _, f := range frames {
+		var out bytes.Buffer
+		p := NewPainter(&out, plainTestCap())
+		if code := paintLoop(f.app, &ScriptedKeys{}, p, nil); code != 0 {
+			t.Fatalf("%s frame paintLoop exit = %d, want 0", f.name, code)
+		}
+		if strings.Contains(out.String(), "\x1b") {
+			t.Fatalf("%s plain-tier paint emitted escape bytes:\n%q", f.name, out.String())
+		}
 	}
 }

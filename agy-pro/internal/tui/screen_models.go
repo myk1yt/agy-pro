@@ -64,6 +64,12 @@ const (
 	missingModelsToolsApprovalBody = "Updates tool grants for model {{id}} in {{provider}}."
 	// catalog-resolved, fallback kept: models.tools.min_one
 	missingModelsToolsMinOne = "At least one tool must stay granted. An empty grant list means the model may use every tool."
+	// catalog-resolved, fallback kept: models.cap.thinking
+	missingModelsCapThinking = "thinking"
+	// catalog-resolved, fallback kept: models.cap.vision
+	missingModelsCapVision = "vision"
+	// catalog-resolved, fallback kept: models.cap.video
+	missingModelsCapVideo = "video"
 )
 
 // knownToolList is the closed tool universe the setup wizard documents
@@ -109,7 +115,7 @@ type modelsScreen struct {
 // ID; tests inject a spy. The UI language resolves from the persisted state
 // (AGY_PRO_HOME state.json), defaulting to English.
 func NewModelsScreen(core *settings.Core, providerName string, openForm func(mode string, modelID string, a *App)) Screen {
-	s := &modelsScreen{core: core, providerName: providerName, openForm: openForm}
+	s := &modelsScreen{core: core, providerName: providerName, openForm: openForm, sel: -1}
 	lang := mode.DefaultLanguage
 	if st, err := mode.LoadState(); err == nil && st != nil {
 		lang = st.EffectiveLanguage()
@@ -132,10 +138,11 @@ func (s *modelsScreen) setLang(lang string) {
 // Mode is ModeNav: digits and arrows both navigate.
 func (s *modelsScreen) Mode() Mode { return ModeNav }
 
-// Title resolves through the catalog; the provider operand is masked
-// (key-shaped provider names can never render raw).
+// Title resolves through the catalog; the provider operand is a disk-borne
+// registry slot, so it routes through the slot masker (key-shaped and
+// location-decorated provider names can never render raw).
 func (s *modelsScreen) Title() string {
-	return s.b.Tf("models.screen.title_for", map[string]string{"provider": providers.MaskOperand(s.providerName)})
+	return s.b.Tf("models.screen.title_for", map[string]string{"provider": maskSlotOperand(s.providerName)})
 }
 
 // findProviderCI resolves a provider case-insensitively, matching the Core
@@ -152,8 +159,14 @@ func findProviderCI(reg *providers.Registry, name string) *providers.Provider {
 // reload re-reads the registry from disk and rebuilds the rows. Every write
 // verb is followed by this, so the sibling models render from the freshly
 // saved file (the sibling-survival pin lives in the tests). The cursor is
-// kept and clamped into the new row range. The on-disk signature is recorded
-// so reloadIfChanged can skip the rebuild while the file is unchanged.
+// restored by ROW ID after the rebuild, so a mutation that shifts the row
+// layout cannot leave the visible cursor on a different verb or model than
+// the user saw (audit F9); a row that vanished (a deleted model) falls back
+// to the old index clamped into the new range by SetCursor, which can land
+// past the model block on an action row when the vanished row was the last
+// model row. The sticky selection is clamped into the new model range and
+// floors at -1 (none selected). The on-disk signature is recorded so
+// reloadIfChanged can skip the rebuild while the file is unchanged.
 func (s *modelsScreen) reload() {
 	s.models = nil
 	s.loadErr = ""
@@ -166,7 +179,7 @@ func (s *modelsScreen) reload() {
 		p := findProviderCI(reg, s.providerName)
 		if p == nil {
 			s.loadErr = fillHubSlots(missingOr(s.b, "models.provider_missing", missingModelsProviderMissing),
-				map[string]string{"provider": providers.MaskOperand(s.providerName)})
+				map[string]string{"provider": maskSlotOperand(s.providerName)})
 		} else {
 			s.models = append([]providers.Model(nil), p.Models...)
 			s.sig = modelsSig(reg, s.providerName)
@@ -175,18 +188,64 @@ func (s *modelsScreen) reload() {
 	if s.sel > len(s.models)-1 {
 		s.sel = len(s.models) - 1
 	}
-	if s.sel < 0 {
-		s.sel = 0
+	s.rebuild()
+}
+
+// rebuild refreshes the row inventory and restores the cursor by ROW ID, so
+// a mutation that shifts the row layout cannot leave the visible cursor on
+// a different verb or model than the user saw (audit F9); a row that
+// vanished (a deleted model) falls back to the old index clamped into the
+// new range by SetCursor, which can land past the model block on an action
+// row when the vanished row was the last model row. Selection moves do NOT
+// go through here: HandleKey calls syncMarker, which rewrites the marker in
+// place so the list window never resets (review finding F-S1).
+func (s *modelsScreen) rebuild() {
+	oldCursor := s.list.Cursor()
+	oldID := ""
+	if oldCursor >= 0 && oldCursor < len(s.rows) {
+		oldID = s.rows[oldCursor].ID
 	}
-	cursor := s.list.Cursor()
 	s.rows = s.buildRows()
 	s.list.SetRows(s.rows)
+	cursor := oldCursor
+	for i, r := range s.rows {
+		if r.ID == oldID {
+			cursor = i
+			break
+		}
+	}
 	s.list.SetCursor(cursor)
 }
 
+// syncMarker moves the visible selection marker to the sticky-selected
+// model row by rewriting the row labels IN PLACE. s.rows and the stepList
+// share the same backing array (SetRows stores the slice header), so the
+// label writes are picked up by the next Render without a SetRows call,
+// which would reset the scroll window and make the view jump on every
+// selection move (review finding F-S1). Labels are recomputed from the row
+// ID (the slot masker over the model id) rather than prefix-stripped, so a
+// model id that happens to start with the marker glyph cannot confuse the
+// sync, and a decorated on-disk id masks here exactly as it does in buildRows.
+func (s *modelsScreen) syncMarker() {
+	for i := range s.rows {
+		if !strings.HasPrefix(s.rows[i].ID, modelRowPrefix) {
+			continue
+		}
+		label := maskSlotOperand(s.rows[i].ID[len(modelRowPrefix):])
+		if i == s.sel {
+			label = "● " + label
+		}
+		if s.rows[i].Label != label {
+			s.rows[i].Label = label
+		}
+	}
+}
+
 // modelsSig builds a signature over the provider's on-disk model records:
-// every field the rows render (id, family, context, maxOut, enabled, tool
-// grants, SupportsTools). A change in any of them moves the signature.
+// every field the rows render (id, family, context, maxOut, enabled, the
+// capability flags SupportsTools/SupportsThinking/ReasoningEffort/
+// SupportsVision/SupportsVideo, and the tool grants). A change in any of
+// them moves the signature.
 func modelsSig(reg *providers.Registry, name string) string {
 	p := findProviderCI(reg, name)
 	if p == nil {
@@ -205,6 +264,10 @@ func modelsSig(reg *providers.Registry, name string) string {
 			strconv.Itoa(m.MaxOutputTokens),
 			en,
 			strconv.FormatBool(m.Capabilities.SupportsTools),
+			strconv.FormatBool(m.Capabilities.SupportsThinking),
+			m.Capabilities.ReasoningEffort,
+			strconv.FormatBool(m.Capabilities.SupportsVision),
+			strconv.FormatBool(m.Capabilities.SupportsVideo),
 			strings.Join(m.Capabilities.AllowedTools, ","),
 		}, "\x1f")
 	}
@@ -232,11 +295,23 @@ func (s *modelsScreen) reloadIfChanged() {
 
 // buildRows composes the row inventory: one row per model, then the fixed
 // action rows. The model note carries family, context/maxOut summary,
-// enabled state, and the tool grant count.
+// enabled state, the tool grant count, and the thinking/vision/video
+// capability flags. The sticky-selected model row carries a visible marker
+// so the target of the Edit/Delete/Toggle/Tools rows is never invisible
+// (the presets screen keeps its selection invisible; audit F9 asked for a
+// marker here because a stray Enter after a mutation must act on the row
+// the user sees marked).
 func (s *modelsScreen) buildRows() []Row {
 	rows := make([]Row, 0, len(s.models)+6)
-	for _, m := range s.models {
-		rows = append(rows, Row{ID: modelRowPrefix + m.ID, Label: providers.MaskOperand(m.ID), Note: s.modelNote(m)})
+	for i, m := range s.models {
+		// The label is a disk-borne registry slot, so it routes through the
+		// slot masker (H-3): MaskOperand's location exemption printed a
+		// decorated on-disk id raw in the row.
+		label := maskSlotOperand(m.ID)
+		if i == s.sel {
+			label = "● " + label
+		}
+		rows = append(rows, Row{ID: modelRowPrefix + m.ID, Label: label, Note: s.modelNote(m)})
 	}
 	b := s.b
 	rows = append(rows,
@@ -251,15 +326,21 @@ func (s *modelsScreen) buildRows() []Row {
 }
 
 // modelNote renders one annotation string: family, context and maxOut
-// summary, enabled state, and the granted-tool count.
+// summary, enabled state, the granted-tool count, and the thinking /
+// vision / video capability flags. The thinking flag carries the reasoning
+// effort in parentheses (thinking(high)), the same shape the CLI twin's
+// Capabilities.Summary renders. Both the family and the effort are
+// registry-persisted free text, so each routes through the slot masker (the
+// strip plus the registry-slot authority), which also removes a Cf rune the
+// painter would otherwise strip at render time and expose the bare value. The
+// flags use the models.cap.* catalog keys with English const fallbacks.
 func (s *modelsScreen) modelNote(m providers.Model) string {
 	b := s.b
 	parts := []string{}
 	if m.Family != "" {
-		// The family slot uses the registry-slot masker (the same
-		// MaskRegistryValue MaskFamilyName applies to an explicit family),
-		// never the raw field.
-		parts = append(parts, providers.MaskRegistryValue(m.Family))
+		// The family slot uses the registry-slot masker (the same authority
+		// MaskFamilyName applies to an explicit family), never the raw field.
+		parts = append(parts, maskSlotOperand(m.Family))
 	}
 	if m.ContextLength > 0 {
 		parts = append(parts, b.T("models.column.context")+" "+strconv.Itoa(m.ContextLength))
@@ -273,6 +354,16 @@ func (s *modelsScreen) modelNote(m providers.Model) string {
 		parts = append(parts, b.T("common.disabled"))
 	}
 	parts = append(parts, b.T("models.cap.tools")+" "+strconv.Itoa(len(m.Capabilities.AllowedTools)))
+	if m.Capabilities.SupportsVision {
+		parts = append(parts, missingOr(b, "models.cap.vision", missingModelsCapVision))
+	}
+	if m.Capabilities.SupportsVideo {
+		parts = append(parts, missingOr(b, "models.cap.video", missingModelsCapVideo))
+	}
+	if m.Capabilities.SupportsThinking {
+		effort := maskSlotOperand(m.Capabilities.EffectiveReasoningEffort())
+		parts = append(parts, missingOr(b, "models.cap.thinking", missingModelsCapThinking)+"("+effort+")")
+	}
 	return strings.Join(parts, " · ")
 }
 
@@ -314,8 +405,11 @@ func (s *modelsScreen) activate(idx int) {
 // withCursorModel runs fn over the selected model. The selection is sticky:
 // it follows the cursor while the cursor sits on a model row and survives
 // the move onto an action row (digit activation jumps the cursor to the
-// action row, so the action verbs cannot read the cursor position directly).
-// With no model selected the user gets a message instead of a silent no-op.
+// action row, so the action verbs cannot read the cursor position
+// directly). The selection starts at -1 (user decision 2A, mirroring the
+// presets screen): entering the screen and firing an action verb without
+// first resting the cursor on a model row refuses with the select-a-model
+// message instead of silently targeting model[0].
 func (s *modelsScreen) withCursorModel(fn func(providers.Model)) {
 	if s.sel >= 0 && s.sel < len(s.models) {
 		fn(s.models[s.sel])
@@ -328,15 +422,20 @@ func (s *modelsScreen) withCursorModel(fn func(providers.Model)) {
 
 // askDelete opens the M4 Approval modal with the exact mutation summary:
 // the registry-entry-only sentence from the catalog (model id and provider
-// masked), the model count N -> N-1, and the last-model warning when the
-// provider would keep an empty list. y runs Core.ModelDelete and reloads;
-// n or Esc cancels with an explicit nothing-written message.
+// through the slot masker), the model count N -> N-1, and the last-model
+// warning when the provider would keep an empty list. y runs Core.ModelDelete
+// and reloads; n or Esc cancels with an explicit nothing-written message.
+//
+// The id and the provider name are disk-borne registry slots (no validator
+// ever saw them on this path), so both route through maskSlotOperand: the
+// location-exempt MaskOperand printed a decorated hand-edited id raw here
+// (H-3).
 func (s *modelsScreen) askDelete() {
 	s.withCursorModel(func(m providers.Model) {
 		a := s.app
 		n := len(s.models)
-		maskedID := providers.MaskOperand(m.ID)
-		maskedProvider := providers.MaskOperand(s.providerName)
+		maskedID := maskSlotOperand(m.ID)
+		maskedProvider := maskSlotOperand(s.providerName)
 		summary := []string{
 			s.b.Tf("models.delete.body", map[string]string{"id": maskedID, "provider": maskedProvider}),
 			fillHubSlots(missingOr(s.b, "models.delete.count", missingModelsDeleteCount), map[string]string{
@@ -357,7 +456,7 @@ func (s *modelsScreen) askDelete() {
 				return
 			}
 			s.reload()
-			a.SetMessage(fillHubSlots(missingOr(s.b, "models.msg.deleted", missingModelsDeleted), map[string]string{
+			a.SetMessage(s.b.T("common.success") + ": " + fillHubSlots(missingOr(s.b, "models.msg.deleted", missingModelsDeleted), map[string]string{
 				"id":       maskedID,
 				"provider": maskedProvider,
 			}))
@@ -368,14 +467,15 @@ func (s *modelsScreen) askDelete() {
 // toggleEnabled opens the M4 Approval modal with the exact mutation summary:
 // the masked provider + model id sentence and the enabled field before/after.
 // y runs Core.ModelSetEnabled and reloads; n or Esc writes nothing. The
-// summary lines carry only MaskOperand operands, so a key-shaped model id
-// can never render raw in the approval frame.
+// summary lines carry only slot-masked registry operands and catalog values,
+// so a key-shaped or decorated model id can never render raw in the approval
+// frame.
 func (s *modelsScreen) toggleEnabled() {
 	s.withCursorModel(func(m providers.Model) {
 		a := s.app
 		next := !m.IsEnabled()
-		maskedID := providers.MaskOperand(m.ID)
-		maskedProvider := providers.MaskOperand(s.providerName)
+		maskedID := maskSlotOperand(m.ID)
+		maskedProvider := maskSlotOperand(s.providerName)
 		before := s.b.T("common.disabled")
 		after := s.b.T("common.enabled")
 		if !next {
@@ -402,7 +502,7 @@ func (s *modelsScreen) toggleEnabled() {
 				return
 			}
 			s.reload()
-			a.SetMessage(fillHubSlots(missingOr(s.b, "models.msg.enabled_set", missingModelsEnabledSet), map[string]string{
+			a.SetMessage(s.b.T("common.success") + ": " + fillHubSlots(missingOr(s.b, "models.msg.enabled_set", missingModelsEnabledSet), map[string]string{
 				"id":       maskedID,
 				"provider": maskedProvider,
 				"state":    after,
@@ -422,8 +522,8 @@ func (s *modelsScreen) toggleEnabled() {
 func (s *modelsScreen) openTools() {
 	s.withCursorModel(func(m providers.Model) {
 		a := s.app
-		maskedID := providers.MaskOperand(m.ID)
-		maskedProvider := providers.MaskOperand(s.providerName)
+		maskedID := maskSlotOperand(m.ID)
+		maskedProvider := maskSlotOperand(s.providerName)
 		ov := newToolsOverlay(
 			missingOr(s.b, "models.tools.title", missingModelsToolsTitle),
 			missingOr(s.b, "models.tools.hint", missingModelsToolsHint),
@@ -465,7 +565,7 @@ func (s *modelsScreen) openTools() {
 						return
 					}
 					s.reload()
-					a.SetMessage(fillHubSlots(missingOr(s.b, "models.msg.tools_saved", missingModelsToolsSaved), map[string]string{
+					a.SetMessage(s.b.T("common.success") + ": " + fillHubSlots(missingOr(s.b, "models.msg.tools_saved", missingModelsToolsSaved), map[string]string{
 						"id": maskedID,
 						"n":  strconv.Itoa(len(granted)),
 					}))
@@ -484,7 +584,9 @@ func (s *modelsScreen) openTools() {
 // registry is re-read behind the signature check first, so a form commit or
 // an external mutation shows up on this frame.
 func (s *modelsScreen) Draw(a *App) []string {
+	s.app = a
 	s.reloadIfChanged()
+	s.list.SetPageSize(pageSizeFor(a.Height(), 6))
 	var lines []string
 	switch {
 	case s.loadErr != "":
@@ -498,14 +600,16 @@ func (s *modelsScreen) Draw(a *App) []string {
 }
 
 // HandleKey delegates to the stepList and keeps the sticky model selection
-// in sync while the cursor sits on a model row. Esc never arrives here: the
-// App precedence handles it first (clears the message, then pops back to
-// the providers screen).
+// in sync while the cursor sits on a model row; when the selection moves
+// the marker follows in place (syncMarker), so the list window never
+// resets. Esc never arrives here: the App precedence handles it first
+// (clears the message, then pops back to the providers screen).
 func (s *modelsScreen) HandleKey(k Key, a *App) {
 	s.app = a
 	s.list.HandleKey(k)
-	if c := s.list.Cursor(); c >= 0 && c < len(s.models) {
+	if c := s.list.Cursor(); c >= 0 && c < len(s.models) && s.sel != c {
 		s.sel = c
+		s.syncMarker()
 	}
 }
 

@@ -17,9 +17,10 @@ import (
 )
 
 // English fallbacks for catalog keys this screen resolves through missingOr;
-// en.json now carries every key below (catalog-resolved); each const names
-// its key and stays as the fallback for a catalog lacking the translation.
-// Every value avoids the em-dash (house rule: hyphens in user-facing text).
+// every key below resolves in all twelve locales, so the consts never render
+// unless a locale file loses a translation again. Each const names its key and
+// stays as the fallback for a catalog lacking it. Every value avoids the
+// em-dash (house rule: hyphens in user-facing text).
 const (
 	// catalog-resolved, fallback kept: settings.prompt.add_json
 	settingsPromptAddJSON = "JSON file path"
@@ -41,8 +42,16 @@ const (
 	settingsPromptPresetNumbers = "Numbers (e.g. 1,3,19,23)"
 	// catalog-resolved, fallback kept: settings.prompt.hint
 	settingsPromptHint = "Ctrl+S submits - Tab moves to OK - Esc cancels"
-	// catalog-resolved, fallback kept: settings.msg.wizard
-	settingsMsgWizard = "Interactive wizard: run `agy pro setup` (or `agy pro settings providers add-interactive`). Raw key echo is masked first-5 + ****."
+	// catalog-resolved, fallback kept: settings.msg.add_provider
+	//
+	// English chrome (decision 6B). Provider add now lives inside this TUI, so
+	// the guidance names the in-TUI route first and keeps the terminal pair as
+	// the documented alternative for scripts and non-console hosts. The retired
+	// terminal-first sentence lived under settings.msg.wizard; that key has no
+	// call site left and the catalogs no longer carry it, so this guidance
+	// resolves through settings.msg.add_provider in all twelve locales, with the
+	// const below as the fallback (the app.exit_confirm pattern).
+	settingsMsgAddProvider = "Add a provider in the TUI: Hub > Providers > Add provider. Terminal alternative: `agy pro setup --wizard` or `agy pro settings providers add-interactive`. Raw key echo is masked first-5 + ****."
 	// catalog-resolved, fallback kept: settings.msg.cancelled
 	settingsMsgCancelled = "Cancelled. Nothing was written."
 	// catalog-resolved, fallback kept: settings.msg.backups_none
@@ -321,7 +330,7 @@ func (s *settingsScreen) activate(it settings.Item, a *App) {
 			a.SetMessage(providers.MaskSentence("error: " + err.Error()))
 		}
 	case it.ID == "providers.add_interactive":
-		a.SetMessage(missingOr(s.bundle, "settings.msg.wizard", settingsMsgWizard))
+		a.SetMessage(missingOr(s.bundle, "settings.msg.add_provider", settingsMsgAddProvider))
 	case it.ID == "providers.add_json":
 		s.prompt(a, missingOr(s.bundle, "settings.prompt.add_json", settingsPromptAddJSON), "", func(text string, a *App) {
 			s.addJSON(label, text, a)
@@ -479,7 +488,7 @@ func (s *settingsScreen) approveProviderDelete(name string, a *App) {
 		a.SetMessage(providers.MaskSentence("error: provider not found", providers.FlagSeedOperands(name)...))
 		return
 	}
-	masked := providers.MaskOperand(p.Name)
+	masked := providers.MaskSlot(p.Name)
 	summary := []string{
 		s.bundle.Tf("providers.delete.body", map[string]string{"name": masked}),
 		s.countsLine(len(p.Models), 0),
@@ -532,7 +541,7 @@ func (s *settingsScreen) approveProviderAdd(label string, spec settings.Provider
 	if !ok {
 		return
 	}
-	masked := providers.MaskOperand(spec.Name)
+	masked := providers.MaskSlot(spec.Name)
 	after := len(spec.Models)
 	existing := findProvider(reg, spec.Name)
 	var summary []string
@@ -575,7 +584,7 @@ func (s *settingsScreen) approveProviderAdd(label string, spec settings.Provider
 // testProvider probes one provider through Core.ProviderTest and reports the
 // verdict on the message line. Operands render masked.
 func (s *settingsScreen) testProvider(name string, a *App) {
-	masked := providers.MaskOperand(name)
+	masked := providers.MaskSlot(name)
 	a.SetMessage(s.bundle.Tf("providers.test.running", map[string]string{"name": masked}))
 	if err := s.core.ProviderTest(name); err != nil {
 		a.SetMessage(s.bundle.Tf("providers.test.fail", map[string]string{
@@ -606,8 +615,8 @@ func (s *settingsScreen) renameProvider(label, old, neu string, a *App) {
 	before := len(p.Models)
 	summary := []string{
 		fillHubSlots(missingOr(s.bundle, "settings.approval.rename", settingsApprovalRename), map[string]string{
-			"old": providers.MaskOperand(p.Name),
-			"new": providers.MaskOperand(neu),
+			"old": providers.MaskSlot(p.Name),
+			"new": providers.MaskSlot(neu),
 		}),
 		s.countsLine(before, before),
 		s.bundle.T("modal.approval.body"),
@@ -632,11 +641,75 @@ func (s *settingsScreen) renameProvider(label, old, neu string, a *App) {
 	}))
 }
 
+// approvalFrameChrome is the frame height a live M4 gate shares with the rest
+// of the frame: the screen title above the gate, the gate title, the gate
+// legend, the shared footer, and the blank line joinBlocks (tui.go) inserts
+// between each pair of adjacent sections. Four fixed rows plus two separators.
+const approvalFrameChrome = 6
+
+// approvalMessageRows is the extra height a live message line costs: the
+// message row itself plus the extra separator, because the message becomes a
+// fourth section between the gate and the shared footer.
+const approvalMessageRows = 2
+
+// approvalEntriesHidden is the bounded-summary tail line (see
+// capApprovalEntries): the exact number of per-entry diff lines the gate could
+// not show, so a partial diff says so instead of ending mid-list. Chrome i18n
+// is decision 6B (documented English), like the gate legends, so this line
+// carries no catalog key.
+const approvalEntriesHidden = "  ... %d more entries NOT shown (the diff above is partial)"
+
+// approvalBodyBudget returns how many modal body lines the live M4 gate may
+// carry and still keep the gate title, the visible diff lines, the gate
+// legend, and the shared footer inside a.Height() rows. The composer's cut
+// ladder (ComposeFrame in tui.go) gives up the screen body, the message, and
+// the screen title before it reaches the gate body, and its last stage trims
+// that body from the bottom without a marker: an unbounded summary is
+// therefore cut silently and the operator cannot tell the diff is partial.
+// The rows the gate can never share are the chrome above plus a live message
+// line, so the bound follows the frame geometry at composition time instead of
+// a fixed entry count. The caller composes the gate in the same step that
+// paints it, so the geometry read here is the painted one.
+func approvalBodyBudget(a *App) int {
+	chrome := approvalFrameChrome
+	if a.Message() != "" {
+		chrome += approvalMessageRows
+	}
+	return a.Height() - chrome
+}
+
+// capApprovalEntries fits an approval gate's per-entry diff lines into the
+// modal body budget. Entries that fit are returned exactly as composed, so a
+// small gate renders byte-identically to the pre-bound gate and carries no
+// tail line. Entries that do not fit are cut to the leading lines the budget
+// holds, followed by ONE tail line naming exactly how many entries are not
+// shown: the operator reads an explicitly partial diff with an exact count
+// instead of a silently truncated one that hides the rest of the write scope.
+// The cut only fires when at least two entries are hidden, so the tail line's
+// plural always reads correctly. fixed is the line count of the summary prefix
+// the caller composed before the entries.
+func capApprovalEntries(entries []string, fixed, budget int) []string {
+	if fixed+len(entries) <= budget {
+		return entries
+	}
+	visible := budget - fixed - 1 // one modal body line is the tail
+	if visible < 0 {
+		visible = 0
+	}
+	out := make([]string, 0, visible+1)
+	out = append(out, entries[:visible]...)
+	out = append(out, fmt.Sprintf(approvalEntriesHidden, len(entries)-visible))
+	return out
+}
+
 // approveFixKeys opens the M4 approval modal for the doctor fix-keys write.
 // The summary carries the action sentence, the registry model count
 // before/after (key-name repair never touches models, so the numbers are
 // equal and any future drift is visible), the honest backup sentence, and
 // one diff-context line per resolved target env name (provider masked). The
+// per-entry diff is bounded to the frame budget (capApprovalEntries), so at
+// 80x24 a 20+ target repair still shows the gate legend and an exact
+// "N more entries NOT shown" tail instead of losing the legend off-frame. The
 // exact per-entry mutation cannot be known before the live probes run; the
 // sentence states the precondition so the approval is not broader than the
 // op. y is the only path to Core.DoctorFixKeys; n/Esc writes nothing.
@@ -658,6 +731,7 @@ func (s *settingsScreen) approveFixKeys(label, target string, a *App) {
 		s.countsLine(total, total),
 		missingOr(s.bundle, "settings.approval.fix_keys_write", settingsApprovalFixKeysWrite),
 	}
+	entries := make([]string, 0, len(names))
 	for _, env := range names {
 		providerName := ""
 		for i := range reg.Providers {
@@ -666,11 +740,12 @@ func (s *settingsScreen) approveFixKeys(label, target string, a *App) {
 				break
 			}
 		}
-		summary = append(summary, fillHubSlots(missingOr(s.bundle, "settings.approval.fix_target", settingsApprovalFixTarget), map[string]string{
+		entries = append(entries, fillHubSlots(missingOr(s.bundle, "settings.approval.fix_target", settingsApprovalFixTarget), map[string]string{
 			"env":      providers.MaskOperand(env),
-			"provider": providers.MaskOperand(providerName),
+			"provider": providers.MaskSlot(providerName),
 		}))
 	}
+	summary = append(summary, capApprovalEntries(entries, len(summary), approvalBodyBudget(a))...)
 	a.ShowModal(NewApproval(label, summary, func(approved bool) {
 		if !approved {
 			a.SetMessage(missingOr(s.bundle, "settings.msg.cancelled", settingsMsgCancelled))
@@ -700,8 +775,10 @@ type keyBackupSnapshot struct {
 // rollback-keys write. The summary carries the action sentence, the registry
 // model count before/after (equal, as for fix-keys), the honest no-file
 // sentence, and one diff line per backup entry (restore or delete, name
-// masked). y is the only path to Core.DoctorRollbackKeys; n/Esc writes
-// nothing.
+// masked). The per-entry diff is bounded to the frame budget
+// (capApprovalEntries), so a long backup listing still shows the gate legend
+// and an exact "N more entries NOT shown" tail at 80x24. y is the only path to
+// Core.DoctorRollbackKeys; n/Esc writes nothing.
 func (s *settingsScreen) approveRollbackKeys(label, backupDir string, a *App) {
 	reg, ok := s.approvalRegistry(a)
 	if !ok {
@@ -730,17 +807,19 @@ func (s *settingsScreen) approveRollbackKeys(label, backupDir string, a *App) {
 		s.countsLine(total, total),
 		missingOr(s.bundle, "settings.approval.rollback_write", settingsApprovalRollbackWrite),
 	}
+	entries := make([]string, 0, len(snap.Entries))
 	for _, e := range snap.Entries {
 		if e.Existed {
-			summary = append(summary, fillHubSlots(missingOr(s.bundle, "settings.approval.rollback_restore", settingsApprovalRollbackRestore), map[string]string{
+			entries = append(entries, fillHubSlots(missingOr(s.bundle, "settings.approval.rollback_restore", settingsApprovalRollbackRestore), map[string]string{
 				"name": providers.MaskOperand(e.Name),
 			}))
 		} else {
-			summary = append(summary, fillHubSlots(missingOr(s.bundle, "settings.approval.rollback_delete", settingsApprovalRollbackDelete), map[string]string{
+			entries = append(entries, fillHubSlots(missingOr(s.bundle, "settings.approval.rollback_delete", settingsApprovalRollbackDelete), map[string]string{
 				"name": providers.MaskOperand(e.Name),
 			}))
 		}
 	}
+	summary = append(summary, capApprovalEntries(entries, len(summary), approvalBodyBudget(a))...)
 	a.ShowModal(NewApproval(label, summary, func(approved bool) {
 		if !approved {
 			a.SetMessage(missingOr(s.bundle, "settings.msg.cancelled", settingsMsgCancelled))
@@ -780,9 +859,10 @@ func (s *settingsScreen) countsLine(before, after int) string {
 }
 
 // providerLine renders one diff-context line for a registry entry: the
-// masked provider name, the userinfo-stripped base URL, and the model count.
+// slot-masked provider name, the userinfo-stripped base URL, and the model
+// count.
 func (s *settingsScreen) providerLine(name, baseURL string, models int) string {
-	return fmt.Sprintf("provider %s (%s, %s)", providers.MaskOperand(name), maskBaseURL(baseURL), s.bundle.Tn("menu.count.models", models))
+	return fmt.Sprintf("provider %s (%s, %s)", providers.MaskSlot(name), maskBaseURL(baseURL), s.bundle.Tn("menu.count.models", models))
 }
 
 // findProvider returns the registry entry for name (case-insensitive, like

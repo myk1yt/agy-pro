@@ -12,6 +12,14 @@ import (
 	"agypro/internal/providers"
 )
 
+// presetsListChrome is the non-list line count of the composed frame around
+// the preset list: the screen title, the separator under it, the status line,
+// the blank under the status line, the blank above the list hint, the hint,
+// the separator above the base footer, and the base footer itself. The models
+// screen's body carries no status line, which is why its chrome value is 6;
+// this body shape needs 8.
+const presetsListChrome = 8
+
 // Row IDs of the fixed rows around the preset list, in display order.
 // Preset rows carry ID "preset\x00<name>" and always sort between the
 // built-in row and the action rows.
@@ -279,8 +287,13 @@ func (s *presetsScreen) reloadIfChanged() {
 }
 
 // adopt swaps in a freshly loaded store state and rebuilds the rows. The
-// cursor and the sticky selection are kept and clamped into the new row
-// range; the signature is recorded from the adopted state.
+// cursor is restored by ROW ID, so a mutation that shifts the row layout
+// cannot leave the visible cursor on a different verb than the one the user
+// activated (preset rows and action rows keep their IDs across a rebuild); a
+// row that vanished (a deleted preset) falls back to the old index, which
+// SetCursor clamps into the new range. The sticky selection is kept and
+// clamped into the new preset range; the signature is recorded from the
+// adopted state.
 func (s *presetsScreen) adopt(pf *fanout.PresetsFile, loadErr string) {
 	s.pf = pf
 	s.loadErr = loadErr
@@ -289,9 +302,20 @@ func (s *presetsScreen) adopt(pf *fanout.PresetsFile, loadErr string) {
 		s.sel = len(s.pf.Presets) - 1
 	}
 	cursor := s.list.Cursor()
+	oldID := ""
+	if cursor >= 0 && cursor < len(s.rows) {
+		oldID = s.rows[cursor].ID
+	}
 	s.rows = s.buildRows()
 	s.list.SetRows(s.rows)
-	s.list.SetCursor(cursor)
+	target := cursor
+	for i, r := range s.rows {
+		if r.ID == oldID {
+			target = i
+			break
+		}
+	}
+	s.list.SetCursor(target)
 }
 
 // buildRows composes the row inventory: the fixed built-in row, one row per
@@ -476,12 +500,12 @@ func (s *presetsScreen) duplicate(p fanout.Preset) {
 		s.pf.Presets = append(s.pf.Presets, cp)
 		if err := s.store.SavePresets(s.pf); err != nil {
 			s.pf.Presets = s.pf.Presets[:len(s.pf.Presets)-1]
-			a.SetMessage(s.b.Tf("err.write_failed", map[string]string{"err": providers.MaskOperand(err.Error())}))
+			a.SetMessage(s.b.T("common.error") + ": " + s.b.Tf("err.write_failed", map[string]string{"err": providers.MaskOperand(err.Error())}))
 			return
 		}
 		s.reload()
 		s.sel = len(s.pf.Presets) - 1
-		a.SetMessage(fillHubSlots(missingOr(s.b, "presets.msg.duplicated", presetsMsgDuplicated),
+		a.SetMessage(s.b.T("common.success") + ": " + fillHubSlots(missingOr(s.b, "presets.msg.duplicated", presetsMsgDuplicated),
 			map[string]string{"name": providers.MaskOperand(name)}))
 	})
 }
@@ -526,12 +550,12 @@ func (s *presetsScreen) askDelete(p fanout.Preset) {
 					s.pf.DefaultPreset = ""
 				}
 				if err := s.store.SavePresets(s.pf); err != nil {
-					a.SetMessage(s.b.Tf("err.write_failed", map[string]string{"err": providers.MaskOperand(err.Error())}))
+					a.SetMessage(s.b.T("common.error") + ": " + s.b.Tf("err.write_failed", map[string]string{"err": providers.MaskOperand(err.Error())}))
 					s.reload()
 					return
 				}
 				s.reload()
-				a.SetMessage(fillHubSlots(missingOr(s.b, "presets.msg.deleted", presetsMsgDeleted),
+				a.SetMessage(s.b.T("common.success") + ": " + fillHubSlots(missingOr(s.b, "presets.msg.deleted", presetsMsgDeleted),
 					map[string]string{"name": masked}))
 			})
 		}))
@@ -543,37 +567,60 @@ func (s *presetsScreen) setDefault(p fanout.Preset) {
 	s.gateCorruptSave(func() {
 		s.pf.DefaultPreset = p.Name
 		if err := s.store.SavePresets(s.pf); err != nil {
-			a.SetMessage(s.b.Tf("err.write_failed", map[string]string{"err": providers.MaskOperand(err.Error())}))
+			a.SetMessage(s.b.T("common.error") + ": " + s.b.Tf("err.write_failed", map[string]string{"err": providers.MaskOperand(err.Error())}))
 			s.reload()
 			return
 		}
 		s.reload()
-		a.SetMessage(fillHubSlots(missingOr(s.b, "presets.msg.default_set", presetsMsgDefaultSet),
+		a.SetMessage(s.b.T("common.success") + ": " + fillHubSlots(missingOr(s.b, "presets.msg.default_set", presetsMsgDefaultSet),
 			map[string]string{"name": providers.MaskOperand(p.Name)}))
 	})
 }
 
 // Draw renders the default-status line, the numbered rows, and the
-// two-handled footer hint. All cell math goes through cellwidth.
+// two-handled footer hint. All cell math goes through cellwidth. The window is
+// sized against the real chrome of this frame: the fixed chrome rows plus
+// every one-off line the body renders above the list, so the body always fits
+// the frame and the overflow path (which shrinks the body from its tail) never
+// runs on a full-page list. The base footer, the only line naming Esc, Ctrl+L
+// and Ctrl+C, stays on the frame.
 func (s *presetsScreen) Draw(a *App) []string {
 	s.app = a
 	s.reloadIfChanged()
-	s.list.SetPageSize(pageSizeFor(a.Height(), 5))
-	lines := []string{cellwidth.Truncate(s.statusLine(), a.Width()), ""}
-	if s.loadErr != "" {
-		lines = append(lines, s.b.T("common.error")+": "+s.loadErr)
-	}
+	warn := ""
 	if s.corruptWarn {
-		warn := corruptPresetWarning(s.b, presetFilePath(storeFile(s.store)))
-		lines = append(lines, cellwidth.Truncate(warn, a.Width()))
+		warn = corruptPresetWarning(s.b, presetFilePath(storeFile(s.store)))
 		if !s.corruptMsgSent && a.Message() == "" {
 			s.corruptMsgSent = true
 			a.SetMessage(warn)
 		}
 	}
-	if len(s.pf.Presets) == 0 {
-		lines = append(lines, cellwidth.Truncate(s.b.T("presets.empty"), a.Width()), "")
+	// notice is the one-off block above the list: the load error, the
+	// corrupt-file warning, and the empty state (a line plus the blank that
+	// keeps the list off it). Its length is what the window has to leave room
+	// for; the list hint and its blank are already part of presetsListChrome.
+	var notice []string
+	if s.loadErr != "" {
+		notice = append(notice, cellwidth.Truncate(s.b.T("common.error")+": "+s.loadErr, a.Width()))
 	}
+	if warn != "" {
+		notice = append(notice, cellwidth.Truncate(warn, a.Width()))
+	}
+	if len(s.pf.Presets) == 0 {
+		notice = append(notice, cellwidth.Truncate(s.b.T("presets.empty"), a.Width()), "")
+	}
+	// The app message line is its own block under the body (a blank separator
+	// plus the line), and the composer appends it after the body. A full-page
+	// list leaves those two rows out of the window as well, so the message
+	// frame neither cuts the list tail nor drops the base footer.
+	chrome := presetsListChrome + len(notice)
+	if a.Message() != "" {
+		chrome += 2
+	}
+	s.list.SetPageSize(pageSizeFor(a.Height(), chrome))
+	lines := make([]string, 0, len(notice)+s.list.PageSize()+4)
+	lines = append(lines, cellwidth.Truncate(s.statusLine(), a.Width()), "")
+	lines = append(lines, notice...)
 	lines = append(lines, s.list.Render(a.Width())...)
 	lines = append(lines, "", s.list.FooterHint())
 	return lines

@@ -29,6 +29,20 @@ const (
 	hostRowRemove = "remove"
 )
 
+// presetsEditorChrome is the non-window row count of the composed frame around
+// the allow_hosts sub-list: the screen title, the separator under it, the
+// zone-A grid (7 fields), the allow_hosts header row, the zone-B grid (7
+// fields), the blank above the hint, the hint, the separator above the base
+// footer, and the base footer itself. The editor has no other height budget
+// (there is no status line and no notice block in its base shape), so this is
+// the number the host window is derived from; the one-off rows this frame may
+// add (the not-found line, the corrupt-file warning, a live validation
+// message) and the app message block are counted per frame in editorChrome.
+// At 80x24 the value leaves 3 host rows, which keeps both grids and the hint
+// on the frame; with 0 or 1 hosts the block still renders whole, exactly as it
+// did with the retired fixed window of 7.
+const presetsEditorChrome = 21
+
 // Engine-default rung values the editor seeds the read-only built-in view
 // with. They mirror the flag defaults and engine withDefaults literals in
 // internal/fanout (cli.go defaultFanout* consts, engine.go DefaultTimeoutSec);
@@ -937,7 +951,7 @@ func (e *presetEditorScreen) Draw(a *App) []string {
 		}
 	}
 	lines = append(lines, e.renderForm(e.formA, e.zone == editorZoneA, sourceKeyA, src, labelW, w)...)
-	lines = append(lines, e.renderHosts(src, labelW, w)...)
+	lines = append(lines, e.renderHosts(a, src, labelW, w)...)
 	lines = append(lines, e.renderForm(e.formB, e.zone == editorZoneB, sourceKeyB, src, labelW, w)...)
 	if msg := e.formA.Message(); msg != "" {
 		lines = append(lines, cellwidth.Truncate(msg, w))
@@ -950,7 +964,14 @@ func (e *presetEditorScreen) Draw(a *App) []string {
 		hint = presetsEditorHintBuiltin
 	}
 	if a.Modal() != e.guard {
-		lines = append(lines, "", cellwidth.Truncate(hint, w))
+		// The host window is the only block that shrinks, and stepList never
+		// takes it below one row. When the frame cannot hold even that row
+		// plus the decorative blank above the hint, the blank gives way so
+		// the hint (the only line naming Ctrl+S) stays on the frame.
+		if a.Height()-e.editorChrome(a) >= 1 {
+			lines = append(lines, "")
+		}
+		lines = append(lines, cellwidth.Truncate(hint, w))
 	}
 	return lines
 }
@@ -983,8 +1004,9 @@ func (e *presetEditorScreen) renderForm(f *Form, active bool, keys []string, src
 }
 
 // renderHosts renders the allow_hosts sub-list block: the field header row
-// (with its rung) plus the numbered host/add/remove rows.
-func (e *presetEditorScreen) renderHosts(src map[string]string, labelW, w int) []string {
+// (with its rung) plus the numbered host/add/remove rows, in a window sized by
+// the frame height.
+func (e *presetEditorScreen) renderHosts(a *App, src map[string]string, labelW, w int) []string {
 	marker := "  "
 	if e.zone == editorZoneHosts {
 		marker = "▶ "
@@ -996,9 +1018,43 @@ func (e *presetEditorScreen) renderHosts(src map[string]string, labelW, w int) [
 		line += missingOr(e.b, "presets.editor.source.none", presetsEditorSourceNone)
 	}
 	lines := []string{cellwidth.Truncate(line, w)}
-	e.hosts.SetPageSize(pageSizeFor(8, 1))
+	e.hosts.SetPageSize(e.hostPageSize(a))
 	lines = append(lines, e.hosts.Render(w)...)
 	return lines
+}
+
+// editorChrome counts the rows one composed frame spends outside the
+// allow_hosts window: the fixed chrome plus every one-off row this frame
+// actually renders. The app message block counts as two because the composer
+// gives it its own section (a separator plus the line).
+func (e *presetEditorScreen) editorChrome(a *App) int {
+	chrome := presetsEditorChrome
+	if e.notFound != "" {
+		chrome++
+	}
+	if e.corruptWarn {
+		chrome++
+	}
+	if e.formA.Message() != "" {
+		chrome++
+	}
+	if e.formB.Message() != "" {
+		chrome++
+	}
+	if a.Message() != "" {
+		chrome += 2
+	}
+	return chrome
+}
+
+// hostPageSize derives the allow_hosts window from the frame height and the
+// chrome this frame carries, so the two field grids and the hint stay on the
+// frame while the host rows page. Over-reserving is harmless: a shorter frame
+// never loses a row, it only pages the host list sooner. While the discard
+// guard is live the hint block is not drawn, so the reservation is
+// conservative there.
+func (e *presetEditorScreen) hostPageSize(a *App) int {
+	return pageSizeFor(a.Height(), e.editorChrome(a))
 }
 
 // presetLadderInputs carries the resolution-ladder inputs the source column
