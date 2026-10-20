@@ -133,9 +133,14 @@ func nativeFallbackDroppedPin(args []string) string {
 // does not. "Needs the P2 mesh" alone would misdescribe the second class
 // (round-5b-fix re-review, qwen F-02 nuance).
 func printDroppedPinNotice(errw io.Writer, dropped string) {
+	// FIX-8: the dropped pin is a registry-borne model id / scheme key, so the
+	// operand slot takes the registry-slot authority (MaskSlot) instead of the
+	// operand masker, which is the identity on the underscore-head credential
+	// class. Control stripping stays FIRST: MaskSlot strips control runes too,
+	// and this line's whole job is to be trustworthy.
 	fmt.Fprintf(errw,
 		"[agy-pro] the pinned model %s is not resolvable on this native fallback (only agy's static Gemini ids are); the session runs agy's default native model instead\n",
-		stripControlChars(providers.MaskOperand(dropped)))
+		stripControlChars(providers.MaskSlot(dropped)))
 }
 
 // ChildKeyScrubNames is the provider-key env-name scrub list for a real-agy

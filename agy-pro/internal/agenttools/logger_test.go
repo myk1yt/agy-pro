@@ -150,3 +150,92 @@ func TestNewLoggerExplicitRedactorAndDisabledPath(t *testing.T) {
 		t.Errorf("explicit redactor was not applied:\n%s", raw)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// FIX-8 (module-wide echo sweep): the Model and Provider fields of the durable
+// JSONL line are registry slots, so they render through providers.MaskSlot
+// (the registry-slot authority) instead of the operand masker, whose
+// underscore-head arm is the identity. The Tool field is a tool NAME, not a
+// registry slot, and stays on MaskOperand.
+// ---------------------------------------------------------------------------
+
+func TestLogMasksUnderscoreHeadRegistrySlots(t *testing.T) {
+	const (
+		providerPlant = "sk_live_0123456789abcdef"
+		providerMask  = "sk_li****"
+		modelPlant    = "tok_a1b2c3d4e5f6g7h8i9j0"
+		modelMask     = "tok_a****"
+	)
+	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	logger, err := NewLogger(path, nil)
+	if err != nil {
+		t.Fatalf("NewLogger: %v", err)
+	}
+	if err := logger.Log(LogEntry{
+		Model:    modelPlant,
+		Provider: providerPlant,
+		Tool:     "upstream_turn",
+		Output:   "ok",
+	}); err != nil {
+		t.Fatalf("Log: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	text := string(raw)
+	for _, plant := range []string{providerPlant, modelPlant} {
+		if strings.Contains(text, plant) {
+			t.Errorf("audit log leaked %q raw:\n%s", plant, text)
+		}
+	}
+	for _, want := range []string{
+		`"provider":"` + providerMask + `"`,
+		`"model":"` + modelMask + `"`,
+		`"tool":"upstream_turn"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("audit line is missing %s:\n%s", want, text)
+		}
+	}
+
+	// Benign corpus: the registry fields keep their exact bytes and no mask
+	// appears anywhere in the line.
+	benignPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	benign, err := NewLogger(benignPath, nil)
+	if err != nil {
+		t.Fatalf("NewLogger: %v", err)
+	}
+	for _, tc := range []struct{ provider, model string }{
+		{"nw", "glm-5.3-flash-flex"},
+		{"openai", "gpt-5.1"},
+		{"gemini", "gemini-3.8-flash-high"},
+		{"deepseek", "deepseek-chat"},
+		{"charm", "claude-opus-5-5-high"},
+		{"acme-corp", "meta-llama/Llama-3-70B"},
+	} {
+		if err := benign.Log(LogEntry{Provider: tc.provider, Model: tc.model, Tool: "read", Output: "ok"}); err != nil {
+			t.Fatalf("Log(%s/%s): %v", tc.provider, tc.model, err)
+		}
+	}
+	raw, err = os.ReadFile(benignPath)
+	if err != nil {
+		t.Fatalf("read benign log: %v", err)
+	}
+	text = string(raw)
+	for _, want := range []string{
+		`"provider":"nw"`, `"model":"glm-5.3-flash-flex"`,
+		`"provider":"openai"`, `"model":"gpt-5.1"`,
+		`"provider":"gemini"`, `"model":"gemini-3.8-flash-high"`,
+		`"provider":"deepseek"`, `"model":"deepseek-chat"`,
+		`"provider":"charm"`, `"model":"claude-opus-5-5-high"`,
+		`"provider":"acme-corp"`, `"model":"meta-llama/Llama-3-70B"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("benign audit line lost %s:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "****") {
+		t.Errorf("a benign registry value was masked:\n%s", text)
+	}
+}

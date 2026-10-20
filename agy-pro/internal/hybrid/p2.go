@@ -402,17 +402,25 @@ func p2Externals(reg *providers.Registry, meshURL string, logf func(format strin
 			// One normalization point for the id (FIX-49/FIX-64 parity): trim
 			// AND strip control characters, so the key, the name agy derives
 			// from it, and the resolver comparison all agree.
+			//
+			// FIX-8: the provider name and model id in these drop reasons are
+			// registry slots, so each renders through providers.MaskSlot (the
+			// registry-slot authority: MaskOperand plus the underscore-head
+			// credential arm) rather than plain MaskOperand, which is the
+			// identity on the "sk_live_..." class. The p2DropSink still applies
+			// its whole-sentence MaskOperand as defense in depth, and benign
+			// values keep their exact bytes.
 			id := stripControlChars(strings.TrimSpace(m.ID))
 			if id == "" {
-				logf("hybrid P2: dropped a model from provider %q: blank id", providers.MaskOperand(p.Name))
+				logf("hybrid P2: dropped a model from provider %q: blank id", providers.MaskSlot(p.Name))
 				continue
 			}
 			if reserved[strings.ToLower(id)] {
-				logf("hybrid P2: dropped model %q from provider %q: the id is a reserved native or AI-Studio preset name; it is served, if at all, through the static-id policy on the resolver", providers.MaskOperand(id), providers.MaskOperand(p.Name))
+				logf("hybrid P2: dropped model %q from provider %q: the id is a reserved native or AI-Studio preset name; it is served, if at all, through the static-id policy on the resolver", providers.MaskSlot(id), providers.MaskSlot(p.Name))
 				continue
 			}
 			if seen[id] {
-				logf("hybrid P2: dropped model %q from provider %q: id already registered by an earlier provider", providers.MaskOperand(id), providers.MaskOperand(p.Name))
+				logf("hybrid P2: dropped model %q from provider %q: id already registered by an earlier provider", providers.MaskSlot(id), providers.MaskSlot(p.Name))
 				continue
 			}
 			seen[id] = true

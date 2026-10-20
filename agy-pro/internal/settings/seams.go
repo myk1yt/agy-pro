@@ -182,7 +182,7 @@ func printKeyAuditLine(out io.Writer, a providers.KeyAudit) {
 		hint = "(not set)"
 	}
 	env := providers.MaskOperand(a.Env)
-	provider := providers.MaskOperand(a.Provider)
+	provider := providers.MaskSlot(a.Provider)
 	switch {
 	case !a.Resolved:
 		fmt.Fprintf(out, "[WARN] %s (%s): %s\n", provider, env, hint)

@@ -972,3 +972,44 @@ func TestLaunchP1_NativeFallbackExitCodeIsTheChilds(t *testing.T) {
 		t.Fatalf("exit code = %d; want 7 (the child's own exit, unchanged by the pin strip)", code)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// FIX-8 (module-wide echo sweep, hybrid surface): the dropped-pin disclosure
+// names a registry-borne pin (a registry model id, a scheme key, a blade slug),
+// so it renders through providers.MaskSlot, the registry-slot authority.
+// MaskOperand is that authority's first stage, so every benign pin keeps its
+// exact bytes; the underscore-head credential class that MaskOperand renders
+// raw masks here.
+// ---------------------------------------------------------------------------
+
+func TestPrintDroppedPinNoticeMasksRegistrySlot(t *testing.T) {
+	const (
+		plant     = "sk_live_0123456789abcdef"
+		plantMask = "sk_li****"
+	)
+	line := func(v string) string {
+		return "[agy-pro] the pinned model " + v + " is not resolvable on this native fallback (only agy's static Gemini ids are); the session runs agy's default native model instead\n"
+	}
+
+	// The plant: masked, never raw.
+	var buf bytes.Buffer
+	printDroppedPinNotice(&buf, plant)
+	if strings.Contains(buf.String(), plant) {
+		t.Errorf("dropped-pin notice leaks the credential-shaped pin:\n%s", buf.String())
+	}
+	if want := line(plantMask); buf.String() != want {
+		t.Errorf("dropped-pin notice drifted\n got: %q\nwant: %q", buf.String(), want)
+	}
+
+	// Benign pins (registry ids, a scheme key, a blade slug) stay byte-identical.
+	for _, benign := range []string{
+		"claude-opus-5-5-high", "gpt-oss-120b", "gemini-3.8-flash-high",
+		"nw:glm-5.3-flash", "blade:review", "openai/gpt-5.1",
+	} {
+		buf.Reset()
+		printDroppedPinNotice(&buf, benign)
+		if want := line(benign); buf.String() != want {
+			t.Errorf("benign pin %q drifted\n got: %q\nwant: %q", benign, buf.String(), want)
+		}
+	}
+}

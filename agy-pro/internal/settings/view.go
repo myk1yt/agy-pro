@@ -23,9 +23,9 @@ import (
 type Item struct {
 	ID       string   `json:"id"`
 	Label    string   `json:"label"`
-	Value    string   `json:"value"`    // current effective value; secrets ALWAYS via providers.MaskSecret
+	Value    string   `json:"value"` // current effective value; secrets ALWAYS via providers.MaskSecret
 	Default  string   `json:"default,omitempty"`
-	Source   string   `json:"source"`   // "env" | "state" | "registry" | "default" | "constant"
+	Source   string   `json:"source"`            // "env" | "state" | "registry" | "default" | "constant"
 	Choices  []string `json:"choices,omitempty"` // empty = free value
 	Danger   bool     `json:"danger,omitempty"`  // destructive op → y/n confirmation
 	ReadOnly bool     `json:"readOnly,omitempty"`
@@ -145,13 +145,13 @@ func (c *Core) sectionLaunch(st *mode.State) Section {
 	items := []Item{
 		{
 			ID: "default_profile", Label: "Default Launch Profile",
-			Value:   profile, Default: mode.ProfilePrompt, Source: "state",
+			Value: profile, Default: mode.ProfilePrompt, Source: "state",
 			Choices: []string{mode.ProfilePrompt, mode.ProfileNative, mode.ProfileGateway},
 			Note:    "prompt = fast launcher on plain agy; native = straight to native Gemini; gateway = local LLM bridge",
 		},
 		{
 			ID: "current_mode", Label: "Profile Mode",
-			Value:   st.CurrentMode, Default: mode.ModeClean, Source: "state",
+			Value: st.CurrentMode, Default: mode.ModeClean, Source: "state",
 			Choices: []string{mode.ModeFull, mode.ModeClean}, Danger: true,
 			Note: "full = orchestrator rules + agent skills/plugins; clean = minimal baseline. Switching backs up the config dir first.",
 		},
@@ -172,7 +172,7 @@ func (c *Core) sectionLaunch(st *mode.State) Section {
 		},
 		{
 			ID: "config.show", Label: "Config Read View",
-			Value: fmt.Sprintf("profile=%s mode=%s bridge-tools=%s", profile, st.CurrentMode, st.EffectiveBridgeTools()),
+			Value:  fmt.Sprintf("profile=%s mode=%s bridge-tools=%s", profile, st.CurrentMode, st.EffectiveBridgeTools()),
 			Source: "state", ReadOnly: true,
 			Note: "same content as `agy pro config show`; this panel is the settings view",
 		},
@@ -227,9 +227,13 @@ func (c *Core) sectionProviders(reg *providers.Registry, regErr error) Section {
 		status := "(no key env)"
 		// B4 display defense: a legacy registry can hold a credential in the
 		// name or env-name slot (short env-name-shaped values were accepted as
-		// apiKeyEnv before the LookupEnv-or-catalog guard). Anything key-shaped
-		// renders through providers.MaskOperand - first-5 + **** or pattern
-		// [REDACTED], never raw.
+		// apiKeyEnv before the LookupEnv-or-catalog guard). The provider NAME is
+		// a registry slot, so it renders through providers.MaskSlot (the one
+		// registry-slot display authority: its operand stage first, then the
+		// shared policy's strip/classify, so a decorated or underscore-headed
+		// key shape masks rather than ride MaskOperand's classification gaps).
+		// The env-var NAME and the key value keep their own maskers. Nothing
+		// renders raw.
 		envName := providers.MaskOperand(p.APIKeyEnv)
 		if p.APIKeyEnv != "" {
 			val := p.KeyValue()
@@ -240,9 +244,9 @@ func (c *Core) sectionProviders(reg *providers.Registry, regErr error) Section {
 			}
 		}
 		items = append(items, Item{
-			ID:     "provider.key." + providers.MaskOperand(p.Name),
+			ID:     "provider.key." + providers.MaskSlot(p.Name),
 			MsgID:  "provider.key", // catalog entry view.provider.key.label carries {{name}}
-			Label:  "Key status - " + providers.MaskOperand(p.Name),
+			Label:  "Key status - " + providers.MaskSlot(p.Name),
 			Value:  status,
 			Source: "registry", ReadOnly: true,
 			Note: "resolved from process env then persistent stores; values never shown beyond the mask",
@@ -289,9 +293,9 @@ func (c *Core) sectionSwarm(st *mode.State) Section {
 	items := []Item{
 		{
 			ID: "native_seat_concurrency", Label: "Native Seat Concurrency",
-			Value:   fmt.Sprintf("%d", st.EffectiveNativeSeatConcurrency()), Default: fmt.Sprintf("%d", mode.DefaultNativeSeatConcurrency),
+			Value: fmt.Sprintf("%d", st.EffectiveNativeSeatConcurrency()), Default: fmt.Sprintf("%d", mode.DefaultNativeSeatConcurrency),
 			Source: "state", Choices: []string{"1", "2", "3", "4", "5", "6", "7", "8"},
-			Note:   "cap on simultaneous native (real-agy) fanout seats; clamped 1..8 (contract §2.3)",
+			Note: "cap on simultaneous native (real-agy) fanout seats; clamped 1..8 (contract §2.3)",
 		},
 		{ID: "fanout.n", Label: "Fanout Default Seats (--n)", Value: "3", Default: "3", Source: "constant", ReadOnly: true,
 			Note: "CLI flag truth (fanout/cli.go); flags remain the power-user/CI path"},

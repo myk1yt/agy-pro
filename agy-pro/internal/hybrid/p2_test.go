@@ -2615,3 +2615,75 @@ func TestP2ChildArgs_WhitespaceModelValueIsValueless(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// FIX-8 (module-wide echo sweep): the P2 customModels drop reasons quote the
+// registry provider NAME and model ID. Both are registry slots, so each
+// renders through providers.MaskSlot (the registry-slot authority) at the
+// composition site; the p2DropSink keeps its whole-sentence MaskOperand as
+// defense in depth. Benign values keep their exact bytes.
+// ---------------------------------------------------------------------------
+
+func TestP2DropReasonsMaskRegistrySlots(t *testing.T) {
+	const (
+		plant     = "sk_live_0123456789abcdef"
+		plantMask = "sk_li****"
+	)
+	collect := func() (*strings.Builder, func(string, ...any)) {
+		var log strings.Builder
+		return &log, func(format string, args ...any) {
+			log.WriteString(fmt.Sprintf(format, args...))
+			log.WriteString("\n")
+		}
+	}
+
+	log, logf := collect()
+	reg := &providers.Registry{Providers: []providers.Provider{
+		{Name: plant, BaseURL: "https://plant.example/v1", Models: []providers.Model{
+			{ID: plant, ContextLength: 32768},
+			{ID: "", ContextLength: 32768},
+		}},
+		{Name: "acme", BaseURL: "https://acme.example/v1", Models: []providers.Model{
+			{ID: plant, ContextLength: 32768},
+		}},
+	}}
+	p2Externals(reg, "http://127.0.0.1:55555", logf)
+	lines := log.String()
+	if strings.Contains(lines, plant) {
+		t.Errorf("P2 drop reason leaks a registry slot raw:\n%s", lines)
+	}
+	if want := `hybrid P2: dropped a model from provider "` + plantMask + `": blank id`; !strings.Contains(lines, want) {
+		t.Errorf("blank-id drop reason must mask the provider name as %q:\n%s", plantMask, lines)
+	}
+	if want := `dropped model "` + plantMask + `" from provider "acme": id already registered by an earlier provider`; !strings.Contains(lines, want) {
+		t.Errorf("duplicate-id drop reason must mask the model id as %q:\n%s", plantMask, lines)
+	}
+
+	// Benign corpus: both operands keep their exact bytes, and the generated
+	// entries are unaffected.
+	blog, blogf := collect()
+	benign := &providers.Registry{Providers: []providers.Provider{
+		{Name: "nw", BaseURL: "https://api.neuralwatt.example/v1", Models: []providers.Model{
+			{ID: "glm-5.3-flash-flex", ContextLength: 32768},
+		}},
+		{Name: "acme-corp", BaseURL: "https://api.acme-corp.example/v1", Models: []providers.Model{
+			{ID: "glm-5.3-flash-flex", ContextLength: 32768},
+			{ID: "", ContextLength: 32768},
+		}},
+	}}
+	entries := p2Externals(benign, "http://127.0.0.1:55555", blogf)
+	for _, want := range []string{
+		`hybrid P2: dropped a model from provider "acme-corp": blank id`,
+		`dropped model "glm-5.3-flash-flex" from provider "acme-corp": id already registered by an earlier provider`,
+	} {
+		if !strings.Contains(blog.String(), want) {
+			t.Errorf("benign drop reason lost its exact bytes (%q):\n%s", want, blog.String())
+		}
+	}
+	if strings.Contains(blog.String(), "****") {
+		t.Errorf("a benign drop reason was masked:\n%s", blog.String())
+	}
+	if len(entries) == 0 {
+		t.Fatal("the benign registry produced no customModels entry")
+	}
+}

@@ -242,21 +242,26 @@ func (c *Core) ProviderTest(name string) error {
 			break
 		}
 	}
+	// Every NAME operand below routes through MaskSlot, the registry-slot
+	// display authority: MaskOperand is the identity on the underscore-head key
+	// class, so a hand-planted "sk_live_..." name rode raw inside the failure
+	// detail. Benign names render byte-identically (MaskSlot's first stage IS
+	// MaskOperand); the probe detail stays on its existing unmasked form.
 	if found == nil {
-		return fmt.Errorf("provider %q not found", providers.MaskOperand(name))
+		return fmt.Errorf("provider %q not found", providers.MaskSlot(name))
 	}
 	audits := c.deps.AuditKeys(&providers.Registry{Providers: []providers.Provider{*found}}, providers.AuditOptions{})
 	if len(audits) == 0 {
-		return fmt.Errorf("provider %q has no API key env to probe", providers.MaskOperand(name))
+		return fmt.Errorf("provider %q has no API key env to probe", providers.MaskSlot(name))
 	}
 	a := audits[0]
 	switch a.Probe.Status {
 	case providers.ProbeValid:
 		return nil
 	case providers.ProbeSkipped:
-		return fmt.Errorf("provider %q: %s", providers.MaskOperand(name), a.Probe.Detail)
+		return fmt.Errorf("provider %q: %s", providers.MaskSlot(name), a.Probe.Detail)
 	default:
-		return fmt.Errorf("provider %q: key probe status %s (%s)", providers.MaskOperand(name), a.Probe.Status, a.Probe.Detail)
+		return fmt.Errorf("provider %q: key probe status %s (%s)", providers.MaskSlot(name), a.Probe.Status, a.Probe.Detail)
 	}
 }
 
@@ -283,6 +288,162 @@ func (c *Core) ProviderDelete(name string) error {
 		return err
 	}
 	return c.deps.SaveReg(reg)
+}
+
+// ProviderEdit error classes. Each verb outcome is a named error so a front-end
+// (the M2 TUI provider form, the M1 plugin) can branch on the reason without
+// parsing text; the wrapped detail carries the (masked) sentence.
+var (
+	// ErrProviderEditNotFound reports that no provider carries the requested name.
+	ErrProviderEditNotFound = errors.New("provider edit: provider not found")
+	// ErrProviderEditAmbiguous reports that the requested name matches more than
+	// one provider under case folding, so the edit target is not determinable.
+	ErrProviderEditAmbiguous = errors.New("provider edit: provider name is ambiguous")
+	// ErrProviderEditBaseURL reports a refused base URL (empty, malformed, or a
+	// non-loopback http:// endpoint).
+	ErrProviderEditBaseURL = errors.New("provider edit: baseURL refused")
+	// ErrProviderEditAPIKeyEnv reports a refused apiKeyEnv operand: not a
+	// plausible environment-variable NAME, or credential material.
+	ErrProviderEditAPIKeyEnv = errors.New("provider edit: apiKeyEnv refused")
+)
+
+// ProviderEdit rewrites an EXISTING provider's two endpoint fields in place:
+// BaseURL and APIKeyEnv. Every other field of the record is left byte-identical,
+// above all Models. That is the whole reason this verb exists instead of a
+// second ProviderAdd: UpsertProvider REPLACES a same-named provider with the
+// record handed to it (registry_ops.go:118-124), so a caller that passes only
+// the two edited fields silently drops that provider's models. ProviderEdit
+// never calls UpsertProvider and never builds a replacement provider record; it
+// mutates reg.Providers[idx] field by field and saves through the same seam as
+// ProviderAdd/ProviderRename/ProviderDelete (deps.SaveReg -> saveRegistryFile ->
+// providers.WriteFileAtomic: whole file, 0600, temp file + rename).
+//
+// APIKeyEnv carries an environment-variable NAME. A key VALUE pasted into the
+// slot is refused by the same guard the add-json twin and UpsertProvider use
+// (providers.ValidateAPIKeyEnvName: charset, then the name must prove itself via
+// the process environment, the known env-name catalog, or the short UPPER_SNAKE
+// rule, then credential shapes are rejected). No operand is ever echoed: every
+// sentence renders through providers.MaskSentence, and the guard's own messages
+// are value-free by construction. Nothing is resolved, logged, or persisted but
+// the NAME. An empty apiKeyEnv is accepted and clears the slot (a provider that
+// needs no key), matching the twin's optional field. Both operands are trimmed
+// first because the add-json twin trims them (spec.go:33-43); nothing else is
+// normalized: a trailing slash, a path prefix, or an explicit port survives
+// verbatim.
+//
+// Validation mirrors the CLI twin (cmd/agy/pro_settings.go add-json ->
+// settings.ParseProviderSpecJSON -> providers.UpsertProvider): the base-URL
+// transport rules and the apiKeyEnv control/charset rules are the registry's own
+// load-time validators, applied here by validating the mutated registry
+// (Registry.Validate -> validateBaseURL / envNameRe; providers.go:296-331,
+// 388-396), and the env-name proof rule is providers.ValidateAPIKeyEnvName. No
+// rule is added, relaxed, or re-ordered relative to the twin. The mutation is
+// applied in two steps so a refusal can name the offending field: baseURL is
+// set and validated first, then apiKeyEnv. Classification relies on the target
+// record having loaded clean (providers.Load -> LoadFrom -> Validate), so a
+// first-step failure cannot be an apiKeyEnv fault.
+//
+// The guard applies to the RESULTING record, not only to the changed field, so
+// an edit cannot launder an env name the add-json twin would refuse (a legacy
+// registry entry whose apiKeyEnv only satisfies the load-time charset); the fix
+// is to correct that field in the same edit.
+//
+// Idempotence: editing a provider to the values it already holds performs NO
+// write at all (SaveReg is not called), so the file's bytes and mtime are
+// untouched. Every other outcome either writes exactly once or returns before
+// SaveReg, so a refused or unknown-target edit leaves the on-disk bytes
+// identical. On a validation failure the two fields are restored in memory
+// before returning, so the caller's registry copy is not left half-edited.
+//
+// Concurrency window: the registry is re-LOADED here (a stale in-memory copy is
+// never trusted, same as the sibling verbs), then mutated, validated, and
+// written as a whole file. A write to providers.json that lands between this
+// load and the rename is overwritten by this one: last writer wins, and there is
+// no lock. Agreement with an EARLIER read (the TUI form's prefill) is the
+// caller's concern, not this verb's; the approval diff a front-end shows must be
+// re-checked against the state it described if the user can pause there.
+func (c *Core) ProviderEdit(name, baseURL, apiKeyEnv string) error {
+	reg, err := c.loadRegistry()
+	if err != nil {
+		return err
+	}
+	idx, err := ResolveProviderEditTarget(reg, name)
+	if err != nil {
+		return err
+	}
+	baseURL = strings.TrimSpace(baseURL)
+	apiKeyEnv = strings.TrimSpace(apiKeyEnv)
+	if baseURL == "" {
+		return fmt.Errorf("%w: baseURL is required", ErrProviderEditBaseURL)
+	}
+	if apiKeyEnv != "" {
+		if err := providers.ValidateAPIKeyEnvName(apiKeyEnv); err != nil {
+			return fmt.Errorf("%w: %s", ErrProviderEditAPIKeyEnv, providers.MaskSentence(err.Error(), apiKeyEnv))
+		}
+	}
+	p := &reg.Providers[idx]
+	if p.BaseURL == baseURL && p.APIKeyEnv == apiKeyEnv {
+		return nil
+	}
+	oldBaseURL, oldAPIKeyEnv := p.BaseURL, p.APIKeyEnv
+	p.BaseURL = baseURL
+	if err := reg.Validate(); err != nil {
+		p.BaseURL, p.APIKeyEnv = oldBaseURL, oldAPIKeyEnv
+		return fmt.Errorf("%w: %s", ErrProviderEditBaseURL, providers.MaskSentence(err.Error(), baseURL, apiKeyEnv))
+	}
+	p.APIKeyEnv = apiKeyEnv
+	if err := reg.Validate(); err != nil {
+		p.BaseURL, p.APIKeyEnv = oldBaseURL, oldAPIKeyEnv
+		return fmt.Errorf("%w: %s", ErrProviderEditAPIKeyEnv, providers.MaskSentence(err.Error(), baseURL, apiKeyEnv))
+	}
+	return c.deps.SaveReg(reg)
+}
+
+// ResolveProviderEditTarget locates the provider an edit applies to and reports
+// its index in reg.Providers.
+//
+// ProviderDelete and RenameProvider both take the FIRST case-insensitive match
+// (registry_ops.go:152-161 and 187-192). Registry.Validate's duplicate check is
+// exact-case (providers.go:360-368), so one file may legally hold "acme" and
+// "ACME" side by side; under a first-match rule an edit of "acme" rewrites
+// whichever of the two sits earlier in the array, i.e. a live provider's
+// endpoint and key variable. An edit moves credential routing, so this verb
+// refuses to guess: an exact-case match wins outright (the registry cannot hold
+// two of those), and a case-folded match is accepted only when it is the single
+// one. Anything else fails with ErrProviderEditAmbiguous before any mutation.
+//
+// Exported because the identity rule must be ONE rule. Core.ProviderEdit is not
+// the only resolver on the path to a write: the TUI provider form resolves the
+// target twice more (to prefill, and to re-check the form-open snapshot against
+// the on-disk record before the approved write). A front-end that resolved with
+// a different rule (a first-case-insensitive match) could refuse a legal edit or,
+// when the case duplicate mirrors the snapshot's endpoint fields, pass its
+// stale-base gate while the verb writes the OTHER record's values over the real
+// target. Every caller now resolves through this function, so the verb and the
+// gates in front of it cannot disagree about which record a name addresses.
+func ResolveProviderEditTarget(reg *providers.Registry, name string) (int, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return -1, fmt.Errorf("%w: a provider name is required", ErrProviderEditNotFound)
+	}
+	for i := range reg.Providers {
+		if reg.Providers[i].Name == name {
+			return i, nil
+		}
+	}
+	idx := -1
+	for i := range reg.Providers {
+		if strings.EqualFold(reg.Providers[i].Name, name) {
+			if idx >= 0 {
+				return -1, fmt.Errorf("%w: %s matches more than one provider under case folding (use the exact spelling)", ErrProviderEditAmbiguous, providers.MaskSlot(name))
+			}
+			idx = i
+		}
+	}
+	if idx < 0 {
+		return -1, fmt.Errorf("%w: %s", ErrProviderEditNotFound, providers.MaskSlot(name))
+	}
+	return idx, nil
 }
 
 // RunWizard runs the interactive secret-entry wizard (the only path that

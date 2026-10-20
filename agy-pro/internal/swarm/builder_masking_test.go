@@ -487,6 +487,40 @@ func TestRenderSeatListMasksKeyShapedGroupAndDisplayName(t *testing.T) {
 	}
 }
 
+// TestRenderSeatListMasksLookAlikeRegistrySlot pins the seat-list conversion:
+// the unnamed seat listing renders the same inventory entries as
+// inventory.RenderNumbered, so its id and mid columns route through
+// providers.MaskSlot too. The plant discriminates the pre-policy masker:
+// providers.MaskOperand is identity on it, so the pre-conversion listing
+// printed the credential core raw while the models --json twin masked it.
+func TestRenderSeatListMasksLookAlikeRegistrySlot(t *testing.T) {
+	const core = "ab3def7gh9jk1mnpqr5t"
+	const masked = "ab3de****"
+	plant := "\u2025/" + core
+	if got := providers.MaskOperand(plant); got != plant {
+		t.Fatalf("premise broken: MaskOperand is not identity on the plant (%q)", got)
+	}
+
+	inv := buildInventory(t,
+		[]inventory.NativeModel{
+			{ID: "gemini-3.8-flash-high", DisplayName: "Gemini 3.8 Flash (High)"},
+			{ID: "gpt-oss-120b-medium", DisplayName: plant},
+		},
+		[]providers.Provider{{Name: "nw", Models: []providers.Model{{ID: plant}, {ID: "glm-5.3-flash-flex"}}}})
+	var buf bytes.Buffer
+	RenderSeatList(&buf, inv)
+	out := buf.String()
+	if strings.Contains(out, core) || strings.Contains(out, plant) {
+		t.Errorf("seat list leaks the look-alike plant raw:\n%s", out)
+	}
+	if strings.Count(out, masked) != 2 {
+		t.Errorf("seat list must mask the id column and the mid column to %q:\n%s", masked, out)
+	}
+	if !strings.Contains(out, "glm-5.3-flash-flex") || !strings.Contains(out, "Gemini 3.8 Flash (High)") {
+		t.Errorf("benign rows must stay readable:\n%s", out)
+	}
+}
+
 // TestPickTemplateMasksMultiWordLineWithEmbeddedSecret (C5/S2): the invalid
 // -template echo is a whole-line seed site (builder.go:194). With the wide
 // seed class a multi-word misdirected paste embedding a bare secret is
@@ -507,5 +541,48 @@ func TestPickTemplateMasksMultiWordLineWithEmbeddedSecret(t *testing.T) {
 	}
 	if !strings.Contains(errOut.String(), "enter 1-") {
 		t.Errorf("template error lost its actionable wording:\n%s", errOut.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FIX-8: RenderSummary's model column was the last exempt operand-masker user
+// on a registry slot (the residual recorded since the phase-2 masking mission).
+// It now renders through providers.MaskSlot, the same authority the seat list
+// uses, so the underscore-head credential class masks here too. MaskOperand is
+// that authority's first stage, so every benign table line stays byte-identical.
+// ---------------------------------------------------------------------------
+
+func TestRenderSummaryMasksUnderscoreHeadModelID(t *testing.T) {
+	const (
+		plant     = "sk_live_0123456789abcdef"
+		plantMask = "sk_li****"
+	)
+	var buf bytes.Buffer
+	RenderSummary(&buf, []fanout.SeatResult{{
+		SeatID:      1,
+		Kind:        "provider",
+		FinalTarget: providers.Target{Model: providers.Model{ID: plant}},
+		Status:      "success",
+	}}, false)
+	if strings.Contains(buf.String(), plant) {
+		t.Errorf("summary leaks the credential-shaped model id:\n%s", buf.String())
+	}
+	if want := "seat | kind | model | verdict\n1 | provider | " + plantMask + " | success\n"; buf.String() != want {
+		t.Errorf("summary drifted\n got: %q\nwant: %q", buf.String(), want)
+	}
+
+	// Benign model ids: byte-identical table lines (the whole rendering, header
+	// included), for the corpus the sibling sweep pins plus the values here.
+	for _, id := range []string{"openai", "gemini", "deepseek", "nw", "charm", "acme-corp", "glm-5.3-flash", "gpt-oss-120b"} {
+		buf.Reset()
+		RenderSummary(&buf, []fanout.SeatResult{{
+			SeatID:      1,
+			Kind:        "provider",
+			FinalTarget: providers.Target{Model: providers.Model{ID: id}},
+			Status:      "success",
+		}}, false)
+		if want := "seat | kind | model | verdict\n1 | provider | " + id + " | success\n"; buf.String() != want {
+			t.Errorf("benign model id %q drifted\n got: %q\nwant: %q", id, buf.String(), want)
+		}
 	}
 }

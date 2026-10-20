@@ -2,6 +2,10 @@ package settings
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -331,5 +335,433 @@ func TestTUIRunPrompt_NonDangerStillSucceedsImmediately(t *testing.T) {
 	tui.Step(KeyEnter)
 	if !strings.Contains(tui.message, "[SUCCESS]") {
 		t.Errorf("rename message = %q", tui.message)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FIX-7 — the add-json name gate (the CLI twin door of the provider-name arm).
+// ---------------------------------------------------------------------------
+
+// addJSONUnderscoreNameProbes is the FIX-7 target class at the CLI door: key
+// shapes whose head is absent from the shared prefix list and whose "_" breaks
+// the opaque-run test, so providers.SecretShaped alone is false for all five
+// while the registry-slot display authority masks them. Synthetic values only.
+var addJSONUnderscoreNameProbes = []string{
+	"sk_live_0123456789abcdef",
+	"tok_a1b2c3d4e5f6g7h8i9j0",
+	"pk_live_0123456789abcdef",
+	"key_0123456789abcdef",
+	"AKIA_0123456789ABCDEF",
+}
+
+// TestParseProviderSpecJSON_RefusesCredentialName pins the FIX-7 CLI twin gate:
+// a credential-shaped NAME fails the parser with the NAMED error before Core
+// ever sees the spec, so nothing is written and the temp-home providers.json
+// stays byte-identical. The sentence is value-free (no rune of the refused name
+// rides in it), and the benign side keeps the accept verdict and the exact
+// on-disk bytes the pre-fix door wrote (the added arm is the identity on every
+// benign name, which the same test asserts against the charset-legal corpus).
+func TestParseProviderSpecJSON_RefusesCredentialName(t *testing.T) {
+	for _, probe := range addJSONUnderscoreNameProbes {
+		t.Run(probe, func(t *testing.T) {
+			// Restate the hole from the pre-fix arm so this pin proves the gap
+			// instead of assuming it: SecretShaped is false, the charset admits
+			// the value, and only the shared name authority sees it.
+			if providers.SecretShaped(probe) {
+				t.Fatalf("%q is caught by the pre-fix arm; it no longer exercises the gap", probe)
+			}
+			if err := providers.ValidateProviderName(probe); err != nil {
+				t.Fatalf("%q fails the name charset, so the refusal would be the charset's: %v", probe, err)
+			}
+			if !providers.NameCarriesCredential(probe) {
+				t.Fatalf("%q is identity under the shared name authority; the gate cannot catch it", probe)
+			}
+
+			_, path := fileBackedCore(t, editFixture())
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read seeded providers.json: %v", err)
+			}
+
+			spec := []byte(`{"name":"` + probe + `","baseURL":"https://gw.example/v1","apiKeyEnv":"GW_KEY","models":[{"id":"m1"}]}`)
+			got, err := ParseProviderSpecJSON(spec)
+			if !errors.Is(err, ErrProviderSpecNameCarriesCredential) {
+				t.Fatalf("ParseProviderSpecJSON(%q name) err = %v, want ErrProviderSpecNameCarriesCredential", probe, err)
+			}
+			if got.Name != "" || len(got.Models) != 0 {
+				t.Fatalf("a refused spec still carries fields: %+v", got)
+			}
+			assertNoLeak(t, err.Error(), probe)
+			if strings.Contains(err.Error(), probe) {
+				t.Fatalf("the refusal echoes the name: %v", err)
+			}
+
+			// The gate sits ahead of the write path: the verb's next step
+			// (Core.ProviderAdd) is never reached, so the file cannot move.
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read providers.json after the refusal: %v", err)
+			}
+			if string(after) != string(before) {
+				t.Fatalf("providers.json changed on a refused name:\nbefore: %s\nafter:  %s", before, after)
+			}
+			if reg := reloadFromDisk(t, path); len(reg.Providers) != len(editFixture().Providers) {
+				t.Fatalf("registry on disk = %d providers, want %d", len(reg.Providers), len(editFixture().Providers))
+			}
+		})
+	}
+}
+
+// TestParseProviderSpecJSON_BenignNameBytesUnchanged pins the no-over-refusal
+// side of the FIX-7 gate: every charset-legal benign name still parses, and the
+// full add flow writes the exact bytes the pre-fix door wrote. The golden bytes
+// are composed with the same serialisation the save seam uses
+// (json.MarshalIndent + a trailing newline), so a message change, a
+// normalization, an extra field, or a new arm that touched a benign name would
+// move them.
+func TestParseProviderSpecJSON_BenignNameBytesUnchanged(t *testing.T) {
+	benign := []string{
+		"acme", "beta", "openai", "gemini", "deepseek", "anthropic", "acme-fast",
+		"acme_internal", "key_backup", "aws_prod", "gateway-eu", "my-gateway.example",
+		"bedrock-us-east1",
+	}
+	const specJSON = `{"name":"%s","baseURL":"https://gw.example/v1","apiKeyEnv":"GW_KEY","models":[{"id":"m1"}]}`
+	for _, name := range benign {
+		t.Run(name, func(t *testing.T) {
+			if providers.NameCarriesCredential(name) {
+				t.Fatalf("%q is refused by the shared name authority; the benign corpus is wrong", name)
+			}
+			spec, err := ParseProviderSpecJSON([]byte(fmt.Sprintf(specJSON, name)))
+			if err != nil {
+				t.Fatalf("benign spec %q refused: %v", name, err)
+			}
+			if spec.Name != name || spec.APIKeyEnv != "GW_KEY" || len(spec.Models) != 1 || spec.Models[0].ID != "m1" {
+				t.Fatalf("parsed spec moved: %+v", spec)
+			}
+
+			c, path := fileBackedCore(t, &providers.Registry{})
+			if err := c.ProviderAdd(spec); err != nil {
+				t.Fatalf("ProviderAdd: %v", err)
+			}
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read providers.json: %v", err)
+			}
+			wantBody, err := json.MarshalIndent(&providers.Registry{Providers: []providers.Provider{{
+				Name: name, BaseURL: "https://gw.example/v1", APIKeyEnv: "GW_KEY",
+				Models: []providers.Model{{ID: "m1"}},
+			}}}, "", "  ")
+			if err != nil {
+				t.Fatalf("marshal the golden registry: %v", err)
+			}
+			want := append(wantBody, '\n')
+			if !bytes.Equal(got, want) {
+				t.Fatalf("add-json wrote different bytes for a benign name:\ngot:  %s\nwant: %s", got, want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// fix7 - provider NAME operands in the probe/identity sentences route through
+// the registry-slot authority (providers.MaskSlot).
+// ---------------------------------------------------------------------------
+
+// probePlantName is the underscore-head key class in a provider NAME slot.
+// The value is synthetic; no live credential is involved.
+const (
+	probePlantName   = "sk_live_0123456789abcdef"
+	probePlantMasked = "sk_li****"
+	probePlantTail   = "0123456789abcdef"
+)
+
+// probeNameCorpus is the identity corpus: the fix must leave every one of
+// these byte-identical (MaskSlot's first stage is MaskOperand), and every
+// name the existing pins in this package use is represented.
+var probeNameCorpus = []string{
+	"openai", "gemini", "deepseek", "nw", "charm", "acme-corp",
+	"acme", "alpha", "beta", "ghost", "x", "nope", "read,search",
+	"ACME", "BeTa",
+}
+
+// probeCase is one composition branch of Core.ProviderTest, together with the
+// message the pre-fix code produced for it (MaskOperand on the name operand).
+type probeCase struct {
+	label string
+	probe *providers.KeyProbeResult
+	seed  []string
+	query string
+	want  func(name string) string
+}
+
+// probeCases builds the four branches for one requested name.
+func probeCases(name string, skipped, invalid providers.KeyProbeResult) []probeCase {
+	return []probeCase{
+		{
+			label: "not found", seed: nil, query: name,
+			want: func(n string) string { return fmt.Sprintf("provider %q not found", providers.MaskOperand(n)) },
+		},
+		{
+			label: "no audit", seed: []string{name}, query: name,
+			want: func(n string) string {
+				return fmt.Sprintf("provider %q has no API key env to probe", providers.MaskOperand(n))
+			},
+		},
+		{
+			label: "probe skipped", probe: &skipped, seed: []string{name}, query: name,
+			want: func(n string) string { return fmt.Sprintf("provider %q: %s", providers.MaskOperand(n), skipped.Detail) },
+		},
+		{
+			label: "probe invalid", probe: &invalid, seed: []string{name}, query: name,
+			want: func(n string) string {
+				return fmt.Sprintf("provider %q: key probe status %s (%s)", providers.MaskOperand(n), invalid.Status, invalid.Detail)
+			},
+		},
+	}
+}
+
+// newProbeCore seeds a registry with names and, when probe is non-nil, an
+// audit seam that answers with it.
+func newProbeCore(names []string, probe *providers.KeyProbeResult) *Core {
+	f := newFakeDeps()
+	for _, n := range names {
+		f.reg.Providers = append(f.reg.Providers, providers.Provider{
+			Name: n, BaseURL: "https://probe.example/v1", APIKeyEnv: "PROBE_KEY",
+		})
+	}
+	if probe != nil {
+		f.audits = []providers.KeyAudit{{
+			Provider: names[0], Env: "PROBE_KEY", Resolved: true, Probe: *probe,
+		}}
+	}
+	return NewCore(f.deps())
+}
+
+// TestCoreProviderTest_NameOperandSlotMasked pins the probe-failure sentences:
+// the NAME operand renders through MaskSlot, so the underscore-head key class
+// masks in all four branches while the sentence text, the probe detail, and
+// the sentinel messages stay unchanged.
+func TestCoreProviderTest_NameOperandSlotMasked(t *testing.T) {
+	skipped := providers.KeyProbeResult{Status: providers.ProbeSkipped, Detail: "dest plant.example: unreachable"}
+	invalid := providers.KeyProbeResult{Status: providers.ProbeInvalid, Detail: "dest plant.example: rejected"}
+
+	t.Run("credential-shaped name masks", func(t *testing.T) {
+		for _, pc := range probeCases(probePlantName, skipped, invalid) {
+			t.Run(pc.label, func(t *testing.T) {
+				err := newProbeCore(pc.seed, pc.probe).ProviderTest(pc.query)
+				if err == nil {
+					t.Fatalf("ProviderTest(%q) succeeded; want the failure branch", pc.query)
+				}
+				wantRaw := pc.want(probePlantName)
+				want := strings.ReplaceAll(wantRaw, probePlantName, probePlantMasked)
+				if want == wantRaw {
+					t.Fatalf("the pin did not move off the pre-fix text: %q", want)
+				}
+				got := err.Error()
+				if got != want {
+					t.Errorf("full message drifted:\ngot:  %q\nwant: %q", got, want)
+				}
+				if strings.Contains(got, probePlantName) || strings.Contains(got, probePlantTail) {
+					t.Errorf("message leaks the planted name raw: %q", got)
+				}
+				if !strings.Contains(got, probePlantMasked) {
+					t.Errorf("message is missing the masked name %q: %q", probePlantMasked, got)
+				}
+			})
+		}
+	})
+
+	t.Run("benign corpus byte-identical", func(t *testing.T) {
+		for _, name := range probeNameCorpus {
+			for _, pc := range probeCases(name, skipped, invalid) {
+				t.Run(name+"/"+pc.label, func(t *testing.T) {
+					err := newProbeCore(pc.seed, pc.probe).ProviderTest(pc.query)
+					if err == nil {
+						t.Fatalf("ProviderTest(%q) succeeded; want the failure branch", pc.query)
+					}
+					if got, want := err.Error(), pc.want(name); got != want {
+						t.Errorf("benign name stopped rendering byte-identically:\ngot:  %q\nwant: %q", got, want)
+					}
+					if got := err.Error(); strings.Contains(got, "****") {
+						t.Errorf("benign name %q was masked: %q", name, got)
+					}
+					if providers.MaskSlot(name) != name {
+						t.Errorf("MaskSlot(%q) = %q; the identity corpus must stay readable", name, providers.MaskSlot(name))
+					}
+				})
+			}
+		}
+	})
+}
+
+// TestResolveProviderEditTarget_NameOperandSlotMasked pins the two identity
+// sentences of the shared edit resolver: the refused NAME operand renders
+// through MaskSlot while the sentence text and the sentinel class stay.
+func TestResolveProviderEditTarget_NameOperandSlotMasked(t *testing.T) {
+	t.Run("not found masks the planted name", func(t *testing.T) {
+		reg := &providers.Registry{Providers: []providers.Provider{{Name: "alpha", BaseURL: "https://a.example/v1"}}}
+		_, err := ResolveProviderEditTarget(reg, probePlantName)
+		if !errors.Is(err, ErrProviderEditNotFound) {
+			t.Fatalf("error = %v; want ErrProviderEditNotFound", err)
+		}
+		want := `provider edit: provider not found: ` + probePlantMasked
+		got := err.Error()
+		if got != want {
+			t.Errorf("full message drifted:\ngot:  %q\nwant: %q", got, want)
+		}
+		if strings.Contains(got, probePlantName) || strings.Contains(got, probePlantTail) {
+			t.Errorf("message leaks the planted name raw: %q", got)
+		}
+	})
+
+	t.Run("ambiguous masks the planted query", func(t *testing.T) {
+		// Two records that fold together; the query matches neither exactly,
+		// so the resolver refuses with the ambiguous class and echoes the
+		// query operand.
+		reg := &providers.Registry{Providers: []providers.Provider{
+			{Name: "Sk_Live_0123456789abcdef", BaseURL: "https://a.example/v1"},
+			{Name: "sk_live_0123456789ABCDEF", BaseURL: "https://b.example/v1"},
+		}}
+		_, err := ResolveProviderEditTarget(reg, probePlantName)
+		if !errors.Is(err, ErrProviderEditAmbiguous) {
+			t.Fatalf("error = %v; want ErrProviderEditAmbiguous", err)
+		}
+		want := `provider edit: provider name is ambiguous: ` + probePlantMasked +
+			` matches more than one provider under case folding (use the exact spelling)`
+		got := err.Error()
+		if got != want {
+			t.Errorf("full message drifted:\ngot:  %q\nwant: %q", got, want)
+		}
+		if strings.Contains(got, probePlantName) || strings.Contains(got, probePlantTail) {
+			t.Errorf("message leaks the planted name raw: %q", got)
+		}
+	})
+
+	t.Run("benign corpus byte-identical", func(t *testing.T) {
+		reg := &providers.Registry{Providers: []providers.Provider{{Name: "alpha", BaseURL: "https://a.example/v1"}}}
+		for _, name := range probeNameCorpus {
+			if name == "alpha" || name == "ACME" {
+				continue // alpha is registered; ACME is the fold pair below
+			}
+			_, err := ResolveProviderEditTarget(reg, name)
+			if !errors.Is(err, ErrProviderEditNotFound) {
+				t.Fatalf("ResolveProviderEditTarget(%q) error = %v; want ErrProviderEditNotFound", name, err)
+			}
+			want := "provider edit: provider not found: " + name
+			if got := err.Error(); got != want {
+				t.Errorf("benign name stopped rendering byte-identically:\ngot:  %q\nwant: %q", got, want)
+			}
+		}
+
+		dup := &providers.Registry{Providers: []providers.Provider{
+			{Name: "acme", BaseURL: "https://a.example/v1"},
+			{Name: "ACME", BaseURL: "https://b.example/v1"},
+		}}
+		_, err := ResolveProviderEditTarget(dup, "Acme")
+		if !errors.Is(err, ErrProviderEditAmbiguous) {
+			t.Fatalf("error = %v; want ErrProviderEditAmbiguous", err)
+		}
+		want := "provider edit: provider name is ambiguous: Acme matches more than one provider under case folding (use the exact spelling)"
+		if got := err.Error(); got != want {
+			t.Errorf("benign ambiguous message drifted:\ngot:  %q\nwant: %q", got, want)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// fix8 - the doctor line's provider NAME operand routes through the registry-
+// slot authority (providers.MaskSlot), pinned at its distinguishing class.
+// ---------------------------------------------------------------------------
+
+// auditNamePlant is the underscore-head key class in the doctor line's provider
+// NAME slot. Synthetic value only.
+const (
+	auditNamePlant  = "sk_live_0123456789abcdef"
+	auditNameMasked = "sk_li****"
+	auditNameTail   = "0123456789abcdef"
+)
+
+// TestPrintKeyAuditLine_UnderscoreNameSlotMasked pins the seams.go name-operand
+// change at the class that distinguishes it: MaskOperand is the identity on the
+// underscore-head family (no prefix head, and the "_" breaks the opaque-run
+// test), so the pre-existing AKIA pin passes with either masker. This pin fails
+// if the name operand falls back to MaskOperand, in every doctor branch.
+func TestPrintKeyAuditLine_UnderscoreNameSlotMasked(t *testing.T) {
+	// Premise: the pre-fix masker cannot see this class, the slot authority can.
+	if got := providers.MaskOperand(auditNamePlant); got != auditNamePlant {
+		t.Fatalf("premise broken: MaskOperand now masks the class (%q)", got)
+	}
+	if providers.SecretShaped(auditNamePlant) {
+		t.Fatalf("premise broken: the shape test catches the plant")
+	}
+	if got := providers.MaskSlot(auditNamePlant); got != auditNameMasked {
+		t.Fatalf("premise broken: MaskSlot(plant) = %q; want %q", got, auditNameMasked)
+	}
+
+	cases := []struct {
+		label string
+		audit providers.KeyAudit
+		want  string
+	}{
+		{
+			label: "unresolved",
+			audit: providers.KeyAudit{Provider: auditNamePlant, Env: "GEMINI_API_KEY"},
+			want:  "[WARN] " + auditNameMasked + " (GEMINI_API_KEY): (not set)",
+		},
+		{
+			label: "conflict",
+			audit: providers.KeyAudit{
+				Provider: auditNamePlant, Env: "GEMINI_API_KEY", Resolved: true,
+				MaskedHint: "AIza****", Conflict: true,
+			},
+			want: "[WARN] " + auditNameMasked + " (GEMINI_API_KEY): AIza**** (name variants conflict)",
+		},
+		{
+			label: "probe ok",
+			audit: providers.KeyAudit{
+				Provider: auditNamePlant, Env: "GEMINI_API_KEY", Resolved: true,
+				MaskedHint: "AIza****", Probe: providers.KeyProbeResult{Status: providers.ProbeValid},
+			},
+			want: "[OK]   " + auditNameMasked + " (GEMINI_API_KEY): AIza**** (probe ok)",
+		},
+		{
+			label: "probe invalid",
+			audit: providers.KeyAudit{
+				Provider: auditNamePlant, Env: "GEMINI_API_KEY", Resolved: true,
+				MaskedHint: "AIza****", Probe: providers.KeyProbeResult{Status: providers.ProbeInvalid},
+			},
+			want: "[WARN] " + auditNameMasked + " (GEMINI_API_KEY): AIza**** (probe invalid)",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.label, func(t *testing.T) {
+			var buf bytes.Buffer
+			printKeyAuditLine(&buf, tc.audit)
+			line := buf.String()
+			if got := strings.TrimSuffix(line, "\n"); got != tc.want {
+				t.Errorf("doctor line drifted:\ngot:  %q\nwant: %q", got, tc.want)
+			}
+			if strings.Contains(line, auditNamePlant) || strings.Contains(line, auditNameTail) {
+				t.Errorf("doctor line leaks the planted provider name: %q", line)
+			}
+			assertNoLeak(t, line, auditNamePlant)
+			if !strings.Contains(line, "GEMINI_API_KEY") {
+				t.Errorf("the env NAME slot must stay readable: %q", line)
+			}
+		})
+	}
+
+	// The benign corpus: the sentence text and a conventional name stay
+	// byte-identical (the slot authority is the identity on every one of these).
+	for _, name := range []string{"p5", "acme", "gemini", "acme-corp", "acme_internal", "key_backup"} {
+		if providers.MaskSlot(name) != name {
+			t.Fatalf("corpus name %q is not identity under the slot authority (%q)", name, providers.MaskSlot(name))
+		}
+		var buf bytes.Buffer
+		printKeyAuditLine(&buf, providers.KeyAudit{Provider: name, Env: "GEMINI_API_KEY"})
+		want := "[WARN] " + name + " (GEMINI_API_KEY): (not set)"
+		if got := strings.TrimSuffix(buf.String(), "\n"); got != want {
+			t.Errorf("benign doctor line drifted:\ngot:  %q\nwant: %q", got, want)
+		}
 	}
 }

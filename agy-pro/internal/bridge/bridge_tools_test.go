@@ -1841,3 +1841,118 @@ func TestToolLoop_JSONBodyCarriesSummedCachedTokens(t *testing.T) {
 		t.Errorf("cached_tokens = %v; want 80 (64+16 summed across the tool turn and the final turn)", details["cached_tokens"])
 	}
 }
+
+// ---------------------------------------------------------------------------
+// FIX-8 (module-wide echo sweep): the audit sinks in bridge_tools.go quote
+// lp.target.Provider.Name and lp.target.Model.ID, both registry slots. They
+// route through providers.MaskSlot (the registry-slot authority) instead of
+// the operand masker, whose underscore-head arm is the identity, so the
+// "sk_live_"/"tok_" class no longer lands raw in the 0600 JSONL or on stderr.
+// Benign names keep their exact bytes at both sinks.
+// ---------------------------------------------------------------------------
+
+func TestToolLoop_UpstreamErrorAuditMasksUnderscoreHeadNames(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("AGY_PRO_HOME", home)
+	ws := t.TempDir()
+	t.Setenv(envBridgeWorkspace, ws)
+	t.Setenv("TEST_BRIDGE_TOOLS_KEY", "secret-upstream-key-abcdef")
+
+	const (
+		provPlant     = "sk_live_0123456789abcdef"
+		provPlantMask = "sk_li****"
+		modelPlant    = "tok_a1b2c3d4e5f6g7h8i9j0"
+		modelMask     = "tok_a****"
+	)
+
+	run := func(t *testing.T, provName, modelID string) (string, string) {
+		t.Helper()
+		up := &scriptedUpstream{turns: []turnFunc{
+			func(w http.ResponseWriter, body map[string]any) {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = io.WriteString(w, `{"error":"boom internal"}`)
+			},
+		}}
+		upstream := httptest.NewServer(up.handler())
+		t.Cleanup(upstream.Close)
+
+		reg := &providers.Registry{Providers: []providers.Provider{{
+			Name:      provName,
+			BaseURL:   upstream.URL,
+			APIKeyEnv: "TEST_BRIDGE_TOOLS_KEY",
+			Models: []providers.Model{
+				{ID: modelID, Capabilities: providers.Capabilities{SupportsTools: true}},
+			},
+		}}}
+
+		var stderr bytes.Buffer
+		log.SetOutput(&stderr)
+		t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+		server := startToolsBridge(t, reg, BridgeToolsConfig{Enabled: true, Tools: []string{"read"}})
+		status, _, raw := postChat(t, server.URL, `{"model":"`+modelID+`","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+		if status != http.StatusOK {
+			t.Fatalf("status = %d; want 200 with synthesized fallback (body %s)", status, raw)
+		}
+
+		logDir := filepath.Join(home, "logs")
+		entries, err := os.ReadDir(logDir)
+		if err != nil {
+			t.Fatalf("audit log dir missing: %v", err)
+		}
+		var logText strings.Builder
+		for _, e := range entries {
+			if strings.HasPrefix(e.Name(), "bridge-tools-") && strings.HasSuffix(e.Name(), ".jsonl") {
+				data, err := os.ReadFile(filepath.Join(logDir, e.Name()))
+				if err != nil {
+					t.Fatal(err)
+				}
+				logText.Write(data)
+			}
+		}
+		// Each run gets a fresh home, so only this run's records are read.
+		if err := os.RemoveAll(logDir); err != nil {
+			t.Fatalf("reset audit log dir: %v", err)
+		}
+		return logText.String(), stderr.String()
+	}
+
+	jsonl, stderr := run(t, provPlant, modelPlant)
+	if !strings.Contains(jsonl, "upstream_turn") {
+		t.Fatalf("audit log missing the upstream_turn record: %s", jsonl)
+	}
+	for _, plant := range []string{provPlant, modelPlant} {
+		if strings.Contains(jsonl, plant) {
+			t.Errorf("audit JSONL leaked %q raw:\n%s", plant, jsonl)
+		}
+		if strings.Contains(stderr, plant) {
+			t.Errorf("stderr audit line leaked %q raw:\n%s", plant, stderr)
+		}
+	}
+	for _, masked := range []string{provPlantMask, modelMask} {
+		if !strings.Contains(jsonl, masked) {
+			t.Errorf("audit JSONL is missing the masked form %q:\n%s", masked, jsonl)
+		}
+		if !strings.Contains(stderr, masked) {
+			t.Errorf("stderr audit line is missing the masked form %q:\n%s", masked, stderr)
+		}
+	}
+	if !strings.Contains(stderr, "tool loop upstream turn 0 failed for") {
+		t.Errorf("stderr audit line lost its shape:\n%s", stderr)
+	}
+
+	// Benign corpus: both sinks carry the names byte-identically.
+	jsonl, stderr = run(t, "nw", "glm-5.3-flash-flex")
+	if !strings.Contains(jsonl, `"provider":"nw"`) {
+		t.Errorf("benign provider name was rewritten in the JSONL:\n%s", jsonl)
+	}
+	if !strings.Contains(jsonl, `"model":"glm-5.3-flash-flex"`) {
+		t.Errorf("benign model id was rewritten in the JSONL:\n%s", jsonl)
+	}
+	if !strings.Contains(stderr, "failed for nw/glm-5.3-flash-flex") {
+		t.Errorf("benign names were rewritten on stderr:\n%s", stderr)
+	}
+	if strings.Contains(jsonl, "****") || strings.Contains(stderr, "****") {
+		t.Errorf("a benign registry name was masked: jsonl=%s stderr=%s", jsonl, stderr)
+	}
+}

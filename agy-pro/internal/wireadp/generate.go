@@ -58,11 +58,12 @@ func (h *generateHandler) Generate(w http.ResponseWriter, r *http.Request, g *Ge
 	// §9.2: the never-textless-200 guarantee comes from the codec's choke
 	// point, so the adapter only supplies the cause. A turn agy could not
 	// render becomes the fixed apology with the provider name appended, and a
-	// 200 is never textless. The name is masked with MaskOperand and stripped
-	// of control characters (FIX-36): this success path bypasses
-	// sanitizeMessage, and a key-shaped or escape-bearing registry provider
-	// name must not reach agy's terminal raw.
-	cause := "provider " + oneLine(providers.MaskOperand(provider)) + ": empty upstream response"
+	// 200 is never textless. The name is a registry slot, so it masks through
+	// MaskSlot (FIX-8: the registry-slot authority, MaskOperand plus the
+	// underscore-head credential arm) and is stripped of control characters
+	// (FIX-36): this success path bypasses sanitizeMessage, and a key-shaped or
+	// escape-bearing registry provider name must not reach agy's terminal raw.
+	cause := "provider " + oneLine(providers.MaskSlot(provider)) + ": empty upstream response"
 	resp, mapNotes := geminiwire.TurnToGenerateResponseWithCause(turn, allowThoughts, turn.FinishReason, cause)
 	if ar := auditFromContext(r.Context()); ar != nil {
 		for _, note := range mapNotes {
@@ -89,7 +90,15 @@ func (h *generateHandler) answerFailure(r *http.Request, g *GenerateContext, ses
 	if fail.kind == failureClientGone {
 		return nil
 	}
-	code, status, message := fail.envelope(g.Target.Provider.Name, g.Target.Model.ID)
+	// FIX-8: the §9.1 envelope table (errorwriter.go's providerErrorRows)
+	// interpolates the provider NAME and, on the 404 row, the model ID straight
+	// into the message, so this call site is the composition point for both
+	// values. Both are registry slots, so each is masked through MaskSlot (the
+	// registry-slot authority) before the template sees it: an underscore-head
+	// credential class the operand masker cannot classify would otherwise reach
+	// agy's terminal raw inside "provider <name>: ...". Benign names and ids
+	// render byte-identically.
+	code, status, message := fail.envelope(providers.MaskSlot(g.Target.Provider.Name), providers.MaskSlot(g.Target.Model.ID))
 	if ar := auditFromContext(r.Context()); ar != nil {
 		ar.addNote("upstream failed: " + status)
 	}
@@ -119,7 +128,7 @@ func (h *generateHandler) answerFailure(r *http.Request, g *GenerateContext, ses
 		// finishReason is added. GF-28's bytes are untouched, because that path
 		// carries real partial text and takes the branch above. The error frame
 		// that follows is what names the specific cause.
-		cause := "provider " + oneLine(providers.MaskOperand(g.Target.Provider.Name)) + ": empty upstream response"
+		cause := "provider " + oneLine(providers.MaskSlot(g.Target.Provider.Name)) + ": empty upstream response"
 		apology, _ := geminiwire.TurnToGenerateResponseWithCause(openaiup.NewTurn(), allowThoughts, "", cause)
 		h.writePartialStream(sess.emitter, g, apology, "")
 		sess.emitter.errorFrame(h.srv, code, status, message)

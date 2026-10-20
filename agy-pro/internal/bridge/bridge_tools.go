@@ -576,16 +576,18 @@ func (lp *toolLoop) auditLogger() *agenttools.Logger {
 // logUpstreamError records a failed upstream turn in the audit log and on
 // stderr (F-03). The error string already carries only a redacted snippet of
 // the upstream body; the logger redacts again, so the raw body never lands in
-// either sink. The provider and model names go through MaskOperand at both
-// sinks: a key-shaped value misdirected into a registry slot must not render
-// raw in the durable JSONL or on stderr.
+// either sink. The provider and model names go through MaskSlot at both sinks
+// (FIX-8): they are registry slots, and the registry-slot authority is
+// MaskOperand plus the underscore-head credential arm, so a key-shaped value
+// misdirected into either slot cannot render raw in the durable JSONL or on
+// stderr while a benign name keeps its exact bytes.
 func (lp *toolLoop) logUpstreamError(turn int, err error) {
 	if err == nil {
 		return
 	}
 	msg := lp.redact(err.Error())
-	provName := providers.MaskOperand(lp.target.Provider.Name)
-	modelID := providers.MaskOperand(lp.target.Model.ID)
+	provName := providers.MaskSlot(lp.target.Provider.Name)
+	modelID := providers.MaskSlot(lp.target.Model.ID)
 	log.Printf("[bridge] tool loop upstream turn %d failed for %s/%s: %s",
 		turn, provName, modelID, msg)
 	if lg := lp.auditLogger(); lg != nil {

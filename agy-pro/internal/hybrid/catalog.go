@@ -187,16 +187,23 @@ func BuildFetchAvailableModels(reg *providers.Registry, opts CatalogOptions) ([]
 			// characters — so the catalog map key, agent_model_sorts.model_ids,
 			// and the resolver comparison all agree and no control char reaches
 			// agy's picker (raw or JSON-escaped).
+			//
+			// FIX-8: the provider name and the model id in the drop reasons are
+			// registry slots, so each renders through providers.MaskSlot (the
+			// registry-slot authority: MaskOperand plus the underscore-head
+			// credential arm) instead of plain MaskOperand, which is the identity
+			// on the "sk_live_..." class. Benign values keep their exact bytes,
+			// which is why the existing drop-reason pins do not move.
 			id := stripControlChars(strings.TrimSpace(m.ID))
 			if id == "" {
-				logf("hybrid catalog: dropped a model from provider %q: blank id", providers.MaskOperand(p.Name))
+				logf("hybrid catalog: dropped a model from provider %q: blank id", providers.MaskSlot(p.Name))
 				continue
 			}
 			if denied[strings.ToLower(id)] {
-				return nil, fmt.Errorf("external model id %q collides with a reserved native or AI-Studio preset name; refusing to sync (rename it in providers.json)", providers.MaskOperand(id))
+				return nil, fmt.Errorf("external model id %q collides with a reserved native or AI-Studio preset name; refusing to sync (rename it in providers.json)", providers.MaskSlot(id))
 			}
 			if seenID[id] {
-				logf("hybrid catalog: dropped model %q from provider %q: id already listed by an earlier provider", providers.MaskOperand(id), providers.MaskOperand(p.Name))
+				logf("hybrid catalog: dropped model %q from provider %q: id already listed by an earlier provider", providers.MaskSlot(id), providers.MaskSlot(p.Name))
 				continue
 			}
 			seenID[id] = true

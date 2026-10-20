@@ -65,11 +65,14 @@ func (l *Logger) Log(entry LogEntry) error {
 	}
 	// Model/Provider/Tool are display identifiers, but a key-shaped value
 	// misdirected into a registry model id or provider name would otherwise
-	// land raw in this durable 0600 line. MaskOperand is the same display
-	// authority the report sinks use, so benign names stay readable while
-	// credential-shaped ones render first-5+****.
-	entry.Model = providers.MaskOperand(entry.Model)
-	entry.Provider = providers.MaskOperand(entry.Provider)
+	// land raw in this durable 0600 line. Model and Provider are registry
+	// slots, so they mask through MaskSlot (FIX-8: the registry-slot
+	// authority, MaskOperand plus the underscore-head credential arm), which
+	// keeps benign names byte-identical while the credential class renders
+	// first-5+****. Tool is a tool NAME, not a registry slot, so it stays on
+	// MaskOperand.
+	entry.Model = providers.MaskSlot(entry.Model)
+	entry.Provider = providers.MaskSlot(entry.Provider)
 	entry.Tool = providers.MaskOperand(entry.Tool)
 	if l.redact != nil {
 		entry.Arguments = l.redact(entry.Arguments)

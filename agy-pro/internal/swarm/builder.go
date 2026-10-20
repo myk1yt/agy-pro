@@ -82,8 +82,14 @@ func RenderSummary(out io.Writer, seats []fanout.SeatResult, useANSI bool) {
 		// E8: registry-derived model IDs are echoed here too; mask key-shaped
 		// ones for display consistency with `status`/`models` (benign IDs
 		// readable).
+		// FIX-8: this site was the last exempt operand-masker user on a registry
+		// slot (recorded as a residual since the phase-2 masking mission). The
+		// model id is a registry slot, so it renders through the registry-slot
+		// authority (MaskSlot): every benign id keeps its exact bytes, and the
+		// underscore-head credential class that MaskOperand renders raw masks
+		// here like it already does in the seat list.
 		fmt.Fprintf(out, "%d | %s | %s | %s\n",
-			s.SeatID, kindOf(s), providers.MaskOperand(s.FinalTarget.Model.ID), verdictOf(s))
+			s.SeatID, kindOf(s), providers.MaskSlot(s.FinalTarget.Model.ID), verdictOf(s))
 	}
 }
 
@@ -361,10 +367,13 @@ func RenderSeatList(out io.Writer, inv *inventory.Inventory) {
 	}
 	idW, midW := 0, 0
 	for _, e := range inv.Entries {
-		if n := len(e.ModelID); n > idW {
+		// The widths come from the MASKED cells (the same strings the row
+		// renders), so a long-but-masked id cannot pad every other row past its
+		// rendered text. Mirrors inventory.RenderNumbered's width rule.
+		if n := len(providers.MaskSlot(e.ModelID)); n > idW {
 			idW = n
 		}
-		if n := len(seatMidColumn(e)); n > midW {
+		if n := len(providers.MaskSlot(seatMidColumn(e))); n > midW {
 			midW = n
 		}
 	}
@@ -380,11 +389,14 @@ func RenderSeatList(out io.Writer, inv *inventory.Inventory) {
 		if inventory.IsK3Excluded(e.ModelID) {
 			suffix += "      " + k3Marker
 		}
-		// E8: registry-derived model ID — mask key-shaped ones, keep benign
-		// IDs readable (display consistency with `status`/`models`).
-		// S5: the same mask covers the mid column (native DisplayName) and the
-		// group column (the provider name), mirroring inventory.RenderNumbered.
-		fmt.Fprintf(out, "%s %-*s  %-*s  [%s]%s\n", num, idW, providers.MaskOperand(e.ModelID), midW, providers.MaskOperand(seatMidColumn(e)), providers.MaskOperand(e.Group), suffix)
+		// E8/S5: the model ID, the mid column (native display name or the
+		// provider capability text), and the group tag are registry-derived
+		// display slots, so all three route through providers.MaskSlot, the one
+		// registry-slot display authority, exactly like inventory.RenderNumbered
+		// over the same entries. MaskOperand's location exemption and its
+		// pre-policy classifiers left a "./<key>"-shaped or look-alike-decorated
+		// id readable in the seat list while the models --json twin masked it.
+		fmt.Fprintf(out, "%s %-*s  %-*s  [%s]%s\n", num, idW, providers.MaskSlot(e.ModelID), midW, providers.MaskSlot(seatMidColumn(e)), providers.MaskSlot(e.Group), suffix)
 	}
 }
 

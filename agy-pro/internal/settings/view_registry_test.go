@@ -120,3 +120,79 @@ func TestView_CJKProviderName_RendersNormally(t *testing.T) {
 		t.Error("p2 missing the CJK provider key-status row")
 	}
 }
+
+// TestViewProviderNameSinkUsesSlotAuthority (fix7-D) pins the settings view's
+// provider-NAME sink against the registry-slot display authority: the
+// key-status row's ID and Label both carry the name. Identity half: the benign
+// corpus (openai, gemini, deepseek, nw, charm) renders byte-identically, so
+// the ID and the Label keep their exact pre-change text. Credential half: the
+// underscore-headed plant, which providers.MaskOperand leaves raw (its "_"
+// breaks the contiguous-run test and its head is not in the shared prefix
+// list), renders masked first-5 + **** in both fields and nowhere raw.
+func TestViewProviderNameSinkUsesSlotAuthority(t *testing.T) {
+	const (
+		plant = "sk_live_0123456789abcdef"
+		mask  = "sk_li****"
+	)
+	// The required names plus the names the pre-existing key-status pins use
+	// (acme, acme-corp, beta, dup) and the separator-bearing forms the view's
+	// CJK/alignment pins exercise.
+	corpus := []string{
+		"openai", "gemini", "deepseek", "nw", "charm",
+		"anthropic", "acme", "acme-corp", "beta", "dup",
+		"my_provider", "my-provider", "cedar.2024", "x",
+	}
+
+	tmp := viewRegistryHome(t)
+	path := filepath.Join(tmp, "providers.json")
+	t.Setenv(providers.EnvProviders, path)
+	reg := &providers.Registry{}
+	for _, n := range append(corpus, plant) {
+		reg.Providers = append(reg.Providers, providers.Provider{
+			Name: n, BaseURL: "https://gw.example/v1", APIKeyEnv: "NAME_SINK_KEY",
+		})
+	}
+	data, err := json.Marshal(reg)
+	if err != nil {
+		t.Fatalf("marshal registry: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+
+	c := NewCore(Deps{LoadReg: providers.Load, SaveReg: saveRegistryFile})
+	view, err := c.View()
+	if err != nil {
+		t.Fatalf("View: %v", err)
+	}
+	sec, ok := view.SectionByID("p2")
+	if !ok {
+		t.Fatal("p2 section missing")
+	}
+	byID := make(map[string]Item, len(sec.Items))
+	var all strings.Builder
+	for _, it := range sec.Items {
+		byID[it.ID] = it
+		all.WriteString(it.ID + it.Label + it.Value + it.Note)
+	}
+
+	for _, n := range corpus {
+		it, ok := byID["provider.key."+n]
+		if !ok {
+			t.Fatalf("key-status row for %q missing", n)
+		}
+		if it.Label != "Key status - "+n {
+			t.Errorf("key-status label for %q = %q; want the name unchanged", n, it.Label)
+		}
+	}
+	it, ok := byID["provider.key."+mask]
+	if !ok {
+		t.Fatalf("key-status row for the plant missing (the ID must carry the masked name)")
+	}
+	if it.Label != "Key status - "+mask {
+		t.Errorf("plant key-status label = %q; want %q", it.Label, "Key status - "+mask)
+	}
+	if strings.Contains(all.String(), plant) {
+		t.Error("the settings view renders the credential-shaped provider name raw")
+	}
+}

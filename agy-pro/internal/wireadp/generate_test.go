@@ -1666,3 +1666,130 @@ func TestCallUpstream_OutboundBodyUnderCapStillRuns(t *testing.T) {
 		t.Errorf("mock upstream calls = %d; want 1", got)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// FIX-8 (module-wide echo sweep): both "empty upstream response" causes in
+// generate.go append the registry provider NAME to the §9.2 apology. The name
+// is a registry slot, so it renders through providers.MaskSlot (the
+// registry-slot authority), which closes the underscore-head credential class
+// that the operand masker is the identity on. Benign names keep their bytes.
+// ---------------------------------------------------------------------------
+
+func TestGenerate_EmptyUpstreamCauseMasksRegistryProviderName(t *testing.T) {
+	const (
+		plant     = "sk_live_0123456789abcdef"
+		plantMask = "sk_li****"
+	)
+
+	// apologyText returns the §9.2 apology sentence of the stream, so the pin
+	// fails on the exact sentence rather than on a substring of the raw body.
+	apologyText := func(t *testing.T, raw string) string {
+		t.Helper()
+		found := ""
+		for _, f := range sseFrames(t, raw) {
+			var resp geminiwire.GenerateContentResponse
+			if err := json.Unmarshal([]byte(f), &resp); err != nil {
+				continue
+			}
+			for _, c := range resp.Candidates {
+				if c.Content == nil {
+					continue
+				}
+				for _, part := range c.Content.Parts {
+					if strings.Contains(part.Text, "could not finish this turn") {
+						found = part.Text
+					}
+				}
+			}
+		}
+		if found == "" {
+			t.Fatalf("the stream carries no §9.2 apology: %s", raw)
+		}
+		return found
+	}
+
+	// assertCause pins the apology sentence AND the whole response: the §9.1
+	// error frame interpolates the same name through errorwriter.go's row
+	// templates, and generate.go masks both operands at that call site, so the
+	// raw value must not survive anywhere in the stream.
+	assertCause := func(t *testing.T, raw string) {
+		t.Helper()
+		text := apologyText(t, raw)
+		if !strings.Contains(text, "provider "+plantMask+": empty upstream response") {
+			t.Errorf("the apology cause must render the name as %q: %s", plantMask, text)
+		}
+		if strings.Contains(raw, plant) {
+			t.Errorf("the response leaks the registry provider name raw: %s", raw)
+		}
+	}
+
+	// Sink 1: the clean-empty success path (a 200 with no renderable turn and
+	// no upstream failure).
+	t.Run("clean empty turn", func(t *testing.T) {
+		m := newMockUpstream(t)
+		cfg, reg := testUpstreamConfig(t, m)
+		reg.Providers[0].Name = plant
+		resetSingletonForTest(t)
+		srv := startServer(t, cfg)
+		m.setScript(func(n int, w http.ResponseWriter) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		})
+
+		resp, raw := post(t, streamURL(srv, "probe-gemini"), nil, chatRequestBody(nil))
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status %d body %s", resp.StatusCode, raw)
+		}
+		assertCause(t, raw)
+	})
+
+	// Sink 2: the keep-alive-committed branch, where the apology precedes the
+	// error frame.
+	t.Run("committed stream", func(t *testing.T) {
+		m := newMockUpstream(t)
+		cfg, reg := testUpstreamConfig(t, m)
+		reg.Providers[0].Name = plant
+		cfg.StreamKeepAliveInterval = 20 * time.Millisecond
+		resetSingletonForTest(t)
+		srv := startServer(t, cfg)
+		m.setScript(func(n int, w http.ResponseWriter) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			writeSSEFrame(w, map[string]any{"id": "chatcmpl-mock", "object": "chat.completion.chunk",
+				"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"role": "assistant"}, "finish_reason": nil}}})
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			time.Sleep(120 * time.Millisecond)
+		})
+
+		resp, raw := post(t, streamURL(srv, "probe-gemini"), nil, chatRequestBody(nil))
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status %d body %s", resp.StatusCode, raw)
+		}
+		assertCause(t, raw)
+	})
+
+	// Benign corpus: the cause is byte-identical to the pre-fix rendering.
+	for _, name := range []string{"nw", "openai", "gemini", "deepseek", "charm", "acme-corp"} {
+		m := newMockUpstream(t)
+		cfg, reg := testUpstreamConfig(t, m)
+		reg.Providers[0].Name = name
+		resetSingletonForTest(t)
+		srv := startServer(t, cfg)
+		m.setScript(func(n int, w http.ResponseWriter) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		})
+
+		resp, raw := post(t, streamURL(srv, "probe-gemini"), nil, chatRequestBody(nil))
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s: status %d body %s", name, resp.StatusCode, raw)
+		}
+		if !strings.Contains(raw, "provider "+name+": empty upstream response") {
+			t.Errorf("%s: the cause lost its exact bytes: %s", name, raw)
+		}
+	}
+}
