@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
+	"agypro/internal/openaiup"
 	"agypro/internal/providers"
 	"agypro/internal/settings"
 )
@@ -23,7 +25,8 @@ import (
 //	agy pro settings providers ...        list | add-json | add-interactive | test | rename | delete |
 //	                                      model-add-json | model-update | model-delete
 //	                                      (the model twins gate the write: console stdin prompts y/n,
-//	                                      non-interactive stdin requires the explicit --yes flag)
+//	                                      non-interactive stdin requires the explicit --yes flag, and
+//	                                      model-update re-verifies the presented record after consent)
 //	agy pro settings mode ...             switch | restore | list | status
 //	agy pro settings doctor ...           diagnose | fix-keys | rollback-keys
 //	agy pro settings update-info | uninstall-info | version-info
@@ -154,7 +157,10 @@ func settingsProvidersCmd(core *settings.Core, args []string, in io.Reader, out,
 			fmt.Fprintf(errw, "[agy-pro] add-json failed: %v\n", err)
 			return 1
 		}
-		fmt.Fprintf(out, "[SUCCESS] provider %s saved (apiKeyEnv %s - env-var NAME only)\n", providers.MaskOperand(spec.Name), providers.MaskOperand(spec.APIKeyEnv))
+		// H-C7: the provider name and the env-var NAME are registry slots, so the
+		// success line renders them through the registry-slot masker (identity for
+		// a benign name, first-5+**** for a key-shaped one).
+		fmt.Fprintf(out, "[SUCCESS] provider %s saved (apiKeyEnv %s - env-var NAME only)\n", regOperand(spec.Name), regOperand(spec.APIKeyEnv))
 		return 0
 	case "add-interactive", "wizard":
 		if err := core.RunWizard(in, out); err != nil {
@@ -171,7 +177,7 @@ func settingsProvidersCmd(core *settings.Core, args []string, in io.Reader, out,
 			fmt.Fprintf(errw, "[agy-pro] %v\n", err)
 			return 1
 		}
-		fmt.Fprintf(out, "[SUCCESS] provider %s key probe ok\n", providers.MaskOperand(args[1]))
+		fmt.Fprintf(out, "[SUCCESS] provider %s key probe ok\n", regOperand(args[1]))
 		return 0
 	case "rename":
 		if len(args) < 3 {
@@ -182,7 +188,7 @@ func settingsProvidersCmd(core *settings.Core, args []string, in io.Reader, out,
 			fmt.Fprintf(errw, "[agy-pro] %v\n", err)
 			return 1
 		}
-		fmt.Fprintf(out, "[SUCCESS] provider %s renamed to %s\n", providers.MaskOperand(args[1]), providers.MaskOperand(args[2]))
+		fmt.Fprintf(out, "[SUCCESS] provider %s renamed to %s\n", regOperand(args[1]), regOperand(args[2]))
 		return 0
 	case "delete":
 		if len(args) < 2 {
@@ -193,7 +199,7 @@ func settingsProvidersCmd(core *settings.Core, args []string, in io.Reader, out,
 			fmt.Fprintf(errw, "[agy-pro] %v\n", err)
 			return 1
 		}
-		fmt.Fprintf(out, "[SUCCESS] provider %s removed from the registry (key values untouched)\n", providers.MaskOperand(args[1]))
+		fmt.Fprintf(out, "[SUCCESS] provider %s removed from the registry (key values untouched)\n", regOperand(args[1]))
 		return 0
 	case "model-add-json":
 		if len(args) < 3 {
@@ -213,7 +219,7 @@ func settingsProvidersCmd(core *settings.Core, args []string, in io.Reader, out,
 			fmt.Fprintf(errw, "[agy-pro] %v\n", err)
 			return 1
 		}
-		fmt.Fprintf(out, "[SUCCESS] provider %s: model %s added\n", providers.MaskOperand(args[1]), providers.MaskOperand(m.ID))
+		fmt.Fprintf(out, "[SUCCESS] provider %s: model %s added\n", regOperand(args[1]), regOperand(m.ID))
 		return 0
 	case "model-update":
 		if len(args) < 4 {
@@ -225,15 +231,29 @@ func settingsProvidersCmd(core *settings.Core, args []string, in io.Reader, out,
 		if code != 0 {
 			return code
 		}
-		proceed, code := confirmRegistryMutation(in, out, errw, modelUpdateDiff(args[1], args[2], m), yes)
+		presented := snapshotRegistryModel(args[1], args[2])
+		proceed, code := confirmRegistryMutation(in, out, errw, modelUpdateDiff(presented, m), yes)
 		if !proceed {
 			return code
+		}
+		// G-C3: consent was given against the diff rendered above, so the state
+		// that diff described must still be the state on disk. The prompt above
+		// can block indefinitely and --yes returns instantly; either way an
+		// external edit can land in between, and Core.ModelUpdate replaces the
+		// whole record from a fresh load with no re-verification of its own. The
+		// signed state is the presented record, or its absence when the diff was
+		// after-only (H-C3: a model created in the window would be replaced
+		// silently). Covered for both consent paths (the prompt finishes before
+		// this line, and --yes never skips it).
+		if err := reverifyPresentedModel(presented); err != nil {
+			fmt.Fprintf(errw, "[agy-pro] %v\n", err)
+			return 1
 		}
 		if err := core.ModelUpdate(args[1], args[2], m); err != nil {
 			fmt.Fprintf(errw, "[agy-pro] %v\n", err)
 			return 1
 		}
-		fmt.Fprintf(out, "[SUCCESS] provider %s: model %s updated\n", providers.MaskOperand(args[1]), providers.MaskOperand(m.ID))
+		fmt.Fprintf(out, "[SUCCESS] provider %s: model %s updated\n", regOperand(args[1]), regOperand(m.ID))
 		return 0
 	case "model-delete":
 		if len(args) < 3 {
@@ -248,7 +268,7 @@ func settingsProvidersCmd(core *settings.Core, args []string, in io.Reader, out,
 			fmt.Fprintf(errw, "[agy-pro] %v\n", err)
 			return 1
 		}
-		fmt.Fprintf(out, "[SUCCESS] provider %s: model %s removed\n", providers.MaskOperand(args[1]), providers.MaskOperand(args[2]))
+		fmt.Fprintf(out, "[SUCCESS] provider %s: model %s removed\n", regOperand(args[1]), regOperand(args[2]))
 		return 0
 	default:
 		fmt.Fprintf(errw, "[agy-pro] unknown providers subcommand %q\n%s\n", providers.MaskOperand(args[0]), proSettingsUsage)
@@ -401,13 +421,22 @@ func readModelSpec(provider, path string, in io.Reader, errw io.Writer) (provide
 // Secret-shaped guard (the F2/F4 CLI gap the TUI form closes with
 // looksSecretValue): the registry stores env-var NAMES only, so a free-text
 // field carrying credential material (a misdirected paste) is refused here,
-// before Core ever sees the record. The classifier mirrors the TUI form
-// guard in internal/tui/screen_model_form.go (secretValuePrefixes plus
-// credentialTokenShaped) verbatim, so the CLI ingest and the TUI form cannot
-// drift apart: known credential prefixes at any length, plus one
-// uninterrupted opaque run of 16+ runes carrying BOTH letters and digits.
-// Separators and single-class runs (long words, all-letter ids, serials)
-// stay readable on both paths.
+// before Core ever sees the record.
+//
+// The classifier is a delegation to the ONE shared NAME authority in
+// internal/providers (NameCarriesCredential), the same predicate the TUI model
+// form guard and every display sink call: a category-based separator class
+// instead of an enumerated marker list, the invisible classes deleted first, a
+// fixpoint strip of the leading decoration (relative markers, a URL scheme, a
+// Windows drive prefix, bare or nested), and the shared shape test (known
+// credential prefixes at any length, plus one uninterrupted opaque run of 16+
+// runes carrying BOTH letters and digits) over the raw value and its stripped
+// core, plus the operand and registry-slot arms that read the key classes those
+// two miss. Separators and single-class runs (long words, all-letter ids,
+// serials) stay readable on both doors, and a location-shaped value is refused
+// on both (a held product decision, pinned on both sides). The earlier rounds
+// kept a copy of the shape test here and it drifted from the TUI copy; the
+// parity pin fails if a local list or a local strip reappears in this file.
 func parseModelSpecJSON(data []byte) (providers.Model, error) {
 	var m providers.Model
 	dec := json.NewDecoder(bytes.NewReader(data))
@@ -434,66 +463,76 @@ func parseModelSpecJSON(data []byte) (providers.Model, error) {
 			return providers.Model{}, fmt.Errorf("model spec: tool %d looks like secret material (value hidden)", i+1)
 		}
 	}
+	// F-C4: strip Cc+Cf control runes from the effort operand before any
+	// classification or display: the CLI printer has no painter (the TUI
+	// painter strips at render), so an escape byte here would otherwise reach
+	// the consent transcript and forge the visual presentation before
+	// Registry.Validate refuses the write.
+	m.Capabilities.ReasoningEffort = stripDiffControls(m.Capabilities.ReasoningEffort)
 	if modelSpecValueLooksSecret(m.Capabilities.ReasoningEffort) {
 		return providers.Model{}, fmt.Errorf("model spec: field %q looks like secret material (value hidden)", "reasoningEffort")
 	}
+	// F-C3: the closed effort set lives once at internal/openaiup
+	// (ValidReasoningEfforts); refuse out-of-set values without echoing
+	// them, and normalize case/whitespace on accept so "HIGH" persists as
+	// "high" (the gateway fail-closes unknown values to "default", so an
+	// un-normalized registry entry is pure drift from the TUI/CLI contract).
+	effort := strings.ToLower(strings.TrimSpace(m.Capabilities.ReasoningEffort))
+	if effort != "" && !openaiup.ValidReasoningEfforts[effort] {
+		// G-C5: the allowed list renders from the canonical set, never from a
+		// hand-maintained copy: a set change (a new level) must move the
+		// refusal message with it, not leave the two drifting apart.
+		return providers.Model{}, fmt.Errorf("model spec: field %q is not a supported reasoning effort (allowed: %s; value hidden)", "reasoningEffort", reasoningEffortAllowedList())
+	}
+	m.Capabilities.ReasoningEffort = effort
 	return m, nil
 }
 
-// modelSpecSecretPrefixes mirrors secretValuePrefixes in
-// internal/tui/screen_model_form.go: a value starting with any of these
-// reads as key material in any slot, at any length.
-var modelSpecSecretPrefixes = []string{
-	"sk-", "key-", "gsk_", "nvapi-", "live_", "secret_",
-	"ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_",
-	"xox", "glpat-", "npm_", "dckr_pat-", "dckr_pat_", "bearer ", "eyj",
+// reasoningEffortAllowedList renders the canonical effort set
+// (openaiup.ValidReasoningEfforts) as a comma-separated list in deterministic
+// (sorted) order. Sorted order, not map order: Go randomizes map iteration, so
+// the refusal message would otherwise differ between two runs of the same
+// command.
+func reasoningEffortAllowedList() string {
+	valid := make([]string, 0, len(openaiup.ValidReasoningEfforts))
+	for v := range openaiup.ValidReasoningEfforts {
+		valid = append(valid, v)
+	}
+	sort.Strings(valid)
+	return strings.Join(valid, ", ")
 }
 
 // modelSpecValueLooksSecret reports whether a free-text model field carries
-// credential material rather than a name: a known credential prefix at any
-// length (still a secret behind the prefix), or one uninterrupted run of the
-// base64 alphabet of 16+ runes with BOTH letter and digit classes present
-// and no other separator (the AKIA/AWS-secret-class opaque token). This is
-// credentialTokenShaped from the TUI form, kept rune-for-rune so the two
-// guards agree on every input.
+// credential material rather than a name. It is a delegation to the ONE shared
+// NAME authority (providers.NameCarriesCredential), the same predicate the TUI
+// model form's looksSecretValue calls for the id, family, tags, tool grants and
+// effort fields, so the CLI ingest and the form ingest answer identically on
+// every input: the union of the policy classifier (providers.SecretShaped:
+// credential heads at any length plus one opaque run at the 16-rune floor,
+// read raw and after the fold and strip of a decorated value), the operand
+// masker (providers.MaskOperand: the decorated-secret and JWT display classes),
+// and the registry-slot masker (providers.MaskSlot: the segment arm that reads
+// the underscore-head class, and the rewrite arm that re-renders a
+// location-shaped value).
+//
+// The underscore-head class is why this door moved off SecretShaped alone
+// (FIX-7E): SecretShaped is false for "sk_live_0123456789abcdef" while every
+// display sink renders that same value as "sk_li****", so the verb accepted a
+// value its own consent transcript masked as a key and persisted it raw. The
+// union also refuses a single-class 16+ rune id and a location-shaped id (a
+// path or a URL), which is the verdict the TUI model form has pinned since
+// FIX-7A and is a held product decision (whether a model ID may legally be a
+// path or a URL). This door carries no local exemption for those classes: a
+// door that accepts a value its frames re-render is exactly the divergence the
+// twin pins exist to catch.
+//
+// The earlier rounds kept this side's own prefix list, its own look-alike
+// separator map, and its own strip, and the two doors drifted apart on every
+// look-alike discovered after the maps were written. The list, the map, and the
+// strip live once in internal/providers/slotpolicy.go; the delegation pin and
+// the corpus parity pin fail if a local copy or a local arm reappears here.
 func modelSpecValueLooksSecret(v string) bool {
-	t := strings.TrimSpace(v)
-	if t == "" {
-		return false
-	}
-	lower := strings.ToLower(t)
-	for _, p := range modelSpecSecretPrefixes {
-		if strings.HasPrefix(lower, p) {
-			return true
-		}
-	}
-	return modelSpecOpaqueToken(t)
-}
-
-// modelSpecOpaqueToken mirrors credentialTokenShaped in
-// internal/tui/screen_model_form.go: one uninterrupted run of the base64
-// alphabet (ASCII letters, digits, and the + / = pad runes), at least 16
-// runes long, with both letter and digit classes present. Any other
-// separator rune (- . _ : whitespace and friends) or a single-class run
-// fails the shape and stays readable. Round-6 F-01: the + / = runes are
-// admitted (a 16+ rune base64 AWS-secret-class credential carries them);
-// the body stays rune-for-rune identical to the TUI twin.
-func modelSpecOpaqueToken(s string) bool {
-	n := 0
-	letter, digit := false, false
-	for _, r := range s {
-		switch {
-		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z':
-			letter = true
-		case r >= '0' && r <= '9':
-			digit = true
-		case r == '+', r == '/', r == '=':
-		default:
-			return false
-		}
-		n++
-	}
-	return n >= 16 && letter && digit
+	return providers.NameCarriesCredential(v)
 }
 
 // hasYesFlag reports whether the verb operands carry the explicit --yes
@@ -577,6 +616,156 @@ func lookupRegistryModel(providerName, modelID string) (before providers.Model, 
 	return before, len(p.Models), true, modelFound
 }
 
+// registryReload re-reads the on-disk registry at write time, immediately
+// before a model-update write (G-C3). Tests replace this seam to interleave an
+// external edit on the --yes path, where there is no console prompt to hang
+// the interleaving on; production keeps providers.Load, the same read the
+// presentation and the Core verb use.
+var registryReload = func() (*providers.Registry, error) {
+	return providers.Load()
+}
+
+// presentedModel is the on-disk record one pre-write presentation was
+// rendered from, kept so the write can re-verify it after consent (G-C3).
+type presentedModel struct {
+	provider string
+	modelID  string
+	before   providers.Model
+	count    int
+	found    bool
+	matched  bool
+}
+
+// snapshotRegistryModel captures the on-disk record for a model-update
+// presentation.
+func snapshotRegistryModel(providerName, modelID string) presentedModel {
+	before, count, found, modelFound := lookupRegistryModel(providerName, modelID)
+	return presentedModel{
+		provider: providerName,
+		modelID:  modelID,
+		before:   before,
+		count:    count,
+		found:    found,
+		matched:  found && modelFound,
+	}
+}
+
+// presentable reports whether the presentation actually showed a before
+// record. Only then is there a signed state to re-verify.
+func (p presentedModel) presentable() bool {
+	return p.found && p.matched
+}
+
+// reverifyPresentedModel re-reads the registry after consent and refuses the
+// write when the presented state moved (G-C3). The CLI presents a diff read
+// from disk, then blocks on an unbounded console prompt (or returns instantly
+// under --yes), then Core.ModelUpdate re-loads and replaces the whole record:
+// without this check an external edit landing between the presentation and the
+// write was silently clobbered, and the operator consented to a diff that no
+// longer described the file. The comparison is the TUI form's signed-field
+// set, so the two write paths refuse the same drift.
+//
+// The signed state is the presented record when the presentation carried a
+// before record, and the record's ABSENCE when it did not (an after-only
+// presentation, H-C3). The absence check matters: a model created by an
+// external edit while the prompt waited would be replaced in place by
+// Core.ModelUpdate, under a consent rendered before it existed. The unchanged
+// sentence covers the created case too: the file did change on disk, the
+// presented diff is stale, and nothing is written.
+//
+// Fail-closed: an unreadable registry, a vanished provider, a vanished model,
+// and a model that appeared during the window all refuse. Nothing has been
+// written at this point.
+func reverifyPresentedModel(p presentedModel) error {
+	reg, err := registryReload()
+	if err != nil || reg == nil {
+		return fmt.Errorf("registry re-read failed before the write, so the presented diff could not be re-verified; nothing written")
+	}
+	prov := findProviderCI(reg, p.provider)
+	if !p.presentable() {
+		if prov != nil && findRegistryModel(prov, p.modelID) != nil {
+			return fmt.Errorf("model %s changed on disk between the presentation and the write, so the presented diff is stale; nothing written (re-run model-update after reviewing the current record)", regOperand(p.modelID))
+		}
+		return nil
+	}
+	if prov == nil {
+		return fmt.Errorf("provider %s disappeared from providers.json between the presentation and the write; nothing written", regOperand(p.provider))
+	}
+	m := findRegistryModel(prov, p.modelID)
+	if m == nil {
+		return fmt.Errorf("model %s disappeared from providers.json between the presentation and the write; nothing written", regOperand(p.modelID))
+	}
+	if sameSignedModelFields(p.before, *m) {
+		return nil
+	}
+	return fmt.Errorf("model %s changed on disk between the presentation and the write, so the presented diff is stale; nothing written (re-run model-update after reviewing the current record)", regOperand(p.modelID))
+}
+
+// sameSignedModelFields reports whether two model records agree on every field
+// a model-update diff signs: id, family, tags, enabled, context, maxOut, the
+// four capability flags, the tool-use flag, the effort (compared normalized)
+// and the tool grants (compared in normalized order). It mirrors
+// sameSignedFields in internal/tui/screen_model_form.go, the TUI form's
+// stale-base comparison, so an update the TUI would refuse is refused on the
+// CLI too. Both sides sign supportsTools: the flag can move on its own (the form
+// OR-derives it from the grant list), so neither write path may silently revert
+// a concurrent flip of it.
+//
+// One deliberate difference: the TUI normalizes tool grants into its catalog
+// order, which this package does not carry, so the CLI normalization is a
+// deduplicated sorted copy; both sides of the comparison get the same treatment,
+// so a pure reorder is not drift on either path.
+func sameSignedModelFields(a, b providers.Model) bool {
+	return a.ID == b.ID &&
+		a.Family == b.Family &&
+		equalStringList(a.Tags, b.Tags) &&
+		a.IsEnabled() == b.IsEnabled() &&
+		a.ContextLength == b.ContextLength &&
+		a.MaxOutputTokens == b.MaxOutputTokens &&
+		a.Capabilities.SupportsTools == b.Capabilities.SupportsTools &&
+		a.Capabilities.SupportsThinking == b.Capabilities.SupportsThinking &&
+		normModelEffort(a.Capabilities.ReasoningEffort) == normModelEffort(b.Capabilities.ReasoningEffort) &&
+		a.Capabilities.SupportsVision == b.Capabilities.SupportsVision &&
+		a.Capabilities.SupportsVideo == b.Capabilities.SupportsVideo &&
+		equalStringList(normalizeToolGrants(a.Capabilities.AllowedTools), normalizeToolGrants(b.Capabilities.AllowedTools))
+}
+
+// normModelEffort is the effort comparison form: case-folded and trimmed, so
+// "HIGH" on disk and "high" from the spec read as the same level (the TUI
+// form's normEffort).
+func normModelEffort(v string) string {
+	return strings.ToLower(strings.TrimSpace(v))
+}
+
+// equalStringList compares two lists element by element in order.
+func equalStringList(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// normalizeToolGrants returns the tool grants deduplicated and sorted, the
+// order-independent comparison form (see sameSignedModelFields).
+func normalizeToolGrants(tools []string) []string {
+	seen := make(map[string]bool, len(tools))
+	out := make([]string, 0, len(tools))
+	for _, t := range tools {
+		if seen[t] {
+			continue
+		}
+		seen[t] = true
+		out = append(out, t)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // findProviderCI resolves a provider exact-first, then case-insensitively
 // (the Core verbs resolve case-insensitively; the diff presentation must see
 // the same record the write will touch).
@@ -594,13 +783,30 @@ func findProviderCI(reg *providers.Registry, name string) *providers.Provider {
 	return nil
 }
 
+// findRegistryModel returns the model with the exact ID in p, or nil. Model IDs
+// are matched exactly, the same rule the Core verbs and the duplicate check use.
+func findRegistryModel(p *providers.Provider, modelID string) *providers.Model {
+	for i := range p.Models {
+		if p.Models[i].ID == modelID {
+			return &p.Models[i]
+		}
+	}
+	return nil
+}
+
 // modelAddDiff renders the masked pre-write presentation for model-add-json:
 // the mutation sentence, the model count before/after when the on-disk
 // provider resolves, the atomic-0600 sentence, and one "+ field: value" line
 // per set field (every operand masked).
+//
+// H-C6: the header sentence's model ID and provider name are registry slots
+// too, so they route through the registry-slot masker (regOperand), not through
+// the location-exempt MaskOperand: a decorated id such as
+// "./ab3def7gh9jk1mnpqr5t" printed raw in the headline while the "+ id" line
+// below masked the same value.
 func modelAddDiff(providerName string, m providers.Model) []string {
 	lines := []string{
-		fmt.Sprintf("Adds model %s to provider %s. Key values are untouched.", providers.MaskOperand(m.ID), providers.MaskOperand(providerName)),
+		fmt.Sprintf("Adds model %s to provider %s. Key values are untouched.", regOperand(m.ID), regOperand(providerName)),
 	}
 	if _, count, found, _ := lookupRegistryModel(providerName, m.ID); found {
 		lines = append(lines, fmt.Sprintf("Model count: %d -> %d", count, count+1))
@@ -612,99 +818,186 @@ func modelAddDiff(providerName string, m providers.Model) []string {
 // modelUpdateDiff renders the masked pre-write presentation for model-update:
 // the mutation sentence, the count line, the atomic-0600 sentence, and one
 // "  field: before -> after" line per changed field against the on-disk
-// record. When the on-disk record is unavailable the diff falls back to
-// after-only lines so the presentation never invents before values.
-func modelUpdateDiff(providerName, modelID string, m providers.Model) []string {
+// record carried by the snapshot. When the on-disk record is unavailable the
+// diff falls back to after-only lines so the presentation never invents before
+// values. The snapshot is handed back to reverifyPresentedModel after consent
+// (G-C3), so the record that was presented is the record that is re-verified.
+// The header's model ID and provider name are registry slots (H-C6), so they
+// render through regOperand.
+func modelUpdateDiff(p presentedModel, m providers.Model) []string {
 	lines := []string{
-		fmt.Sprintf("Updates model %s in provider %s. Key values are untouched.", providers.MaskOperand(m.ID), providers.MaskOperand(providerName)),
+		fmt.Sprintf("Updates model %s in provider %s. Key values are untouched.", regOperand(m.ID), regOperand(p.provider)),
 	}
-	before, count, found, modelFound := lookupRegistryModel(providerName, modelID)
-	if found {
-		lines = append(lines, fmt.Sprintf("Model count: %d -> %d", count, count))
+	if p.found {
+		lines = append(lines, fmt.Sprintf("Model count: %d -> %d", p.count, p.count))
 	}
 	lines = append(lines, modelWriteAtomicSentence)
-	if found && modelFound {
-		return append(lines, modelChangedDiffLines(before, m)...)
+	if p.presentable() {
+		return append(lines, modelChangedDiffLines(p.before, m)...)
 	}
 	return append(lines, modelAddDiffLines(m)...)
 }
 
 // modelDeleteDiff renders the masked pre-write presentation for model-delete.
+// The header and the "- model" line render registry-slot values (the model ID
+// and the provider name), so both route through regOperand (H-C6): a disk-borne
+// id such as "./ab3def7gh9jk1mnpqr5t" printed raw under the location-exempt
+// MaskOperand.
 func modelDeleteDiff(providerName, modelID string) []string {
 	lines := []string{
-		fmt.Sprintf("Removes model %s from provider %s. Key values are untouched.", providers.MaskOperand(modelID), providers.MaskOperand(providerName)),
+		fmt.Sprintf("Removes model %s from provider %s. Key values are untouched.", regOperand(modelID), regOperand(providerName)),
 	}
 	if _, count, found, _ := lookupRegistryModel(providerName, modelID); found {
 		lines = append(lines, fmt.Sprintf("Model count: %d -> %d", count, count-1))
 	}
 	lines = append(lines, modelWriteAtomicSentence)
-	return append(lines, "- model "+providers.MaskOperand(modelID))
+	return append(lines, "- model "+regOperand(modelID))
 }
 
-// maskJoined masks each list item individually before joining, the TUI
-// maskJoined rule (screen_model_form.go) ported to the CLI twins: one
-// credential-shaped entry cannot hide behind the join separator of its
-// neighbors, and MaskOperand on an already-joined string would see the
-// separators and stay readable.
-func maskJoined(items []string, sep string) string {
+// regOperand renders one registry-slot operand for a CLI transcript line (a
+// diff line, a mutation sentence, a success line, or a re-verify refusal). It is
+// a delegation to providers.MaskSlot, the single registry-slot display
+// authority: control-run strip first (F-C4), then the registry-slot authority
+// (F-C1: a marker-decorated credential such as "./<key>" must not ride
+// MaskOperand's location exemption), then the shared policy's
+// identity-fallback, so a look-alike-decorated plant masks in the CLI
+// transcript exactly as it does in the TUI frame (the CLI used to render that
+// subclass raw while the TUI masked it). A value the policy does not flag
+// renders byte-identically to its input, which is what keeps the benign
+// transcript stable.
+//
+// The name stays because every transcript site already calls it; the body is
+// one delegation and the parity pin fails if a local list or a local strip
+// reappears here.
+func regOperand(v string) string {
+	return providers.MaskSlot(v)
+}
+
+// maskJoinedReg renders a list-valued registry slot: every item masks on its
+// own before the join (the TUI maskJoined rule, so one credential-shaped entry
+// cannot hide behind the separator of its neighbors), and the joined string is
+// never re-classified as a single operand, which would see the separators and
+// stay readable.
+func maskJoinedReg(items []string, sep string) string {
 	parts := make([]string, len(items))
 	for i, it := range items {
-		parts[i] = providers.MaskOperand(it)
+		parts[i] = regOperand(it)
 	}
 	return strings.Join(parts, sep)
 }
 
 // modelAddDiffLines renders one "+ field: value" line per set field of the
-// incoming record (mirrors the M4 modal's addedDiffLines).
+// incoming record (mirrors the M4 modal's addedDiffLines). The capability
+// lines keep the TUI modal's labels (thinking/vision/video, F-C5).
+//
+// G-C1: EVERY slot routes through addReg, not only the capability slots. The
+// id/family/tags/tools operands are registry slots too, and rendering them
+// through MaskOperand left the same hole the capability lines had: a
+// marker-decorated credential in the family slot ("./<40-rune secret>")
+// persisted and printed raw into the consent transcript.
 func modelAddDiffLines(m providers.Model) []string {
 	lines := []string{}
-	add := func(field, value string) {
-		lines = append(lines, "+ "+field+": "+providers.MaskOperand(value))
+	// addReg renders one registry-slot operand (see regOperand).
+	addReg := func(field, value string) {
+		lines = append(lines, "+ "+field+": "+regOperand(value))
 	}
-	add("id", m.ID)
+	// addList is the list form of addReg: per-item masking, then join.
+	addList := func(field string, items []string) {
+		lines = append(lines, "+ "+field+": "+maskJoinedReg(items, ", "))
+	}
+	addReg("id", m.ID)
 	if m.Family != "" {
-		add("family", m.Family)
+		addReg("family", m.Family)
 	}
 	if len(m.Tags) > 0 {
-		add("tags", maskJoined(m.Tags, ", "))
+		addList("tags", m.Tags)
 	}
 	if m.Enabled != nil && !*m.Enabled {
-		add("enabled", "false")
+		addReg("enabled", "false")
 	}
 	if m.ContextLength > 0 {
-		add("contextLength", strconv.Itoa(m.ContextLength))
+		addReg("contextLength", strconv.Itoa(m.ContextLength))
 	}
 	if m.MaxOutputTokens > 0 {
-		add("maxOutputTokens", strconv.Itoa(m.MaxOutputTokens))
+		addReg("maxOutputTokens", strconv.Itoa(m.MaxOutputTokens))
 	}
 	if len(m.Capabilities.AllowedTools) > 0 {
-		add("tools", maskJoined(m.Capabilities.AllowedTools, ", "))
+		addList("tools", m.Capabilities.AllowedTools)
+	}
+	if m.Capabilities.SupportsTools {
+		addReg("supportsTools", "true")
+	}
+	if m.Capabilities.SupportsThinking {
+		addReg("thinking", "true")
+	}
+	if m.Capabilities.ReasoningEffort != "" {
+		addReg("reasoningEffort", m.Capabilities.ReasoningEffort)
+	}
+	if m.Capabilities.SupportsVision {
+		addReg("vision", "true")
+	}
+	if m.Capabilities.SupportsVideo {
+		addReg("video", "true")
 	}
 	return lines
 }
 
 // modelChangedDiffLines renders one "  field: before -> after" line per
 // changed field (mirrors the M4 modal's changedDiffLines), or the no-changes
-// marker.
+// marker. Two rules decide emission and rendering (H-C1):
+//   - emission compares the RAW operands, never the rendered columns. A
+//     marker-only difference ("fast" -> "./fast"), a case-only difference, or
+//     two credential-shaped values that fold to the same first-5+**** mask all
+//     move the persisted bytes, so the approval must print the line; deciding
+//     on the rendered forms suppressed it and printed "(no field changes)"
+//     while Core.ModelUpdate still replaced the record.
+//   - rendering masks both columns through the same registry-slot masker as the
+//     add side (G-C1), so a value whose raw bytes are a credential never reaches
+//     the transcript. A true no-change (raw equality on every field) still
+//     prints the byte-stable marker.
 func modelChangedDiffLines(before, m providers.Model) []string {
 	lines := []string{}
-	chg := func(field, b, a string) {
+	// chgReg emits on a raw operand difference and renders both columns masked.
+	chgReg := func(field, b, a string) {
 		if b == a {
 			return
 		}
-		lines = append(lines, "  "+field+": "+providers.MaskOperand(b)+" -> "+providers.MaskOperand(a))
+		lines = append(lines, "  "+field+": "+regOperand(b)+" -> "+regOperand(a))
 	}
-	chg("id", before.ID, m.ID)
-	chg("family", before.Family, m.Family)
-	chg("tags", maskJoined(before.Tags, ", "), maskJoined(m.Tags, ", "))
-	chg("enabled", strconv.FormatBool(before.IsEnabled()), strconv.FormatBool(m.IsEnabled()))
-	chg("contextLength", strconv.Itoa(before.ContextLength), strconv.Itoa(m.ContextLength))
-	chg("maxOutputTokens", strconv.Itoa(before.MaxOutputTokens), strconv.Itoa(m.MaxOutputTokens))
-	chg("tools", maskJoined(before.Capabilities.AllowedTools, ", "), maskJoined(m.Capabilities.AllowedTools, ", "))
+	// chgList is the list form of chgReg: the raw lists decide emission (order
+	// included), per-item masking then join renders both columns.
+	chgList := func(field string, b, a []string) {
+		if equalStringList(b, a) {
+			return
+		}
+		lines = append(lines, "  "+field+": "+maskJoinedReg(b, ", ")+" -> "+maskJoinedReg(a, ", "))
+	}
+	chgReg("id", before.ID, m.ID)
+	chgReg("family", before.Family, m.Family)
+	chgList("tags", before.Tags, m.Tags)
+	chgReg("enabled", strconv.FormatBool(before.IsEnabled()), strconv.FormatBool(m.IsEnabled()))
+	chgReg("contextLength", strconv.Itoa(before.ContextLength), strconv.Itoa(m.ContextLength))
+	chgReg("maxOutputTokens", strconv.Itoa(before.MaxOutputTokens), strconv.Itoa(m.MaxOutputTokens))
+	chgList("tools", before.Capabilities.AllowedTools, m.Capabilities.AllowedTools)
+	chgReg("supportsTools", strconv.FormatBool(before.Capabilities.SupportsTools), strconv.FormatBool(m.Capabilities.SupportsTools))
+	chgReg("thinking", strconv.FormatBool(before.Capabilities.SupportsThinking), strconv.FormatBool(m.Capabilities.SupportsThinking))
+	chgReg("reasoningEffort", before.Capabilities.ReasoningEffort, m.Capabilities.ReasoningEffort)
+	chgReg("vision", strconv.FormatBool(before.Capabilities.SupportsVision), strconv.FormatBool(m.Capabilities.SupportsVision))
+	chgReg("video", strconv.FormatBool(before.Capabilities.SupportsVideo), strconv.FormatBool(m.Capabilities.SupportsVideo))
 	if len(lines) == 0 {
 		lines = append(lines, "(no field changes)")
 	}
 	return lines
+}
+
+// stripDiffControls removes control runes (the Cc class) and the format class
+// (Cf: bidi overrides, zero-width joiners, BOM) from a value before it reaches
+// a CLI transcript (F-C4). Unlike the TUI painter, the CLI printer has no
+// render-time strip, so an escape byte in a registry operand would otherwise
+// forge the visual consent presentation. The rule lives in the shared policy
+// (providers.StripSlotControls) and the TUI delegates to the same one.
+func stripDiffControls(s string) string {
+	return providers.StripSlotControls(s)
 }
 
 func dirOf(p string) string {

@@ -351,3 +351,62 @@ func TestRunModelsCmdMachineOutputHasNoCommunityBanner(t *testing.T) {
 		}
 	}
 }
+
+// TestRunModelsCmdJSONMasksLookAlikeModelID pins the newly converted inventory
+// sink: a look-alike-decorated model id (U+2025 TWO DOT LEADER + "/" + a
+// lowercase 20-rune core) sits in a record and every id-derived field of the
+// --json dump must mask it. The id is free text at load (only the control-rune
+// rule constrains it), so this is a real exposure: before the policy round the
+// id, the seat spec, and the composed display name rode MaskOperand, whose
+// location exemption and pre-policy classifier left the core readable.
+func TestRunModelsCmdJSONMasksLookAlikeModelID(t *testing.T) {
+	const core = "ab3def7gh9jk1mnpqr5t"
+	const plant = "\u2025/" + core
+	const masked = "ab3de****"
+
+	reg := &providers.Registry{Providers: []providers.Provider{{
+		Name:    "nw",
+		BaseURL: "https://api.example/v1",
+		Models: []providers.Model{
+			{ID: plant, Family: "glm"},
+			{ID: "qwen3.8-flash", Family: "Qwen"},
+		},
+	}}}
+	old := loadModelsInventory
+	loadModelsInventory = func(ctx context.Context) (*inventory.Inventory, error) {
+		return inventory.Load(ctx, reg, nil)
+	}
+	t.Cleanup(func() { loadModelsInventory = old })
+
+	var out, errw strings.Builder
+	code := runModelsCmdTo([]string{"--json"}, &out, &errw)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, errw.String())
+	}
+	got := out.String()
+	if strings.Contains(got, core) || strings.Contains(got, plant) {
+		t.Errorf("models --json leaks the look-alike model id raw:\n%s", got)
+	}
+	var entries []inventory.Entry
+	if err := json.Unmarshal([]byte(got), &entries); err != nil {
+		t.Fatalf("json decode: %v\n%s", err, got)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("json entries = %d, want 2", len(entries))
+	}
+	if entries[0].ModelID != masked {
+		t.Errorf("ModelID = %q, want %q", entries[0].ModelID, masked)
+	}
+	// The composed display name is a label ("<id> (<provider>)"); the display
+	// arm masks the credential span, so the label cannot re-expose the core.
+	if entries[0].DisplayName != masked {
+		t.Errorf("DisplayName = %q, want the masked slot %q", entries[0].DisplayName, masked)
+	}
+	if strings.Contains(entries[0].Spec, core) {
+		t.Errorf("Spec = %q leaks the core", entries[0].Spec)
+	}
+	// The benign row renders byte-identically (the sink masks nothing benign).
+	if entries[1].ModelID != "qwen3.8-flash" || entries[1].Family != "Qwen" {
+		t.Errorf("benign row moved: %+v", entries[1])
+	}
+}

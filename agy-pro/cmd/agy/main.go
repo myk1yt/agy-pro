@@ -126,14 +126,25 @@ var (
 	setupTUIRunner    = tui.RunSetup
 	setupWizardRunner = providers.InteractiveSetupWizard
 	setupConsoleCap   = tui.Detect
+	setupStdinConsole = tui.StdinIsConsole
+	setupCapRestore   = restoreSetupCap
 	setupExit         = os.Exit
 )
 
+// restoreSetupCap hands the console output mode back to the state the setup
+// gate's capability probe found it in. It is a seam of its own because Cap's
+// restore hook is unexported: a test in this package can observe the call
+// site, but cannot build a Cap that carries a hook. The hook's own semantics
+// (a no-op on a cap that never enabled VT, one console-mode write on repeat
+// calls) are pinned in internal/tui/termcap_test.go.
+func restoreSetupCap(cap tui.Cap) { cap.Restore() }
+
 // runSetup handles `agy pro setup [arguments...]`. No arguments open the
-// setup TUI on a raw-console host and the classic line wizard everywhere
-// else; `--wizard` (hidden alias `wizard`) forces the wizard on any host;
-// any other argument fails closed with the masked operand, the help text,
-// and exit code 2 (today unknown flags were silently ignored).
+// setup TUI on a host where BOTH standard handles are consoles and the
+// classic line wizard everywhere else; `--wizard` (hidden alias `wizard`)
+// forces the wizard on any host; any other argument fails closed with the
+// masked operand, the help text, and exit code 2 (today unknown flags were
+// silently ignored).
 func runSetup(args []string) {
 	if len(args) > 0 {
 		// D2: the switch key is case-folded, but the masked echo takes the
@@ -155,7 +166,28 @@ func runSetup(args []string) {
 	// console: pipe, non-Windows TTY, or mintty-class host), and on those
 	// hosts the byte-stable degrade is the existing line-mode wizard, so
 	// piped and scripted callers keep today's transcript exactly.
-	if setupConsoleCap().SuppressBanner {
+	//
+	// The stdin probe is the second half of the gate. The TUI key source
+	// reads the Windows console input buffer, so a console stdout paired with
+	// a PIPED stdin (`producer | agy pro setup`) would open a full-screen
+	// surface that can never accept typed text; with the provider add/edit
+	// form that is a real input-loss shape, not a cosmetic one. Both handles
+	// must therefore be consoles before the TUI opens, and every other shape
+	// takes the same byte-stable wizard with no new output and no new exit
+	// code. The stdout test stays first (short-circuit), so a scripted caller
+	// whose stdin is closed never has that handle probed at all.
+	if cap := setupConsoleCap(); cap.SuppressBanner || !setupStdinConsole() {
+		// FIX-C: the gate above already ran the capability ladder, and Detect
+		// enables VT processing on the console output handle, so that mode now
+		// belongs to this process and must go back before the line wizard keeps
+		// the process alive. This restores the exact Cap the gate probed, once,
+		// and it runs BEFORE the wizard: runSetupWizard exits through setupExit
+		// on failure and an os.Exit skips defers, so a deferred restore would
+		// leak the mode on exactly the failure path. It emits no bytes and
+		// requests no exit code, so both the wizard transcript and the exit code
+		// are unchanged. The TUI branch below is deliberately not restored here:
+		// tui.RunSetup owns its own defer cap.Restore() (internal/tui/app.go:50).
+		setupCapRestore(cap)
 		runSetupWizard()
 		return
 	}
@@ -474,13 +506,20 @@ func printConfiguredProvidersAndModels(reg *providers.Registry) {
 
 		// D3: registry-driven display slots echo user-editable JSON fields; a
 		// misdirected paste can land a key-shaped value in a provider name,
-		// baseURL, env name, or model id. MaskOperand keeps benign values
-		// readable and masks credential-shaped ones. The BaseURL slot routes
-		// through MaskBaseURL (the layered URL mask) so credential material in
-		// the userinfo slot cannot ride raw under MaskOperand's location
-		// exemption.
+		// baseURL, env name, or model id. The BaseURL slot routes through
+		// MaskBaseURL (the layered URL mask) so credential material in the
+		// userinfo slot cannot ride raw under MaskOperand's location exemption.
+		//
+		// FIX-8 convergence: the provider NAME is a registry slot (providers.json
+		// borne), so it routes through providers.MaskSlot, the single
+		// registry-slot display authority. MaskOperand is its first stage, so
+		// every benign name renders byte-identically, while the underscore-head
+		// credential class ("sk_live_...", "tok_...", "AKIA_..."), which the
+		// operand masker cannot classify, now masks here too. The env NAME in
+		// the key-status composite stays on MaskOperand: it is an environment
+		// variable NAME, not a registry slot.
 		fmt.Printf("[%d] %s (%s) [API Key: %s]\n", i+1,
-			providers.MaskOperand(p.Name), providers.MaskBaseURL(p.BaseURL), providers.MaskOperand(keyStatus))
+			providers.MaskSlot(p.Name), providers.MaskBaseURL(p.BaseURL), providers.MaskOperand(keyStatus))
 
 		if len(p.Models) == 0 {
 			fmt.Println("    (No models configured)")
@@ -494,11 +533,20 @@ func printConfiguredProvidersAndModels(reg *providers.Registry) {
 			// K1: the capability summary embeds the registry-controlled
 			// reasoningEffort (Summary composes thinking(<effort>) and masks
 			// the effort there); this banner slot masks the composed summary
-			// again (defense in depth), matching the models --json and
-			// RenderNumbered sinks.
-			capSummary := providers.MaskOperand(m.CapabilitySummary())
+			// again (defense in depth), matching the models --json sink.
+			//
+			// Convergence: the model id column and the composed summary are
+			// registry slots holding providers.json-borne values (a model id is
+			// free text at load), so both route through providers.MaskSlot, the
+			// single registry-slot display authority, instead of plain
+			// MaskOperand: a location-shaped or look-alike-decorated id
+			// ("./<key>", U+2025 + "/" + a key core) masked here used to ride
+			// raw under the operand masker's location exemption. The family
+			// column routes through MaskFamilyName, which delegates to the same
+			// authority.
+			capSummary := providers.MaskSlot(m.CapabilitySummary())
 			fmt.Printf("    - %-*s  [Family: %-*s | Context: %s | MaxOutput: %s | Capabilities: %s]\n",
-				maxIDLen, providers.MaskOperand(providers.DisplayName(m.ID, p.Name)),
+				maxIDLen, providers.MaskSlot(providers.DisplayName(m.ID, p.Name)),
 				maxFamilyLen, providers.MaskFamilyName(m),
 				ctxDisplay, maxOutDisplay, capSummary)
 		}
@@ -782,9 +830,13 @@ func printKeyAudits(audits []providers.KeyAudit) bool {
 			marker = "[SKIP]"
 			verdict = "SKIP"
 		}
-		// D3: the provider/env names come from the user-editable registry.
+		// D3: the provider/env names come from the user-editable registry. FIX-8:
+		// the PROVIDER name is a registry slot and routes through the
+		// registry-slot authority (MaskSlot), which is MaskOperand plus the
+		// underscore-head credential arm. The ENV name stays on MaskOperand: it
+		// is an environment variable NAME, not a registry slot.
 		fmt.Printf("%s key %s (%s): %s | source: %s | mask: %s\n",
-			marker, providers.MaskOperand(a.Provider), providers.MaskOperand(a.Env), verdict, keySourceLabel(a), keyMaskLabel(a))
+			marker, providers.MaskSlot(a.Provider), providers.MaskOperand(a.Env), verdict, keySourceLabel(a), keyMaskLabel(a))
 		if a.Conflict {
 			fmt.Printf("       conflict: clean name and BOM variant both present with different values (try `agy pro doctor --fix-keys`)\n")
 		}
@@ -868,12 +920,15 @@ func runDoctorFixKeys(target string) {
 
 // printRepairReport renders the --fix-keys entries. Provider, env and variant
 // names resolve from the user-editable registry (D3): masked for display, with
-// MaskOperand keeping benign names readable. e.MaskedValue is already a mask.
-// Notes can embed wrapped store errors that repeat the raw env/variant name
-// (E6), so they are redacted seeded with those names.
+// benign names readable. FIX-8: the PROVIDER name is a registry slot, so it
+// routes through the registry-slot authority (MaskSlot); the ENV and VARIANT
+// names are environment variable NAMEs and stay on MaskOperand.
+// e.MaskedValue is already a mask. Notes can embed wrapped store errors that
+// repeat the raw env/variant name (E6), so they are redacted seeded with those
+// names.
 func printRepairReport(report *providers.RepairReport) {
 	for _, e := range report.Entries {
-		provider, env, variant := providers.MaskOperand(e.Provider), providers.MaskOperand(e.Env), providers.MaskOperand(e.VariantName)
+		provider, env, variant := providers.MaskSlot(e.Provider), providers.MaskOperand(e.Env), providers.MaskOperand(e.VariantName)
 		note := maskOperandSentence(e.Note, e.Env, e.VariantName)
 		switch e.Action {
 		case providers.RepairActionRewrite:

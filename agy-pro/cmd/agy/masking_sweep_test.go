@@ -279,20 +279,28 @@ func TestWrapperPlantedKeySweep(t *testing.T) {
 
 // TestWrapperPlantedKeySweepSuccessPaths covers the SUCCESS confirmations:
 // a key-shaped operand in a slot the operation accepts must still be masked
-// on the way out (the `rename acme sk-...` class from C2).
+// on the way out. The rename slot left the accepted set with FIX-7E (the
+// registry op now gates the new name with the shared authority), so its subtest
+// asserts the refusal, exactly as the add-json NAME subtest does for FIX-7.
 func TestWrapperPlantedKeySweepSuccessPaths(t *testing.T) {
-	t.Run("rename success echoes masked new name", func(t *testing.T) {
+	t.Run("rename refuses a key-shaped new name", func(t *testing.T) {
 		tc := installSettingsCore(t)
 		tc.reg = &providers.Registry{Providers: []providers.Provider{{Name: "acme", BaseURL: "https://acme.example/v1"}}}
 		code, out, errw := runSettings(t, []string{"providers", "rename", "acme", maskSweepKey}, "")
-		if code != 0 {
-			t.Fatalf("rename exit = %d stderr=%s", code, errw)
+		if code != 1 {
+			t.Fatalf("rename exit = %d, want 1 on a key-shaped new name; stderr=%s", code, errw)
 		}
-		if strings.Contains(out, maskSweepKey) {
-			t.Errorf("rename success line prints the planted key raw:\n%s", out)
+		if strings.Contains(out, maskSweepKey) || strings.Contains(errw, maskSweepKey) {
+			t.Errorf("the refusal prints the planted key raw:\nstdout=%s\nstderr=%s", out, errw)
 		}
-		if !strings.Contains(out, maskSweepMasked) {
-			t.Errorf("rename success line should carry the readable mask %q:\n%s", maskSweepMasked, out)
+		if strings.Contains(out, maskSweepMasked) {
+			t.Errorf("a refused name must not reach the success line:\n%s", out)
+		}
+		if !strings.Contains(errw, "looks like secret/key material (value hidden)") {
+			t.Errorf("the refusal must be the named value-free sentence:\n%s", errw)
+		}
+		if len(tc.reg.Providers) != 1 || tc.reg.Providers[0].Name != "acme" {
+			t.Errorf("a refused name reached the registry: %+v", tc.reg.Providers)
 		}
 	})
 
@@ -330,25 +338,33 @@ func TestWrapperPlantedKeySweepSuccessPaths(t *testing.T) {
 		}
 	})
 
-	t.Run("add-json success echoes masked provider name", func(t *testing.T) {
-		installSettingsCore(t)
+	t.Run("add-json refuses a key-shaped provider name", func(t *testing.T) {
+		// FIX-7 closed this door. Before the fix the success line masked the
+		// planted name while providers.json stored it RAW (the residual this
+		// phase recorded); the name gate now refuses the spec before Core, so
+		// there is no masked success line on this path. The mask sinks for names
+		// already on disk stay pinned by the show/delete/test sites above.
+		tc := installSettingsCore(t)
 		specPath := filepath.Join(t.TempDir(), "spec.json")
 		spec := `{"name":"` + maskSweepKey + `","baseURL":"https://acme.example/v1","apiKeyEnv":"ACME_KEY","models":[{"id":"m1"}]}`
 		if err := os.WriteFile(specPath, []byte(spec), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		code, out, errw := runSettings(t, []string{"providers", "add-json", specPath}, "")
-		if code != 0 {
-			t.Fatalf("add-json exit = %d stderr=%s", code, errw)
+		if code != 1 {
+			t.Fatalf("add-json exit = %d, want 1 on a key-shaped name; stderr=%s", code, errw)
 		}
-		if strings.Contains(out, maskSweepKey) {
-			t.Errorf("add-json success line prints the planted key raw:\n%s", out)
+		if strings.Contains(out, maskSweepKey) || strings.Contains(errw, maskSweepKey) {
+			t.Errorf("the refusal echoes the planted key raw:\nstdout=%s\nstderr=%s", out, errw)
 		}
-		if !strings.Contains(out, maskSweepMasked) {
-			t.Errorf("add-json success line should carry the readable mask:\n%s", out)
+		if strings.Contains(out, maskSweepMasked) {
+			t.Errorf("a refused name must not reach the success line:\n%s", out)
 		}
-		if !strings.Contains(out, "ACME_KEY") {
-			t.Errorf("benign env-var NAME must stay readable:\n%s", out)
+		if !strings.Contains(errw, "looks like secret/key material (value hidden)") {
+			t.Errorf("the refusal must be the named value-free sentence:\n%s", errw)
+		}
+		if len(tc.reg.Providers) != 0 {
+			t.Errorf("a refused name reached the registry: %+v", tc.reg.Providers)
 		}
 	})
 }

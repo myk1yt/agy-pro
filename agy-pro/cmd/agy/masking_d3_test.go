@@ -509,3 +509,94 @@ func TestE2SeedEligibilityWholeOperandOnly(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// FIX-8 (module-wide echo sweep): the registry-borne provider NAME in the
+// `agy pro status` / `agy pro models` banner, the doctor key-audit line, and
+// the --fix-keys repair report is a registry slot, so it renders through
+// providers.MaskSlot (the registry-slot authority) instead of MaskOperand,
+// whose underscore-head arm is the identity. The env NAMEs in the same lines
+// are environment variable NAMEs, not registry slots, and stay on the operand
+// masker. Benign registry values keep their exact bytes.
+// ---------------------------------------------------------------------------
+
+func TestEchoSweepBannerKeyAuditAndRepairReportMaskRegistryName(t *testing.T) {
+	const (
+		plant     = "sk_live_0123456789abcdef"
+		plantMask = "sk_li****"
+	)
+
+	// The startup banner (`agy pro models` / `agy pro status`).
+	planted := &providers.Registry{Providers: []providers.Provider{{
+		Name:      plant,
+		BaseURL:   "https://plant.example/v1",
+		APIKeyEnv: "AGY_PRO_TEST_ECHO_ENV",
+		Models:    []providers.Model{{ID: "plant-model"}},
+	}}}
+	out := captureStdout(t, func() { printConfiguredProvidersAndModels(planted) })
+	if strings.Contains(out, plant) {
+		t.Errorf("banner leaks the registry provider name raw:\n%s", out)
+	}
+	if !strings.Contains(out, "[1] "+plantMask+" (https://plant.example/v1)") {
+		t.Errorf("banner must render the name as %q:\n%s", plantMask, out)
+	}
+	if !strings.Contains(out, "AGY_PRO_TEST_ECHO_ENV") {
+		t.Errorf("banner lost the benign env NAME:\n%s", out)
+	}
+
+	// The doctor key-audit line (`agy pro doctor`).
+	out = captureStdout(t, func() {
+		printKeyAudits([]providers.KeyAudit{{
+			Provider: plant,
+			Env:      "AGY_PRO_TEST_ECHO_ENV",
+		}})
+	})
+	if strings.Contains(out, plant) {
+		t.Errorf("key-audit line leaks the registry provider name raw:\n%s", out)
+	}
+	if !strings.Contains(out, "key "+plantMask+" (AGY_PRO_TEST_ECHO_ENV)") {
+		t.Errorf("key-audit line must render the name as %q and keep the env NAME:\n%s", plantMask, out)
+	}
+
+	// The --fix-keys repair report.
+	out = captureStdout(t, func() {
+		printRepairReport(&providers.RepairReport{Entries: []providers.RepairEntry{{
+			Provider: plant,
+			Env:      "AGY_PRO_TEST_ECHO_ENV",
+			Action:   providers.RepairActionRewrite,
+			Note:     "renamed",
+		}}})
+	})
+	if strings.Contains(out, plant) {
+		t.Errorf("repair report leaks the registry provider name raw:\n%s", out)
+	}
+	if !strings.Contains(out, "[FIXED] "+plantMask+" (AGY_PRO_TEST_ECHO_ENV)") {
+		t.Errorf("repair report must render the name as %q and keep the env NAME:\n%s", plantMask, out)
+	}
+
+	// Benign corpus: every banner line stays byte-identical to the pre-fix
+	// rendering (the names and ids the existing pins in this package use).
+	benign := &providers.Registry{Providers: []providers.Provider{
+		{Name: "openai", BaseURL: "https://api.openai.example/v1", APIKeyEnv: "", Models: []providers.Model{{ID: "gpt-5.1"}}},
+		{Name: "gemini", BaseURL: "https://api.gemini.example/v1", APIKeyEnv: "GEMINI_API_KEY", Models: []providers.Model{{ID: "gemini-3.8-flash-high"}}},
+		{Name: "deepseek", BaseURL: "https://api.deepseek.example/v1", APIKeyEnv: "", Models: []providers.Model{{ID: "deepseek-chat"}}},
+		{Name: "nw", BaseURL: "https://api.neuralwatt.com/v1", APIKeyEnv: "AGY_PRO_TEST_BENIGN_KEY_ENV", Models: []providers.Model{{ID: "glm-5.3-flash-flex"}}},
+		{Name: "charm", BaseURL: "https://api.charm.example/v1", APIKeyEnv: "", Models: []providers.Model{{ID: "claude-opus-5-5-high"}}},
+		{Name: "acme-corp", BaseURL: "https://api.acme-corp.example/v1", APIKeyEnv: "", Models: []providers.Model{{ID: "gpt-oss-120b"}}},
+	}}
+	out = captureStdout(t, func() { printConfiguredProvidersAndModels(benign) })
+	for _, want := range []string{
+		"[1] openai (https://api.openai.example/v1)",
+		"[2] gemini (https://api.gemini.example/v1)",
+		"[3] deepseek (https://api.deepseek.example/v1)",
+		"[4] nw (https://api.neuralwatt.com/v1)",
+		"[5] charm (https://api.charm.example/v1)",
+		"[6] acme-corp (https://api.acme-corp.example/v1)",
+		"gpt-5.1", "gemini-3.8-flash-high", "deepseek-chat", "glm-5.3-flash-flex",
+		"claude-opus-5-5-high", "gpt-oss-120b",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("benign banner output lost %q:\n%s", want, out)
+		}
+	}
+}

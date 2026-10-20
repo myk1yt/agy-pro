@@ -318,24 +318,35 @@ func TestRunSettingsCmd_UnknownSubcommand(t *testing.T) {
 }
 
 // TestRunSettingsCmd_KeyEchoMasked (C2): a key paste in an operand slot the
-// settings command ACCEPTS (rename target, provider name, add-json name) must
-// come back masked on the success line, never raw.
+// settings command ACCEPTS (test target, delete target) must come back masked
+// on the success line, never raw. Two NAME-ingest slots left this set with a
+// stated reason and their subtests assert the refusal instead of a masked
+// success line: the add-json NAME slot left with FIX-7, and the rename target
+// left with FIX-7E (providers.RenameProvider now gates the new name with the
+// shared authority, so a key-shaped new name never reaches the write and there
+// is no success line to mask).
 func TestRunSettingsCmd_KeyEchoMasked(t *testing.T) {
 	const planted = "sk-planted-settings-echo-key-0123456789abcdef"
 	const masked = "sk-pl****"
 
-	t.Run("rename success", func(t *testing.T) {
+	t.Run("rename refuses a key-shaped new name", func(t *testing.T) {
 		tc := installSettingsCore(t)
 		tc.reg = &providers.Registry{Providers: []providers.Provider{{Name: "acme", BaseURL: "https://acme.example/v1"}}}
 		code, out, errw := runSettings(t, []string{"providers", "rename", "acme", planted}, "")
-		if code != 0 {
-			t.Fatalf("rename exit = %d stderr=%s", code, errw)
+		if code != 1 {
+			t.Fatalf("rename exit = %d, want 1 on a key-shaped new name; stderr=%s", code, errw)
 		}
 		if strings.Contains(out, planted) || strings.Contains(errw, planted) {
 			t.Errorf("rename echoes the planted key raw:\nstdout=%s stderr=%s", out, errw)
 		}
-		if !strings.Contains(out, masked) {
-			t.Errorf("rename success line missing the readable mask:\n%s", out)
+		if strings.Contains(out, masked) {
+			t.Errorf("a refused name must not reach a success line:\n%s", out)
+		}
+		if !strings.Contains(errw, "looks like secret/key material (value hidden)") {
+			t.Errorf("the refusal must be the named value-free sentence:\n%s", errw)
+		}
+		if len(tc.reg.Providers) != 1 || tc.reg.Providers[0].Name != "acme" {
+			t.Errorf("a refused rename reached the registry: %+v", tc.reg.Providers)
 		}
 	})
 
@@ -373,22 +384,31 @@ func TestRunSettingsCmd_KeyEchoMasked(t *testing.T) {
 		}
 	})
 
-	t.Run("add-json success", func(t *testing.T) {
-		installSettingsCore(t)
+	t.Run("add-json refusal", func(t *testing.T) {
+		// FIX-7: the add-json name gate refuses a key-shaped name before Core,
+		// so this operand slot no longer produces a masked success line. The
+		// refusal must stay value-free and must not reach the registry.
+		tc := installSettingsCore(t)
 		specPath := filepath.Join(t.TempDir(), "spec.json")
 		spec := `{"name":"` + planted + `","baseURL":"https://acme.example/v1","apiKeyEnv":"ACME_KEY","models":[{"id":"m1"}]}`
 		if err := os.WriteFile(specPath, []byte(spec), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		code, out, errw := runSettings(t, []string{"providers", "add-json", specPath}, "")
-		if code != 0 {
-			t.Fatalf("add-json exit = %d stderr=%s", code, errw)
+		if code != 1 {
+			t.Fatalf("add-json exit = %d, want 1 on a key-shaped name; stderr=%s", code, errw)
 		}
-		if strings.Contains(out, planted) {
-			t.Errorf("add-json echoes the planted key raw:\n%s", out)
+		if strings.Contains(out, planted) || strings.Contains(errw, planted) {
+			t.Errorf("add-json echoes the planted key raw:\nstdout=%s\nstderr=%s", out, errw)
 		}
-		if !strings.Contains(out, masked) || !strings.Contains(out, "ACME_KEY") {
-			t.Errorf("add-json success line must mask the name and keep the env NAME readable:\n%s", out)
+		if strings.Contains(out, masked) {
+			t.Errorf("a refused name must not reach the success line:\n%s", out)
+		}
+		if !strings.Contains(errw, "looks like secret/key material (value hidden)") {
+			t.Errorf("add-json must refuse with the named value-free sentence:\n%s", errw)
+		}
+		if len(tc.reg.Providers) != 0 {
+			t.Errorf("a refused name reached the registry: %+v", tc.reg.Providers)
 		}
 	})
 
@@ -610,4 +630,72 @@ func TestRunSettingsCmd_FixKeysErrorMasked(t *testing.T) {
 			t.Errorf("benign fix-keys tail must stay readable:\n%s", errw)
 		}
 	})
+}
+
+// TestRunSettingsCmd_ProviderRenameKeyDoor pins FIX-7E through the CLI: the
+// rename verb refuses a key-shaped NEW name before the write, so providers.json
+// is byte-identical across every probe, and a benign rename still lands with the
+// name as the ONLY byte that moves (the file equals the pre-rename bytes with
+// the one quoted name substituted).
+func TestRunSettingsCmd_ProviderRenameKeyDoor(t *testing.T) {
+	path := installFileBackedSettingsCore(t, twoModelRegistry())
+	before := diskBytes(t, path)
+
+	probes := []string{
+		"sk_live_0123456789abcdef",
+		"tok_a1b2c3d4e5f6g7h8i9j0",
+		"pk_live_0123456789abcdef",
+		"key_0123456789abcdef",
+		"AKIA_0123456789ABCDEF",
+	}
+	for _, probe := range probes {
+		code, out, errw := runSettings(t, []string{"providers", "rename", "acme", probe}, "")
+		if code != 1 {
+			t.Fatalf("%s: rename exit = %d, want 1 (stderr=%s)", probe, code, errw)
+		}
+		if strings.Contains(out, probe) || strings.Contains(errw, probe) {
+			t.Errorf("%s: the refusal echoes the value raw (stdout=%s stderr=%s)", probe, out, errw)
+		}
+		if !strings.Contains(errw, "looks like secret/key material (value hidden)") {
+			t.Errorf("%s: the refusal must be the named value-free sentence: %s", probe, errw)
+		}
+		if !bytes.Equal(diskBytes(t, path), before) {
+			t.Fatalf("%s: a refused rename wrote providers.json", probe)
+		}
+	}
+
+	// A charset-valid but credential-shaped name is refused by the gate, not by
+	// the charset, so the class reported is the key class.
+	code, _, errw := runSettings(t, []string{"providers", "rename", "acme", "provider0123456789"}, "")
+	if code != 1 || !strings.Contains(errw, "looks like secret/key material (value hidden)") {
+		t.Fatalf("opaque-run new name exit = %d stderr=%s; want the key-class refusal", code, errw)
+	}
+	if !bytes.Equal(diskBytes(t, path), before) {
+		t.Fatal("a refused opaque-run rename wrote providers.json")
+	}
+
+	// The benign arm: exit 0, the success line, and the name as the only moved
+	// bytes.
+	code, out, errw := runSettings(t, []string{"providers", "rename", "acme", "acme-main"}, "")
+	if code != 0 {
+		t.Fatalf("benign rename exit = %d stderr=%s", code, errw)
+	}
+	if !strings.Contains(out, "[SUCCESS] provider acme renamed to acme-main") {
+		t.Errorf("benign rename success line missing: %s", out)
+	}
+	wantBytes := bytes.ReplaceAll(before, []byte(`"acme"`), []byte(`"acme-main"`))
+	if !bytes.Equal(diskBytes(t, path), wantBytes) {
+		t.Errorf("benign rename changed bytes beyond the name:\nwant=%s\ngot=%s", wantBytes, diskBytes(t, path))
+	}
+	reg := reloadTestRegistry(t, path)
+	if _, ok := reg.Provider("acme-main"); !ok {
+		t.Fatalf("renamed provider missing: %+v", reg.Providers)
+	}
+	if _, ok := reg.Provider("acme"); ok {
+		t.Error("the old name survived the benign rename")
+	}
+	p, _ := reg.Provider("acme-main")
+	if p.APIKeyEnv != "ACME_KEY" || len(p.Models) != 2 || p.Models[0].ID != "acme-fast" {
+		t.Errorf("benign rename changed the record beyond the name: %+v", p)
+	}
 }

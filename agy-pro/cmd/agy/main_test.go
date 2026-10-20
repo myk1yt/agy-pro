@@ -15,6 +15,7 @@ import (
 	"agypro/internal/inventory"
 	"agypro/internal/paths"
 	"agypro/internal/providers"
+	"agypro/internal/tui"
 )
 
 func TestFormatTokenCount(t *testing.T) {
@@ -1322,4 +1323,373 @@ func TestRunDoctorRollbackSlotCommaDecoratedTargets(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestPrintConfiguredProvidersMasksLookAlikeModelID pins the status banner's
+// id and family columns, the two sinks this round moved onto the shared
+// registry-slot policy. A look-alike-decorated model id (U+2025 TWO DOT LEADER +
+// "/" + a lowercase 20-rune core) and the same plant in the family slot must
+// render masked: the id column composes "<id> (<provider>)", so the credential
+// sits behind an annotation that the whole-value classifier cannot see, and the
+// family column is a registry slot. Before the policy round both reached
+// MaskOperand, whose location exemption and pre-policy classifier left the core
+// readable in the banner.
+func TestPrintConfiguredProvidersMasksLookAlikeModelID(t *testing.T) {
+	const core = "ab3def7gh9jk1mnpqr5t"
+	const plant = "\u2025/" + core
+	const masked = "ab3de****"
+
+	// The provider name is lowercase on purpose: it makes the composed label
+	// ("<id> (<provider>)") carry no uppercase letter, so the pre-policy
+	// authority classified it as benign and rendered the core raw. That is what
+	// makes this pin discriminate.
+	reg := &providers.Registry{Providers: []providers.Provider{{
+		Name:    "nw",
+		BaseURL: "https://api.neuralwatt.com/v1",
+		Models: []providers.Model{
+			{ID: plant, Family: plant, ContextLength: 1048576, MaxOutputTokens: -1},
+			{ID: "glm-5.3-flash-flex", Family: "glm", ContextLength: 1048576, MaxOutputTokens: -1},
+		},
+	}}}
+	out := captureStdout(t, func() { printConfiguredProvidersAndModels(reg) })
+	if strings.Contains(out, core) || strings.Contains(out, plant) {
+		t.Errorf("status banner leaks the look-alike plant raw:\n%s", out)
+	}
+	// Both columns mask (the id column pads to the widest display name, so the
+	// assertion is padding-insensitive).
+	if !strings.Contains(out, "- "+masked) || !strings.Contains(out, "[Family: "+masked) {
+		t.Errorf("status banner must mask the id and family columns:\n%s", out)
+	}
+	// The benign row stays byte-identical.
+	if !strings.Contains(out, "- glm-5.3-flash-flex") || !strings.Contains(out, "[Family: glm ") {
+		t.Errorf("benign banner row moved:\n%s", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// P4-5: the setup entry gate requires a stdin console as well as a stdout
+// console. The TUI key source reads the Windows console input buffer, so a
+// console stdout paired with a PIPED stdin (`producer | agy pro setup`) would
+// open a full-screen surface that can never accept typed text. The gate opens
+// the TUI only when BOTH standard handles are consoles; every other shape keeps
+// the byte-stable line wizard. swapSetupSeams (pro_setup_test.go) drives both
+// probe seams, so no pin here needs a real console.
+// ---------------------------------------------------------------------------
+
+// TestSetupGateRequiresBothConsoleHandles pins the handle shapes: the TUI opens
+// only for console stdout + console stdin, and the piped-stdin shape degrades to
+// the wizard without ever reaching the TUI.
+func TestSetupGateRequiresBothConsoleHandles(t *testing.T) {
+	cases := []struct {
+		name         string
+		stdinConsole bool
+		wantTUI      bool
+	}{
+		{"console stdout + console stdin opens the TUI", true, true},
+		{"console stdout + piped stdin degrades to the wizard", false, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rec := swapSetupSeams(t)
+			rec.stdinConsole = c.stdinConsole
+			rec.tuiCode = 3
+			rec.exitCode = -1
+
+			runSetup(nil)
+
+			if rec.tuiCalled != c.wantTUI {
+				t.Fatalf("TUI called = %v; want %v", rec.tuiCalled, c.wantTUI)
+			}
+			if rec.wizardCalled == c.wantTUI {
+				t.Fatalf("wizard called = %v; want %v", rec.wizardCalled, !c.wantTUI)
+			}
+			if !c.wantTUI {
+				// Degrade path: the wizard gets stdin/stdout and no exit code is
+				// requested, so the process exit stays the caller's.
+				if rec.wizardIn != os.Stdin || rec.wizardOut != os.Stdout {
+					t.Error("degrade path: wizard must receive stdin/stdout")
+				}
+				if rec.exitCode != -1 {
+					t.Errorf("degrade path: exit code requested = %d; want none", rec.exitCode)
+				}
+				return
+			}
+			if rec.tuiIn != os.Stdin || rec.tuiOut != os.Stdout || rec.tuiErrw != os.Stderr {
+				t.Error("TUI must receive the process stdio handles")
+			}
+			if rec.exitCode != 3 {
+				t.Errorf("exit code = %d; want 3 (TUI result propagated)", rec.exitCode)
+			}
+		})
+	}
+}
+
+// TestSetupGateNonConsoleStdoutDegradesOnAnyStdin pins today's behavior: a
+// non-console stdout always takes the wizard, whatever stdin looks like, and
+// the stdin probe is not even consulted (the stdout signal short-circuits), so a
+// scripted caller with a closed stdin never has that handle probed.
+func TestSetupGateNonConsoleStdoutDegradesOnAnyStdin(t *testing.T) {
+	for _, stdinConsole := range []bool{true, false} {
+		rec := swapSetupSeams(t)
+		rec.cap = tui.Cap{SuppressBanner: true}
+		rec.stdinConsole = stdinConsole
+		rec.exitCode = -1
+
+		runSetup(nil)
+
+		if !rec.wizardCalled {
+			t.Fatalf("stdinConsole=%v: non-console stdout must run the wizard", stdinConsole)
+		}
+		if rec.tuiCalled {
+			t.Fatalf("stdinConsole=%v: non-console stdout must not run the TUI", stdinConsole)
+		}
+		if rec.stdinProbes != 0 {
+			t.Errorf("stdinConsole=%v: stdin probe queried %d times; the stdout signal must short-circuit", stdinConsole, rec.stdinProbes)
+		}
+		if rec.exitCode != -1 {
+			t.Errorf("stdinConsole=%v: exit code requested = %d; want none", stdinConsole, rec.exitCode)
+		}
+	}
+}
+
+// TestSetupGateWizardFlagForcesWizardOnAnyShape: --wizard keeps forcing the
+// line wizard on every handle shape, console or not, and never probes stdin.
+func TestSetupGateWizardFlagForcesWizardOnAnyShape(t *testing.T) {
+	for _, suppress := range []bool{false, true} {
+		for _, stdinConsole := range []bool{true, false} {
+			rec := swapSetupSeams(t)
+			rec.cap = tui.Cap{SuppressBanner: suppress}
+			rec.stdinConsole = stdinConsole
+			rec.exitCode = -1
+
+			runSetup([]string{"--wizard"})
+
+			if !rec.wizardCalled {
+				t.Fatalf("suppress=%v stdinConsole=%v: --wizard must run the wizard", suppress, stdinConsole)
+			}
+			if rec.tuiCalled {
+				t.Fatalf("suppress=%v stdinConsole=%v: --wizard must not run the TUI", suppress, stdinConsole)
+			}
+			if rec.wizardIn != os.Stdin || rec.wizardOut != os.Stdout {
+				t.Errorf("suppress=%v stdinConsole=%v: wizard must receive stdin/stdout", suppress, stdinConsole)
+			}
+			if rec.stdinProbes != 0 {
+				t.Errorf("suppress=%v stdinConsole=%v: --wizard must not probe stdin", suppress, stdinConsole)
+			}
+			if rec.exitCode != -1 {
+				t.Errorf("suppress=%v stdinConsole=%v: exit code requested = %d; want none", suppress, stdinConsole, rec.exitCode)
+			}
+		}
+	}
+}
+
+// TestSetupGateUnknownArgStillFailsClosed: an unknown argument keeps its
+// fail-closed contract on both stdin shapes (masked operand, help text, exit 2)
+// and never reaches either runner.
+func TestSetupGateUnknownArgStillFailsClosed(t *testing.T) {
+	for _, stdinConsole := range []bool{true, false} {
+		rec := swapSetupSeams(t)
+		rec.stdinConsole = stdinConsole
+		rec.exitCode = -1
+
+		var stderr string
+		stdout := captureStdout(t, func() {
+			stderr = captureStderr(t, func() { runSetup([]string{"--bogus"}) })
+		})
+
+		if rec.exitCode != 2 {
+			t.Errorf("stdinConsole=%v: exit code = %d; want 2", stdinConsole, rec.exitCode)
+		}
+		if !strings.Contains(stderr, `Unknown setup argument: "--bogus"`) {
+			t.Errorf("stdinConsole=%v: stderr missing the masked operand line:\n%s", stdinConsole, stderr)
+		}
+		if !strings.Contains(stdout, "Usage: agy pro <command>") {
+			t.Errorf("stdinConsole=%v: help text was not printed:\n%s", stdinConsole, stdout)
+		}
+		if rec.tuiCalled || rec.wizardCalled {
+			t.Errorf("stdinConsole=%v: unknown argument must not run the TUI or the wizard", stdinConsole)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FIX-C: the setup gate's degrade branch restores the console output mode its
+// capability probe enabled. Detect turns VT processing on for the console
+// output handle, and the TUI path hands that mode back through tui.RunSetup's
+// own defer cap.Restore() (internal/tui/app.go:50). The degrade branch used to
+// route into the line wizard with the mode still on, so the process outlived
+// itself with a modified console. The pins below observe the restore through
+// the setupCapRestore seam (Cap's own hook is unexported, so a test in this
+// package can only observe the call site) and pin the branch table.
+// ---------------------------------------------------------------------------
+
+// setupRestoreRec records the entry gate's capability-restore calls.
+type setupRestoreRec struct {
+	calls int
+	caps  []tui.Cap
+}
+
+// captureSetupRestore swaps the restore seam for the duration of one test. The
+// shared seam set (swapSetupSeams, pro_setup_test.go) leaves setupCapRestore at
+// its production value, whose Restore on a zero Cap is a no-op, so the older
+// pins keep running the real wiring.
+func captureSetupRestore(t *testing.T) *setupRestoreRec {
+	t.Helper()
+	rec := &setupRestoreRec{}
+	old := setupCapRestore
+	setupCapRestore = func(cap tui.Cap) {
+		rec.calls++
+		rec.caps = append(rec.caps, cap)
+	}
+	t.Cleanup(func() { setupCapRestore = old })
+	return rec
+}
+
+// TestSetupGateDegradeRestoresProbedCapExactlyOnce pins FIX-C on every shape
+// that probes the capability ladder and then degrades: the exact probed Cap is
+// restored exactly once, the restore lands BEFORE the wizard runs (the wizard
+// exits through setupExit on failure and an os.Exit skips defers), and both the
+// wizard transcript and the exit code are unchanged, because the restore emits
+// no bytes and requests no code.
+func TestSetupGateDegradeRestoresProbedCapExactlyOnce(t *testing.T) {
+	const marker = "wizard transcript line\n"
+	cases := []struct {
+		name  string
+		cap   tui.Cap
+		stdin bool
+	}{
+		{"non-console stdout, console stdin", tui.Cap{Tier: tui.TierPlain, SuppressBanner: true}, true},
+		{"non-console stdout, piped stdin", tui.Cap{Tier: tui.TierPlain, SuppressBanner: true}, false},
+		{"console stdout, piped stdin", tui.Cap{Tier: tui.Tier256, Width: 120, Height: 40}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rec := swapSetupSeams(t)
+			rec.cap = c.cap
+			rec.stdinConsole = c.stdin
+			rec.exitCode = -1
+			restores := captureSetupRestore(t)
+
+			restoresBeforeWizard := -1
+			setupWizardRunner = func(in io.Reader, out io.Writer) error {
+				rec.wizardCalled = true
+				rec.wizardIn, rec.wizardOut = in, out
+				restoresBeforeWizard = restores.calls
+				fmt.Fprint(out, marker)
+				return nil
+			}
+
+			var stderr string
+			stdout := captureStdout(t, func() {
+				stderr = captureStderr(t, func() { runSetup(nil) })
+			})
+
+			if !rec.wizardCalled || rec.tuiCalled {
+				t.Fatalf("wizard called = %v, TUI called = %v; want the wizard only",
+					rec.wizardCalled, rec.tuiCalled)
+			}
+			if restores.calls != 1 {
+				t.Fatalf("restore calls = %d; want exactly 1", restores.calls)
+			}
+			if got := restores.caps[0]; got.Tier != c.cap.Tier || got.Width != c.cap.Width ||
+				got.Height != c.cap.Height || got.SuppressBanner != c.cap.SuppressBanner {
+				t.Errorf("restored cap = %+v; want the probed cap %+v", got, c.cap)
+			}
+			if restoresBeforeWizard != 1 {
+				t.Errorf("restore calls at wizard entry = %d; want 1 (the restore must precede the wizard)",
+					restoresBeforeWizard)
+			}
+			if stdout != marker {
+				t.Errorf("degrade transcript = %q; want %q (the restore must emit nothing)", stdout, marker)
+			}
+			if stderr != "" {
+				t.Errorf("degrade path wrote to stderr: %q", stderr)
+			}
+			if rec.exitCode != -1 {
+				t.Errorf("exit code requested = %d; want none", rec.exitCode)
+			}
+		})
+	}
+}
+
+// TestSetupGateDoesNotRestoreOnPathsWithoutTheDegrade pins the other half of
+// FIX-C: the restore belongs to the degrade branch alone. The TUI branch hands
+// the mode back through tui.RunSetup's defer, and the --wizard and unknown
+// argument branches never probe the ladder, so nothing is restored there.
+func TestSetupGateDoesNotRestoreOnPathsWithoutTheDegrade(t *testing.T) {
+	cases := []struct {
+		name       string
+		args       []string
+		wantProbe  int
+		wantTUI    bool
+		wantWizard bool
+	}{
+		{"console + console opens the TUI", nil, 1, true, false},
+		{"--wizard never probes the ladder", []string{"--wizard"}, 0, false, true},
+		{"unknown argument never probes the ladder", []string{"--bogus"}, 0, false, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rec := swapSetupSeams(t)
+			rec.cap = tui.Cap{Tier: tui.Tier256, Width: 120, Height: 40}
+			rec.stdinConsole = true
+			rec.exitCode = -1
+			restores := captureSetupRestore(t)
+
+			capProbes := 0
+			innerCap := setupConsoleCap
+			setupConsoleCap = func() tui.Cap {
+				capProbes++
+				return innerCap()
+			}
+
+			captureStdout(t, func() {
+				captureStderr(t, func() { runSetup(c.args) })
+			})
+
+			if capProbes != c.wantProbe {
+				t.Errorf("capability probes = %d; want %d", capProbes, c.wantProbe)
+			}
+			if restores.calls != 0 {
+				t.Errorf("restore calls = %d; want 0 (the TUI owns its defer, the other branches never probed)",
+					restores.calls)
+			}
+			if rec.tuiCalled != c.wantTUI {
+				t.Errorf("TUI called = %v; want %v", rec.tuiCalled, c.wantTUI)
+			}
+			if rec.wizardCalled != c.wantWizard {
+				t.Errorf("wizard called = %v; want %v", rec.wizardCalled, c.wantWizard)
+			}
+			switch {
+			case c.wantTUI:
+				if rec.exitCode != 0 {
+					t.Errorf("exit code = %d; want 0 (the TUI result becomes the exit code)", rec.exitCode)
+				}
+			case c.wantWizard:
+				if rec.exitCode != -1 {
+					t.Errorf("exit code requested = %d; want none", rec.exitCode)
+				}
+			default:
+				if rec.exitCode != 2 {
+					t.Errorf("exit code = %d; want 2 (the unknown argument keeps its fail-closed code)", rec.exitCode)
+				}
+			}
+		})
+	}
+}
+
+// TestSetupCapRestoreSeamIsNoOpSafe pins that the production restore seam can
+// be handed any cap the gate can produce without doing anything unexpected:
+// Cap.Restore is a no-op when the ladder never enabled VT and writes the
+// console mode once on repeat calls (both arms are pinned in
+// internal/tui/termcap_test.go). This pin covers the seam wire in front of it.
+func TestSetupCapRestoreSeamIsNoOpSafe(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("restore seam panicked on a Cap without a hook: %v", r)
+		}
+	}()
+	restoreSetupCap(tui.Cap{})
+	restoreSetupCap(tui.Cap{Tier: tui.TierPlain, Width: 80, Height: 24, SuppressBanner: true})
+	restoreSetupCap(tui.Cap{Tier: tui.TierTruecolor, Width: 120, Height: 40})
 }

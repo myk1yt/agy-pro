@@ -3,12 +3,15 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"agypro/internal/openaiup"
 	"agypro/internal/providers"
 	"agypro/internal/settings"
 )
@@ -592,10 +595,13 @@ func TestRunSettingsCmd_ModelVerbs_SecretShapedSpecRejected(t *testing.T) {
 
 // TestRunSettingsCmd_ModelVerbs_ToolsDiffMasking pins the round-5 CLI-twin
 // fix: the consent diff masks each list item BEFORE joining (a
-// credential-shaped grant cannot hide behind the join separator), and the
-// spec guard accepts legitimate separator-carrying tool names and
-// single-class long ids on both the CLI and the TUI-form classifier (the
-// drift pin: an all-letter 16+ id is a name, not a key).
+// credential-shaped grant cannot hide behind the join separator), the spec
+// guard accepts legitimate separator-carrying tool names, and the 16+ rune
+// single-class id class (an all-letter word) is REFUSED, which is the verdict
+// the TUI model form has carried since FIX-7A. That last arm moved in FIX-7E:
+// this pin used to assert acceptance on the premise that the TUI form accepted
+// the same id, and the TUI form's authority (providers.MaskOperand) masks a
+// 16+ single-class word, so the two doors now refuse it together.
 func TestRunSettingsCmd_ModelVerbs_ToolsDiffMasking(t *testing.T) {
 	const planted = "Ab3dEf7Gh9jK1mNpQr5t" // 20 runes, opaque, mixed letter/digit
 	const masked = "Ab3dE****"
@@ -633,17 +639,27 @@ func TestRunSettingsCmd_ModelVerbs_ToolsDiffMasking(t *testing.T) {
 		t.Fatalf("AllowedTools on disk = %v; want [read_url_content list_dir]", tools)
 	}
 
-	// 3. Drift pin: an all-letter 16+ rune id is a name on BOTH classifiers
-	// and must be accepted (the old CLI guard refused it, the TUI form
-	// accepted it).
+	// 3. Parity pin (FIX-7E, moved): a 16+ rune single-class id (an all-letter
+	// word) is refused, because the shared NAME authority's operand arm masks
+	// it and the TUI model form has refused the same class since FIX-7A. This
+	// arm used to assert acceptance; the premise it rested on ("the TUI form
+	// accepted it") no longer holds, and a CLI door that accepts a value its own
+	// transcripts mask is the twin divergence this unit closes.
+	before := diskBytes(t, path)
 	code, _, errw = runSettings(t,
 		[]string{"providers", "model-add-json", "acme", "-", "--yes"},
 		`{"id":"abcdefghijklmnop"}`)
-	if code != 0 {
-		t.Fatalf("all-letter 16+ id must be accepted; exit = %d stderr=%s", code, errw)
+	if code != 1 {
+		t.Fatalf("16+ single-class id exit = %d, want 1; stderr=%s", code, errw)
 	}
-	if got := acmeTestModels(t, reloadTestRegistry(t, path))[3].ID; got != "abcdefghijklmnop" {
-		t.Fatalf("id on disk = %q; want abcdefghijklmnop", got)
+	if !strings.Contains(errw, "secret material (value hidden)") {
+		t.Errorf("stderr missing the masked refusal: %s", errw)
+	}
+	if !bytes.Equal(diskBytes(t, path), before) {
+		t.Error("a refused single-class id wrote providers.json")
+	}
+	if n := len(acmeTestModels(t, reloadTestRegistry(t, path))); n != 3 {
+		t.Fatalf("model count = %d after the refusal; want 3", n)
 	}
 
 	// 4. Round-6 F-01 accept pin: a separator-carrying legitimate model id is
@@ -731,6 +747,229 @@ func TestRunSettingsCmd_ModelVerbs_DiffPresentation(t *testing.T) {
 	}
 }
 
+// TestRunSettingsCmd_ModelVerbs_CapabilityDiffLines pins the phase-2 CLI-twin
+// diff parity with the TUI form: the model capability fields (thinking,
+// reasoningEffort, vision, video, and the supportsTools grant) appear in the
+// pre-write presentation when set/changed and stay silent when untouched,
+// so an unchanged update still shows the byte-stable "(no field changes)"
+// marker.
+func TestRunSettingsCmd_ModelVerbs_CapabilityDiffLines(t *testing.T) {
+	// (a) model-add-json with a thinking model: the new lines render in the
+	// approval presentation, masked through the same MaskOperand discipline as
+	// the neighboring capability lines.
+	path := installFileBackedSettingsCore(t, twoModelRegistry())
+	code, out, errw := runSettings(t,
+		[]string{"providers", "model-add-json", "acme", "-", "--yes"},
+		`{"id":"acme-think","capabilities":{"supportsThinking":true,"reasoningEffort":"high","supportsVision":true,"supportsVideo":true}}`)
+	if code != 0 {
+		t.Fatalf("model-add-json exit = %d stderr=%s", code, errw)
+	}
+	for _, want := range []string{
+		"+ thinking: true",
+		"+ reasoningEffort: high",
+		"+ vision: true",
+		"+ video: true",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("add presentation missing %q; stdout=%s", want, out)
+		}
+	}
+	added := acmeTestModels(t, reloadTestRegistry(t, path))[2].Capabilities
+	if !added.SupportsThinking || added.ReasoningEffort != "high" || !added.SupportsVision || !added.SupportsVideo {
+		t.Errorf("persisted capabilities = %+v", added)
+	}
+
+	// A model without any capability flag renders none of the new lines.
+	code, out, errw = runSettings(t,
+		[]string{"providers", "model-add-json", "acme", "-", "--yes"}, `{"id":"acme-plain"}`)
+	if code != 0 {
+		t.Fatalf("plain model-add-json exit = %d stderr=%s", code, errw)
+	}
+	for _, absent := range []string{"thinking", "reasoningEffort", "vision", "video"} {
+		if strings.Contains(out, absent) {
+			t.Errorf("plain add must not emit %q; stdout=%s", absent, out)
+		}
+	}
+
+	// (b) model-update changing the effort low -> high: the before -> after
+	// line reads from the on-disk record.
+	reg := twoModelRegistry()
+	reg.Providers[0].Models[1].Capabilities = providers.Capabilities{
+		ReasoningEffort: "low",
+	}
+	path = installFileBackedSettingsCore(t, reg)
+	code, out, errw = runSettings(t,
+		[]string{"providers", "model-update", "acme", "acme-slow", "-", "--yes"},
+		`{"id":"acme-slow","capabilities":{"supportsThinking":true,"reasoningEffort":"high"}}`)
+	if code != 0 {
+		t.Fatalf("model-update exit = %d stderr=%s", code, errw)
+	}
+	for _, want := range []string{
+		"  reasoningEffort: low -> high",
+		"  thinking: false -> true",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("update presentation missing %q; stdout=%s", want, out)
+		}
+	}
+	updated := acmeTestModels(t, reloadTestRegistry(t, path))[1].Capabilities
+	if updated.ReasoningEffort != "high" || !updated.SupportsThinking {
+		t.Errorf("persisted capabilities = %+v", updated)
+	}
+
+	// (c) An update that changes nothing capability-related emits no new
+	// lines: the unchanged marker stays byte-stable.
+	code, out, errw = runSettings(t,
+		[]string{"providers", "model-update", "acme", "acme-slow", "-", "--yes"},
+		`{"id":"acme-slow","capabilities":{"supportsThinking":true,"reasoningEffort":"high"}}`)
+	if code != 0 {
+		t.Fatalf("no-op model-update exit = %d stderr=%s", code, errw)
+	}
+	if !strings.Contains(out, "(no field changes)") {
+		t.Errorf("no-op update must show the unchanged marker; stdout=%s", out)
+	}
+	for _, absent := range []string{"thinking:", "reasoningEffort:", "vision:", "video:"} {
+		if strings.Contains(out, absent) {
+			t.Errorf("no-op update must not emit %q; stdout=%s", absent, out)
+		}
+	}
+}
+
+// TestRunSettingsCmd_ModelVerbs_CapabilityFixRound pins the reconciled
+// review findings F-C1..F-C4 on the CLI twin:
+//
+//   - F-C1: a marker-decorated credential in a capability slot renders
+//     masked (MaskRegistryValue discipline) in the approval presentation,
+//     never raw, on both the add-side renderer and the update before
+//     column read from a hand-edited disk record.
+//   - F-C2: a supportsTools flip can no longer hide behind "(no field
+//     changes)": the whole-record update prints the grant line.
+//   - F-C3: the closed effort set is enforced at parse: "HIGH" normalizes
+//     and persists as "high"; "extreme" is refused non-echoing with nothing
+//     written.
+//   - F-C4: an ESC byte in the effort operand is stripped before the value
+//     reaches the consent transcript (the CLI printer has no painter).
+//
+// G-C4 replaces the plant this pin originally used. The old plant was
+// "./AKIAIOSFODNN7EXAMPLE", which the generic redactor (awsKeyIDRe) renders as
+// "./[REDACTED]" even under plain MaskOperand: every assertion below passed
+// against the unfixed renderer, so the pin proved nothing. The plant is now a
+// lowercase decorated opaque run with no credential prefix, no uppercase and
+// no AKIA shape, i.e. invisible to awsKeyIDRe, skRe and the prefix list. Only
+// the registry-slot masker (MaskRegistryValue -> MaskSecret of the
+// marker-stripped core) renders it masked, so the pin separates the two
+// maskers. Verified by reverting the masker in a scratch copy: the assertions
+// fail there.
+func TestRunSettingsCmd_ModelVerbs_CapabilityFixRound(t *testing.T) {
+	const decorated = "./ab3def7gh9jk1mnpqr5t"
+	const maskedDecorated = "ab3de****"
+
+	// F-C1, add side (renderer-level pin: the decorated value is refused by
+	// the F-C3 set validation before it could ever reach the CLI ingest, so
+	// the add-side masking discipline is pinned at the renderer, which is
+	// also the seam the disk-borne before column flows through on update).
+	addLines := modelAddDiffLines(providers.Model{ID: "m9",
+		Capabilities: providers.Capabilities{ReasoningEffort: decorated, SupportsThinking: true}})
+	joined := strings.Join(addLines, "\n")
+	if !strings.Contains(joined, "+ reasoningEffort: "+maskedDecorated) {
+		t.Errorf("add-side capability line must mask the decorated credential:\n%s", joined)
+	}
+	if strings.Contains(joined, decorated) {
+		t.Errorf("add-side capability line echoes the decorated credential raw:\n%s", joined)
+	}
+	if !strings.Contains(joined, "+ thinking: true") {
+		t.Errorf("benign capability operands stay readable:\n%s", joined)
+	}
+
+	// F-C1, update side end to end: the on-disk record carries the decorated
+	// value (hand-edit path, no value-domain validation on load); the update
+	// to a benign effort renders the masked head in the before column.
+	reg := twoModelRegistry()
+	reg.Providers[0].Models[1].Capabilities = providers.Capabilities{ReasoningEffort: decorated}
+	path := installFileBackedSettingsCore(t, reg)
+	code, out, errw := runSettings(t,
+		[]string{"providers", "model-update", "acme", "acme-slow", "-", "--yes"},
+		`{"id":"acme-slow","capabilities":{"reasoningEffort":"high"}}`)
+	if code != 0 {
+		t.Fatalf("model-update exit = %d stderr=%s", code, errw)
+	}
+	if !strings.Contains(out, "reasoningEffort: "+maskedDecorated+" -> high") {
+		t.Errorf("update diff must mask the decorated before operand: stdout=%s", out)
+	}
+	if strings.Contains(out, decorated) {
+		t.Errorf("update diff echoes the decorated credential raw: stdout=%s", out)
+	}
+
+	// F-C2: flipping supportsTools on a record whose grant list is empty
+	// must print the grant line, not "(no field changes)".
+	path = installFileBackedSettingsCore(t, twoModelRegistry())
+	code, out, errw = runSettings(t,
+		[]string{"providers", "model-update", "acme", "acme-slow", "-", "--yes"},
+		`{"id":"acme-slow","capabilities":{"supportsTools":true}}`)
+	if code != 0 {
+		t.Fatalf("supportsTools update exit = %d stderr=%s", code, errw)
+	}
+	if !strings.Contains(out, "  supportsTools: false -> true") {
+		t.Errorf("supportsTools flip must show the change line: stdout=%s", out)
+	}
+	if strings.Contains(out, "(no field changes)") {
+		t.Errorf("supportsTools flip must not hide behind the unchanged marker: stdout=%s", out)
+	}
+	if !acmeTestModels(t, reloadTestRegistry(t, path))[1].Capabilities.CanUseTools() {
+		t.Error("supportsTools flip did not persist")
+	}
+
+	// F-C3 accept pin: "HIGH" normalizes to "high" and persists.
+	code, out, errw = runSettings(t,
+		[]string{"providers", "model-add-json", "acme", "-", "--yes"},
+		`{"id":"acme-effort","capabilities":{"reasoningEffort":"HIGH"}}`)
+	if code != 0 {
+		t.Fatalf("uppercase effort exit = %d stderr=%s", code, errw)
+	}
+	if !strings.Contains(out, "+ reasoningEffort: high") {
+		t.Errorf("normalized effort must render in the diff: stdout=%s", out)
+	}
+	if got := acmeTestModels(t, reloadTestRegistry(t, path))[2].Capabilities.ReasoningEffort; got != "high" {
+		t.Errorf("persisted effort = %q; want high", got)
+	}
+
+	// F-C3 refusal pin: "extreme" is out of set, refused non-echoing,
+	// nothing written.
+	before := diskBytes(t, path)
+	code, _, errw = runSettings(t,
+		[]string{"providers", "model-add-json", "acme", "-", "--yes"},
+		`{"id":"acme-effort2","capabilities":{"reasoningEffort":"extreme"}}`)
+	if code != 1 {
+		t.Fatalf("out-of-set effort exit = %d; want 1 (stderr=%s)", code, errw)
+	}
+	if !strings.Contains(errw, "not a supported reasoning effort") {
+		t.Errorf("refusal must name the effort validation: stderr=%s", errw)
+	}
+	if strings.Contains(errw, "extreme") {
+		t.Errorf("refusal must not echo the value: stderr=%s", errw)
+	}
+	if !bytes.Equal(diskBytes(t, path), before) {
+		t.Error("out-of-set effort wrote providers.json")
+	}
+
+	// F-C4: an ESC byte inside the effort operand is stripped before the
+	// consent transcript ("hi<ESC>gh" normalizes to "high"); no escape byte
+	// reaches stdout. The spec carries the byte as the JSON \u001b escape,
+	// the only wire-legal form encoding/json accepts.
+	code, out, errw = runSettings(t,
+		[]string{"providers", "model-add-json", "acme", "-", "--yes"},
+		`{"id":"acme-esc","capabilities":{"reasoningEffort":"hi`+`\u001b`+`gh"}}`)
+	if code != 0 {
+		t.Fatalf("ESC-carrying effort exit = %d stderr=%s", code, errw)
+	}
+	if strings.Contains(out, "\x1b") {
+		t.Errorf("escape byte reached the consent transcript: stdout=%q", out)
+	}
+	if !strings.Contains(out, "+ reasoningEffort: high") {
+		t.Errorf("stripped effort must render clean in the diff: stdout=%s", out)
+	}
+}
+
 // TestRunSettingsCmd_ModelVerbs_NullDeviceRequiresYes pins the /dev/null
 // edge: the null device IS a character device (the raw stdinIsTTY seam alone
 // would prompt it), so it must take the non-interactive path and refuse
@@ -754,5 +993,1259 @@ func TestRunSettingsCmd_ModelVerbs_NullDeviceRequiresYes(t *testing.T) {
 	}
 	if !bytes.Equal(diskBytes(t, path), before) {
 		t.Error("null-device stdin without --yes wrote providers.json")
+	}
+}
+
+// assertDiffLines compares a rendered diff line by line, so a masking change
+// that moves even one benign operand fails with the exact line.
+func assertDiffLines(t *testing.T, got, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("diff line count = %d; want %d\ngot:\n%s", len(got), len(want), strings.Join(got, "\n"))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("diff line %d = %q; want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestRunSettingsCmd_ModelVerbs_RegistrySlotDiffMasking pins G-C1: the
+// id/family/tags/allowedTools operands of both diff builders are registry
+// slots, so they route through the registry-slot masker (MaskRegistryValue +
+// stripDiffControls), not through MaskOperand and its location exemption.
+//
+// The plant is the G-C4 lowercase decorated opaque run: it starts with "./"
+// (so MaskOperand's location exemption keeps it readable) and defeats
+// awsKeyIDRe and the credential prefixes (so the generic redactor leaves it
+// alone too). Only the registry-slot masker renders it masked, which is what
+// makes this pin fail against the previous renderer. The second half pins the
+// benign transcripts line by line: widening the discipline must not move a
+// single byte of a benign presentation.
+func TestRunSettingsCmd_ModelVerbs_RegistrySlotDiffMasking(t *testing.T) {
+	const plant = "./ab3def7gh9jk1mnpqr5t"
+	const core = "ab3def7gh9jk1mnpqr5t"
+	const masked = "ab3de****"
+
+	t.Run("add side masks every registry slot", func(t *testing.T) {
+		lines := modelAddDiffLines(providers.Model{
+			ID:     plant,
+			Family: plant,
+			Tags:   []string{"fast", plant},
+			Capabilities: providers.Capabilities{
+				AllowedTools: []string{"read", plant},
+			},
+		})
+		joined := strings.Join(lines, "\n")
+		for _, want := range []string{
+			"+ id: " + masked,
+			"+ family: " + masked,
+			"+ tags: fast, " + masked,
+			"+ tools: read, " + masked,
+		} {
+			if !strings.Contains(joined, want) {
+				t.Errorf("add-side diff missing %q:\n%s", want, joined)
+			}
+		}
+		if strings.Contains(joined, core) {
+			t.Errorf("add-side diff echoes the credential core raw:\n%s", joined)
+		}
+	})
+
+	t.Run("changed side masks both columns", func(t *testing.T) {
+		before := providers.Model{
+			ID:     plant,
+			Family: plant,
+			Tags:   []string{plant},
+			Capabilities: providers.Capabilities{
+				AllowedTools: []string{plant},
+			},
+		}
+		after := providers.Model{
+			ID:     "m1",
+			Family: "acme-1",
+			Tags:   []string{"fast"},
+			Capabilities: providers.Capabilities{
+				AllowedTools: []string{"read"},
+			},
+		}
+		lines := modelChangedDiffLines(before, after)
+		assertDiffLines(t, lines, []string{
+			"  id: " + masked + " -> m1",
+			"  family: " + masked + " -> acme-1",
+			"  tags: " + masked + " -> fast",
+			"  tools: " + masked + " -> read",
+		})
+		if strings.Contains(strings.Join(lines, "\n"), core) {
+			t.Errorf("changed diff echoes the credential core raw:\n%s", strings.Join(lines, "\n"))
+		}
+	})
+
+	t.Run("benign add transcript unchanged", func(t *testing.T) {
+		disabled := false
+		lines := modelAddDiffLines(providers.Model{
+			ID:              "acme-third",
+			Family:          "acme-1",
+			Tags:            []string{"fast", "vision-capable"},
+			Enabled:         &disabled,
+			ContextLength:   32000,
+			MaxOutputTokens: 8192,
+			Capabilities: providers.Capabilities{
+				SupportsTools:    true,
+				SupportsThinking: true,
+				ReasoningEffort:  "high",
+				SupportsVision:   true,
+				SupportsVideo:    true,
+				AllowedTools:     []string{"read", "list_dir"},
+			},
+		})
+		assertDiffLines(t, lines, []string{
+			"+ id: acme-third",
+			"+ family: acme-1",
+			"+ tags: fast, vision-capable",
+			"+ enabled: false",
+			"+ contextLength: 32000",
+			"+ maxOutputTokens: 8192",
+			"+ tools: read, list_dir",
+			"+ supportsTools: true",
+			"+ thinking: true",
+			"+ reasoningEffort: high",
+			"+ vision: true",
+			"+ video: true",
+		})
+	})
+
+	t.Run("benign changed transcript unchanged", func(t *testing.T) {
+		before := providers.Model{
+			ID:              "acme-slow",
+			Family:          "acme-1",
+			Tags:            []string{"fast"},
+			ContextLength:   128000,
+			MaxOutputTokens: 4096,
+			Capabilities: providers.Capabilities{
+				SupportsTools: true,
+				AllowedTools:  []string{"read"},
+			},
+		}
+		after := providers.Model{
+			ID:              "acme-slow",
+			Family:          "acme-2",
+			Tags:            []string{"fast", "vision"},
+			ContextLength:   256000,
+			MaxOutputTokens: 4096,
+			Capabilities: providers.Capabilities{
+				SupportsTools:    true,
+				SupportsThinking: true,
+				ReasoningEffort:  "high",
+				AllowedTools:     []string{"read", "list_dir"},
+			},
+		}
+		assertDiffLines(t, modelChangedDiffLines(before, after), []string{
+			"  family: acme-1 -> acme-2",
+			"  tags: fast -> fast, vision",
+			"  contextLength: 128000 -> 256000",
+			"  tools: read -> read, list_dir",
+			"  thinking: false -> true",
+			"  reasoningEffort:  -> high",
+		})
+	})
+
+	t.Run("no-change marker unchanged", func(t *testing.T) {
+		m := providers.Model{ID: "acme-slow", Family: "acme-1", ContextLength: 1000}
+		assertDiffLines(t, modelChangedDiffLines(m, m), []string{"(no field changes)"})
+	})
+}
+
+// TestRunSettingsCmd_ModelVerbs_StaleDiskFamilyMasked pins G-C1 end to end on
+// the live path: the add-side ingest now refuses a decorated family (G-C2), so
+// the record that can still carry one is a hand-edited providers.json. The
+// update presentation reads that record for its before column, and the column
+// must mask it.
+func TestRunSettingsCmd_ModelVerbs_StaleDiskFamilyMasked(t *testing.T) {
+	const plant = "./ab3def7gh9jk1mnpqr5t"
+
+	reg := twoModelRegistry()
+	reg.Providers[0].Models[1].Family = plant
+	path := installFileBackedSettingsCore(t, reg)
+
+	code, out, errw := runSettings(t,
+		[]string{"providers", "model-update", "acme", "acme-slow", "-", "--yes"},
+		`{"id":"acme-slow","family":"acme-1"}`)
+	if code != 0 {
+		t.Fatalf("model-update exit = %d stderr=%s", code, errw)
+	}
+	if !strings.Contains(out, "  family: ab3de**** -> acme-1") {
+		t.Errorf("before column must mask the decorated disk family: stdout=%s", out)
+	}
+	if strings.Contains(out, "ab3def7gh9jk1mnpqr5t") {
+		t.Errorf("before column echoes the disk family core raw: stdout=%s", out)
+	}
+	if got := acmeTestModels(t, reloadTestRegistry(t, path))[1].Family; got != "acme-1" {
+		t.Errorf("family on disk = %q; want acme-1", got)
+	}
+}
+
+// TestRunSettingsCmd_ModelVerbs_DecoratedSecretSpecRejected pins G-C2: the
+// ingest classifier now also classifies the location-marker-stripped core, so a
+// single leading marker cannot smuggle a credential past the shape test. Before
+// the fix the first case below passed ingest, persisted into providers.json,
+// and printed raw in the consent transcript (the two-security-seat PoC).
+func TestRunSettingsCmd_ModelVerbs_DecoratedSecretSpecRejected(t *testing.T) {
+	const awsShaped = "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"
+	const lowerAwsShaped = "wjalrxutnfemik7mdengbpxrficyexamplekey"
+	const opaque = "ab3def7gh9jk1mnpqr5t"
+	path := installFileBackedSettingsCore(t, twoModelRegistry())
+
+	cases := []struct {
+		name    string
+		spec    string
+		rawWant string
+	}{
+		{"PoC: dot-slash decorated family", `{"id":"m1","family":"./` + awsShaped + `"}`, awsShaped},
+		{"dot-slash decorated lowercase family", `{"id":"m1","family":"./` + lowerAwsShaped + `"}`, lowerAwsShaped},
+		{"backslash decorated id", `{"id":".\\` + opaque + `"}`, opaque},
+		{"scheme-decorated family", `{"id":"m1","family":"https://` + awsShaped + `"}`, awsShaped},
+		{"stacked markers in a tag", `{"id":"m9","tags":["./C:\\` + opaque + `"]}`, opaque},
+		{"decorated tool grant", `{"id":"m9","capabilities":{"allowedTools":["./` + opaque + `"]}}`, opaque},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			before := diskBytes(t, path)
+			code, _, errw := runSettings(t,
+				[]string{"providers", "model-add-json", "acme", "-", "--yes"}, tc.spec)
+			if code != 1 {
+				t.Fatalf("exit = %d; want 1 (stderr=%s)", code, errw)
+			}
+			if !strings.Contains(errw, "secret material (value hidden)") {
+				t.Errorf("stderr missing the masked refusal: %s", errw)
+			}
+			if strings.Contains(errw, tc.rawWant) {
+				t.Errorf("stderr echoes the decorated value raw: %s", errw)
+			}
+			if !bytes.Equal(diskBytes(t, path), before) {
+				t.Error("rejected decorated spec wrote providers.json")
+			}
+		})
+	}
+
+	// Location-shaped model fields are refused on this door exactly as the TUI
+	// model form refuses them. The shared authority's rewrite arm is why:
+	// MaskSlot renders the marker-stripped core, so a frame would show bytes the
+	// record does not carry. FIX-7E moved this arm (it asserted acceptance and a
+	// verbatim persist of "./models/acme-third" plus "https://acme.example/v1");
+	// the TUI form has pinned the same refusal for a path, a Windows path and a
+	// URL since FIX-7A, and the class is a held product decision (whether a model
+	// field may legally be a path or a URL). This door carries no local
+	// exemption for it.
+	t.Run("location-shaped values are refused like the TUI door", func(t *testing.T) {
+		path := installFileBackedSettingsCore(t, twoModelRegistry())
+		specs := []string{
+			`{"id":"./models/acme-third"}`,
+			`{"id":"acme-third","family":"https://acme.example/v1"}`,
+			`{"id":"acme-third","family":"C:\\models\\gemini-pro"}`,
+		}
+		for _, spec := range specs {
+			before := diskBytes(t, path)
+			code, _, errw := runSettings(t,
+				[]string{"providers", "model-add-json", "acme", "-", "--yes"}, spec)
+			if code != 1 {
+				t.Fatalf("%s: exit = %d, want 1 (stderr=%s)", spec, code, errw)
+			}
+			if !strings.Contains(errw, "secret material (value hidden)") {
+				t.Errorf("%s: stderr missing the masked refusal: %s", spec, errw)
+			}
+			if !bytes.Equal(diskBytes(t, path), before) {
+				t.Errorf("%s: a refused location-shaped spec wrote providers.json", spec)
+			}
+		}
+
+		// The accept side, pinned next to the refusal: a benign id and family are
+		// accepted and persist verbatim (MaskSlot is the identity on both).
+		code, out, errw := runSettings(t,
+			[]string{"providers", "model-add-json", "acme", "-", "--yes"},
+			`{"id":"acme-third","family":"llama"}`)
+		if code != 0 {
+			t.Fatalf("benign spec exit = %d stderr=%s", code, errw)
+		}
+		if !strings.Contains(out, "+ id: acme-third") {
+			t.Errorf("diff must name the benign id: stdout=%s", out)
+		}
+		added := acmeTestModels(t, reloadTestRegistry(t, path))[2]
+		if added.ID != "acme-third" || added.Family != "llama" {
+			t.Errorf("persisted record = %+v; want id acme-third and family llama", added)
+		}
+	})
+
+	// The pre-existing accept set is unchanged by the union for a
+	// separator-carrying model id: '-' '.' '/' break the opaque run, no
+	// contiguous run reaches the floor, and MaskSlot is the identity.
+	for _, id := range []string{"meta-llama/Llama-3.3-70B-Instruct-Turbo"} {
+		if modelSpecValueLooksSecret(id) {
+			t.Errorf("benign id %q is classified as secret material", id)
+		}
+	}
+}
+
+// TestRunSettingsCmd_ModelVerbs_UpdateRefusesStalePresentation pins G-C3 on
+// both consent paths: the CLI presents a diff read from disk, then waits for
+// consent (or returns instantly under --yes), then Core.ModelUpdate re-loads
+// and replaces the whole record. An external edit landing in that window must
+// refuse the write, not be clobbered.
+//
+// Console path: the reader performs the external edit on its first Read, i.e.
+// exactly while the prompt is waiting, so the interleaving is a real one and no
+// seam is involved.
+func TestRunSettingsCmd_ModelVerbs_UpdateRefusesStalePresentation_Console(t *testing.T) {
+	path := installFileBackedSettingsCore(t, twoModelRegistry())
+	stubStdinIsTTY(t, true)
+	specPath := filepath.Join(t.TempDir(), "model.json")
+	if err := os.WriteFile(specPath, []byte(`{"id":"acme-slow","contextLength":256000}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	in := &mutateOnRead{
+		answer: "y\n",
+		mutate: func() {
+			reg := reloadTestRegistry(t, path)
+			reg.Path = path
+			reg.Providers[0].Models[1].ContextLength = 777
+			if err := saveTestRegistry(reg); err != nil {
+				t.Fatalf("external edit: %v", err)
+			}
+		},
+	}
+	out, errw := &bytes.Buffer{}, &bytes.Buffer{}
+	code := runSettingsCmd([]string{"providers", "model-update", "acme", "acme-slow", specPath}, in, out, errw)
+	if code != 1 {
+		t.Fatalf("stale update exit = %d; want 1 (stdout=%s stderr=%s)", code, out, errw)
+	}
+	if !strings.Contains(errw.String(), "changed on disk between the presentation and the write") {
+		t.Errorf("refusal must name the stale presentation: stderr=%s", errw)
+	}
+	if !strings.Contains(errw.String(), "nothing written") {
+		t.Errorf("refusal must say nothing was written: stderr=%s", errw)
+	}
+	// The presentation still showed the pre-edit record, so the operator saw the
+	// diff that was refused rather than a silent no-op.
+	if !strings.Contains(out.String(), "  contextLength: 0 -> 256000") {
+		t.Errorf("presentation must show the pre-edit before column: stdout=%s", out)
+	}
+	// Nothing was clobbered: the external edit survives, the requested value
+	// never landed.
+	got := acmeTestModels(t, reloadTestRegistry(t, path))[1]
+	if got.ContextLength != 777 {
+		t.Errorf("on-disk contextLength = %d; want the external edit (777) preserved", got.ContextLength)
+	}
+	if got.MaxOutputTokens != 0 {
+		t.Errorf("on-disk maxOutputTokens = %d; the refused write landed", got.MaxOutputTokens)
+	}
+}
+
+// TestRunSettingsCmd_ModelVerbs_UpdateRefusesStalePresentation_Yes pins the
+// same refusal on the --yes path, where there is no prompt to hang the
+// interleaving on: the write-time re-read seam performs the external edit, so
+// the check runs and refuses before Core is reached.
+func TestRunSettingsCmd_ModelVerbs_UpdateRefusesStalePresentation_Yes(t *testing.T) {
+	path := installFileBackedSettingsCore(t, twoModelRegistry())
+	updateArgs := []string{"providers", "model-update", "acme", "acme-slow", "-", "--yes"}
+	const spec = `{"id":"acme-slow","contextLength":256000}`
+
+	// staleEdit runs one --yes update whose write-time re-read applies edit to
+	// the on-disk provider first.
+	staleEdit := func(edit func(*providers.Provider)) (int, string, string, int) {
+		prev := registryReload
+		calls := 0
+		registryReload = func() (*providers.Registry, error) {
+			calls++
+			reg := reloadTestRegistry(t, path)
+			reg.Path = path
+			edit(&reg.Providers[0])
+			if err := saveTestRegistry(reg); err != nil {
+				t.Fatalf("external edit: %v", err)
+			}
+			return providers.Load()
+		}
+		defer func() { registryReload = prev }()
+		code, out, errw := runSettings(t, updateArgs, spec)
+		return code, out, errw, calls
+	}
+
+	// (a) a signed scalar drifts (contextLength).
+	code, out, errw, calls := staleEdit(func(p *providers.Provider) { p.Models[1].ContextLength = 777 })
+	if code != 1 {
+		t.Fatalf("stale --yes update exit = %d; want 1 (stdout=%s stderr=%s)", code, out, errw)
+	}
+	if calls != 1 {
+		t.Errorf("write-time re-read ran %d times; want 1", calls)
+	}
+	if !strings.Contains(errw, "changed on disk between the presentation and the write") {
+		t.Errorf("refusal must name the stale presentation: stderr=%s", errw)
+	}
+	if got := acmeTestModels(t, reloadTestRegistry(t, path))[1].ContextLength; got != 777 {
+		t.Errorf("on-disk contextLength = %d; want the external edit (777) preserved", got)
+	}
+
+	// (b) a signed capability flag drifts (supportsTools, the flag the CLI diff
+	// signs as its own line). Also proves the refused write from (a) left the
+	// other fields alone.
+	code, out, errw, _ = staleEdit(func(p *providers.Provider) { p.Models[1].Capabilities.SupportsTools = true })
+	if code != 1 {
+		t.Fatalf("stale supportsTools update exit = %d; want 1 (stdout=%s stderr=%s)", code, out, errw)
+	}
+	if !strings.Contains(errw, "changed on disk between the presentation and the write") {
+		t.Errorf("supportsTools drift must refuse too: stderr=%s", errw)
+	}
+	stale := acmeTestModels(t, reloadTestRegistry(t, path))[1]
+	if !stale.Capabilities.SupportsTools {
+		t.Error("refused update clobbered the edited supportsTools flag")
+	}
+	if stale.ContextLength != 777 {
+		t.Errorf("on-disk contextLength = %d; the refused write clobbered it", stale.ContextLength)
+	}
+
+	// (c) the normal --yes path still writes: the re-verify is not a blanket
+	// refusal. The seam now reports the unchanged registry.
+	code, out, errw = runSettings(t, updateArgs, spec)
+	if code != 0 {
+		t.Fatalf("consented update exit = %d stderr=%s", code, errw)
+	}
+	if got := acmeTestModels(t, reloadTestRegistry(t, path))[1].ContextLength; got != 256000 {
+		t.Errorf("consented update contextLength = %d; want 256000", got)
+	}
+}
+
+// mutateOnRead performs the external edit on its first Read and then serves the
+// scripted console answer: the interleaving an operator's editor performs while
+// the consent prompt waits for input.
+type mutateOnRead struct {
+	mutate func()
+	answer string
+	done   bool
+}
+
+func (r *mutateOnRead) Read(p []byte) (int, error) {
+	if !r.done {
+		r.done = true
+		r.mutate()
+	}
+	if r.answer == "" {
+		return 0, io.EOF
+	}
+	n := copy(p, r.answer)
+	r.answer = r.answer[n:]
+	return n, nil
+}
+
+// TestReasoningEffortAllowedListMatchesCanonicalSet pins G-C5: the out-of-set
+// refusal message renders its allowed list from openaiup.ValidReasoningEfforts
+// (sorted, deterministic), so a set change moves the message and a
+// hand-maintained stale list cannot come back.
+func TestReasoningEffortAllowedListMatchesCanonicalSet(t *testing.T) {
+	const want = "default, high, low, max, medium, none, xhigh"
+	got := reasoningEffortAllowedList()
+	if got != want {
+		t.Fatalf("allowed list = %q; want %q (canonical set, sorted)", got, want)
+	}
+	parts := strings.Split(got, ", ")
+	if len(parts) != len(openaiup.ValidReasoningEfforts) {
+		t.Errorf("allowed list has %d entries; want %d", len(parts), len(openaiup.ValidReasoningEfforts))
+	}
+	for effort := range openaiup.ValidReasoningEfforts {
+		if !strings.Contains(got, effort) {
+			t.Errorf("allowed list %q is missing canonical effort %q", got, effort)
+		}
+	}
+	for i := 1; i < len(parts); i++ {
+		if parts[i-1] >= parts[i] {
+			t.Errorf("allowed list is not sorted: %q", got)
+		}
+	}
+
+	// And the refusal sentence actually carries it.
+	installFileBackedSettingsCore(t, twoModelRegistry())
+	_, _, errw := runSettings(t,
+		[]string{"providers", "model-add-json", "acme", "-", "--yes"},
+		`{"id":"acme-effort","capabilities":{"reasoningEffort":"extreme"}}`)
+	if !strings.Contains(errw, "(allowed: "+want+"; value hidden)") {
+		t.Errorf("refusal does not carry the derived allowed list: stderr=%s", errw)
+	}
+}
+
+// mustModelByID returns the named model from a reloaded registry, failing the
+// test when the provider or the model is missing.
+func mustModelByID(t *testing.T, reg *providers.Registry, provider, modelID string) providers.Model {
+	t.Helper()
+	p, ok := reg.Provider(provider)
+	if !ok {
+		t.Fatalf("provider %q missing from the reloaded registry", provider)
+	}
+	for _, m := range p.Models {
+		if m.ID == modelID {
+			return m
+		}
+	}
+	t.Fatalf("model %q missing from provider %q after reload", modelID, provider)
+	return providers.Model{}
+}
+
+// TestRunSettingsCmd_ModelVerbs_ChangedDiffEmitsOnRawDifference pins H-C1: the
+// changed builder decides emission on the RAW operands and renders the masked
+// forms. The previous rule compared the rendered columns, so a marker-only or
+// case-only difference printed "(no field changes)" while Core.ModelUpdate still
+// replaced the record: a positive claim the write falsifies.
+//
+// FIX-7E narrowed case (c): the pair of credential-shaped families that folded
+// to one first-5+**** mask is unreachable now (the ingest door refuses every
+// value the slot masker rewrites), so the scalar arm pins the marker-only class,
+// which is the fold-invisible difference that still reaches the write.
+func TestRunSettingsCmd_ModelVerbs_ChangedDiffEmitsOnRawDifference(t *testing.T) {
+	// (a) Marker-only difference on a list slot: both columns render "fast"
+	// because the marker is stripped for display, yet the bytes differ.
+	assertDiffLines(t, modelChangedDiffLines(
+		providers.Model{ID: "m1", Tags: []string{"fast"}},
+		providers.Model{ID: "m1", Tags: []string{"./fast"}},
+	), []string{"  tags: fast -> fast"})
+
+	// (b) Case-only difference on a scalar slot.
+	assertDiffLines(t, modelChangedDiffLines(
+		providers.Model{ID: "m1", Family: "Acme"},
+		providers.Model{ID: "m1", Family: "acme"},
+	), []string{"  family: Acme -> acme"})
+
+	// (c) Marker-only difference on a SCALAR slot: the before value is on disk
+	// with a leading location marker, so both columns render the marker-stripped
+	// core while the bytes differ. FIX-7E moved this case: it used to pair two
+	// credential-shaped families that mask identically, which is unreachable on
+	// the accept side now that the ingest door refuses every value the slot
+	// masker rewrites (that door and the column renderer are one authority). The
+	// fold-invisible class that still reaches the write is a marker on the value
+	// already on disk.
+	const beforeFamily = "./acme-fork"
+	const afterFamily = "acme-fork"
+	if regOperand(beforeFamily) != regOperand(afterFamily) {
+		t.Fatalf("premise: the two families must render identically (got %q and %q)",
+			regOperand(beforeFamily), regOperand(afterFamily))
+	}
+	if modelSpecValueLooksSecret(afterFamily) {
+		t.Fatalf("premise: the after family must pass the ingest classifier")
+	}
+	assertDiffLines(t, modelChangedDiffLines(
+		providers.Model{ID: "acme-slow", Family: beforeFamily},
+		providers.Model{ID: "acme-slow", Family: afterFamily},
+	), []string{"  family: acme-fork -> acme-fork"})
+
+	// (d) End to end: the line prints and the on-disk bytes really move.
+	reg := twoModelRegistry()
+	reg.Providers[0].Models[1].Family = beforeFamily
+	path := installFileBackedSettingsCore(t, reg)
+	code, out, errw := runSettings(t,
+		[]string{"providers", "model-update", "acme", "acme-slow", "-", "--yes"},
+		`{"id":"acme-slow","family":"`+afterFamily+`"}`)
+	if code != 0 {
+		t.Fatalf("model-update exit = %d stderr=%s", code, errw)
+	}
+	if !strings.Contains(out, "  family: acme-fork -> acme-fork") {
+		t.Errorf("raw-difference change must print its line: stdout=%s", out)
+	}
+	if strings.Contains(out, "(no field changes)") {
+		t.Errorf("raw-difference change must not print the no-changes marker: stdout=%s", out)
+	}
+	if strings.Contains(out, beforeFamily) {
+		t.Errorf("the raw marker-decorated family echoed into the transcript: stdout=%s", out)
+	}
+	if got := mustModelByID(t, reloadTestRegistry(t, path), "acme", "acme-slow").Family; got != afterFamily {
+		t.Errorf("on-disk family = %q; want the spec value (the write moves bytes)", got)
+	}
+
+	// (e) A true no-change stays byte-identical: raw equality on every field
+	// still prints the byte-stable marker and nothing else.
+	same := providers.Model{ID: "acme-slow", Family: "acme-1", Tags: []string{"fast"}, ContextLength: 1000}
+	assertDiffLines(t, modelChangedDiffLines(same, same), []string{"(no field changes)"})
+}
+
+// TestRunSettingsCmd_ModelVerbs_DecorationClassSpecRejected pins H-C2: the
+// ingest classifier folds the format class (Cf) and the unicode look-alike
+// separators into its strip fixpoint, so a decoration outside ASCII cannot
+// smuggle a credential into a registry slot. Every named rune is covered on the
+// classifier directly, then three shapes are driven end to end (refused
+// non-echoing, nothing written).
+func TestRunSettingsCmd_ModelVerbs_DecorationClassSpecRejected(t *testing.T) {
+	const opaque = "ab3def7gh9jk1mnpqr5t"
+
+	// Premise: the bare run is refused, so the decoration is the only variable.
+	if !modelSpecValueLooksSecret(opaque) {
+		t.Fatalf("premise: the bare opaque run must already be refused")
+	}
+
+	decorations := []struct{ name, value string }{
+		{"bidi LRE U+202A", "\u202a./" + opaque},
+		{"bidi RLE U+202B", "\u202b./" + opaque},
+		{"bidi PDF U+202C", "\u202c./" + opaque},
+		{"bidi LRO U+202D", "\u202d./" + opaque},
+		{"bidi RLO U+202E", "\u202e./" + opaque},
+		{"bidi LRI U+2066", "\u2066./" + opaque},
+		{"bidi RLI U+2067", "\u2067./" + opaque},
+		{"bidi FSI U+2068", "\u2068./" + opaque},
+		{"bidi PDI U+2069", "\u2069./" + opaque},
+		{"zero-width space U+200B", "\u200b./" + opaque},
+		{"zero-width joiner U+200D", "\u200d./" + opaque},
+		{"BOM U+FEFF", "\ufeff./" + opaque},
+		{"two dot leader U+2025", "\u2025/" + opaque},
+		{"horizontal ellipsis U+2026", "\u2026/" + opaque},
+		{"one dot leader U+2024", "\u2024/" + opaque},
+		{"ideographic full stop U+3002", "\u3002/" + opaque},
+		{"halfwidth ideographic full stop U+FF61", "\uff61/" + opaque},
+		{"fullwidth solidus U+FF0F", "\uff0f" + opaque},
+		{"fullwidth reverse solidus U+FF3C", "\uff3c" + opaque},
+		{"fraction slash U+2044", "\u2044" + opaque},
+		{"division slash U+2215", "\u2215" + opaque},
+		{"interior zero-width space", "ab3def7\u200bgh9jk1mnpqr5t"},
+		{"interior fullwidth solidus", "ab3def7\uff0fgh9jk1mnpqr5t"},
+		{"interior control rune", "ab3def7\u0001gh9jk1mnpqr5t"},
+	}
+	for _, tc := range decorations {
+		if !modelSpecValueLooksSecret(tc.value) {
+			t.Errorf("%s defeats the classifier: %q", tc.name, tc.value)
+		}
+	}
+
+	path := installFileBackedSettingsCore(t, twoModelRegistry())
+	cases := []struct{ name, spec string }{
+		{"Cf-decorated family", fmt.Sprintf(`{"id":"m1","family":%q}`, "\u202e./"+opaque)},
+		{"look-alike-decorated tag", fmt.Sprintf(`{"id":"m9","tags":[%q]}`, "\u2025/"+opaque)},
+		{"interior zero-width id", fmt.Sprintf(`{"id":%q}`, "ab3def7\u200bgh9jk1mnpqr5t")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			before := diskBytes(t, path)
+			code, _, errw := runSettings(t,
+				[]string{"providers", "model-add-json", "acme", "-", "--yes"}, tc.spec)
+			if code != 1 {
+				t.Fatalf("exit = %d; want 1 (stderr=%s)", code, errw)
+			}
+			if !strings.Contains(errw, "secret material (value hidden)") {
+				t.Errorf("stderr missing the non-echoing refusal: %s", errw)
+			}
+			if strings.Contains(errw, opaque) {
+				t.Errorf("stderr echoes the credential core raw: %s", errw)
+			}
+			if !bytes.Equal(diskBytes(t, path), before) {
+				t.Error("rejected decoration-class spec wrote providers.json")
+			}
+		})
+	}
+
+	// The decoration is classification-only: a benign value carrying one is
+	// still accepted, and the stored value is the spec value verbatim.
+	t.Run("benign decoration-carrying values stay accepted", func(t *testing.T) {
+		path := installFileBackedSettingsCore(t, twoModelRegistry())
+		code, _, errw := runSettings(t,
+			[]string{"providers", "model-add-json", "acme", "-", "--yes"},
+			fmt.Sprintf(`{"id":"acme-deco","family":%q,"tags":[%q]}`, "\u2026acme", "\u2025notes"))
+		if code != 0 {
+			t.Fatalf("benign decoration-carrying spec exit = %d stderr=%s", code, errw)
+		}
+		added := mustModelByID(t, reloadTestRegistry(t, path), "acme", "acme-deco")
+		if added.Family != "\u2026acme" {
+			t.Errorf("persisted family = %q; want the spec value verbatim", added.Family)
+		}
+		if len(added.Tags) != 1 || added.Tags[0] != "\u2025notes" {
+			t.Errorf("persisted tags = %q; want the spec value verbatim", added.Tags)
+		}
+	})
+}
+
+// TestRunSettingsCmd_ModelVerbs_CreatedDuringConsentRefused pins H-C3: when the
+// presentation was after-only (no before record), the signed state is the
+// model's ABSENCE. A model created by an external edit while the consent window
+// was open must refuse the write, because Core.ModelUpdate would find the new
+// record and replace it under a consent rendered before it existed.
+func TestRunSettingsCmd_ModelVerbs_CreatedDuringConsentRefused(t *testing.T) {
+	const specJSON = `{"id":"acme-new","contextLength":256000}`
+
+	// createDuring tunes an on-disk registry to carry the model the presentation
+	// did not see.
+	createDuring := func(t *testing.T, path string) {
+		t.Helper()
+		reg := reloadTestRegistry(t, path)
+		reg.Path = path
+		p, ok := reg.Provider("acme")
+		if !ok {
+			t.Fatal("provider acme missing from the registry")
+		}
+		p.Models = append(p.Models, providers.Model{ID: "acme-new", ContextLength: 7})
+		if err := saveTestRegistry(reg); err != nil {
+			t.Fatalf("external creation: %v", err)
+		}
+	}
+
+	// Console path: the creation happens on the reader's first Read, i.e.
+	// exactly while the consent prompt waits, so the interleaving is a real one
+	// and no seam is involved. On the unfixed code the write proceeds and
+	// replaces the just-created record.
+	t.Run("console", func(t *testing.T) {
+		path := installFileBackedSettingsCore(t, twoModelRegistry())
+		stubStdinIsTTY(t, true)
+		specPath := filepath.Join(t.TempDir(), "model.json")
+		if err := os.WriteFile(specPath, []byte(specJSON), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		in := &mutateOnRead{answer: "y\n", mutate: func() { createDuring(t, path) }}
+		out, errw := &bytes.Buffer{}, &bytes.Buffer{}
+		code := runSettingsCmd([]string{"providers", "model-update", "acme", "acme-new", specPath}, in, out, errw)
+		if code != 1 {
+			t.Fatalf("created-during-consent update exit = %d; want 1 (stdout=%s stderr=%s)", code, out, errw)
+		}
+		if !strings.Contains(errw.String(), "changed on disk between the presentation and the write") {
+			t.Errorf("refusal must name the stale presentation: stderr=%s", errw)
+		}
+		if !strings.Contains(errw.String(), "nothing written") {
+			t.Errorf("refusal must say nothing was written: stderr=%s", errw)
+		}
+		// The presentation was after-only: the operator saw the record as a new one.
+		if !strings.Contains(out.String(), "+ id: acme-new") {
+			t.Errorf("after-only presentation must render the added lines: stdout=%s", out)
+		}
+		// The created record survives untouched.
+		if got := mustModelByID(t, reloadTestRegistry(t, path), "acme", "acme-new").ContextLength; got != 7 {
+			t.Errorf("created record contextLength = %d; want the created value (7) preserved", got)
+		}
+	})
+
+	// --yes path: the write-time re-read seam performs the creation, so the same
+	// refusal is reachable without a console (the --yes path never skips the
+	// check).
+	t.Run("yes", func(t *testing.T) {
+		path := installFileBackedSettingsCore(t, twoModelRegistry())
+		updateArgs := []string{"providers", "model-update", "acme", "acme-new", "-", "--yes"}
+
+		prev := registryReload
+		defer func() { registryReload = prev }()
+		calls := 0
+		registryReload = func() (*providers.Registry, error) {
+			calls++
+			createDuring(t, path)
+			return providers.Load()
+		}
+
+		code, out, errw := runSettings(t, updateArgs, specJSON)
+		if code != 1 {
+			t.Fatalf("created-during-consent update exit = %d; want 1 (stdout=%s stderr=%s)", code, out, errw)
+		}
+		if calls != 1 {
+			t.Errorf("write-time re-read ran %d times; want 1", calls)
+		}
+		if !strings.Contains(errw, "changed on disk between the presentation and the write") {
+			t.Errorf("refusal must name the stale presentation: stderr=%s", errw)
+		}
+		if got := mustModelByID(t, reloadTestRegistry(t, path), "acme", "acme-new").ContextLength; got != 7 {
+			t.Errorf("created record contextLength = %d; want the created value (7) preserved", got)
+		}
+	})
+
+	// Control: a still-absent model is not refused as stale. The absence check
+	// ran and passed, so Core's own not-found refusal is what the operator sees
+	// (the check is not a blanket refusal).
+	t.Run("still absent", func(t *testing.T) {
+		installFileBackedSettingsCore(t, twoModelRegistry())
+		code, _, errw := runSettings(t,
+			[]string{"providers", "model-update", "acme", "acme-new", "-", "--yes"}, specJSON)
+		if code != 1 {
+			t.Fatalf("still-absent update exit = %d; want 1 (stderr=%s)", code, errw)
+		}
+		if strings.Contains(errw, "changed on disk between the presentation and the write") {
+			t.Errorf("a still-absent model must not be refused as a stale presentation: stderr=%s", errw)
+		}
+		if !strings.Contains(errw, `model "acme-new" not found`) {
+			t.Errorf("want Core's not-found refusal on the pass-through path: stderr=%s", errw)
+		}
+	})
+}
+
+// TestRunSettingsCmd_ModelVerbs_ReverifyFailClosed pins H-C4: each fail-closed
+// branch of reverifyPresentedModel (unreadable registry, vanished provider,
+// vanished model) is exercised with a presentation that really carried a before
+// record. Replacing any refusal with a silent return lets the write land, so
+// the disk-byte assertion fails.
+func TestRunSettingsCmd_ModelVerbs_ReverifyFailClosed(t *testing.T) {
+	updateArgs := []string{"providers", "model-update", "acme", "acme-slow", "-", "--yes"}
+	const spec = `{"id":"acme-slow","contextLength":256000}`
+
+	cases := []struct {
+		name   string
+		reload func(t *testing.T, path string) (*providers.Registry, error)
+		want   string
+	}{
+		{
+			name: "unreadable registry",
+			reload: func(t *testing.T, path string) (*providers.Registry, error) {
+				return nil, errors.New("simulated read failure")
+			},
+			want: "registry re-read failed before the write",
+		},
+		{
+			name: "nil registry",
+			reload: func(t *testing.T, path string) (*providers.Registry, error) {
+				return nil, nil
+			},
+			want: "registry re-read failed before the write",
+		},
+		{
+			name: "vanished provider",
+			reload: func(t *testing.T, path string) (*providers.Registry, error) {
+				return &providers.Registry{Providers: []providers.Provider{
+					{Name: "other", BaseURL: "https://other.example/v1", APIKeyEnv: "OTHER_KEY"},
+				}}, nil
+			},
+			want: "provider acme disappeared from providers.json",
+		},
+		{
+			name: "vanished model",
+			reload: func(t *testing.T, path string) (*providers.Registry, error) {
+				reg := reloadTestRegistry(t, path)
+				reg.Providers[0].Models = reg.Providers[0].Models[:1]
+				return reg, nil
+			},
+			want: "model acme-slow disappeared from providers.json",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := installFileBackedSettingsCore(t, twoModelRegistry())
+			before := diskBytes(t, path)
+
+			prev := registryReload
+			registryReload = func() (*providers.Registry, error) { return tc.reload(t, path) }
+			defer func() { registryReload = prev }()
+
+			code, out, errw := runSettings(t, updateArgs, spec)
+			if code != 1 {
+				t.Fatalf("exit = %d; want 1 (stdout=%s stderr=%s)", code, out, errw)
+			}
+			if !strings.Contains(errw, tc.want) {
+				t.Errorf("refusal = %q; want it to contain %q", errw, tc.want)
+			}
+			if !strings.Contains(errw, "nothing written") {
+				t.Errorf("refusal must say nothing was written: stderr=%s", errw)
+			}
+			// The presentation was presentable: the operator saw the before column.
+			if !strings.Contains(out, "  contextLength: 0 -> 256000") {
+				t.Errorf("presentation must show the before column: stdout=%s", out)
+			}
+			if !bytes.Equal(diskBytes(t, path), before) {
+				t.Error("a refused re-verify wrote providers.json")
+			}
+		})
+	}
+}
+
+// TestRunSettingsCmd_ModelVerbs_RegistrySlotSentencesMasked pins H-C6 (and the
+// H-C6 sentence class): the mutation headlines and the model-delete "- model"
+// line render registry-slot values through the registry-slot masker, not
+// through the location-exempt MaskOperand. The add/update header IDs are
+// spec-borne and ingest-gated, so the decorated shape is pinned at the renderer
+// (the same seam); the delete line is pinned end to end from a hand-edited
+// record, which is the reachable disk-borne path.
+func TestRunSettingsCmd_ModelVerbs_RegistrySlotSentencesMasked(t *testing.T) {
+	const plant = "./ab3def7gh9jk1mnpqr5t"
+	const core = "ab3def7gh9jk1mnpqr5t"
+	const masked = "ab3de****"
+
+	reg := twoModelRegistry()
+	reg.Providers[0].Models[1].ID = plant
+	path := installFileBackedSettingsCore(t, reg)
+
+	// Headlines: the model ID and the provider name are registry slots.
+	addHeader := modelAddDiff("acme", providers.Model{ID: plant})[0]
+	if !strings.Contains(addHeader, "Adds model "+masked+" to provider acme.") {
+		t.Errorf("add header must mask the model ID: %q", addHeader)
+	}
+	if strings.Contains(addHeader, core) {
+		t.Errorf("add header echoes the decorated ID raw: %q", addHeader)
+	}
+	addHeader = modelAddDiff(plant, providers.Model{ID: "m1"})[0]
+	if !strings.Contains(addHeader, "Adds model m1 to provider "+masked+".") {
+		t.Errorf("add header must mask the provider name: %q", addHeader)
+	}
+	updHeader := modelUpdateDiff(presentedModel{provider: "acme"}, providers.Model{ID: plant})[0]
+	if !strings.Contains(updHeader, "Updates model "+masked+" in provider acme.") {
+		t.Errorf("update header must mask the model ID: %q", updHeader)
+	}
+	delLines := modelDeleteDiff("acme", plant)
+	if !strings.Contains(delLines[0], "Removes model "+masked+" from provider acme.") {
+		t.Errorf("delete header must mask the model ID: %q", delLines[0])
+	}
+	if got := delLines[len(delLines)-1]; got != "- model "+masked {
+		t.Errorf("delete line = %q; want %q", got, "- model "+masked)
+	}
+	// A Cf rune in front of the marker is stripped by the same renderer (the
+	// stripDiffControls arm), so the display side of that decoration class is
+	// closed too.
+	if got := modelDeleteDiff("acme", "\u202e"+plant); got[len(got)-1] != "- model "+masked {
+		t.Errorf("Cf-decorated delete line = %q; want %q", got[len(got)-1], "- model "+masked)
+	}
+
+	// Benign sentences stay byte-identical.
+	if got := modelAddDiff("acme", providers.Model{ID: "acme-third"})[0]; got != "Adds model acme-third to provider acme. Key values are untouched." {
+		t.Errorf("benign add header = %q", got)
+	}
+	if got := modelUpdateDiff(presentedModel{provider: "acme"}, providers.Model{ID: "acme-slow"})[0]; got != "Updates model acme-slow in provider acme. Key values are untouched." {
+		t.Errorf("benign update header = %q", got)
+	}
+	benignDel := modelDeleteDiff("acme", "acme-slow")
+	if benignDel[0] != "Removes model acme-slow from provider acme. Key values are untouched." || benignDel[len(benignDel)-1] != "- model acme-slow" {
+		t.Errorf("benign delete transcript moved: %q", benignDel)
+	}
+
+	// End to end: the hand-edited record carries the plant as its model ID; the
+	// whole delete transcript masks every slot and the removal really happens.
+	code, out, errw := runSettings(t,
+		[]string{"providers", "model-delete", "acme", plant, "--yes"}, "")
+	if code != 0 {
+		t.Fatalf("model-delete exit = %d stderr=%s", code, errw)
+	}
+	for _, want := range []string{
+		"Removes model " + masked + " from provider acme. Key values are untouched.",
+		"- model " + masked,
+		"[SUCCESS] provider acme: model " + masked + " removed",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("delete transcript missing %q: stdout=%s", want, out)
+		}
+	}
+	if strings.Contains(out, core) {
+		t.Errorf("delete transcript echoes the decorated ID raw: stdout=%s", out)
+	}
+	if models := acmeTestModels(t, reloadTestRegistry(t, path)); len(models) != 1 || models[0].ID != "acme-fast" {
+		t.Errorf("models after delete = %+v; want only acme-fast", models)
+	}
+}
+
+// TestRunSettingsCmd_ModelVerbs_LookAlikeSlotMasked pins the closed F-1 class:
+// a look-alike-decorated plant (U+2025 TWO DOT LEADER + "/" + a lowercase 20-rune
+// core) sits in a hand-edited record and must render MASKED at every CLI
+// registry-slot sink: the update before column, the delete headline, the
+// "- model" line, the success line, and a re-verify refusal. Before the policy
+// round regOperand was the bare authority, whose ASCII marker set cannot see
+// U+2025, so the plant printed raw in the CLI transcript while the TUI masked
+// the same value; the two twins disagreed on the class both ingest doors already
+// refused. The shared policy's identity-fallback closes it on this side, and the
+// TUI pins the same plant.
+func TestRunSettingsCmd_ModelVerbs_LookAlikeSlotMasked(t *testing.T) {
+	const core = "ab3def7gh9jk1mnpqr5t"
+	const plant = "\u2025/" + core
+	const masked = "ab3de****"
+
+	// The plant is refused at both ingest doors (premise), so only a hand-edited
+	// record can carry it: nothing on the write path persisted it.
+	if !modelSpecValueLooksSecret(plant) {
+		t.Fatalf("premise: the ingest guard must refuse the look-alike plant %q", plant)
+	}
+
+	// 1. Update before column: the on-disk family is the plant, the spec moves it
+	// to a benign value, so the family line renders the planted BEFORE operand.
+	reg := twoModelRegistry()
+	reg.Providers[0].Models[1].Family = plant
+	path := installFileBackedSettingsCore(t, reg)
+	code, out, errw := runSettings(t,
+		[]string{"providers", "model-update", "acme", "acme-slow", "-", "--yes"},
+		`{"id":"acme-slow","family":"acme-1"}`)
+	if code != 0 {
+		t.Fatalf("model-update exit = %d stderr=%s", code, errw)
+	}
+	if !strings.Contains(out, "  family: "+masked+" -> acme-1") {
+		t.Errorf("update before column must mask the look-alike plant:\n%s", out)
+	}
+	if strings.Contains(out, core) || strings.Contains(out, plant) {
+		t.Errorf("update transcript echoes the decorated plant raw:\n%s", out)
+	}
+	if got := mustModelByID(t, reloadTestRegistry(t, path), "acme", "acme-slow").Family; got != "acme-1" {
+		t.Errorf("on-disk family = %q; want the spec value (the write moves bytes)", got)
+	}
+
+	// 2. Delete headline, "- model" line, and the success line: the record's ID
+	// is the plant (a hand-edited record; the delete verb takes it as an operand
+	// and every rendered slot must mask it).
+	reg = twoModelRegistry()
+	reg.Providers[0].Models[1].ID = plant
+	path = installFileBackedSettingsCore(t, reg)
+	code, out, errw = runSettings(t,
+		[]string{"providers", "model-delete", "acme", plant, "--yes"}, "")
+	if code != 0 {
+		t.Fatalf("model-delete exit = %d stderr=%s", code, errw)
+	}
+	for _, want := range []string{
+		"Removes model " + masked + " from provider acme. Key values are untouched.",
+		"- model " + masked,
+		"[SUCCESS] provider acme: model " + masked + " removed",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("delete transcript missing %q: stdout=%s", want, out)
+		}
+	}
+	if strings.Contains(out, core) || strings.Contains(out, plant) {
+		t.Errorf("delete transcript echoes the decorated plant raw: stdout=%s", out)
+	}
+
+	// 3. Re-verify refusal: the sentence's operand is the presented (disk-borne)
+	// model id, so it masks through the same authority.
+	reg = twoModelRegistry()
+	reg.Providers[0].Models[1].ID = plant
+	installFileBackedSettingsCore(t, reg)
+	presented := snapshotRegistryModel("acme", plant)
+	if !presented.presentable() {
+		t.Fatalf("test premise broken: the presentation carried no before record")
+	}
+	prev := registryReload
+	registryReload = func() (*providers.Registry, error) {
+		reload := twoModelRegistry() // the plant is gone: an external edit landed
+		return reload, nil
+	}
+	t.Cleanup(func() { registryReload = prev })
+	err := reverifyPresentedModel(presented)
+	if err == nil {
+		t.Fatal("the re-verify must refuse a model that disappeared")
+	}
+	if !strings.Contains(err.Error(), "model "+masked+" disappeared") {
+		t.Errorf("re-verify refusal = %q; want the masked model id", err)
+	}
+	if strings.Contains(err.Error(), core) || strings.Contains(err.Error(), plant) {
+		t.Errorf("re-verify refusal echoes the decorated plant raw: %q", err)
+	}
+}
+
+// TestRunSettingsCmd_ModelVerbs_NameHeadSpecRejected pins FIX-7E end to end:
+// the five underscore-head key probes (the class SecretShaped alone misses and
+// providers.NameCarriesCredential catches) are refused as model fields on both
+// model verbs, with the established masked sentence, no echoed value, and
+// providers.json byte-identical. The classifier is shared with the TUI model
+// form, so this door can no longer persist a value its own consent transcript
+// renders as "sk_li****".
+func TestRunSettingsCmd_ModelVerbs_NameHeadSpecRejected(t *testing.T) {
+	probes := []string{
+		"sk_live_0123456789abcdef",
+		"tok_a1b2c3d4e5f6g7h8i9j0",
+		"pk_live_0123456789abcdef",
+		"key_0123456789abcdef",
+		"AKIA_0123456789ABCDEF",
+	}
+
+	// Every free-text field of the spec routes through the same predicate. A
+	// slice (not a map) keeps the subtest order deterministic.
+	specs := func(p string) [][2]string {
+		return [][2]string{
+			{"id", `{"id":"` + p + `"}`},
+			{"family", `{"id":"m9","family":"` + p + `"}`},
+			{"tag", `{"id":"m9","tags":["` + p + `"]}`},
+			{"tool grant", `{"id":"m9","capabilities":{"allowedTools":["read","` + p + `"]}}`},
+			{"reasoningEffort", `{"id":"m9","capabilities":{"reasoningEffort":"` + p + `"}}`},
+		}
+	}
+
+	for _, probe := range probes {
+		probe := probe
+		for _, fieldSpec := range specs(probe) {
+			field, spec := fieldSpec[0], fieldSpec[1]
+			t.Run(field+"/"+probe, func(t *testing.T) {
+				path := installFileBackedSettingsCore(t, twoModelRegistry())
+				before := diskBytes(t, path)
+				code, _, errw := runSettings(t,
+					[]string{"providers", "model-add-json", "acme", "-", "--yes"}, spec)
+				if code != 1 {
+					t.Fatalf("exit = %d, want 1 (stderr=%s)", code, errw)
+				}
+				if !strings.Contains(errw, "secret material (value hidden)") {
+					t.Errorf("stderr missing the masked refusal: %s", errw)
+				}
+				if strings.Contains(errw, probe) {
+					t.Errorf("stderr echoes the value raw: %s", errw)
+				}
+				if !bytes.Equal(diskBytes(t, path), before) {
+					t.Error("a refused spec wrote providers.json")
+				}
+			})
+		}
+	}
+
+	// model-update shares the classifier, so the same probe is refused there. The
+	// refusal lands before the consent prompt and before the re-verify, so the
+	// on-disk record is untouched.
+	t.Run("model-update shares the door", func(t *testing.T) {
+		path := installFileBackedSettingsCore(t, twoModelRegistry())
+		before := diskBytes(t, path)
+		code, out, errw := runSettings(t,
+			[]string{"providers", "model-update", "acme", "acme-slow", "-", "--yes"},
+			`{"id":"acme-slow","family":"sk_live_0123456789abcdef"}`)
+		if code != 1 {
+			t.Fatalf("model-update exit = %d, want 1 (stderr=%s)", code, errw)
+		}
+		if !strings.Contains(errw, "secret material (value hidden)") {
+			t.Errorf("stderr missing the masked refusal: %s", errw)
+		}
+		if strings.Contains(out, "Approve Registry Write") {
+			t.Errorf("a refused spec must not reach the consent presentation: %s", out)
+		}
+		if strings.Contains(errw, "sk_live_0123456789abcdef") {
+			t.Errorf("stderr echoes the value raw: %s", errw)
+		}
+		if !bytes.Equal(diskBytes(t, path), before) {
+			t.Error("a refused update wrote providers.json")
+		}
+	})
+}
+
+// TestRunSettingsCmd_ModelVerbs_NameDoorParityWithModelForm is the twin-parity
+// pin for the model-field door (FIX-7E): one corpus is driven through the CLI
+// model verbs' classifier (modelSpecValueLooksSecret) and through the predicate
+// the TUI model form's looksSecretValue delegates to
+// (providers.NameCarriesCredential), and the two must return the same verdict on
+// every row, in both directions.
+//
+// The TUI side of the equality is pinned, not assumed: the form's guard is a
+// one-statement delegation to that predicate, and TestSlotPolicySingleImplementation
+// in internal/providers fails if it ever becomes anything else. The shared rows
+// are the exact corpus the form pins in
+// TestModelFormIDAuthorityAddsOnlyCredentialClass, and the containment check
+// below fails if a row disappears from that pin, so the two corpora cannot drift
+// apart silently.
+//
+// Each row also asserts the display-agreement rule the form pins: the verdict is
+// "refused" exactly when the slot authority would re-render the value, so the CLI
+// transcript can never show different bytes than the record it wrote.
+func TestRunSettingsCmd_ModelVerbs_NameDoorParityWithModelForm(t *testing.T) {
+	type row struct {
+		id     string
+		refuse bool
+	}
+
+	// Shared corpus: mirrored from the TUI model-form pin (same ids, same after
+	// verdicts).
+	shared := []row{
+		// Realistic model IDs: the accept set both doors protect.
+		{"anthropic/claude-3.5-sonnet", false},
+		{"meta-llama/Llama-3.3-70B-Instruct-Turbo", false},
+		{"Qwen/Qwen2.5-72B-Instruct-Turbo", false},
+		{"meta-llama/llama-3.3-70b-instruct", false},
+		{"claude-3-5-sonnet-20241022", false},
+		{"acme-fast", false},
+		{"gpt-4.1-mini", false},
+		{"deepseek-v4-flash", false},
+		{"qwen2.5-72b-instruct", false},
+		{"glm-5.3-flash", false},
+		{"gemini-3-pro-high", false},
+		{"gemini-3.8-flash-high", false},
+		{"claude-opus-5-5-high", false},
+		{"claude-sonnet-5-5-high", false},
+		{"kimi-k2-thinking", false},
+		{"gpt-5-codex", false},
+		{"o4-mini", false},
+		{"mistral-large-latest", false},
+		{"llama-4-scout-17b-16e-instruct", false},
+		{"gemma-3-27b-it", false},
+		{"phi-4-reasoning", false},
+		{"command-r-plus-08-2025", false},
+		{"nvidia/llama-3.3-nemotron-super-49b-v1", false},
+		{"x-ai/grok-4-fast", false},
+		{"moonshotai/kimi-k2-0905-preview", false},
+		{"zhipuai/glm-5.3", false},
+		{"qwen3-coder-480b-a35b", false},
+		{"deepseek-r1-distill-qwen-32b", false},
+		{"internlm3-8b-instruct", false},
+		{"acme-large", false},
+		{"us.anthropic.claude-3-5-sonnet-20241022-v2:0", false},
+		{"models/gemini-2.5-pro", false},
+		{"text-embedding-3-large", false},
+		{"whisper-1", false},
+		{"tts-1", false},
+		{"gpt-4o-audio-preview", false},
+		// The underscore-head key class (this unit's target).
+		{"sk_live_0123456789abcdef", true},
+		{"tok_a1b2c3d4e5f6g7h8i9j0", true},
+		{"pk_live_0123456789abcdef", true},
+		{"key_0123456789abcdef", true},
+		{"AKIA_0123456789ABCDEF", true},
+		// 16+ rune single-class values.
+		{"abcdefghijklmnopqrstuvwxyz", true},
+		{"1234567890123456", true},
+		// Locations: the authority's documented rewrite arm, a held product
+		// decision (whether a model field may legally be a path or a URL).
+		{`C:\models\gemini-pro`, true},
+		{"./models/gemini-pro", true},
+		{"https://example.com/v1", true},
+		// Pre-existing refusals: unchanged.
+		{"AKIAIOSFODNN7EXAMPLE", true},
+		{"AbCdEfGh0123456jKlMnoP", true},
+		{"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", true},
+		{"Ab3dEf7Gh9jK1mNp+/Qr=", true},
+		{"sk-abc", true},
+		{"gsk_abcdefghijklm", true},
+		{"dckr_pat-abcdef0123456789", true},
+		{"bearer abc", true},
+		{"eyJhbGciOiJIUzI1NiIsInR5cCI6kpXVCJ9", true},
+		{"ghp_abcdefghij0123456789", true},
+	}
+
+	// Extra realistic shapes the CLI-side corpus carries (Ollama tags, quant
+	// suffixes, a Bedrock ARN, an MLX path, an HF path). They are not rows of the
+	// TUI pin, so their verdict is stated here against the same authority; the HF
+	// reference is a location-shaped value, which the authority re-renders and
+	// therefore refuses, and it is listed as a refusal so the class stays visible
+	// instead of being discovered by a user.
+	extra := []row{
+		{"llama3.2:latest", false},
+		{"qwen2.5-coder:32b-instruct-q8_0", false},
+		{"mistral:7b-instruct-v0.3-q4_K_M", false},
+		{"deepseek-r1:14b-q5_k_m", false},
+		{"arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0", false},
+		{"mlx-community/Llama-3.3-70B-Instruct-4bit", false},
+		{"hf.co/bartowski/Qwen2.5-72B-Instruct-GGUF", true},
+	}
+
+	accepted, refused := 0, 0
+	drive := func(rows []row, label string) {
+		for _, r := range rows {
+			cli := modelSpecValueLooksSecret(r.id)
+			tui := providers.NameCarriesCredential(r.id)
+			if cli != tui {
+				t.Fatalf("%s: door verdicts disagree on %q: CLI model verbs = %v, TUI model form = %v",
+					label, r.id, cli, tui)
+			}
+			if cli != r.refuse {
+				t.Errorf("%s: %q verdict = %v, table says %v", label, r.id, cli, r.refuse)
+			}
+			if got := providers.MaskSlot(r.id) != r.id; got != r.refuse {
+				t.Errorf("%s: %q slot authority re-renders = %v, door verdict = %v (display and validation disagree)",
+					label, r.id, got, r.refuse)
+			}
+			if cli {
+				refused++
+			} else {
+				accepted++
+			}
+		}
+	}
+	drive(shared, "shared")
+	sharedAccepted, sharedRefused := accepted, refused
+	drive(extra, "extra")
+
+	// The sets, not just the rows: the shared corpus splits 36 accept / 20 refuse
+	// (the TUI pin's split) and the full corpus 42 / 21 on both doors, so a corpus
+	// edit that moves a verdict fails here instead of passing silently.
+	if sharedAccepted != 36 || sharedRefused != 20 {
+		t.Fatalf("shared corpus verdicts = %d accept / %d refuse; want 36 / 20", sharedAccepted, sharedRefused)
+	}
+	if accepted != 42 || refused != 21 {
+		t.Fatalf("full corpus verdicts = %d accept / %d refuse; want 42 / 21", accepted, refused)
+	}
+
+	// One corpus: every shared row must still appear in the TUI pin's source.
+	src, err := os.ReadFile(filepath.Join("..", "..", "internal", "tui", "screen_model_form_test.go"))
+	if err != nil {
+		t.Fatalf("read the TUI model-form pin source: %v", err)
+	}
+	for _, r := range shared {
+		if !strings.Contains(string(src), r.id) {
+			t.Errorf("shared corpus row %q is gone from the TUI model-form pin; the two corpora have diverged", r.id)
+		}
 	}
 }

@@ -77,22 +77,26 @@ func runModelsCmdTo(args []string, out, errw io.Writer) int {
 		// name; Family is registry-derived). K1: Entry.Capabilities carries
 		// the registry-controlled reasoningEffort (Capabilities.Summary
 		// composes thinking(<effort>)) and nothing on the add-json / hand-edit
-		// write path validates that field, so the composed summary routes
-		// through MaskOperand here too: defense in depth on top of the
-		// composition mask inside Summary. L1: Family is a registry slot and
-		// never a legitimate path, so it routes through the registry-slot
-		// display authority (providers.MaskRegistryValue, the same one
-		// MaskFamilyName uses) instead of plain MaskOperand: a
-		// location-shaped key-shaped family ("./<key>", URL- or drive-shaped)
-		// masks instead of riding raw under MaskOperand's location exemption,
-		// while benign families stay readable.
+		// write path validates that field, so the composed summary is masked
+		// here too: defense in depth on top of the composition mask inside
+		// Summary.
+		//
+		// Convergence: every one of these fields is a registry slot holding a
+		// providers.json-borne value (a model id and a family are free text at
+		// load; nothing but the control-rune rule constrains them), so all six
+		// route through providers.MaskSlot, the single registry-slot display
+		// authority. The two earlier shapes that rode raw here are closed:
+		// ModelID/DisplayName/Spec/Group under plain MaskOperand (its location
+		// exemption left a "./<key>"-shaped id readable) and a
+		// look-alike-decorated value under every masker that predates the
+		// shared policy. Benign values render byte-identically.
 		for i := range inv.Entries {
-			inv.Entries[i].ModelID = providers.MaskOperand(inv.Entries[i].ModelID)
-			inv.Entries[i].Spec = providers.MaskOperand(inv.Entries[i].Spec)
-			inv.Entries[i].DisplayName = providers.MaskOperand(inv.Entries[i].DisplayName)
-			inv.Entries[i].Group = providers.MaskOperand(inv.Entries[i].Group)
-			inv.Entries[i].Family = providers.MaskRegistryValue(inv.Entries[i].Family)
-			inv.Entries[i].Capabilities = providers.MaskOperand(inv.Entries[i].Capabilities)
+			inv.Entries[i].ModelID = providers.MaskSlot(inv.Entries[i].ModelID)
+			inv.Entries[i].Spec = providers.MaskSlot(inv.Entries[i].Spec)
+			inv.Entries[i].DisplayName = providers.MaskSlot(inv.Entries[i].DisplayName)
+			inv.Entries[i].Group = providers.MaskSlot(inv.Entries[i].Group)
+			inv.Entries[i].Family = providers.MaskSlot(inv.Entries[i].Family)
+			inv.Entries[i].Capabilities = providers.MaskSlot(inv.Entries[i].Capabilities)
 		}
 		if err := enc.Encode(inv.Entries); err != nil {
 			fmt.Fprintf(errw, "model inventory error: %v\n", err)

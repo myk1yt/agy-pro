@@ -1,8 +1,8 @@
 // P12: dispatch and degrade tests for `agy pro setup`. Every branch is
 // driven through the package-level seams (setupTUIRunner, setupWizardRunner,
-// setupConsoleCap, setupExit), so no test needs an interactive console, the
-// live providers registry, or a real process exit. AGY_PRO_HOME points at a
-// temp dir wherever state could be touched.
+// setupConsoleCap, setupStdinConsole, setupExit), so no test needs an
+// interactive console, the live providers registry, or a real process exit.
+// AGY_PRO_HOME points at a temp dir wherever state could be touched.
 package main
 
 import (
@@ -22,8 +22,12 @@ import (
 func swapSetupSeams(t *testing.T) (rec *setupRec) {
 	t.Helper()
 	t.Setenv(paths.EnvAgyProHome, filepath.Join(t.TempDir(), "home"))
-	rec = &setupRec{}
-	oldTUI, oldWizard, oldCap, oldExit := setupTUIRunner, setupWizardRunner, setupConsoleCap, setupExit
+	// The harness models a raw-console host by default: both the stdout and
+	// the stdin probe report a console, which is the shape the pre-P4-5 tests
+	// were written for. A pin that needs the piped-stdin shape flips
+	// stdinConsole to false.
+	rec = &setupRec{stdinConsole: true}
+	oldTUI, oldWizard, oldCap, oldStdin, oldExit := setupTUIRunner, setupWizardRunner, setupConsoleCap, setupStdinConsole, setupExit
 	setupTUIRunner = func(in io.Reader, out, errw io.Writer) int {
 		rec.tuiCalled = true
 		rec.tuiIn, rec.tuiOut, rec.tuiErrw = in, out, errw
@@ -35,15 +39,21 @@ func swapSetupSeams(t *testing.T) (rec *setupRec) {
 		return rec.wizardErr
 	}
 	setupConsoleCap = func() tui.Cap { return rec.cap }
+	setupStdinConsole = func() bool {
+		rec.stdinProbes++
+		return rec.stdinConsole
+	}
 	setupExit = func(code int) { rec.exitCode = code }
 	t.Cleanup(func() {
-		setupTUIRunner, setupWizardRunner, setupConsoleCap, setupExit = oldTUI, oldWizard, oldCap, oldExit
+		setupTUIRunner, setupWizardRunner, setupConsoleCap, setupStdinConsole, setupExit = oldTUI, oldWizard, oldCap, oldStdin, oldExit
 	})
 	return rec
 }
 
 type setupRec struct {
 	cap          tui.Cap
+	stdinConsole bool // value the stdin-console probe reports
+	stdinProbes  int  // how many times the gate queried the stdin probe
 	tuiCalled    bool
 	tuiIn        io.Reader
 	tuiOut       io.Writer
