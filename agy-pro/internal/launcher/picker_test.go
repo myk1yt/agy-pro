@@ -578,21 +578,7 @@ func TestExecuteForcedNative_BatchWrapGuard(t *testing.T) {
 	}
 
 	if runtime.GOOS == "windows" {
-		if gotName != "cmd.exe" {
-			t.Errorf("batch target must be wrapped in cmd.exe, got spawn %q", gotName)
-		}
-		if len(gotArgs) != 0 {
-			t.Errorf("wrap puts the whole line on the raw command line, got args %v", gotArgs)
-		}
-		if gotCmd == nil || gotCmd.SysProcAttr == nil || gotCmd.SysProcAttr.CmdLine == "" {
-			t.Fatal("setRawCmdLine did not stamp the raw command line")
-		}
-		if !strings.Contains(gotCmd.SysProcAttr.CmdLine, "real-agy.cmd") {
-			t.Errorf("raw line must carry the batch target: %q", gotCmd.SysProcAttr.CmdLine)
-		}
-		if !strings.HasPrefix(gotCmd.SysProcAttr.CmdLine, `cmd.exe /d /v:off /s /c "`) {
-			t.Errorf("raw line must be the /d /v:off /s /c wrap: %q", gotCmd.SysProcAttr.CmdLine)
-		}
+		assertBatchWrapStamp(t, gotName, gotArgs, gotCmd)
 	} else {
 		if gotName != batch {
 			t.Errorf("non-Windows must spawn the target directly, got %q", gotName)
@@ -767,4 +753,31 @@ func TestRunSwarmFromMenuFallbackAndTimeout(t *testing.T) {
 			t.Errorf("timeout message missing:\n%s", errw.String())
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// FIX-8 disposition pin: the picker's "invalid selection" echo quotes the line
+// the USER TYPED, which is not a registry slot. It therefore stays on
+// providers.MaskOperand, and the registry-slot authority (providers.MaskSlot)
+// must not be routed here: MaskSlot rewrites a location-shaped operand to its
+// marker-stripped core ("./backups" -> "backups"), which would change the
+// bytes of a benign non-answer. The registry-borne names in this menu are
+// rendered by inventory.RenderNumbered, not by this line.
+// ---------------------------------------------------------------------------
+
+func TestPickerInvalidSelectionEchoKeepsTypedOperandRendering(t *testing.T) {
+	inv := pickerFixture()
+	var out strings.Builder
+	rel := newStdinRelay(strings.NewReader("./backups\n"))
+	pick := showModelPicker(&out, nil, rel, inv)
+	if pick.Picked {
+		t.Fatalf("a path-shaped selection must not pick, got %+v", pick.Entry)
+	}
+	msg := out.String()
+	if !strings.Contains(msg, `invalid selection "./backups"`) {
+		t.Errorf("typed operand rendering changed (MaskSlot would strip the location markers):\n%s", msg)
+	}
+	if !strings.Contains(msg, "want a number 1-") {
+		t.Errorf("grammar hint missing:\n%s", msg)
+	}
 }

@@ -120,6 +120,10 @@ func resolvePickerLine(line string, inv *inventory.Inventory, out io.Writer) Mod
 			fmt.Fprintln(out, "[agy-pro] no models in the combined inventory; continuing with External Models (bridge)")
 			return ModelPick{}
 		}
+		// FIX-8: the selection line is a TYPED operand of this command, never a
+		// registry slot, so it stays on MaskOperand (the registry-slot authority
+		// MaskSlot would strip the markers of a location-shaped answer and change
+		// the rendered bytes for a benign non-answer).
 		fmt.Fprintf(out, "[agy-pro] invalid selection %q (want a number 1-%d, a range like 3-5, or a preset p1/p2/p3); continuing with External Models (bridge)\n",
 			providers.MaskOperand(trimmed), len(inv.Entries))
 		return ModelPick{}
