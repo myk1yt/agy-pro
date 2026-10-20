@@ -227,7 +227,14 @@ func (b *Builder) pickSeats(r *bufio.Reader, out io.Writer) ([]inventory.Entry, 
 		if saved, err := b.Store.LoadPresets(); err == nil && len(saved) > 0 {
 			fmt.Fprintln(out, "Saved presets:")
 			for _, p := range saved {
-				fmt.Fprintf(out, "  %s = %s\n", p.Name, p.Numbers)
+				// The saved preset is the same free-text value kind the three
+				// preset surfaces render through providers.MaskOperand; this
+				// picker was the swarm twin that still composed both operands
+				// raw (internal/tui/screen_settings.go presetLines writes the
+				// identical "%s = %s" line, masked). A credential planted in a
+				// name or numbers field renders first-5+**** here too, and a
+				// benign pair keeps its exact bytes.
+				fmt.Fprintf(out, "  %s = %s\n", providers.MaskOperand(p.Name), providers.MaskOperand(p.Numbers))
 			}
 		}
 	}

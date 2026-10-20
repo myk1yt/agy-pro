@@ -87,7 +87,14 @@ func (r *ToolRunner) Execute(seatID int, model, provider, toolName, argsJSON str
 			}
 		}
 		if !permitted {
-			execErr = fmt.Errorf("tool %q is not in the allowed tools list for model %q", toolName, model)
+			// O7: the model id is a registry slot and the tool name is an
+			// operand, and this sentence is persisted in the log entry's Error
+			// field, which only passes the registry redactor (logger.go) and
+			// therefore keeps a bare underscore-head value raw. Mask both
+			// operands at the composition site, the way the converted logger
+			// masks its own columns; benign values render byte-identical.
+			execErr = fmt.Errorf("tool %q is not in the allowed tools list for model %q",
+				providers.MaskOperand(toolName), providers.MaskSlot(model))
 			// R13: the refusal logs the raw arguments JSON, so the network
 			// tools' operands seed the log on this exit path too.
 			argsJSON = redactNetToolArgs(toolName, argsJSON, r.SearchSource)
@@ -283,7 +290,10 @@ func (r *ToolRunner) Execute(seatID int, model, provider, toolName, argsJSON str
 		}
 
 	default:
-		execErr = fmt.Errorf("unknown tool %q", toolName)
+		// O7, same class on the dispatch default branch: the unknown tool name
+		// reaches the log entry's Error field through the same redactor-only
+		// path, so the operand masks at the composition site.
+		execErr = fmt.Errorf("unknown tool %q", providers.MaskOperand(toolName))
 	}
 
 	duration := time.Since(start)

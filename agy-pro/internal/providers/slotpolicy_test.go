@@ -1164,3 +1164,647 @@ func TestBaseURLDoorsShareTheHostStrip(t *testing.T) {
 		t.Fatalf("the add-json parser no longer reports the named base-URL refusal:\n%s", spec)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// masking fix round M1: O1 (rewrite-arm cross-separator) and O2 (Zl/Zp part arm)
+// The open sites come from docs/261018_0002_session_agy-pro-tui/followup/
+// masking-census-2026-10-21.md; the values below are synthetic.
+// ---------------------------------------------------------------------------
+
+// TestMaskSlotRewriteArmCrossSeparator pins census O1, the two-arm word/wide
+// split of the rewrite arm.
+//
+// The identity arm measures a core with the base64 alphabet ("+", "/", and "="
+// join the run) while the rewrite arm read the same core as WORDS, where all
+// three break it. A location-decorated core that reaches the 16-rune floor only
+// ACROSS those separators therefore rendered raw at the status banner id column
+// and the models --json DisplayName field while its undecorated twin masked.
+//
+// The table was measured on the pre-fix tree (the mutation revert of this fix,
+// run through -overlay). Two corrections to the census's shape list came out of
+// that measurement: the open class needs an annotation or a non-separator
+// breaker, because without one the whole-value classifier already reads the
+// rewrite's marker-stripped core; and the census's "bare slot" example
+// "./x.abcd1234+efgh5678" is NOT open on this tree for exactly that reason. Both
+// facts are pinned below (block 1 versus block 2), and every row recomputes the
+// pre-fix read first, so the table is a live before/after comparison and not a
+// restatement of the fix.
+func TestMaskSlotRewriteArmCrossSeparator(t *testing.T) {
+	// 1. The OPEN class, measured: every row below is raw on the pre-fix tree. The
+	// authority rewrites the value, the rewrite is not yet a mask, the whole-value
+	// classifier declines it (an annotation or a non-separator breaker defeats the
+	// core read), and the word read declines it too (every separator-joined piece
+	// is under the floor). The premises recompute all four conditions, so the row
+	// fails loudly if it stops isolating the split.
+	open := []struct{ name, value, want string }{
+		{"composed label, plus-joined", "./abcd1234+efgh5678 (lab)", "abcd1****"},
+		{"composed label, equals-joined", "./x.abcd1234=efgh5678 (lab)", "abcd1****"},
+		{"composed label, mixed separators", "./x.abcd1234+efgh5678=ijkl9012 (lab)", "abcd1****"},
+		{"drive-decorated composed label", `C:\x.abcd1234+efgh5678 (lab)`, "abcd1****"},
+		{"look-alike marker and composed label", "./\u2025x.abcd1234+efgh5678 (lab)", "abcd1****"},
+		{"suffix-annotated slot", "./x.abcd1234+efgh5678#tag", "abcd1****"},
+	}
+	for _, tc := range open {
+		t.Run(tc.name, func(t *testing.T) {
+			clean := StripSlotControls(tc.value)
+			out := MaskRegistryValue(clean)
+			if out == clean {
+				t.Fatalf("premise broken: the authority returned %q unchanged, so the row does not exercise the rewrite arm", tc.value)
+			}
+			pcore := stripSlotMarkers(foldSeparators(out))
+			if pcore == "" || strings.Contains(pcore, "****") {
+				t.Fatalf("premise broken: the authority's rewrite %q is already a mask or empty", out)
+			}
+			if SecretShaped(out) {
+				t.Fatalf("premise broken: the whole-value classifier already masks the rewrite %q, so the row is not part of the open class", out)
+			}
+			if slotRunScan(pcore, nil) {
+				t.Fatalf("premise broken: the pre-fix word-bounded read already masks the rewrite %q, so the row no longer isolates the split", pcore)
+			}
+			if !slotRewriteShaped(pcore, clean) {
+				t.Fatalf("slotRewriteShaped(%q) = false; want true (the separator-joined fragment reaches the floor)", pcore)
+			}
+			got := MaskSlot(tc.value)
+			if got != tc.want {
+				t.Errorf("MaskSlot(%q) = %q; want %q (cross-separator credential at the display authority)", tc.value, got, tc.want)
+			}
+			for _, leak := range []string{"abcd1234", "efgh5678", "ijkl9012"} {
+				if strings.Contains(got, leak) {
+					t.Errorf("MaskSlot(%q) = %q leaks the credential fragment %q", tc.value, got, leak)
+				}
+			}
+		})
+	}
+
+	// 2. Already closed by the OTHER classifier of the same arm. The census named
+	// "./x.abcd1234+efgh5678" as a second open shape; measured on this tree it is
+	// not, because the whole-value classifier reads the rewrite's marker-stripped
+	// core ("x." is a drive prefix, so the core is the bare run) and masks it. The
+	// rows are kept as regression pins, and the premise proves which classifier
+	// owns them, so a later edit cannot reclassify them silently.
+	for _, tc := range []struct{ value string }{
+		{"./x.abcd1234+efgh5678"},
+		{"./x.abcd1234=efgh5678"},
+		{"./x.abcd1234+efgh5678=ijkl9012"},
+		{`C:\x.abcd1234+efgh5678`},
+	} {
+		clean := StripSlotControls(tc.value)
+		out := MaskRegistryValue(clean)
+		if out == clean {
+			t.Fatalf("premise broken: the authority returned %q unchanged", tc.value)
+		}
+		if !SecretShaped(out) {
+			t.Fatalf("premise broken: the whole-value classifier no longer masks the rewrite %q, so the row belongs in the open class", out)
+		}
+		if got := MaskSlot(tc.value); got != "abcd1****" {
+			t.Errorf("MaskSlot(%q) = %q; want abcd1**** (already-closed cross-separator shape must stay masked)", tc.value, got)
+		}
+	}
+
+	// 3. The undecorated twins keep masking, each through the arm that already owns
+	// it: the bare composed label and the dotted slot reach the IDENTITY arm (the
+	// authority leaves them unchanged, which is the two-arm differential the
+	// census isolated), and the two bare separator runs are masked by the
+	// authority itself (MaskOperand reads one 17-rune contiguous run).
+	for _, twin := range []struct{ value, want string }{
+		{"abcd1234+efgh5678 (lab)", "abcd1****"},
+		{"x.abcd1234+efgh5678", "abcd1****"},
+	} {
+		if got := MaskRegistryValue(StripSlotControls(twin.value)); got != StripSlotControls(twin.value) {
+			t.Fatalf("premise broken: the authority rewrote %q, so the row does not exercise the identity arm", twin.value)
+		}
+		if got := MaskSlot(twin.value); got != twin.want {
+			t.Errorf("MaskSlot(%q) = %q; want %q (the undecorated twin keeps masking)", twin.value, got, twin.want)
+		}
+	}
+	for _, bare := range []string{"abcd1234+efgh5678", "abcd1234=efgh5678"} {
+		if MaskRegistryValue(bare) == bare {
+			t.Fatalf("premise broken: the authority left %q unchanged, so the row no longer exercises the whole-value arm", bare)
+		}
+		if got := MaskSlot(bare); got != "abcd1****" {
+			t.Errorf("MaskSlot(%q) = %q; want abcd1**** (the undecorated bare run keeps masking)", bare, got)
+		}
+	}
+
+	// The accept side: the join across "/" is OFF on the URL/path rewrite path,
+	// because a slash there is a path separator rather than a base64 rune. Every
+	// benign row below must render exactly as the authority's rewrite.
+	benign := []string{
+		"https://api.example.com/v1/completions", // the pinned benign URL rewrite
+		"https://gw.example/v1/chat/completions",
+		"https://example.com/v1",
+		"./models/gemini-pro",
+		"./models/anthropic/claude-3.5-sonnet",
+		`C:\models\gemini-pro`,
+		"meta-llama/Llama-3.3-70B-Instruct-Turbo (acme)",
+		"gpt-4.1-mini (nw)",
+	}
+	for _, v := range benign {
+		want := MaskRegistryValue(StripSlotControls(v))
+		if got := MaskSlot(v); got != want {
+			t.Errorf("MaskSlot(%q) = %q; want the authority's %q byte-identical (no masking on a benign rewrite)", v, got, want)
+		}
+	}
+	// The two URL rows would be newly masked by a slash-joining read: their
+	// rewrites carry the slash-joined 18-rune and 22-rune fragments. If this
+	// premise ever stops holding, the boundary is unexercised and the join
+	// decision needs re-derivation rather than a silent widening.
+	for _, v := range []string{"https://api.example.com/v1/completions", "https://gw.example/v1/chat/completions"} {
+		pcore := stripSlotMarkers(foldSeparators(MaskRegistryValue(v)))
+		if !slotSegmentShaped(pcore) {
+			t.Fatalf("premise broken: the wide read no longer masks the benign URL rewrite %q, so the slash boundary is unexercised", pcore)
+		}
+		if !slotRewriteIsLocationStrip(v) {
+			t.Fatalf("premise broken: %q is no longer read as a URL/path rewrite, so the slash join would apply", v)
+		}
+	}
+
+	// The documented boundary of the census's variant A: a slash-joined plant that
+	// wears a location marker stays raw, because the join across "/" is off on the
+	// URL/path rewrite path by construction. These rows render exactly as the
+	// authority rewrites them, which is the pre-fix rendering. The pins exist so
+	// the boundary cannot move in either direction without a conscious edit (a
+	// widening here, or a later fix that decides the slash class).
+	for _, v := range []string{"./x.abcd1234/efgh5678 (lab)", "https://x.abcd1234/efgh5678 (lab)"} {
+		clean := StripSlotControls(v)
+		if MaskRegistryValue(clean) == clean {
+			t.Fatalf("premise broken: the authority returned %q unchanged, so the row does not exercise the rewrite arm", v)
+		}
+		if got, want := MaskSlot(v), MaskRegistryValue(clean); got != want {
+			t.Errorf("MaskSlot(%q) = %q; want the authority's %q (the slash join stays off on the URL/path rewrite path)", v, got, want)
+		}
+	}
+}
+
+// TestMaskSlotComposedLabelAtTheConvertedSinks pins the end-to-end property of
+// census O1 at the two named sinks without writing a registry: the status banner
+// id column (cmd/agy/main.go, providers.MaskSlot(providers.DisplayName(m.ID,
+// p.Name))) and the models --json DisplayName field (internal/inventory builds
+// Entry.DisplayName through providers.DisplayName, cmd/agy/pro_models.go masks
+// it). The composition is driven exactly as those sinks build it, and the sink
+// source is pinned at the delegation shape so a sink cannot move off the
+// authority while this row stays green.
+func TestMaskSlotComposedLabelAtTheConvertedSinks(t *testing.T) {
+	// The banner column and the inventory mid column, composed the way the sinks
+	// compose it: DisplayName(id, providerName).
+	label := DisplayName("./abcd1234+efgh5678", "lab")
+	if label != "./abcd1234+efgh5678 (lab)" {
+		t.Fatalf("DisplayName composition moved: %q", label)
+	}
+	if got := MaskSlot(label); got != "abcd1****" {
+		t.Errorf("MaskSlot(%q) = %q; want abcd1**** (status banner id column and models --json DisplayName)", label, got)
+	}
+	// The inventory id column masks the raw id (inventory.RenderNumbered), and
+	// the models --json twin masks each field; the bare slot is the same plant
+	// without the annotation.
+	for _, sinkValue := range []string{
+		"./x.abcd1234+efgh5678",       // RenderNumbered id width and cell
+		"./x.abcd1234+efgh5678 (lab)", // Entry.DisplayName as inventory builds it
+		DisplayName("./x.abcd1234+efgh5678", "lab"),
+	} {
+		if got := MaskSlot(sinkValue); got != "abcd1****" {
+			t.Errorf("MaskSlot(%q) = %q; want abcd1**** (converted inventory sink value)", sinkValue, got)
+		}
+	}
+	// Benign composed labels stay byte-identical at the same sinks.
+	for _, pair := range [][2]string{
+		{"./models/gemini-pro", "acme"},
+		{"meta-llama/Llama-3.3-70B-Instruct-Turbo", "acme"},
+		{"gpt-4.1-mini", "nw"},
+	} {
+		l := DisplayName(pair[0], pair[1])
+		if got, want := MaskSlot(l), MaskRegistryValue(StripSlotControls(l)); got != want {
+			t.Errorf("MaskSlot(%q) = %q; want the authority's %q byte-identical", l, got, want)
+		}
+	}
+
+	// The delegation shape of the three sinks this property depends on. Whitespace
+	// is ignored, so a reformat (a line break inside the call) does not fail the
+	// pin, while a sink that stops composing through DisplayName or stops routing
+	// the composition through MaskSlot does.
+	sinks := []struct{ file, want string }{
+		{filepath.Join("..", "..", "cmd", "agy", "main.go"), "providers.MaskSlot(providers.DisplayName("},
+		{filepath.Join("..", "inventory", "inventory.go"), "DisplayName:providers.DisplayName("},
+		{filepath.Join("..", "inventory", "inventory.go"), "providers.MaskSlot(e.DisplayName)"},
+		{filepath.Join("..", "..", "cmd", "agy", "pro_models.go"), "inv.Entries[i].DisplayName=providers.MaskSlot("},
+	}
+	for _, sink := range sinks {
+		raw, err := os.ReadFile(sink.file)
+		if err != nil {
+			t.Fatalf("read %s: %v", sink.file, err)
+		}
+		compact := strings.Map(func(r rune) rune {
+			if unicode.IsSpace(r) {
+				return -1
+			}
+			return r
+		}, string(raw))
+		if !strings.Contains(compact, sink.want) {
+			t.Errorf("%s no longer contains %q: the sink stopped composing or masking through the shared authority", sink.file, sink.want)
+		}
+	}
+}
+
+// TestBaseURLPartArmLineSeparatorStrip pins census O2, the Zl/Zp residual of the
+// URL PART arms. The host label strips Zs/Zl/Zp (fix8-7), but the path, query,
+// fragment, userinfo, and Opaque arms classify through MaskSlot, whose strips
+// delete Cc+Cf and Cc/Cf/Mn/Me only. A U+2028 or U+2029 inside a part therefore
+// survives into the run scan and FLUSHES the run, so
+// "https://<host>/v1/<head>_<12-rune run><U+2028><14-rune run>" was the identity
+// of the authority at all three doors and echoed raw later (the display side
+// shares the classifier).
+//
+// The fix is a part-arm-only Zl/Zp strip (stripURIPartLineSeparators). The fold
+// helpers keep their classes, which this test pins separately so a later
+// "unification" cannot move a path/query/fragment verdict through them.
+func TestBaseURLPartArmLineSeparatorStrip(t *testing.T) {
+	// 1. Membership: the part strip carries exactly Zl and Zp.
+	for _, r := range []rune{'\u2028', '\u2029'} {
+		if !isSlotURIPartLineSeparatorRune(r) {
+			t.Errorf("U+%04X must be a part-arm strip member (Zl/Zp)", r)
+		}
+	}
+	for _, r := range []rune{' ', '\u00a0', '\u2007', '\u202f', '\u3000', '\u200b', '\u202e', '\ufeff', '\u0301', 'a', '0', '/', '.', '+', '=', '\u00e9'} {
+		if isSlotURIPartLineSeparatorRune(r) {
+			t.Errorf("U+%04X must NOT be a part-arm strip member (the fold's classes stay separate)", r)
+		}
+	}
+	// 2. The fold helpers keep their classes (the fix8-7 boundary): the fold
+	// deletes Cc/Cf/Mn/Me, rewrites non-ASCII separator members, and leaves a line
+	// or paragraph separator alone.
+	if got, want := foldSeparators("ab3def7\u2028gh9jk1mnpqr5t"), "ab3def7\u2028gh9jk1mnpqr5t"; got != want {
+		t.Errorf("foldSeparators rewrote a line separator (%q); the fold's class is unchanged", got)
+	}
+	if got, want := foldSeparators("ab3def7\u00a0gh9jk1mnpqr5t"), "ab3def7/gh9jk1mnpqr5t"; got != want {
+		t.Errorf("foldSeparators(space-separated core) = %q; want %q (the Zs rewrite is the fold's contract)", got, want)
+	}
+	if got, want := stripURIPartLineSeparators("api.example.com"), "api.example.com"; got != want {
+		t.Errorf("stripURIPartLineSeparators(%q) = %q; want the identity", "api.example.com", got)
+	}
+	if got, want := stripURIPartLineSeparators("ab\u2028cd\u2029ef\u00a0"), "abcdef\u00a0"; got != want {
+		t.Errorf("stripURIPartLineSeparators(line-separated part) = %q; want %q", got, want)
+	}
+
+	// 3. The refuse side, one row per part arm. Each row recomputes the pre-fix
+	// blindness (the part, with only its control runes stripped as MaskSlot's first
+	// stage does, is the identity) and the post-fix classification (the stripped
+	// part masks), so the strip is load-bearing on every row rather than incidental
+	// to another arm.
+	refuse := []struct{ name, url, encoded, part string }{
+		{
+			"path segment, raw U+2028",
+			"https://gw.example/v1/sk_live_0123456789ab\u2028cdefgh56789012",
+			"\u2028",
+			"sk_live_0123456789ab\u2028cdefgh56789012",
+		},
+		{
+			"path segment, raw U+2029",
+			"https://gw.example/v1/sk_live_0123456789ab\u2029cdefgh56789012",
+			"\u2029",
+			"sk_live_0123456789ab\u2029cdefgh56789012",
+		},
+		{
+			"path segment, percent-encoded U+2028",
+			"https://gw.example/v1/sk_live_0123456789ab%E2%80%A8cdefgh56789012",
+			"%E2%80%A8",
+			"sk_live_0123456789ab\u2028cdefgh56789012",
+		},
+		{
+			"query value, raw U+2028",
+			"https://gw.example/v1?api_key=sk_live_0123456789ab\u2028cdefgh56789012",
+			"\u2028",
+			"sk_live_0123456789ab\u2028cdefgh56789012",
+		},
+		{
+			"query key, raw U+2028",
+			"https://gw.example/v1?sk_live_0123456789ab\u2028cdefgh56789012=1",
+			"\u2028",
+			"sk_live_0123456789ab\u2028cdefgh56789012",
+		},
+		{
+			"fragment, raw U+2028",
+			"https://gw.example/v1#sk_live_0123456789ab\u2028cdefgh56789012",
+			"\u2028",
+			"sk_live_0123456789ab\u2028cdefgh56789012",
+		},
+		{
+			"userinfo password, percent-encoded U+2028",
+			"https://user:sk_live_0123456789ab%E2%80%A8cdefgh56789012@gw.example/v1",
+			"%E2%80%A8",
+			"sk_live_0123456789ab\u2028cdefgh56789012",
+		},
+		{
+			"userinfo username, percent-encoded U+2029",
+			"https://sk_live_0123456789ab%E2%80%A9cdefgh56789012@gw.example/v1",
+			"%E2%80%A9",
+			"sk_live_0123456789ab\u2029cdefgh56789012",
+		},
+		{
+			"opaque slot, raw U+2028",
+			"https:sk_live_0123456789ab\u2028cdefgh56789012",
+			"\u2028",
+			"sk_live_0123456789ab\u2028cdefgh56789012",
+		},
+	}
+	for _, tc := range refuse {
+		t.Run(tc.name, func(t *testing.T) {
+			if !strings.Contains(tc.url, tc.encoded) {
+				t.Fatalf("premise: %q does not carry %q", tc.url, tc.encoded)
+			}
+			// The whole-value arms are the identity on the row: nothing but the part
+			// arm can decide it.
+			if SecretShaped(tc.url) || MaskOperand(tc.url) != tc.url {
+				t.Fatalf("premise: the whole-value arms already refuse %q, so the row no longer isolates a part arm", tc.url)
+			}
+			if u, err := url.Parse(tc.url); err == nil && baseURLHostCarriesCredential(u.Hostname()) {
+				t.Fatalf("premise: the host arm already refuses %q, so the row no longer isolates a part arm", tc.url)
+			}
+			// Pre-fix blindness: with the line separator still in place, MaskSlot is
+			// the identity on the part (its own Cc/Cf strip is the only change).
+			if got := MaskSlot(StripSlotControls(tc.part)); got != StripSlotControls(tc.part) {
+				t.Fatalf("premise broken: MaskSlot(%q) = %q, so the part already classified as credential material before the strip", tc.part, got)
+			}
+			// Post-fix: the stripped part is credential material, and the part arm
+			// says so.
+			if stripped := stripURIPartLineSeparators(tc.part); MaskSlot(stripped) == stripped {
+				t.Fatalf("premise broken: MaskSlot(%q) is the identity, so the strip does not join the run", stripped)
+			}
+			if !baseURLPartCarriesCredential(tc.part) {
+				t.Errorf("baseURLPartCarriesCredential(%q) = false; want true (run split by a line separator)", tc.part)
+			}
+			if !BaseURLCarriesCredential(tc.url) {
+				t.Errorf("BaseURLCarriesCredential(%q) = false; want true", tc.url)
+			}
+			if err := wizardBaseURLRefused(tc.url); err == nil {
+				t.Errorf("wizardBaseURLRefused(%q) = nil; want the credential refusal", tc.url)
+			}
+			if !BaseURLCarriesCredential("  " + tc.url + "\t") {
+				t.Errorf("the padded form of %q is accepted; every door trims before it classifies", tc.url)
+			}
+		})
+	}
+
+	// 3b. The mixed spelling: a decoded control rune next to a line separator. The
+	// part arm's value comparison changes on the control strip alone, so this row is
+	// refused by the control rule rather than by the line-separator strip, and the
+	// mutation revert that removes the strip leaves it green. It is kept as a
+	// spelling-coverage row, with the governing rule recorded: if the control rule
+	// ever stops changing the value, this row stops being refused and the assertion
+	// below says so.
+	mixedPart := "sk_live_0123456789ab\u2029\u0007cdefgh56789012"
+	mixedURL := "https://gw.example/v1?api_key=sk_live_0123456789ab%E2%80%A9%07cdefgh56789012"
+	if MaskSlot(mixedPart) == mixedPart {
+		t.Fatalf("premise broken: the control rune no longer changes %q under MaskSlot, so the row now depends on the Zl/Zp strip", mixedPart)
+	}
+	if !baseURLPartCarriesCredential(mixedPart) {
+		t.Errorf("baseURLPartCarriesCredential(%q) = false; want true (control rune in the part)", mixedPart)
+	}
+	if !BaseURLCarriesCredential(mixedURL) {
+		t.Errorf("BaseURLCarriesCredential(%q) = false; want true", mixedURL)
+	}
+	if err := wizardBaseURLRefused(mixedURL); err == nil {
+		t.Errorf("wizardBaseURLRefused(%q) = nil; want the credential refusal", mixedURL)
+	}
+
+	// 4. The accept side: a line separator in a NON-credential position stays
+	// benign (the strip is the identity on the classification), and benign URLs
+	// without one render byte-identically.
+	for _, benign := range []string{
+		"https://gw.example/v1/acme\u2028gateway",
+		"https://gw.example/v1/acme\u2029gateway",
+		"https://gw.example/v1/\u2028",
+		"https://api.openai.com/v1",
+		"https://gw.example/v1",
+	} {
+		if BaseURLCarriesCredential(benign) {
+			t.Errorf("BaseURLCarriesCredential(%q) = true; want false (benign part)", benign)
+		}
+		if got, want := MaskSlot(benign), MaskRegistryValue(StripSlotControls(benign)); got != want {
+			t.Errorf("MaskSlot(%q) = %q; want the authority's %q byte-identical", benign, got, want)
+		}
+	}
+
+	// 5. The pinned URL corpus is unchanged, structurally: no row carries a Zl/Zp
+	// outside the host label, so the part-arm strip is the identity on every part
+	// of every row and no verdict can move. The row count is the round's baseline;
+	// a later edit that adds or drops a row must revisit this proof.
+	const corpusRowsThisRound = 76
+	if len(baseURLAuthorityCorpus) != corpusRowsThisRound {
+		t.Fatalf("the URL corpus moved (%d rows, this round pinned %d); re-verify the part-arm strip against the new rows", len(baseURLAuthorityCorpus), corpusRowsThisRound)
+	}
+	for _, tc := range baseURLAuthorityCorpus {
+		if got := BaseURLCarriesCredential(tc.url); got != tc.refuse {
+			t.Errorf("corpus row %q moved: BaseURLCarriesCredential(%q) = %v, want %v", tc.name, tc.url, got, tc.refuse)
+		}
+		if !strings.ContainsAny(tc.url, "\u2028\u2029") {
+			continue
+		}
+		u, err := url.Parse(strings.TrimSpace(tc.url))
+		if err != nil {
+			t.Fatalf("corpus row %q no longer parses: %v", tc.name, err)
+		}
+		if !strings.ContainsAny(u.Host, "\u2028\u2029") {
+			t.Fatalf("corpus row %q carries a line separator outside the host label; the part-arm strip would decide it", tc.name)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The percent-encoded part hole: the path and Opaque segment loop classified
+// every segment RAW. url.Parse decodes the path slot once, but a hostless
+// "https:<value>" spelling lands in u.Opaque verbatim, so an escape-encoded
+// line separator (or a fully escape-encoded credential) kept its "%" bytes and
+// the run scan flushed at each of them. Each segment is now classified in its
+// decoded form as well (url.PathUnescape), beside the raw read; a segment whose
+// escapes are malformed stays raw-only.
+// ---------------------------------------------------------------------------
+
+// TestBaseURLPercentDecodedPartArm pins the decoded read of the path and Opaque
+// segment loop in three parts: the rows where that read is the deciding arm,
+// the spellings that were already refused before it, and the rows that must not
+// move (malformed escapes, benign legal escapes).
+func TestBaseURLPercentDecodedPartArm(t *testing.T) {
+	// 1. The isolating rows: the decoded read decides them. Every row proves its
+	// own premises (the raw segment is accepted, the whole-value arms and the
+	// host arm are the identity, the decoded segment is credential material), so
+	// a later change that closes a row through another arm says so instead of
+	// passing silently.
+	isolating := []struct {
+		name    string
+		url     string
+		rawPart string
+		decoded string
+	}{
+		{
+			name:    "hostless Opaque slot, escape-encoded U+2028",
+			url:     "https:sk_live_0123456789ab%e2%80%a8cdefgh5678",
+			rawPart: "sk_live_0123456789ab%e2%80%a8cdefgh5678",
+			decoded: "sk_live_0123456789ab\u2028cdefgh5678",
+		},
+		{
+			name:    "hostless Opaque slot, fully escape-encoded credential",
+			url:     "https:%73%6b%5f%6c%69%76%65%5f%30%31%32%33%34%35%36%37%38%39%61%62%63%64%65%66",
+			rawPart: "%73%6b%5f%6c%69%76%65%5f%30%31%32%33%34%35%36%37%38%39%61%62%63%64%65%66",
+			decoded: "sk_live_0123456789abcdef",
+		},
+		{
+			name:    "path segment, double-encoded credential",
+			url:     "https://gw.example/v1/%2573%256b%255f%256c%2569%2576%2565%255f%2530%2531%2532%2533%2534%2535%2536%2537%2538%2539%2561%2562%2563%2564%2565%2566",
+			rawPart: "%73%6b%5f%6c%69%76%65%5f%30%31%32%33%34%35%36%37%38%39%61%62%63%64%65%66",
+			decoded: "sk_live_0123456789abcdef",
+		},
+	}
+	for _, tc := range isolating {
+		t.Run(tc.name, func(t *testing.T) {
+			u, err := url.Parse(tc.url)
+			if err != nil {
+				t.Fatalf("premise: url.Parse rejects the row: %v", err)
+			}
+			if slot := u.Path + u.Opaque; !strings.Contains(slot, tc.rawPart) {
+				t.Fatalf("premise: the path/Opaque slot %q does not carry the raw segment %q", slot, tc.rawPart)
+			}
+			if SecretShaped(tc.url) || MaskOperand(tc.url) != tc.url {
+				t.Fatalf("premise: a whole-value arm already refuses the row, so it no longer isolates the decoded read")
+			}
+			if baseURLHostCarriesCredential(u.Hostname()) {
+				t.Fatalf("premise: the host arm already refuses the row")
+			}
+			// The hole: the raw segment is accepted by the part arm.
+			if baseURLPartCarriesCredential(tc.rawPart) {
+				t.Fatalf("premise broken: the raw segment already classifies as credential material, so the decoded read is not what decides the row")
+			}
+			decoded, err := url.PathUnescape(tc.rawPart)
+			if err != nil || decoded != tc.decoded {
+				t.Fatalf("premise: url.PathUnescape(%q) = %q, %v; want %q", tc.rawPart, decoded, err, tc.decoded)
+			}
+			if !baseURLPartCarriesCredential(tc.decoded) {
+				t.Fatalf("premise broken: the decoded part %q does not classify as credential material", tc.decoded)
+			}
+			if !BaseURLCarriesCredential(tc.url) {
+				t.Errorf("BaseURLCarriesCredential(%q) = false; want true (escape-encoded part)", tc.url)
+			}
+			if err := wizardBaseURLRefused(tc.url); err == nil {
+				t.Errorf("wizardBaseURLRefused(%q) = nil; want the credential refusal", tc.url)
+			}
+			if !BaseURLCarriesCredential("  " + tc.url + "\t") {
+				t.Errorf("the padded form of %q is accepted; every door trims before it classifies", tc.url)
+			}
+		})
+	}
+
+	// 2. Spelling coverage: the rows the review named that were already refused
+	// before the decoded read, kept so the spellings stay refused. Each row also
+	// asserts the arm that owns it (the raw part read), so the row's verdict has
+	// a measured owner rather than riding on another arm silently.
+	//
+	// The lowercase row's post-escape tail ("a8cdefgh56789012") lands exactly on
+	// the 16-rune floor, which is why the raw read already caught it; the
+	// isolating rows above shorten the tail to put the decoded read in charge.
+	// The uppercase row is also refused by a whole-value arm (MaskOperand is not
+	// the identity on it, see the premise below), which is the "different arm
+	// incidentally" the round recorded.
+	coverage := []struct {
+		name    string
+		url     string
+		rawPart string
+	}{
+		{
+			name:    "hostless Opaque slot, lowercase escapes at the run floor",
+			url:     "https:sk_live_0123456789ab%e2%80%a8cdefgh56789012",
+			rawPart: "sk_live_0123456789ab%e2%80%a8cdefgh56789012",
+		},
+		{
+			name:    "hostless Opaque slot, uppercase escapes",
+			url:     "https:sk_live_0123456789ab%E2%80%A8cdefgh56789012",
+			rawPart: "sk_live_0123456789ab%E2%80%A8cdefgh56789012",
+		},
+		{
+			name:    "path segment, single-encoded credential",
+			url:     "https://gw.example/v1/%73%6b%5f%6c%69%76%65%5f0123456789abcdef",
+			rawPart: "sk_live_0123456789abcdef",
+		},
+	}
+	for _, tc := range coverage {
+		t.Run(tc.name, func(t *testing.T) {
+			if !baseURLPartCarriesCredential(tc.rawPart) {
+				t.Errorf("the raw part read no longer refuses %q; re-derive the row's verdict", tc.rawPart)
+			}
+			if !BaseURLCarriesCredential(tc.url) {
+				t.Errorf("BaseURLCarriesCredential(%q) = false; want true", tc.url)
+			}
+		})
+	}
+	if MaskOperand("https:sk_live_0123456789ab%E2%80%A8cdefgh56789012") == "https:sk_live_0123456789ab%E2%80%A8cdefgh56789012" {
+		t.Errorf("premise: MaskOperand became the identity on the uppercase spelling; the row's incidental owner changed")
+	}
+
+	// 3. A segment whose escapes do not decode legally is classified raw only,
+	// so its verdict is exactly what it was before the decoded read: ACCEPTED
+	// (the raw run stays under the floor). url.Parse accepts the hostless form
+	// and keeps the malformed escape in Opaque, which is what makes this row
+	// reach the part arm at all.
+	const (
+		malformedURL  = "https:sk_live_0123456789ab%2"
+		malformedPart = "sk_live_0123456789ab%2"
+	)
+	if _, err := url.PathUnescape(malformedPart); err == nil {
+		t.Fatalf("premise: url.PathUnescape decodes the malformed escape, so the row no longer tests the raw-only branch")
+	}
+	if _, err := url.Parse(malformedURL); err != nil {
+		t.Fatalf("premise: url.Parse rejects the hostless spelling (%v), so the row would test the fail-closed arm", err)
+	}
+	if baseURLPartCarriesCredential(malformedPart) {
+		t.Errorf("baseURLPartCarriesCredential(%q) = true; want false (raw classification)", malformedPart)
+	}
+	if BaseURLCarriesCredential(malformedURL) {
+		t.Errorf("BaseURLCarriesCredential(%q) = true; want false: a malformed escape is classified raw, exactly as before the decoded read", malformedURL)
+	}
+
+	// 4. The accept side: benign legal escapes keep their exact verdicts. The
+	// path rows are already decoded by url.Parse; the Opaque rows are decoded by
+	// the new read, so both spellings of the same benign value are pinned.
+	for _, benign := range []struct{ url, decodedPart string }{
+		{"https://gw.example/v1/acme%20gateway", "acme gateway"},
+		{"https:acme%20gateway", "acme gateway"},
+		{"https://gw.example/v1/%61%62%63", "abc"},
+		{"https:%61%62%63", "abc"},
+	} {
+		if baseURLPartCarriesCredential(benign.decodedPart) {
+			t.Errorf("the decoded benign part %q classifies as credential material", benign.decodedPart)
+		}
+		if BaseURLCarriesCredential(benign.url) {
+			t.Errorf("BaseURLCarriesCredential(%q) = true; want false (benign legal escape)", benign.url)
+		}
+	}
+
+	// 5. The decode function choice: the segment loop decodes with
+	// url.PathUnescape, which keeps a literal "+" as the base64 rune it is.
+	// url.QueryUnescape would turn the same literal "+" into a space, split the
+	// run below the floor, and accept the plant. The two decoders differ only on
+	// a literal "+", so the row below carries one beside an escape: the raw read
+	// accepts (the "%" splits the run), the path-decoded read refuses (one long
+	// run), and the query-decoded read would accept (the space splits it). A
+	// swap of the decoded read to the form decoder fails this row.
+	const plusURL = "https:abcd1234+efgh%2b5678"
+	const plusRaw = "abcd1234+efgh%2b5678"
+	const plusPathDecoded = "abcd1234+efgh+5678"
+	const plusQueryDecoded = "abcd1234 efgh+5678"
+	if decoded, err := url.PathUnescape(plusRaw); err != nil || decoded != plusPathDecoded {
+		t.Fatalf("premise: url.PathUnescape(%q) = %q, %v; want %q", plusRaw, decoded, err, plusPathDecoded)
+	}
+	if decoded, err := url.QueryUnescape(plusRaw); err != nil || decoded != plusQueryDecoded {
+		t.Fatalf("premise: url.QueryUnescape(%q) = %q, %v; want %q (the row's discriminator)", plusRaw, decoded, err, plusQueryDecoded)
+	}
+	if baseURLPartCarriesCredential(plusRaw) {
+		t.Fatalf("premise broken: the raw segment already classifies, so the row no longer isolates the decoded read")
+	}
+	if !baseURLPartCarriesCredential(plusPathDecoded) {
+		t.Fatalf("premise broken: the path-decoded part %q is not credential material", plusPathDecoded)
+	}
+	if baseURLPartCarriesCredential(plusQueryDecoded) {
+		t.Fatalf("premise broken: the query-decoded part %q classifies, so the row no longer discriminates the decode function", plusQueryDecoded)
+	}
+	if !BaseURLCarriesCredential(plusURL) {
+		t.Errorf("BaseURLCarriesCredential(%q) = false; want true: the decoded read must keep a literal + as a base64 rune", plusURL)
+	}
+}

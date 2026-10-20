@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"agypro/internal/providers"
 )
 
 // ladderEnv isolates the whole resolution environment: a private AGY_PRO_HOME
@@ -662,8 +664,9 @@ func TestLadderPresetOperandMaskedEverywhere(t *testing.T) {
 // in the userinfo slot) is masked in every reachable echo. MaskOperand's
 // "://" location exemption used to render such a name raw in the not-found
 // error and the dangling-default warning; a preset name is never a legitimate
-// location, so both slots route through providers.MaskRegistryValue, which
-// classifies the stripped core and the "://" segments. The planted value is
+// location, so both slots route through providers.MaskSlot, the registry-slot
+// display authority, which classifies the stripped core, the "://" segments,
+// and the policy's decorated classes. The planted value is
 // the package's own AWS-secret fixture wearing a URL userinfo costume.
 func TestLadderPresetUserinfoOperandMasked(t *testing.T) {
 	home, stderr := ladderEnv(t)
@@ -723,5 +726,78 @@ func TestLadderPresetUserinfoOperandMasked(t *testing.T) {
 	}
 	if strings.Contains(stderr.String(), planted) || !strings.Contains(stderr.String(), maskedHead) {
 		t.Errorf("dangling userinfo default key warning = %q; want the masked name", stderr.String())
+	}
+}
+
+// Census O5 pin: the two preset echoes in loadActivePreset (the dangling
+// default_preset warning and the flag/env not-found error) render through
+// providers.MaskSlot, the single registry-slot display authority, instead of the
+// pre-policy providers.MaskRegistryValue. The plant is the discriminating shape:
+// MaskRegistryValue is the IDENTITY on a look-alike-decorated value (its core
+// classifiers predate the policy fold, so the decoration breaks every run they
+// read), which is how the credential core rendered raw in both echoes. The
+// benign corpus holds both echoes byte-identically.
+func TestLadderPresetEchoesRouteThroughSlotAuthority(t *testing.T) {
+	home, stderr := ladderEnv(t)
+	const core = "ab3def7gh9jk1mnpqr5t"
+	const masked = "ab3de****"
+	plant := "\u2025/" + core
+
+	// Premise: the stale authority returns the plant unchanged and the slot
+	// authority masks it, so a reverted call site turns every block below red.
+	if got := providers.MaskRegistryValue(plant); got != plant {
+		t.Fatalf("premise broken: MaskRegistryValue(%q) = %q; want identity", plant, got)
+	}
+	if got := providers.MaskSlot(plant); got != masked {
+		t.Fatalf("premise broken: MaskSlot(%q) = %q; want %q", plant, got, masked)
+	}
+
+	// Dangling default_preset: warning only, masked, run continues preset-less.
+	savePresetsFile(t, home, &PresetsFile{
+		Presets:       []Preset{{Name: "main", N: 4}},
+		DefaultPreset: plant,
+	})
+	cfg, err := buildRunConfig(ladderFlags(stderr), "p")
+	if err != nil {
+		t.Fatalf("dangling decorated default key must warn, not error: %v", err)
+	}
+	if cfg.N != 3 {
+		t.Errorf("dangling decorated default key N = %d; want engine default 3", cfg.N)
+	}
+	if strings.Contains(stderr.String(), core) || strings.Contains(stderr.String(), plant) {
+		t.Errorf("dangling default key warning leaks the credential: %q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), masked) {
+		t.Errorf("dangling default key warning = %q; want the masked name %q", stderr.String(), masked)
+	}
+
+	// Flag-selected name: the not-found error masks the same operand.
+	f := ladderFlags(stderr)
+	f.preset = plant
+	if _, err := buildRunConfig(f, "p"); err == nil ||
+		strings.Contains(err.Error(), plant) || strings.Contains(err.Error(), core) ||
+		!strings.Contains(err.Error(), masked) {
+		t.Errorf("--preset decorated operand error = %v; want the masked name %q", err, masked)
+	}
+
+	// Benign corpus: both echoes keep the name byte-identically.
+	savePresetsFile(t, home, &PresetsFile{
+		Presets:       []Preset{{Name: "main", N: 4}},
+		DefaultPreset: "nightly",
+	})
+	stderr.Reset()
+	if _, err := buildRunConfig(ladderFlags(stderr), "p"); err != nil {
+		t.Fatalf("dangling benign default key must warn, not error: %v", err)
+	}
+	wantWarn := "fanout: warning: default preset \"nightly\" not found in fanout-presets.json; running without a preset\n"
+	if stderr.String() != wantWarn {
+		t.Errorf("benign default-key warning drifted\n got: %q\nwant: %q", stderr.String(), wantWarn)
+	}
+	f = ladderFlags(stderr)
+	f.preset = "nightly"
+	if _, err := buildRunConfig(f, "p"); err == nil {
+		t.Fatal("benign unknown --preset must fail")
+	} else if want := "preset \"nightly\" not found in fanout-presets.json"; err.Error() != want {
+		t.Errorf("benign --preset error drifted\n got: %q\nwant: %q", err.Error(), want)
 	}
 }

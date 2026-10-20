@@ -307,14 +307,21 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request, reg *provider
 
 	target, err := findBestTarget(reg, modelReq)
 	if err != nil {
-		writeJSONError(w, http.StatusNotFound, fmt.Sprintf("model %q not found in configured providers", modelReq), "model_not_found")
+		// The request model operand is client-supplied, so it routes through
+		// the operand authority: a credential-shaped value pasted into the
+		// request cannot render raw in the JSON error body, and a benign spec
+		// keeps its exact bytes.
+		writeJSONError(w, http.StatusNotFound, fmt.Sprintf("model %q not found in configured providers", providers.MaskOperand(modelReq)), "model_not_found")
 		return
 	}
 
 	apiKey := strings.TrimSpace(target.Provider.KeyValue())
 	if target.Provider.APIKeyEnv != "" && apiKey == "" {
+		// Provider name is a registry slot (MaskSlot), the env name is an
+		// operand (MaskOperand): the same split the converted sibling
+		// surfaces use, so neither slot can render a credential raw here.
 		writeJSONError(w, http.StatusUnauthorized,
-			fmt.Sprintf("API key for provider %s (%s) is not configured or empty in environment", target.Provider.Name, target.Provider.APIKeyEnv),
+			fmt.Sprintf("API key for provider %s (%s) is not configured or empty in environment", providers.MaskSlot(target.Provider.Name), providers.MaskOperand(target.Provider.APIKeyEnv)),
 			"authentication_error")
 		return
 	}
@@ -426,7 +433,9 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request, reg *provider
 			rw.WriteHeader(http.StatusBadGateway)
 			_ = json.NewEncoder(rw).Encode(map[string]any{
 				"error": map[string]any{
-					"message": fmt.Sprintf("bridge error contacting provider %q: %v", target.Provider.Name, proxyErr),
+					// The provider name is a registry slot, so it masks through
+					// the slot authority on the way into the JSON body.
+					"message": fmt.Sprintf("bridge error contacting provider %q: %v", providers.MaskSlot(target.Provider.Name), proxyErr),
 					"type":    "bad_gateway",
 					"code":    http.StatusBadGateway,
 				},
@@ -522,7 +531,10 @@ func findBestTarget(reg *providers.Registry, modelSpec string) (providers.Target
 		}
 	}
 
-	return providers.Target{}, fmt.Errorf("model %q not found in configured providers", modelSpec)
+	// The spec is an operand (the request model field), so the same operand
+	// authority the handler uses masks it here; the sibling registry lookup
+	// (providers/selection.go) renders the same sentence the same way.
+	return providers.Target{}, fmt.Errorf("model %q not found in configured providers", providers.MaskOperand(modelSpec))
 }
 
 func setCorsHeaders(w http.ResponseWriter) {

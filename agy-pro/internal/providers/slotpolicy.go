@@ -211,6 +211,56 @@ func stripHostLabelInvisibles(v string) string {
 	}, v)
 }
 
+// isSlotURIPartLineSeparatorRune reports whether r is deleted from one URL PART
+// before the part is classified: the two line-separator classes, Zl (U+2028 LINE
+// SEPARATOR) and Zp (U+2029 PARAGRAPH SEPARATOR).
+//
+// They are named HERE, and not added to isSlotInvisibleRune or to the separator
+// class, because both of those sets are pinned: the fold's deletion set is Cc,
+// Cf, Mn, Me and its rewrite set is the non-ASCII separator class, so admitting
+// Zl or Zp to either would move a path, query, fragment, or Opaque verdict the
+// fix8-7 boundary owns (TestBaseURLHostLabelSpaceSeparatorStrip asserts both
+// sets separately). A Zl/Zp member is neither invisible to the fold nor a slash
+// look-alike: nothing deletes it, nothing rewrites it, and the run scan
+// therefore FLUSHES at it.
+//
+// The host label already carries the same two members inside its own wider
+// strip. This is that arm's part-side twin, kept separate for the reason above:
+// a host label has no fold, a part does, and the fold's Zs rewrite ("to a
+// slash") is the part-side answer for the space class.
+func isSlotURIPartLineSeparatorRune(r rune) bool {
+	return unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r)
+}
+
+// stripURIPartLineSeparators deletes the part-arm class (see
+// isSlotURIPartLineSeparatorRune) from one URL part, so the part is classified in
+// the form a transport carries it. Zl and Zp are not legitimate characters of a
+// path segment, a query key or value, a fragment, a userinfo operand, or the
+// Opaque slot; url.Parse keeps them inside the part and no transport rule
+// rejects them, so they were the one decoration left after the host arm closed
+// its own (fix8-7). The measured shape is
+// "<head>_<12-rune run><U+2028><14-rune run>": neither half reaches the 16-rune
+// floor, nothing deletes the separator, so the run scan flushed in the middle and
+// the part was the IDENTITY of MaskSlot at every URL door while the display side
+// (which shares the classifier) echoed it raw. Deleting the member joins the
+// halves exactly as the undecorated twin is joined.
+//
+// The strip is the identity on a part with no member rune, so every pre-existing
+// part verdict is byte-identical: no pinned corpus row carries a Zl/Zp in a part
+// slot (the fix8-7 rows carry theirs in the host label, which this arm never
+// reads).
+func stripURIPartLineSeparators(v string) string {
+	if v == "" {
+		return v
+	}
+	return strings.Map(func(r rune) rune {
+		if isSlotURIPartLineSeparatorRune(r) {
+			return -1
+		}
+		return r
+	}, v)
+}
+
 // foldSeparators deletes the invisible runes (Cc, Cf, Mn, Me) and rewrites
 // every NON-ASCII separator-class rune to a single ASCII "/", so a decoration
 // outside ASCII reduces exactly like its ASCII twin: a leading look-alike is a
@@ -387,32 +437,73 @@ func slotOpaqueRunShaped(s string) bool {
 // readable inside the label. The ingest classifier stays whole-value: a composed
 // label is never a model field, so this arm is display-only and can only mask.
 func slotSegmentShaped(core string) bool {
-	return slotRunScan(core, true)
+	return slotRunScan(core, slotJoinSlashAlphabet)
 }
 
-// slotWordShaped is the same floor over WORDS: '=', '+', and '/' break a word
-// too, so a path component cannot join its neighbors.
+// slotRewriteShaped is the arm for a value the registry-slot authority REWROTE,
+// and it reads fragments rather than words.
 //
-// It is the arm for a value the registry-slot authority REWROTE. The authority
-// strips a leading scheme or drive before its own classifiers run, so a benign
-// location comes back as a bare path ("https://api.example.com/v1/completions"
-// becomes "api.example.com/v1/completions"). Read with the segment arm, the
-// last three path components join over their slashes into an 18-rune run and a
-// pinned benign URL would mask; read as words, every component stays under the
-// floor. The composed labels this arm exists for are word-bounded by
+// The authority strips a leading scheme, drive, or relative marker before its
+// own classifiers run, so a benign location comes back as a bare path
+// ("https://api.example.com/v1/completions" becomes
+// "api.example.com/v1/completions"). Read with the segment arm, the last three
+// path components join over their slashes into an 18-rune run and a pinned
+// benign URL masks; the composed labels this arm exists for are word-bounded by
 // construction ("<id> (<provider>)", "thinking(<effort>)", "tools,
-// thinking(<effort>)"), and an ASCII separator inside a credential core is a
-// visible split both ingest doors accept by design, so breaking on it adds no
-// differential: only a word at the floor can mask.
-func slotWordShaped(core string) bool {
-	return slotRunScan(core, false)
+// thinking(<effort>)").
+//
+// The word-bounded read left the two-arm hole open. The identity arm measures a
+// core with the base64 alphabet ("+", "/", "=" join the run) while a word read
+// breaks at every one of them, so a decorated core that reaches the floor only
+// ACROSS those separators ("<marker>/abcd1234+efgh5678 (lab)",
+// "abcd1234+efgh5678 (lab)") was masked by the identity arm and rendered raw by
+// this one, at the status banner id column and the models --json DisplayName
+// field. This scan closes it fragment-wise:
+//   - "+" and "=" join unconditionally. Neither is a location character, and no
+//     pinned benign rewrite joins over them.
+//   - "/" joins only when the rewrite is NOT the bare core of a URL or a path
+//     (slotRewriteIsLocationStrip). Joining over the slashes of a location
+//     rewrite masks the pinned benign URL, and on that path every "/" is a path
+//     separator, not a base64 rune.
+//
+// The join can only mask, never accept: a value this arm masks is already
+// refused at every ingest door in its undecorated twin, and a value the
+// authority masked re-classifies as benign here (MaskSecret of a mask is not a
+// run), so nothing is masked twice.
+func slotRewriteShaped(core, original string) bool {
+	if slotRewriteIsLocationStrip(original) {
+		return slotRunScan(core, slotJoinPlusEquals)
+	}
+	return slotSegmentShaped(core)
 }
+
+// slotRewriteIsLocationStrip reports whether the registry-slot authority's
+// rewrite of original is the bare core of a URL or a path: the value carried a
+// leading URL scheme, a Windows drive prefix, a relative-path marker (./ ../ .\
+// ..\), or a leading separator run, so stripLocationMarkers deleted the
+// decoration and every "/" left in the rewrite is a PATH separator rather than a
+// base64 rune. It asks the authority's own stripper, so the two cannot disagree
+// about what a location rewrite is. Only such a rewrite turns the slash join off
+// (see slotRewriteShaped).
+func slotRewriteIsLocationStrip(original string) bool {
+	t := strings.TrimSpace(original)
+	return t != "" && stripLocationMarkers(t) != t
+}
+
+// slotJoinSlashAlphabet and slotJoinPlusEquals are the two run-join predicates
+// the scans above read. The slash alphabet is the base64 one, so a credential
+// carrying "/" ("wJalrXUtnFEMI/K7MDENG/...") stays one run; the plus-equals
+// alphabet is the rewrite arm's, which joins the two non-location members and
+// leaves the path separator to the caller's decision.
+func slotJoinSlashAlphabet(r rune) bool { return r == '+' || r == '/' || r == '=' }
+
+func slotJoinPlusEquals(r rune) bool { return r == '+' || r == '=' }
 
 // slotRunScan is the shared scan: one pass over the value, flushing the current
-// run at every rune outside the base64 alphabet (plus '+' and '=' when
-// slashAlphabet is set, so an AWS secret carrying "/" stays one run). A flushed
-// run masks when it reaches the floor with both letter and digit classes.
-func slotRunScan(core string, slashAlphabet bool) bool {
+// run at every rune the join predicate declines (a nil predicate joins nothing,
+// which is the plain word read). A flushed run masks when it reaches the floor
+// with both letter and digit classes.
+func slotRunScan(core string, join func(rune) bool) bool {
 	n := 0
 	letter, digit := false, false
 	flush := func() bool {
@@ -428,7 +519,7 @@ func slotRunScan(core string, slashAlphabet bool) bool {
 		case r >= '0' && r <= '9':
 			digit = true
 			n++
-		case slashAlphabet && (r == '+' || r == '/' || r == '='):
+		case join != nil && join(r):
 			n++
 		default:
 			if flush() {
@@ -569,6 +660,20 @@ func NameCarriesCredential(v string) bool {
 // accepted at all three doors. Each raw pair is decoded when its own escape
 // sequence is legal (a well-formed pair classifies exactly as before) and
 // classified in its RAW form when it is not (a malformed pair is still seen).
+//
+// The path and Opaque slots are read in BOTH forms. url.Parse decodes the path
+// slot once, but a hostless "https:<value>" spelling keeps the hostless
+// remainder in u.Opaque VERBATIM: "https:...%e2%80%a8..." reaches the arm as the
+// escape TEXT, so the percent bytes break the run at every escape and a
+// credential whose post-escape tail falls under the floor reads as location
+// material. Each segment is classified raw (the pre-existing verdict) and, when
+// its own escapes decode legally, ALSO in decoded form. The decode is
+// url.PathUnescape, the path-and-Opaque semantics: neither slot is
+// form-encoded, so a literal "+" stays the base64 member it is instead of
+// becoming a space (QueryUnescape's rule, which the query arm keeps because a
+// query IS form-encoded). A segment whose escapes do not decode legally is
+// classified raw only, so a malformed-but-benign segment keeps its verdict. The
+// decoded read sits beside the raw read and can only add a refusal.
 func BaseURLCarriesCredential(raw string) bool {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
@@ -595,6 +700,13 @@ func BaseURLCarriesCredential(raw string) bool {
 	for _, slot := range []string{u.Path, u.Opaque} {
 		for _, seg := range strings.Split(slot, "/") {
 			if baseURLPartCarriesCredential(seg) {
+				return true
+			}
+			// See the doc comment: the Opaque slot arrives undecoded, and a path
+			// segment can carry a second escape layer, so classify the decoded
+			// form too when its own escapes are legal. A segment whose escapes are
+			// malformed stays raw-only, exactly as before.
+			if decoded, err := url.PathUnescape(seg); err == nil && decoded != seg && baseURLPartCarriesCredential(decoded) {
 				return true
 			}
 		}
@@ -805,6 +917,12 @@ func slotBase64Run(s string) bool {
 // whole-value classifiers can never see one; the registry-slot masker reads
 // each part exactly as a registry slot.
 //
+// The part is classified in its VISIBLE form: the Zl/Zp classes are deleted
+// first (stripURIPartLineSeparators). A line or paragraph separator survives the
+// fold and flushes the run scan, so a credential split across one read as two
+// short words and was accepted at every door; the host label closed its own
+// share of that class in fix8-7, and this is the part-side twin.
+//
 // Ordinary parts ("v1", "chat", "completions", "api", "v2", "hello",
 // "2024-02-01") are identity under it, so a benign URL keeps its exact accept
 // verdict. The pure IDENTIFIER shape is exempt (see baseURLPartIsIdentifier):
@@ -817,6 +935,10 @@ func slotBase64Run(s string) bool {
 // mixed base64 run outside the hex alphabet all still classify as credential
 // material, because none of them can satisfy a pure identifier shape.
 func baseURLPartCarriesCredential(part string) bool {
+	if part == "" {
+		return false
+	}
+	part = stripURIPartLineSeparators(part)
 	if part == "" {
 		return false
 	}
@@ -906,11 +1028,12 @@ func isUUIDFormIdentifier(s string) bool {
 //     fold, so an inner plant that still wears an ASCII marker ("." + U+2025 +
 //     "/" + a 20-rune core), or that sits behind a composed label ("<id>
 //     (<provider>)"), comes back as a CHANGED but readable core. Running the
-//     shared fold + strip + word classification on that output is what closes
-//     the shape; a rewrite the policy also declines is returned unchanged, and
-//     an authority mask re-classifies as benign, so nothing is ever masked
-//     twice. The arm reads words rather than slash-joined segments here,
-//     because the rewrite of a benign location is a bare path;
+//     shared fold + strip + fragment scan on that output is what closes the
+//     shape; a rewrite the policy also declines is returned unchanged, and an
+//     authority mask re-classifies as benign, so nothing is ever masked twice.
+//     The fragment scan joins "+" and "=" unconditionally and "/" only off the
+//     URL/path rewrite path (slotRewriteShaped): joining over a location
+//     rewrite's slashes would mask the pinned benign URL;
 //   - when the authority returns the value unchanged, fold + strip with the
 //     shared policy and, if the value or its core reads as credential material
 //     (or the core carries a credential-shaped segment, the composed-label
@@ -928,12 +1051,12 @@ func MaskSlot(v string) string {
 		// return: a credential core shielded by an ASCII marker that the
 		// authority strips, or one carried inside a composed label, is invisible
 		// to the authority's own core classifiers but is exactly what the
-		// policy's fold, strip, and word arm read. The word arm (not the wide
-		// segment arm) is the right read here: the authority's rewrite of a
-		// benign location is a bare path, whose components the segment arm would
-		// join over their slashes into one run.
+		// policy's fold, strip, and fragment scan read. The fragment scan (see
+		// slotRewriteShaped) joins "+" and "=" unconditionally and "/" only off
+		// the URL/path rewrite path: on that path every "/" is a path separator,
+		// and joining over it would mask the pinned benign URL rewrite.
 		if pcore := stripSlotMarkers(foldSeparators(out)); pcore != "" &&
-			(SecretShaped(out) || slotWordShaped(pcore)) {
+			(SecretShaped(out) || slotRewriteShaped(pcore, clean)) {
 			return MaskSecret(pcore)
 		}
 		return out

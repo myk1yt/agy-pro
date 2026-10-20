@@ -371,8 +371,15 @@ func (w *SeatWorker) runChatLoop(ctx context.Context, target providers.Target, u
 			return assistantMsg.Content, totalToolCalls, nil
 		}
 
-		// If empty content and no tool calls, return error
-		return "", totalToolCalls, fmt.Errorf("received empty content response from %s", target.FullName())
+		// If empty content and no tool calls, return error. The operand is a
+		// composed registry slot ("<provider>/<model>", both halves from
+		// providers.json), so it renders through the registry-slot authority
+		// exactly like seatSpecLabel does. This text becomes SeatResult.Error
+		// and, on the failover path, Failovers[].Reason, which the report
+		// writers only seed-redact; that redaction is the identity on the
+		// underscore-head credential class, so the mask has to happen here. A
+		// benign name keeps its exact bytes.
+		return "", totalToolCalls, fmt.Errorf("received empty content response from %s", providers.MaskSlot(target.FullName()))
 	}
 
 	// If max turns reached, solicit final synthesis. The synthesis carries the
@@ -411,7 +418,11 @@ func (w *SeatWorker) runChatLoop(ctx context.Context, target providers.Target, u
 		usage.add(retry)
 		retryChoice := retry.Choices[0]
 		if strings.TrimSpace(retryChoice.Message.Content) == "" {
-			return "", totalToolCalls, fmt.Errorf("synthesis produced empty content from %s", target.FullName())
+			// Same registry-slot operand as the loop error above, and the same
+			// reason: this string reaches SeatResult.Error and
+			// Failovers[].Reason, whose later redaction misses the
+			// underscore-head credential class.
+			return "", totalToolCalls, fmt.Errorf("synthesis produced empty content from %s", providers.MaskSlot(target.FullName()))
 		}
 		return retryChoice.Message.Content, totalToolCalls, nil
 	}

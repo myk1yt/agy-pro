@@ -942,7 +942,12 @@ func (s *settingsScreen) presetLines() []string {
 	}
 	lines := make([]string, len(presets))
 	for i, p := range presets {
-		lines[i] = fmt.Sprintf("%s = %s", p.Name, p.Numbers)
+		// The preset name and its numbers are user-set operands of the same
+		// class the preset screens render through providers.MaskOperand
+		// (screen_presets.go buildRows, screen_preset_editor.go save and
+		// writePreset), so a credential-shaped preset renders first-5+**** here
+		// too. Benign names and number lists pass through byte-identically.
+		lines[i] = fmt.Sprintf("%s = %s", providers.MaskOperand(p.Name), providers.MaskOperand(p.Numbers))
 	}
 	return lines
 }

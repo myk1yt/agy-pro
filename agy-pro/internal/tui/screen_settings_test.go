@@ -1648,3 +1648,106 @@ func TestSettingsScreenBenignProviderNamesByteIdentical(t *testing.T) {
 		app.Step(KeyNo)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// fixM3b / census O6 - the legacy settings screen composes the SAVED PRESET
+// name and its numbers through the operand authority (providers.MaskOperand),
+// the same authority the preset screens render the same value kind with.
+// ---------------------------------------------------------------------------
+
+const (
+	// The contiguous base64 run class: the plant the preset list surface pins
+	// for this same authority (screen_presets_test.go, the row-note pin).
+	settingsPresetNamePlant = "AKIAIOSFODNN7EXAMPLE"
+	settingsPresetNameMask  = "AKIAI****"
+	settingsPresetNameTail  = "IOSFODNN7EXAMPLE"
+	// The credential-head prefix class, planted in the numbers field.
+	settingsPresetNumsPlant = "ghp_a1b2c3d4e5f6g7h8i9j0k1l2"
+	settingsPresetNumsMask  = "ghp_a****"
+	settingsPresetNumsTail  = "a1b2c3d4e5f6g7h8i9j0k1l2"
+)
+
+// openSettingsRow selects one settings row by item ID in the screen's loaded
+// view (any section) and activates it with Enter, the same path a keypress
+// takes: the list cursor moves, then the pick callback runs.
+func openSettingsRow(t *testing.T, app *App, id string) {
+	t.Helper()
+	scr, ok := app.Top().(*settingsScreen)
+	if !ok {
+		t.Fatalf("top screen is %T; want *settingsScreen", app.Top())
+	}
+	for si, sec := range scr.view.Sections {
+		for ri, it := range sec.Items {
+			if it.ID != id {
+				continue
+			}
+			scr.section = si
+			scr.rebuild()
+			scr.list.SetCursor(ri)
+			app.Step(KeyEnter)
+			return
+		}
+	}
+	t.Fatalf("row %q missing from the settings view", id)
+}
+
+// TestSettingsScreenPresetOperandsMasked pins presetLines (the
+// internal/tui/screen_settings.go listing composer): a credential-shaped preset
+// name and a credential-shaped numbers field render as first-5+**** in the
+// preset listing result screen, and no raw fragment of either survives.
+func TestSettingsScreenPresetOperandsMasked(t *testing.T) {
+	h := newSettingsTestCore(t)
+	h.presets = []swarm.SavedPreset{
+		{Name: settingsPresetNamePlant, Numbers: "1,3"},
+		{Name: "quick", Numbers: settingsPresetNumsPlant},
+	}
+	app := newSettingsApp(h)
+	openSettingsRow(t, app, "swarm.presets")
+	if _, ok := app.Top().(*settingsResultScreen); !ok {
+		t.Fatalf("preset listing did not push the result screen: %T", app.Top())
+	}
+	frame := app.Frame().String()
+	for _, want := range []string{
+		settingsPresetNameMask + " = 1,3",
+		"quick = " + settingsPresetNumsMask,
+	} {
+		if !strings.Contains(frame, want) {
+			t.Errorf("preset listing missing %q\n%s", want, frame)
+		}
+	}
+	for _, raw := range []string{settingsPresetNamePlant, settingsPresetNumsPlant} {
+		if strings.Contains(frame, raw) {
+			t.Errorf("preset listing echoes the credential-shaped preset %q raw\n%s", raw, frame)
+		}
+	}
+	for _, tail := range []string{settingsPresetNameTail, settingsPresetNumsTail} {
+		if strings.Contains(frame, tail) {
+			t.Errorf("preset listing leaks the planted preset tail %q\n%s", tail, frame)
+		}
+	}
+}
+
+// TestSettingsScreenBenignPresetOperandsByteIdentical pins the identity half:
+// a benign preset name and a benign numbers list render exactly as the
+// pre-change "%s = %s" composition did, and no mask marker appears.
+func TestSettingsScreenBenignPresetOperandsByteIdentical(t *testing.T) {
+	presets := []swarm.SavedPreset{
+		{Name: "p9", Numbers: "1,3,19,23"},
+		{Name: "deep-review", Numbers: "2,5"},
+		{Name: "swift", Numbers: "1"},
+	}
+	h := newSettingsTestCore(t)
+	h.presets = presets
+	app := newSettingsApp(h)
+	openSettingsRow(t, app, "swarm.presets")
+	frame := app.Frame().String()
+	for _, p := range presets {
+		want := p.Name + " = " + p.Numbers
+		if !strings.Contains(frame, want) {
+			t.Errorf("benign preset %q stopped rendering byte-identically; missing %q\n%s", p.Name, want, frame)
+		}
+	}
+	if strings.Contains(frame, "****") {
+		t.Errorf("a benign preset name or numbers list was masked:\n%s", frame)
+	}
+}

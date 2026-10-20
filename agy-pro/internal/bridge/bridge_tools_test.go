@@ -1956,3 +1956,210 @@ func TestToolLoop_UpstreamErrorAuditMasksUnderscoreHeadNames(t *testing.T) {
 		t.Errorf("a benign registry name was masked: jsonl=%s stderr=%s", jsonl, stderr)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// FIX-8 / census O4: the four JSON error sentences on the request path quote a
+// request operand or a registry slot. Each interpolates through the shared
+// authority (MaskOperand for the request model spec and the key-env name,
+// MaskSlot for the provider name), so a credential-shaped value cannot render
+// raw in the error body a local client receives, and every benign operand keeps
+// its exact bytes. The plants discriminate the authorities: the provider-name
+// plant is the underscore-head class that MaskOperand renders raw and only the
+// slot authority masks.
+// ---------------------------------------------------------------------------
+
+// decodeBridgeErrorBody returns the "error" object of a bridge error response.
+func decodeBridgeErrorBody(t *testing.T, raw []byte) map[string]any {
+	t.Helper()
+	var env map[string]any
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatalf("error body is not JSON: %v (body %s)", err, raw)
+	}
+	errObj, ok := env["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("body carries no 'error' object: %s", raw)
+	}
+	return errObj
+}
+
+func TestBridgeJSONErrorMasksCredentialOperands(t *testing.T) {
+	const (
+		modelPlant = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+		modelMask  = "wJalr****"
+		provPlant  = "sk_live_0123456789abcdef"
+		provMask   = "sk_li****"
+		envPlant   = "ghp_0123456789abcdefghij"
+		envMask    = "ghp_0****"
+	)
+	// Premises: each operand classifies as credential material on the arm the
+	// converted site uses, and the provider plant is raw under the operand
+	// masker. A reverted interpolation therefore turns the payload assertions
+	// red instead of passing on an already-benign value.
+	if got := providers.MaskOperand(modelPlant); got != modelMask {
+		t.Fatalf("premise broken: MaskOperand(%q) = %q; want %q", modelPlant, got, modelMask)
+	}
+	if got := providers.MaskOperand(envPlant); got != envMask {
+		t.Fatalf("premise broken: MaskOperand(%q) = %q; want %q", envPlant, got, envMask)
+	}
+	if got := providers.MaskSlot(provPlant); got != provMask {
+		t.Fatalf("premise broken: MaskSlot(%q) = %q; want %q", provPlant, got, provMask)
+	}
+	if got := providers.MaskOperand(provPlant); got != provPlant {
+		t.Fatalf("premise broken: MaskOperand is not identity on the provider plant (%q)", got)
+	}
+
+	t.Run("model not found masks the request operand", func(t *testing.T) {
+		reg := &providers.Registry{Providers: []providers.Provider{{
+			Name:    "tool-prov",
+			BaseURL: "http://127.0.0.1:1",
+			Models:  []providers.Model{{ID: "tool-model"}},
+		}}}
+		server := startToolsBridge(t, reg, BridgeToolsConfig{})
+		status, _, raw := postChat(t, server.URL, `{"model":"`+modelPlant+`"}`)
+		if status != http.StatusNotFound {
+			t.Fatalf("status = %d; want 404 (body %s)", status, raw)
+		}
+		errObj := decodeBridgeErrorBody(t, raw)
+		want := `model "` + modelMask + `" not found in configured providers`
+		if errObj["message"] != want {
+			t.Errorf("error.message = %q; want %q", errObj["message"], want)
+		}
+		if strings.Contains(string(raw), modelPlant) {
+			t.Errorf("error body leaks the raw request operand: %s", raw)
+		}
+	})
+
+	t.Run("unconfigured key masks the provider name and the env name", func(t *testing.T) {
+		// The env name resolves to nothing, so the handler takes the 401 arm.
+		reg := &providers.Registry{Providers: []providers.Provider{{
+			Name:      provPlant,
+			BaseURL:   "http://127.0.0.1:1",
+			APIKeyEnv: envPlant,
+			Models:    []providers.Model{{ID: "tool-model"}},
+		}}}
+		server := startToolsBridge(t, reg, BridgeToolsConfig{})
+		status, _, raw := postChat(t, server.URL, `{"model":"tool-model"}`)
+		if status != http.StatusUnauthorized {
+			t.Fatalf("status = %d; want 401 (body %s)", status, raw)
+		}
+		errObj := decodeBridgeErrorBody(t, raw)
+		want := "API key for provider " + provMask + " (" + envMask + ") is not configured or empty in environment"
+		if errObj["message"] != want {
+			t.Errorf("error.message = %q; want %q", errObj["message"], want)
+		}
+		for _, plant := range []string{provPlant, envPlant} {
+			if strings.Contains(string(raw), plant) {
+				t.Errorf("error body leaks %q raw: %s", plant, raw)
+			}
+		}
+	})
+
+	t.Run("bad gateway masks the provider name", func(t *testing.T) {
+		t.Setenv("TEST_BRIDGE_BAD_GATEWAY_KEY", "secret-upstream-key-abcdef")
+		reg := &providers.Registry{Providers: []providers.Provider{{
+			Name:      provPlant,
+			BaseURL:   "http://127.0.0.1:1", // closed port: the proxy transport fails
+			APIKeyEnv: "TEST_BRIDGE_BAD_GATEWAY_KEY",
+			Models:    []providers.Model{{ID: "tool-model"}},
+		}}}
+		server := startToolsBridge(t, reg, BridgeToolsConfig{})
+		status, _, raw := postChat(t, server.URL, `{"model":"tool-model","messages":[{"role":"user","content":"hi"}]}`)
+		if status != http.StatusBadGateway {
+			t.Fatalf("status = %d; want 502 (body %s)", status, raw)
+		}
+		errObj := decodeBridgeErrorBody(t, raw)
+		msg, _ := errObj["message"].(string)
+		wantPrefix := `bridge error contacting provider "` + provMask + `": `
+		if !strings.HasPrefix(msg, wantPrefix) {
+			t.Errorf("error.message = %q; want prefix %q", msg, wantPrefix)
+		}
+		if strings.Contains(string(raw), provPlant) {
+			t.Errorf("error body leaks the raw provider name: %s", raw)
+		}
+	})
+
+	t.Run("registry lookup error masks the request operand", func(t *testing.T) {
+		reg := &providers.Registry{Providers: []providers.Provider{{
+			Name:    "tool-prov",
+			BaseURL: "http://127.0.0.1:1",
+			Models:  []providers.Model{{ID: "tool-model"}},
+		}}}
+		_, err := findBestTarget(reg, modelPlant)
+		if err == nil {
+			t.Fatal("findBestTarget must fail on an unknown spec")
+		}
+		want := `model "` + modelMask + `" not found in configured providers`
+		if err.Error() != want {
+			t.Errorf("lookup error = %q; want %q", err.Error(), want)
+		}
+		if strings.Contains(err.Error(), modelPlant) {
+			t.Errorf("lookup error leaks the raw request operand: %v", err)
+		}
+	})
+}
+
+// TestBridgeJSONErrorBenignOperandsByteIdentical holds the benign side of the
+// same four sites: every byte of the payload a local client receives is the
+// byte it received before the conversion, so the error surface does not drift.
+func TestBridgeJSONErrorBenignOperandsByteIdentical(t *testing.T) {
+	benignReg := func(name, apiKeyEnv, model string) *providers.Registry {
+		return &providers.Registry{Providers: []providers.Provider{{
+			Name:      name,
+			BaseURL:   "http://127.0.0.1:1",
+			APIKeyEnv: apiKeyEnv,
+			Models:    []providers.Model{{ID: model}},
+		}}}
+	}
+
+	t.Run("model not found", func(t *testing.T) {
+		server := startToolsBridge(t, benignReg("nw", "", "glm-5.3-flash-flex"), BridgeToolsConfig{})
+		status, _, raw := postChat(t, server.URL, `{"model":"missing-model"}`)
+		if status != http.StatusNotFound {
+			t.Fatalf("status = %d; want 404 (body %s)", status, raw)
+		}
+		want := "{\"error\":{\"code\":404,\"message\":\"model \\\"missing-model\\\" not found in configured providers\",\"type\":\"model_not_found\"}}\n"
+		if string(raw) != want {
+			t.Errorf("error body drifted\n got: %q\nwant: %q", raw, want)
+		}
+	})
+
+	t.Run("unconfigured key", func(t *testing.T) {
+		t.Setenv("UNSET_NW_KEY_FOR_TEST", "")
+		server := startToolsBridge(t, benignReg("NW", "UNSET_NW_KEY_FOR_TEST", "glm-5.3-flash-flex"), BridgeToolsConfig{})
+		status, _, raw := postChat(t, server.URL, `{"model":"glm-5.3-flash-flex"}`)
+		if status != http.StatusUnauthorized {
+			t.Fatalf("status = %d; want 401 (body %s)", status, raw)
+		}
+		want := "{\"error\":{\"code\":401,\"message\":\"API key for provider NW (UNSET_NW_KEY_FOR_TEST) is not configured or empty in environment\",\"type\":\"authentication_error\"}}\n"
+		if string(raw) != want {
+			t.Errorf("error body drifted\n got: %q\nwant: %q", raw, want)
+		}
+	})
+
+	t.Run("bad gateway", func(t *testing.T) {
+		t.Setenv("TEST_BRIDGE_BAD_GATEWAY_KEY", "secret-upstream-key-abcdef")
+		server := startToolsBridge(t, benignReg("broken-prov", "TEST_BRIDGE_BAD_GATEWAY_KEY", "offline-model"), BridgeToolsConfig{})
+		status, _, raw := postChat(t, server.URL, `{"model":"offline-model","messages":[{"role":"user","content":"hi"}]}`)
+		if status != http.StatusBadGateway {
+			t.Fatalf("status = %d; want 502 (body %s)", status, raw)
+		}
+		errObj := decodeBridgeErrorBody(t, raw)
+		msg, _ := errObj["message"].(string)
+		// The transport error text is supplied by the client stack, so the
+		// byte-identity assertion covers the interpolated prefix.
+		wantPrefix := `bridge error contacting provider "broken-prov": `
+		if !strings.HasPrefix(msg, wantPrefix) {
+			t.Errorf("error.message = %q; want prefix %q", msg, wantPrefix)
+		}
+	})
+
+	t.Run("registry lookup error", func(t *testing.T) {
+		_, err := findBestTarget(benignReg("nw", "", "glm-5.3-flash-flex"), "missing-model")
+		if err == nil {
+			t.Fatal("findBestTarget must fail on an unknown spec")
+		}
+		if want := `model "missing-model" not found in configured providers`; err.Error() != want {
+			t.Errorf("lookup error drifted\n got: %q\nwant: %q", err.Error(), want)
+		}
+	})
+}

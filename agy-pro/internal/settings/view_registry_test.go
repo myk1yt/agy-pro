@@ -19,6 +19,7 @@ import (
 	"unicode"
 
 	"agypro/internal/providers"
+	"agypro/internal/swarm"
 )
 
 // viewRegistryHome isolates the Core's default seams (state load, swarm store)
@@ -194,5 +195,156 @@ func TestViewProviderNameSinkUsesSlotAuthority(t *testing.T) {
 	}
 	if strings.Contains(all.String(), plant) {
 		t.Error("the settings view renders the credential-shaped provider name raw")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// fixM3b / census O6: the two settings surfaces compose the SAVED PRESET name
+// and its numbers through providers.MaskOperand, the same authority the preset
+// screens render the same value kind with (screen_presets.go buildRows,
+// screen_preset_editor.go save and writePreset).
+// ---------------------------------------------------------------------------
+
+// presetSinkNamePlant and presetSinkNumbersPlant are the two plant shapes the
+// sibling preset surfaces pin for the same authority: the contiguous base64 run
+// (the AKIA class the preset row-note pin uses) and the credential-head prefix
+// class. providers.MaskOperand masks both; benign names and number lists are
+// the identity.
+const (
+	presetSinkNamePlant    = "AKIAIOSFODNN7EXAMPLE"
+	presetSinkNameMask     = "AKIAI****"
+	presetSinkNameTail     = "IOSFODNN7EXAMPLE"
+	presetSinkNumbersPlant = "ghp_a1b2c3d4e5f6g7h8i9j0k1l2"
+	presetSinkNumbersMask  = "ghp_a****"
+	presetSinkNumbersTail  = "a1b2c3d4e5f6g7h8i9j0k1l2"
+)
+
+// presetSinkStore is the minimal in-memory swarm.Store behind the preset-sink
+// pins; nothing reaches ~/.agy-pro/swarm-state.json.
+type presetSinkStore struct{ presets []swarm.SavedPreset }
+
+func (s presetSinkStore) LoadPresets() ([]swarm.SavedPreset, error) { return s.presets, nil }
+func (s presetSinkStore) SavePresets([]swarm.SavedPreset) error     { return nil }
+
+// viewOverPresets builds the settings view over an in-memory core whose preset
+// store carries presets (the fakeDeps harness keeps state and registry
+// in-memory, so no live file is read).
+func viewOverPresets(t *testing.T, presets []swarm.SavedPreset) SettingsView {
+	t.Helper()
+	f := newFakeDeps()
+	d := f.deps()
+	d.SwarmStore = presetSinkStore{presets: presets}
+	view, err := NewCore(d).View()
+	if err != nil {
+		t.Fatalf("View: %v", err)
+	}
+	return view
+}
+
+// TestSwarmPresetsValueMasksPresetOperands pins swarmPresetsValue
+// (internal/settings/view.go): the swarm.presets row VALUE renders a credential-shaped
+// preset name and a credential-shaped numbers field as first-5+****, in both
+// the name slot and the numbers slot of the "name=numbers" composition.
+func TestSwarmPresetsValueMasksPresetOperands(t *testing.T) {
+	view := viewOverPresets(t, []swarm.SavedPreset{
+		{Name: presetSinkNamePlant, Numbers: "1,3"},
+		{Name: "quick", Numbers: presetSinkNumbersPlant},
+	})
+	it, ok := view.FindItem("swarm.presets")
+	if !ok {
+		t.Fatal("swarm.presets row missing from the view")
+	}
+	want := presetSinkNameMask + "=1,3, quick=" + presetSinkNumbersMask
+	if it.Value != want {
+		t.Errorf("swarm.presets value drifted:\ngot:  %q\nwant: %q", it.Value, want)
+	}
+	for _, raw := range []string{presetSinkNamePlant, presetSinkNumbersPlant} {
+		if strings.Contains(it.Value, raw) {
+			t.Errorf("swarm.presets value echoes the credential-shaped preset %q raw: %q", raw, it.Value)
+		}
+	}
+	for _, tail := range []string{presetSinkNameTail, presetSinkNumbersTail} {
+		if strings.Contains(it.Value, tail) {
+			t.Errorf("swarm.presets value leaks the planted preset tail %q: %q", tail, it.Value)
+		}
+	}
+}
+
+// TestSwarmPresetsValueBenignOperandsByteIdentical pins the identity half: a
+// benign preset name and a benign numbers list render exactly as the pre-change
+// "%s=%s" composition did, and no mask marker appears.
+func TestSwarmPresetsValueBenignOperandsByteIdentical(t *testing.T) {
+	view := viewOverPresets(t, []swarm.SavedPreset{
+		{Name: "p9", Numbers: "1,3,19,23"},
+		{Name: "deep-review", Numbers: "2,5"},
+		{Name: "swift", Numbers: "1"},
+	})
+	it, ok := view.FindItem("swarm.presets")
+	if !ok {
+		t.Fatal("swarm.presets row missing from the view")
+	}
+	want := "p9=1,3,19,23, deep-review=2,5, swift=1"
+	if it.Value != want {
+		t.Errorf("benign preset value drifted:\ngot:  %q\nwant: %q", it.Value, want)
+	}
+	if strings.Contains(it.Value, "****") {
+		t.Errorf("a benign preset name or numbers list was masked: %q", it.Value)
+	}
+}
+
+// TestTUISwarmPresetsEchoMasksPresetOperands pins TUI.activate
+// (internal/settings/tui.go, the swarm.presets row): the legacy settings TUI result lines
+// render the preset name and its numbers through providers.MaskOperand.
+func TestTUISwarmPresetsEchoMasksPresetOperands(t *testing.T) {
+	tui, _ := newPlantTUI(t, func(d *Deps) {
+		d.SwarmStore = presetSinkStore{presets: []swarm.SavedPreset{
+			{Name: presetSinkNamePlant, Numbers: "1,3"},
+			{Name: "quick", Numbers: presetSinkNumbersPlant},
+		}}
+	})
+	findItem(t, tui, "swarm.presets")
+	tui.Step(KeyEnter)
+	right := tui.Frame().Right
+	for _, want := range []string{
+		"     ⎿ " + presetSinkNameMask + " = 1,3",
+		"     ⎿ quick = " + presetSinkNumbersMask,
+	} {
+		if !strings.Contains(right, want) {
+			t.Errorf("preset echo missing %q\n%s", want, right)
+		}
+	}
+	for _, raw := range []string{presetSinkNamePlant, presetSinkNumbersPlant} {
+		if strings.Contains(right, raw) {
+			t.Errorf("the settings TUI echoes the credential-shaped preset %q raw:\n%s", raw, right)
+		}
+	}
+	for _, tail := range []string{presetSinkNameTail, presetSinkNumbersTail} {
+		if strings.Contains(right, tail) {
+			t.Errorf("the settings TUI leaks the planted preset tail %q:\n%s", tail, right)
+		}
+	}
+}
+
+// TestTUISwarmPresetsEchoBenignOperandsByteIdentical pins the identity half of
+// the TUI site: benign preset values keep the exact pre-change line text.
+func TestTUISwarmPresetsEchoBenignOperandsByteIdentical(t *testing.T) {
+	presets := []swarm.SavedPreset{
+		{Name: "p9", Numbers: "1,3,19,23"},
+		{Name: "deep-review", Numbers: "2,5"},
+	}
+	tui, _ := newPlantTUI(t, func(d *Deps) {
+		d.SwarmStore = presetSinkStore{presets: presets}
+	})
+	findItem(t, tui, "swarm.presets")
+	tui.Step(KeyEnter)
+	right := tui.Frame().Right
+	for _, p := range presets {
+		want := "     ⎿ " + p.Name + " = " + p.Numbers
+		if !strings.Contains(right, want) {
+			t.Errorf("benign preset %q stopped rendering byte-identically; missing %q\n%s", p.Name, want, right)
+		}
+	}
+	if strings.Contains(right, "****") {
+		t.Errorf("a benign preset name or numbers list was masked:\n%s", right)
 	}
 }

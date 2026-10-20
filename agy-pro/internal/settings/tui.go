@@ -430,7 +430,12 @@ func (t *TUI) activate(it Item) {
 		}
 		t.result = nil
 		for _, p := range presets {
-			t.result = append(t.result, fmt.Sprintf("     ⎿ %s = %s", p.Name, p.Numbers))
+			// The preset name and its numbers are user-set operands; the legacy
+			// settings screen renders them through providers.MaskOperand, the
+			// same authority the preset screens use (screen_presets.go
+			// buildRows). Benign values stay byte-identical.
+			t.result = append(t.result, fmt.Sprintf("     ⎿ %s = %s",
+				providers.MaskOperand(p.Name), providers.MaskOperand(p.Numbers)))
 		}
 		if len(presets) == 0 {
 			t.result = []string{"     ⎿ (no saved presets; p1/p2/p3 defaults always available)"}

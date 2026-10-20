@@ -1,6 +1,10 @@
 package agenttools
 
 import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -137,4 +141,173 @@ func TestRunnerRunCommandTimeoutPassThrough(t *testing.T) {
 	if elapsed > 15*time.Second {
 		t.Fatalf("dispatch waited %v; the 1s budget was not honored", elapsed)
 	}
+}
+
+// O7 (masking census 2026-10-21, MEDIUM): the model-level tool refusal composes
+// the registry model id and the tool name into one sentence that is returned as
+// the tool result AND persisted in the 0600 log's Error field. The logger masks
+// its own Model/Provider/Tool columns (logger.go:74-76), but the Error field
+// only passes the registry redactor, whose generic patterns do not cover the
+// underscore-head class, so both raw operands survived in the durable line.
+// Both now mask at the composition site through the same authorities the
+// converted sibling logger uses: the model id is a registry slot (MaskSlot) and
+// the tool name is an operand (MaskOperand). The decorated row holds the
+// authority choice too: MaskOperand is location-exempt, so only the slot
+// authority masks a marker-decorated id.
+func TestToolRunnerModelToolsRefusalMasksRegistryOperands(t *testing.T) {
+	cases := []struct {
+		name      string
+		model     string
+		tool      string
+		wantModel string
+		wantTool  string
+	}{
+		{
+			name:      "underscore-head model id and key-shaped tool name",
+			model:     "sk_live_0123456789abcdef",
+			tool:      "Ab3dE5gH7jK9mN1pQ3sT",
+			wantModel: "sk_li****",
+			wantTool:  "Ab3dE****",
+		},
+		{
+			name:      "location-decorated model id",
+			model:     "./sk_live_0123456789abcdef",
+			tool:      "Ab3dE5gH7jK9mN1pQ3sT",
+			wantModel: "sk_li****",
+			wantTool:  "Ab3dE****",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			logPath := filepath.Join(dir, "tool.jsonl")
+			logger, err := NewLogger(logPath, nil)
+			if err != nil {
+				t.Fatalf("NewLogger: %v", err)
+			}
+			runner := NewRunner(dir, false, false, logger)
+			runner.AllowedModelTools = []string{"read_file"}
+
+			out, err := runner.Execute(4, tc.model, "prov-x", tc.tool, `{"path":"src/alpha/go.mod"}`)
+			if err != nil {
+				t.Fatalf("Execute error = %v; the refusal is error-shaped with a nil error", err)
+			}
+			wantMsg := fmt.Sprintf("tool %q is not in the allowed tools list for model %q", tc.wantTool, tc.wantModel)
+			if out != "Error: "+wantMsg {
+				t.Fatalf("refusal = %q; want %q", out, "Error: "+wantMsg)
+			}
+
+			entry := readSingleToolLogEntry(t, logPath)
+			if entry.Error != wantMsg {
+				t.Errorf("log Error = %q; want %q", entry.Error, wantMsg)
+			}
+			if entry.Model != tc.wantModel {
+				t.Errorf("log Model = %q; want %q", entry.Model, tc.wantModel)
+			}
+			if entry.Tool != tc.wantTool {
+				t.Errorf("log Tool = %q; want %q", entry.Tool, tc.wantTool)
+			}
+
+			raw, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatalf("read log: %v", err)
+			}
+			for _, plant := range []string{tc.model, tc.tool} {
+				if strings.Contains(string(raw), plant) {
+					t.Errorf("tool log leaks the raw operand %q:\n%s", plant, raw)
+				}
+				if strings.Contains(out, plant) {
+					t.Errorf("model-visible refusal leaks the raw operand %q: %q", plant, out)
+				}
+			}
+		})
+	}
+}
+
+// O7 benign side: both maskers are the identity on ordinary identifiers, so the
+// refusal sentence and its log line stay byte-identical to the pre-fix form.
+func TestToolRunnerModelToolsRefusalBenignByteIdentical(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "tool.jsonl")
+	logger, err := NewLogger(logPath, nil)
+	if err != nil {
+		t.Fatalf("NewLogger: %v", err)
+	}
+	runner := NewRunner(dir, false, false, logger)
+	runner.AllowedModelTools = []string{"read_file"}
+
+	out, err := runner.Execute(4, "model-x", "prov-x", "write_file", `{"path":"out.txt","content":"x"}`)
+	if err != nil {
+		t.Fatalf("Execute error = %v; the refusal is error-shaped with a nil error", err)
+	}
+	const wantMsg = `tool "write_file" is not in the allowed tools list for model "model-x"`
+	if out != "Error: "+wantMsg {
+		t.Fatalf("refusal = %q; want %q", out, "Error: "+wantMsg)
+	}
+
+	entry := readSingleToolLogEntry(t, logPath)
+	if entry.Error != wantMsg {
+		t.Errorf("log Error = %q; want %q", entry.Error, wantMsg)
+	}
+	if entry.Model != "model-x" || entry.Provider != "prov-x" || entry.Tool != "write_file" {
+		t.Errorf("log columns = (%q, %q, %q); want (model-x, prov-x, write_file)",
+			entry.Model, entry.Provider, entry.Tool)
+	}
+}
+
+// O7, same raw-composition class on the dispatch default branch: an unknown tool
+// name is composed raw into an error that reaches the same log Error field
+// (logger.go masks only the Tool column). MaskOperand keeps an ordinary token
+// readable, matching the sibling --tools refusal (tokens.go:54) and the CLI
+// assertions downstream.
+func TestToolRunnerUnknownToolRefusalMasksOperand(t *testing.T) {
+	cases := []struct {
+		name string
+		tool string
+		want string
+	}{
+		{name: "key-shaped tool name", tool: "Ab3dE5gH7jK9mN1pQ3sT", want: `Error: unknown tool "Ab3dE****"`},
+		{name: "benign tool name", tool: "nowrite", want: `Error: unknown tool "nowrite"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			logPath := filepath.Join(dir, "tool.jsonl")
+			logger, err := NewLogger(logPath, nil)
+			if err != nil {
+				t.Fatalf("NewLogger: %v", err)
+			}
+			runner := NewRunner(dir, false, false, logger)
+
+			out, err := runner.Execute(5, "model-x", "prov-x", tc.tool, `{}`)
+			if err != nil {
+				t.Fatalf("Execute error = %v; the refusal is error-shaped with a nil error", err)
+			}
+			if out != tc.want {
+				t.Fatalf("refusal = %q; want %q", out, tc.want)
+			}
+			entry := readSingleToolLogEntry(t, logPath)
+			if wantErr := strings.TrimPrefix(tc.want, "Error: "); entry.Error != wantErr {
+				t.Errorf("log Error = %q; want %q", entry.Error, wantErr)
+			}
+		})
+	}
+}
+
+// readSingleToolLogEntry decodes the one JSONL line a single-dispatch pin wrote.
+func readSingleToolLogEntry(t *testing.T, path string) LogEntry {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("log lines = %d; want exactly one:\n%s", len(lines), raw)
+	}
+	var entry LogEntry
+	if err := json.Unmarshal([]byte(lines[0]), &entry); err != nil {
+		t.Fatalf("decode log line: %v\n%s", err, lines[0])
+	}
+	return entry
 }

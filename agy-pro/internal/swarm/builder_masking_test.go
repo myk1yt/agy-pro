@@ -1,6 +1,7 @@
 package swarm
 
 import (
+	"bufio"
 	"bytes"
 	"strings"
 	"testing"
@@ -584,5 +585,102 @@ func TestRenderSummaryMasksUnderscoreHeadModelID(t *testing.T) {
 		if want := "seat | kind | model | verdict\n1 | provider | " + id + " | success\n"; buf.String() != want {
 			t.Errorf("benign model id %q drifted\n got: %q\nwant: %q", id, buf.String(), want)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The swarm twin of the preset surface: the interactive seat picker's saved
+// preset listing (builder.go pickSeats) composed the stored name and numbers
+// operands raw, the same O6-class sink the three preset surfaces already render
+// through providers.MaskOperand. Both operands route through that masker now,
+// and a benign pair keeps the exact bytes the raw composition wrote.
+// ---------------------------------------------------------------------------
+
+// presetStoreStub is the in-memory swarm.Store the picker pin reads.
+type presetStoreStub struct{ presets []SavedPreset }
+
+func (s presetStoreStub) LoadPresets() ([]SavedPreset, error) { return s.presets, nil }
+func (s presetStoreStub) SavePresets([]SavedPreset) error     { return nil }
+
+// savedPresetBlock returns the rendered "Saved presets:" section, from its
+// header line up to the following section header.
+func savedPresetBlock(t *testing.T, out string) string {
+	t.Helper()
+	const header = "Saved presets:\n"
+	start := strings.Index(out, header)
+	if start < 0 {
+		t.Fatalf("seat picker did not render the saved-preset section:\n%s", out)
+	}
+	rest := out[start:]
+	end := strings.Index(rest, "Numbered inventory:\n")
+	if end < 0 {
+		t.Fatalf("saved-preset section has no following inventory header:\n%s", out)
+	}
+	return rest[:end]
+}
+
+// TestPickSeatsMasksSavedPresetOperands pins the seat picker's saved-preset
+// listing: a credential-shaped name and a credential-shaped numbers field
+// render first-5+**** (neither the plant nor its post-5 tail survives), while a
+// benign name and numbers list render the exact line the raw composition wrote.
+func TestPickSeatsMasksSavedPresetOperands(t *testing.T) {
+	const (
+		presetName     = skPlant // sk-an****
+		presetNameMask = skMask
+		presetNums     = awsPlant // wJalr****
+		presetNumsMask = awsMask
+		presetNameTail = "t-api03-PLANT0123456789abcdef"
+		presetNumsTail = "XUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"
+	)
+	if providers.MaskOperand(presetName) == presetName || providers.MaskOperand(presetNums) == presetNums {
+		t.Fatalf("premise broken: providers.MaskOperand is the identity on a plant")
+	}
+
+	var out, errOut bytes.Buffer
+	b := &Builder{Out: &out, ErrW: &errOut, Inv: builderInv(t), Store: presetStoreStub{presets: []SavedPreset{
+		{Name: presetName, Numbers: "1,3"},
+		{Name: "quick", Numbers: presetNums},
+	}}}
+	if _, ok := b.pickSeats(bufio.NewReader(strings.NewReader("p1\n")), &out); !ok {
+		t.Fatalf("seat picker failed on a valid selection\nstdout:\n%s\nstderr:\n%s", out.String(), errOut.String())
+	}
+	block := savedPresetBlock(t, out.String())
+	for _, want := range []string{
+		"  " + presetNameMask + " = 1,3\n",
+		"  quick = " + presetNumsMask + "\n",
+	} {
+		if !strings.Contains(block, want) {
+			t.Errorf("saved-preset listing missing %q\n%s", want, block)
+		}
+	}
+	for _, raw := range []string{presetName, presetNums, presetNameTail, presetNumsTail} {
+		if strings.Contains(block, raw) {
+			t.Errorf("saved-preset listing echoes %q raw\n%s", raw, block)
+		}
+	}
+
+	// The identity half: a benign pair renders byte-identically to the raw
+	// composition, so the conversion cannot move a pinned benign line.
+	benign := []SavedPreset{
+		{Name: "p9", Numbers: "1,3,19,23"},
+		{Name: "deep-review", Numbers: "2,5"},
+		{Name: "swift", Numbers: "1"},
+	}
+	for _, p := range benign {
+		if providers.MaskOperand(p.Name) != p.Name || providers.MaskOperand(p.Numbers) != p.Numbers {
+			t.Fatalf("premise broken: providers.MaskOperand is not the identity on the benign preset %+v", p)
+		}
+	}
+	var benignOut, benignErr bytes.Buffer
+	bb := &Builder{Out: &benignOut, ErrW: &benignErr, Inv: builderInv(t), Store: presetStoreStub{presets: benign}}
+	if _, ok := bb.pickSeats(bufio.NewReader(strings.NewReader("p1\n")), &benignOut); !ok {
+		t.Fatalf("seat picker failed on a valid selection\nstdout:\n%s\nstderr:\n%s", benignOut.String(), benignErr.String())
+	}
+	const wantBlock = "Saved presets:\n  p9 = 1,3,19,23\n  deep-review = 2,5\n  swift = 1\n"
+	if got := savedPresetBlock(t, benignOut.String()); got != wantBlock {
+		t.Errorf("benign saved-preset section drifted from the raw composition\n got: %q\nwant: %q", got, wantBlock)
+	}
+	if strings.Contains(benignOut.String(), "****") {
+		t.Errorf("a benign saved preset was masked:\n%s", benignOut.String())
 	}
 }

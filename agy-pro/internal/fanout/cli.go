@@ -855,14 +855,17 @@ func loadActivePreset(f fanoutFlags, w io.Writer) (*Preset, error) {
 	if fromDefaultKey {
 		// F5/round-6 M1: the name is file-sourced (a hand-edited
 		// fanout-presets.json can plant a credential-shaped default_preset), so
-		// the slot is masked. MaskRegistryValue, not MaskOperand: a preset name
-		// is never a legitimate location, so the "://" location exemption must
-		// not let a userinfo credential ("https://user:pass@host/x") ride raw
-		// in this echo.
-		fmt.Fprintf(w, "fanout: warning: default preset %q not found in fanout-presets.json; running without a preset\n", providers.MaskRegistryValue(name))
+		// the slot is masked through the single registry-slot display authority
+		// MaskSlot. Not MaskOperand: a preset name is never a legitimate
+		// location, so the "://" location exemption must not let a userinfo
+		// credential ("https://user:pass@host/x") ride raw in this echo, and the
+		// authority's policy arms (control strip, look-alike fold, composed-label
+		// segment arm) are what classify a decorated plant that the pre-policy
+		// MaskRegistryValue rendered unchanged.
+		fmt.Fprintf(w, "fanout: warning: default preset %q not found in fanout-presets.json; running without a preset\n", providers.MaskSlot(name))
 		return nil, nil
 	}
-	return nil, fmt.Errorf("preset %q not found in fanout-presets.json", providers.MaskRegistryValue(name))
+	return nil, fmt.Errorf("preset %q not found in fanout-presets.json", providers.MaskSlot(name))
 }
 
 // resolveMaxNative applies the native-seat concurrency precedence of contract

@@ -408,7 +408,11 @@ func (c *Core) swarmPresetsValue() string {
 	}
 	var parts []string
 	for _, p := range presets {
-		parts = append(parts, fmt.Sprintf("%s=%s", p.Name, p.Numbers))
+		// The preset name and its numbers are user-set operands, so they render
+		// through providers.MaskOperand: the same authority the preset screens
+		// use (screen_presets.go buildRows). A credential-shaped name or numbers
+		// field renders first-5+****; benign values stay byte-identical.
+		parts = append(parts, fmt.Sprintf("%s=%s", providers.MaskOperand(p.Name), providers.MaskOperand(p.Numbers)))
 	}
 	return strings.Join(parts, ", ")
 }
