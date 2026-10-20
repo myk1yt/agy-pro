@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -49,15 +50,28 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 	if provName == "" {
 		return errors.New("provider name cannot be empty")
 	}
+	// FIX-7B: the registry-slot authority classifies the NAME before the
+	// charset does. The charset accepts the underscore key family
+	// ("sk_live_0123456789abcdef"), MaskOperand is the identity on it, and the
+	// wizard persists the name through its own upsert (not registry_ops.go),
+	// from where it reaches the derived env name
+	// ("SK_LIVE_0123456789ABCDEF_API_KEY") and every listing, doctor, and
+	// report sink. A name that carries credential material is refused here,
+	// fail closed, before the URL prompt, before the probe, and before any
+	// write; the sentence names the field and never the value.
+	if err := wizardNameRefused(provName); err != nil {
+		return err
+	}
 	// B5 data-layer completeness: the wizard persists to the same registry as
 	// the registry-ops path, so names must satisfy the same shell-safe charset
 	// (a name later lands in plugin run_command lines).
 	if err := ValidateProviderName(provName); err != nil {
 		return err
 	}
-	// B2/U8: every later echo of the name goes through MaskOperand — a
-	// misdirected key paste in the name slot must never reach the transcript.
-	provLabel := MaskOperand(provName)
+	// B2/U8: every later echo of the name routes through the registry-slot mask
+	// (MaskSlot, whose first stage is MaskOperand), so even a hand-edited
+	// registry value of the refused class cannot render raw here.
+	provLabel := wizardProvLabel(provName)
 
 	// A name that resolves to a catalog entry (via an alias such as "gemini")
 	// keeps the name the user typed but takes the catalog base URL, key variable,
@@ -83,6 +97,14 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 	if baseURL == "" {
 		return errors.New("base URL cannot be empty")
 	}
+	// FIX-7B: the transport rule (validateBaseURL) is scheme and host only, so a
+	// credential parked in the path, the query, the fragment, or the userinfo
+	// used to pass here, echo raw at the edit prompt and the completion summary,
+	// and persist. The same registry-slot authority the TUI form's base-URL arm
+	// uses rejects it before the probe and before any write.
+	if err := wizardBaseURLRefused(baseURL); err != nil {
+		return err
+	}
 	if err := validateBaseURL(baseURL); err != nil {
 		// B2/U8: the operand may be a misdirected key paste; never echo it raw.
 		return fmt.Errorf("%w: %s", err, MaskOperand(baseURL))
@@ -91,14 +113,17 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 	// Step 3: API Key & Environment Variable Name
 	defaultEnv := defaultEnvFor(provName)
 	existingVal := os.Getenv(defaultEnv)
-	// C5/U8: a credential-shaped provider name passes the B5 charset and
-	// defaultEnvFor only case-folds it and swaps separators for "_", so the
-	// derived name embeds the pasted key verbatim
-	// ("AKIAIOSFODNN7EXAMPLE" -> "AKIAIOSFODNN7EXAMPLE_API_KEY"). MaskOperand
-	// keeps UPPER_SNAKE names readable by design, so echo sites withhold that
-	// derived name instead of leaking it. A name the user typed as an env
-	// variable still renders through MaskOperand.
-	withholdDerivedEnv := MaskOperand(provName) != provName
+	// C5/U8 + FIX-7B: a credential-shaped provider name passes the B5 charset
+	// (the name guard above now refuses that class at the prompt, so this path is
+	// the hand-edited-registry case), and defaultEnvFor only case-folds the name
+	// and swaps separators for "_", so the derived name embeds the pasted key
+	// verbatim ("AKIAIOSFODNN7EXAMPLE" -> "AKIAIOSFODNN7EXAMPLE_API_KEY"). The
+	// registry-slot mask decides the class, not MaskOperand alone: MaskOperand is
+	// the identity on the underscore family ("sk_live_0123456789abcdef"), which
+	// is exactly the class this mission closes. Echo sites withhold that derived
+	// name instead of leaking it. A name the user typed as an env variable still
+	// renders through MaskOperand.
+	withholdDerivedEnv := wizardWithholdsDerivedEnv(provName)
 	envEcho := func(env string) string {
 		if withholdDerivedEnv && env == defaultEnv {
 			return "(withheld: derived from a key-shaped name)"
@@ -181,10 +206,14 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 			if i >= 6 {
 				break
 			}
+			// The discovered ID is endpoint-borne (untrusted) and it is also the
+			// registry ID the row will carry, so the description embeds the same
+			// masked form the menu renders: a credential-shaped ID cannot ride raw
+			// into the preset list through its own annotation.
 			presets = append(presets, ModelPreset{
 				ID:              rm,
 				Family:          InferFamily(rm),
-				Description:     fmt.Sprintf("%s (auto-discovered)", rm),
+				Description:     wizardModelLabel(rm) + " (auto-discovered)",
 				Recommended:     i == 0,
 				ContextLength:   1048576,
 				MaxOutputTokens: -1,
@@ -216,7 +245,11 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 				} else if p.Recommended {
 					tag = " [Recommended]"
 				}
-				fmt.Fprintf(out, "  %d) %s (%s)%s\n", i+1, p.ID, p.Description, tag)
+				// The preset row is a registry-name render like every other model-ID
+				// sink: MaskSlot is identity on a benign catalog or discovered ID and
+				// first-5+**** on the underscore class (the description is already
+				// masked at synthesis for a discovered row).
+				fmt.Fprintf(out, "  %d) %s (%s)%s\n", i+1, wizardModelLabel(p.ID), p.Description, tag)
 			}
 			customOpt := len(presets) + 1
 			fmt.Fprintf(out, "  %d) Custom Model ID (enter manually)\n", customOpt)
@@ -246,7 +279,11 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 			} else {
 				// User might have typed custom model ID directly
 				if choiceStr != "" && choiceStr != "1" {
-					selectedModel = promptCustomModel(reader, out, choiceStr)
+					m, err := promptCustomModel(reader, out, choiceStr)
+					if err != nil {
+						return err
+					}
+					selectedModel = m
 					hasSelection = true
 				}
 			}
@@ -261,20 +298,24 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 				fmt.Fprintln(out, "Model ID cannot be empty.")
 				continue
 			}
-			selectedModel = promptCustomModel(reader, out, customID)
+			m, err := promptCustomModel(reader, out, customID)
+			if err != nil {
+				return err
+			}
+			selectedModel = m
 			hasSelection = true
 		}
 
 		// Prevent duplicate models
 		if configuredSet[selectedModel.ID] {
-			fmt.Fprintf(out, "Model %q is already configured for %s.\n", MaskOperand(selectedModel.ID), provLabel)
+			fmt.Fprintf(out, "Model %q is already configured for %s.\n", wizardModelLabel(selectedModel.ID), provLabel)
 			continue
 		}
 
 		// Live Connection Probe Loop
 	probeLoop:
 		for {
-			fmt.Fprintf(out, "\n[Live Probe] Testing endpoint %s connection with model %q...\n", endpointHost(baseURL), MaskOperand(selectedModel.ID))
+			fmt.Fprintf(out, "\n[Live Probe] Testing endpoint %s connection with model %q...\n", endpointHost(baseURL), wizardModelLabel(selectedModel.ID))
 			latency, probeErr := ProbeEndpoint(baseURL, keyValue, selectedModel.ID)
 			if probeErr == nil {
 				fmt.Fprintf(out, "✅ Connection succeeded! Latency: %dms\n", latency)
@@ -283,7 +324,9 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 				break probeLoop
 			}
 
-			fmt.Fprintf(out, "❌ Connection test failed: %v\n", probeErr)
+			// FIX-M: the transcript echo is a sink of its own, so it routes
+			// through the same sentence masker (identity for a benign error).
+			fmt.Fprintf(out, "❌ Connection test failed: %v\n", maskProbeError(probeErr, baseURL))
 			if isTimeoutErr(probeErr) {
 				fmt.Fprintln(out, "[Notice] Gateway response timed out. The model may be cold-starting or queueing. You can retry immediately or save anyway.")
 			}
@@ -304,14 +347,30 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 			case "1", "save":
 				models = append(models, selectedModel)
 				configuredSet[selectedModel.ID] = true
-				fmt.Fprintf(out, "Saved model %q anyway.\n", MaskOperand(selectedModel.ID))
+				fmt.Fprintf(out, "Saved model %q anyway.\n", wizardModelLabel(selectedModel.ID))
 				break probeLoop
 			case "2", "retry", "r":
 				continue probeLoop
 			case "3", "edit", "e":
-				newURL, _ := promptLine(reader, out, "Base URL", baseURL)
+				// FIX-J: the bracketed default is the CURRENT base URL, and
+				// validateBaseURL accepts a userinfo URL, so the raw value used to
+				// print here in captured or piped runs. The display default routes
+				// through MaskBaseURL (the same authority as the completion summary,
+				// FIX-G), while the accept-default return stays RAW: the wizard writes
+				// what this prompt returns, so masking the returned value would
+				// persist the mask. A benign URL masks to itself, so its prompt line
+				// stays byte-identical.
+				newURL, _ := promptLineDisplay(reader, out, "Base URL", MaskBaseURL(baseURL), baseURL)
 				newURL = strings.TrimSpace(newURL)
-				if newURL != "" {
+				// FIX-7B: this prompt validated nothing, so a credential-bearing
+				// replacement typed here reached the probe and the write. A TYPED
+				// replacement now passes the same guard as the step-2 prompt. An
+				// accepted default returns the current, already-vetted value (its
+				// display copy is the mask), so accepting it re-runs nothing.
+				if newURL != "" && newURL != baseURL {
+					if err := wizardBaseURLRefused(newURL); err != nil {
+						return err
+					}
 					baseURL = newURL
 				}
 				newKey, keyErr := promptSecret(reader, out, console, "API Key", "keep current")
@@ -345,10 +404,10 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 				}
 				continue probeLoop
 			case "4", "discard", "d":
-				fmt.Fprintf(out, "Discarded model %q.\n", MaskOperand(selectedModel.ID))
+				fmt.Fprintf(out, "Discarded model %q.\n", wizardModelLabel(selectedModel.ID))
 				break probeLoop
 			default:
-				fmt.Fprintf(out, "Discarded model %q.\n", MaskOperand(selectedModel.ID))
+				fmt.Fprintf(out, "Discarded model %q.\n", wizardModelLabel(selectedModel.ID))
 				break probeLoop
 			}
 		}
@@ -361,6 +420,17 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 
 	if len(models) == 0 {
 		return errors.New("no models configured; setup aborted")
+	}
+
+	// K-2 pre-write guard: the per-prompt guard only sees the values the user
+	// typed, and the wizard also collects rows from the preset catalog and from
+	// the endpoint's model list. Classify every free-text field of every
+	// collected model once more, before anything is marshalled, so key material
+	// cannot reach providers.json through a row the prompts never showed. A
+	// refusal aborts the setup with the registry untouched and the value
+	// unechoed.
+	if err := wizardModelFieldsRefused(models); err != nil {
+		return err
 	}
 
 	// Step 5: Save to registry
@@ -428,7 +498,15 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 	fmt.Fprintln(out, "  ✅ Provider Setup Complete!")
 	fmt.Fprintln(out, "===========================================================")
 	fmt.Fprintf(out, "Provider        : %s\n", provLabel)
-	fmt.Fprintf(out, "Base URL        : %s\n", baseURL)
+	// FIX-G: the summary is the last echo of the URL, and validateBaseURL
+	// accepts a userinfo URL ("https://user:<key>@host/v1"), so the raw value
+	// used to echo in the line-mode degrade path. MaskBaseURL is the layered
+	// URL mask the TUI twin uses (tui maskBaseURL, screen_providers.go, kept in
+	// parity by its cross-package pin), so the wizard and the TUI render the
+	// same input the same way. A benign URL has no userinfo, no
+	// credential-shaped query or fragment and no credential-shaped token, so
+	// the masker returns it unchanged and the summary line stays byte-identical.
+	fmt.Fprintf(out, "Base URL        : %s\n", MaskBaseURL(baseURL))
 	keyStatus := "not set; export it before use"
 	if keyValue != "" {
 		keyStatus = "saved in environment, " + MaskSecret(keyValue)
@@ -444,23 +522,166 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 			ctxDisplay = fmt.Sprintf("%dM", m.ContextLength/1048576)
 		}
 		fmt.Fprintf(out, "  %d. %-32s [family: %s, context: %s, capabilities: %s]\n",
-			i+1, DisplayName(MaskOperand(m.ID), provLabel), MaskFamilyName(m), ctxDisplay, m.CapabilitySummary())
+			i+1, DisplayName(wizardModelLabel(m.ID), provLabel), MaskFamilyName(m), ctxDisplay, m.CapabilitySummary())
 	}
 	fmt.Fprintln(out, "===========================================================")
 	fmt.Fprintln(out, "Ready to use! The gateway bridge activates whenever an external model is targeted:")
-	fmt.Fprintf(out, "  Native agy   : agy -m %q\n", DisplayName(MaskOperand(models[0].ID), provLabel))
+	fmt.Fprintf(out, "  Native agy   : agy -m %q\n", DisplayName(wizardModelLabel(models[0].ID), provLabel))
 	fmt.Fprintln(out, "                 (set AGY_PRO_BRIDGE=1 to expose every model in the /model picker)")
-	fmt.Fprintf(out, "  Fanout swarm : agy pro fanout --models %q --prompt \"your prompt\"\n", provLabel+"/"+MaskOperand(models[0].ID))
+	fmt.Fprintf(out, "  Fanout swarm : agy pro fanout --models %q --prompt \"your prompt\"\n", provLabel+"/"+wizardModelLabel(models[0].ID))
 	fmt.Fprintln(out, "  List models  : agy pro models")
 	fmt.Fprintln(out, "===========================================================")
 	return nil
 }
 
-func promptCustomModel(r *bufio.Reader, w io.Writer, modelID string) Model {
+// wizardSecretRefusal is the wizard door's non-echoing refusal sentence: it
+// names the field class, never the value, in the same "(value hidden)" idiom
+// the registry validators use for a misdirected key paste.
+func wizardSecretRefusal(field string) error {
+	return fmt.Errorf("the %s looks like secret material and cannot be saved (value hidden)", field)
+}
+
+// wizardNameRefused is the wizard door's provider-NAME guard. The wizard's name
+// prompt ran the charset check only, and that charset accepts the underscore
+// credential family ("sk_live_0123456789abcdef", "tok_a1b2c3d4e5f6g7h8i9j0"):
+// MaskOperand is the identity on it, so the raw name was persisted through the
+// wizard's own upsert and echoed at the listing, doctor, and report sinks while
+// its derived env name leaked the class as upper snake case.
+//
+// The class is the registry-slot authority's (NameCarriesCredential: the shape
+// test, or MaskOperand/MaskSlot changing the value), so the name door and the
+// TUI form's name arm cannot disagree. The refusal is the existing sentence
+// idiom: the field is named, the value never is.
+func wizardNameRefused(name string) error {
+	if !NameCarriesCredential(name) {
+		return nil
+	}
+	return wizardSecretRefusal("provider name")
+}
+
+// wizardProvLabel renders a provider name for every transcript sink of the
+// wizard. MaskSlot is the registry-slot display authority (a superset of
+// MaskOperand: its first stage), so the underscore family the name prompt
+// refuses still renders first-5+**** if a hand-edited registry or a future
+// ingest door feeds one in. A benign name is byte-identical.
+func wizardProvLabel(name string) string {
+	return MaskSlot(name)
+}
+
+// wizardModelLabel renders a registry-borne model ID for every transcript sink
+// of the wizard. A model ID is a registry name like the provider name: it is
+// the `models[].id` value of providers.json, and the wizard carries it in its
+// own models / selectedModel state (from the prompt, from the preset catalog,
+// or from the endpoint's discovered model list).
+//
+// The eight ID sinks used MaskOperand, which is the identity on the
+// underscore-head class ("sk_live_0123456789abcdef": no shared prefix, and the
+// "_" breaks the opaque-run test), so a hand-edited or discovered
+// credential-shaped ID rendered raw in the duplicate notice, the live-probe
+// line, the saved/discarded notices, the summary row, and the two ready-to-use
+// commands. MaskSlot is the registry-slot display authority (a superset of
+// MaskOperand: its first stage), the same one wizardProvLabel uses and the one
+// the report/status sinks render model IDs through. A benign ID is
+// byte-identical.
+func wizardModelLabel(id string) string {
+	return MaskSlot(id)
+}
+
+// wizardWithholdsDerivedEnv reports whether the env name the wizard derives
+// from the provider name must be withheld from the transcript. defaultEnvFor
+// only case-folds and separator-swaps the name, so a credential-shaped name
+// embeds itself verbatim in the derived variable
+// ("sk_live_0123456789abcdef" -> "SK_LIVE_0123456789ABCDEF_API_KEY").
+// MaskOperand is the identity on that class; the registry-slot mask is not, so
+// the derived-name leak is decided by the same authority as the door guard.
+func wizardWithholdsDerivedEnv(name string) bool {
+	return MaskSlot(name) != name
+}
+
+// wizardBaseURLRefused is the wizard door's base-URL guard. validateBaseURL is
+// the transport rule (scheme and host) and says nothing about the rest of the
+// URL, so a credential-bearing endpoint passed the prompt, echoed raw at the
+// edit prompt and the completion summary, rode the probe request, and was
+// persisted. The mission invariant is that providers.json stores env-var NAMES
+// and endpoint data, never a secret VALUE, so a URL whose parts carry
+// credential material is refused before the probe and before any write.
+//
+// The classification is the ONE shared URL authority (BaseURLCarriesCredential,
+// slotpolicy.go): the whole value, the host labels, the userinfo, the path (and
+// the Opaque spelling), the query keys and values, and the fragment. The wizard
+// keeps no local part list, so this door, the TUI provider form, and the
+// add-json parser cannot drift apart again; the host arm and the benign-userinfo
+// verdict arrive with the shared function.
+func wizardBaseURLRefused(raw string) error {
+	if BaseURLCarriesCredential(raw) {
+		return wizardSecretRefusal("Base URL")
+	}
+	return nil
+}
+
+// wizardFieldRefused applies the shared NAME authority (NameCarriesCredential,
+// slotpolicy.go) to one free-text model field of the wizard. The wizard writes
+// straight into providers.json, so a misdirected key paste at any of these
+// prompts must be refused before the value reaches the connection probe or the
+// file, exactly as the TUI model form and the CLI model verbs refuse it. A
+// refusal aborts the setup with nothing written and the value unechoed.
+//
+// FIX-8e: the guard used to be SecretShaped alone, so a key-shaped model ID of
+// the underscore class ("tok_a1b2c3d4e5f6g7h8i9j0" and the rest of it) passed
+// the Model ID, family, tags, and tools prompts and persisted raw into
+// models[].id while the TUI model form, the CLI model verbs, and add-json all
+// refused it. The authority is the union of the three shared arms, so the
+// wizard door and every other ingest door answer identically on every input;
+// the pre-write sweep below calls the same function, so a preset row or an
+// endpoint-discovered id cannot slip in either.
+func wizardFieldRefused(field, value string) error {
+	if !NameCarriesCredential(value) {
+		return nil
+	}
+	return wizardSecretRefusal(field)
+}
+
+// wizardModelFieldsRefused is the pre-write guard: it classifies every
+// free-text field of every collected model (id, family, tags, tool grants)
+// once more, so a row the per-prompt guard never showed the user (a preset row
+// or an id discovered from the endpoint's model list) cannot carry credential
+// material into the registry either. The reasoning effort cannot carry a paste:
+// the prompt maps anything outside the closed set to "default".
+func wizardModelFieldsRefused(models []Model) error {
+	for _, m := range models {
+		if err := wizardFieldRefused("model ID", m.ID); err != nil {
+			return err
+		}
+		if err := wizardFieldRefused("model family", m.Family); err != nil {
+			return err
+		}
+		for _, tag := range m.Tags {
+			if err := wizardFieldRefused("model tag", tag); err != nil {
+				return err
+			}
+		}
+		for _, tool := range m.Capabilities.AllowedTools {
+			if err := wizardFieldRefused("model tool name", tool); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func promptCustomModel(r *bufio.Reader, w io.Writer, modelID string) (Model, error) {
+	// The ID is the first free-text field of the custom row, so it is refused
+	// before the family inference and before any probe request carries it.
+	if err := wizardFieldRefused("model ID", modelID); err != nil {
+		return Model{}, err
+	}
 	inferredFam := InferFamily(modelID)
 	family, _ := promptLine(r, w, fmt.Sprintf("Model Family [%s]", inferredFam), inferredFam)
 	if family == "" {
 		family = inferredFam
+	}
+	if err := wizardFieldRefused("model family", family); err != nil {
+		return Model{}, err
 	}
 
 	ctxStr, _ := promptLine(r, w, "Context Length in tokens [1048576, or -1 for server maximum]", "1048576")
@@ -483,9 +704,13 @@ func promptCustomModel(r *bufio.Reader, w io.Writer, modelID string) Model {
 		toolsListStr, _ := promptLine(r, w, "Allowed tools for this model (fanout --tools read,search,write,exec; read,search = read_file,list_dir,grep,glob; write = write_file; exec = run_command - and write/exec only take effect for tools listed here)", "read_file,list_dir,grep,glob")
 		for _, t := range strings.Split(toolsListStr, ",") {
 			t = strings.TrimSpace(t)
-			if t != "" {
-				allowedTools = append(allowedTools, t)
+			if t == "" {
+				continue
 			}
+			if err := wizardFieldRefused("model tool name", t); err != nil {
+				return Model{}, err
+			}
+			allowedTools = append(allowedTools, t)
 		}
 	}
 
@@ -524,7 +749,7 @@ func promptCustomModel(r *bufio.Reader, w io.Writer, modelID string) Model {
 		ContextLength:   ctxLen,
 		MaxOutputTokens: maxOut,
 		Capabilities:    caps,
-	}
+	}, nil
 }
 
 // DeriveTags automatically assigns tags based on model capabilities:
@@ -601,7 +826,15 @@ func ProbeEndpoint(baseURL, apiKey, modelID string) (latencyMs int64, err error)
 	latency := time.Since(start).Milliseconds()
 	dest := endpointHost(baseURL)
 	if err != nil {
-		return latency, fmt.Errorf("network error contacting %s: %w", dest, err)
+		// FIX-M: the *url.Error embeds the full endpoint, path included, so a
+		// credential-bearing base URL used to reach the transcript through this
+		// wrap. The sentence routes through maskProbeTranscript and the original
+		// stays in the chain (probeTranscriptError.Unwrap), so isTimeoutErr's
+		// errors.Is/errors.As checks are unaffected.
+		return latency, &probeTranscriptError{
+			msg: maskProbeTranscript(fmt.Sprintf("network error contacting %s: %v", dest, err), baseURL),
+			err: err,
+		}
 	}
 	defer resp.Body.Close()
 
@@ -619,6 +852,117 @@ func ProbeEndpoint(baseURL, apiKey, modelID string) (latencyMs int64, err error)
 	}
 
 	return latency, nil
+}
+
+// probeTranscriptError is an error whose message has been rendered for the
+// wizard transcript while the original stays in the chain, so
+// isTimeoutErr (errors.Is on context.DeadlineExceeded, errors.As on net.Error)
+// keeps seeing the transport error underneath. It mirrors the osError idiom in
+// internal/agysettings: masking a message must never break the chain.
+type probeTranscriptError struct {
+	msg string
+	err error
+}
+
+func (e *probeTranscriptError) Error() string { return e.msg }
+func (e *probeTranscriptError) Unwrap() error { return e.err }
+
+// maskProbeTranscript renders one probe-failure sentence for the transcript.
+// FIX-M: with a credential-bearing base URL, the transport error (*url.Error)
+// echoes the whole endpoint and no shared URL masker covers the path, so the
+// sentence is seeded with the credential-shaped parts of the URL. The
+// classification is the registry-slot authority's (a part is credential
+// material when MaskSlot does not return it unchanged), the same rule the
+// provider form's base-URL ingest guard applies per part.
+//
+// FIX-7B: the seeds were PATH-only, so a query value, a fragment, or a userinfo
+// username still printed raw inside the wrapped *url.Error (the URL prompt now
+// refuses those parts, and this seed set is the defense in depth for a hand-
+// edited or future ingest path). The builder covers every part the door guard
+// reads (probeCredentialPathSeeds).
+//
+// MaskSentence is the established sentence-level masker for error text; it drops
+// a seed that SeedEligible declines (a separator-carrying lower-case head such
+// as "sk_live_..." is neither a contiguous run nor a known prefix), so the same
+// seeds are applied once more through the seeded redactor the HTTP-detail sink
+// above already uses. An eligible seed is [REDACTED] by then, which makes the
+// second pass a no-op, and a benign sentence has no seeds at all, so its bytes
+// are unchanged (MaskSentence's no-seed fallback classifies a full sentence as
+// benign).
+func maskProbeTranscript(sentence, baseURL string) string {
+	seeds := probeCredentialPathSeeds(baseURL)
+	if len(seeds) == 0 {
+		return MaskSentence(sentence)
+	}
+	return NewRedactor(seeds...)(MaskSentence(sentence, seeds...))
+}
+
+// probeCredentialPathSeeds returns the URL parts that read as credential
+// material to the registry-slot authority: the credential-bearing HOST labels,
+// every path segment (and the Opaque slot of a hostless "https:<key>"), every
+// query key and value, the fragment, and the userinfo username and password.
+// The transport layer splits a URL into these parts, so no whole-value
+// classifier can see one; MaskSlot reads each part exactly as a registry slot,
+// and the *url.Error prints every part verbatim. Ordinary parts ("v1", "chat",
+// "completions", "api-version", a benign host label) are identity, so a benign
+// URL yields no seeds and its transcript stays byte-identical.
+//
+// FIX-8f: the HOST slot was the last one missing, so a key pasted as the host
+// ("https://sk_live_0123456789abcdef/v1") printed raw inside the wrapped
+// *url.Error sentence. The host labels are seeded through the shared host rule
+// (baseURLHostLabelCarriesCredential), and they are appended without the
+// MaskSlot gate: the class the host rule exists for (the underscore head) is
+// exactly the class MaskSlot still reads as a registry slot but SeedEligible
+// declines, so the seeded-redactor pass is what removes it. A redactor seed is
+// a literal string, so seeding one more literal can only mask.
+func probeCredentialPathSeeds(baseURL string) []string {
+	u, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return nil
+	}
+	var seeds []string
+	add := func(part string) {
+		if part != "" && MaskSlot(part) != part {
+			seeds = append(seeds, part)
+		}
+	}
+	for _, label := range strings.Split(u.Hostname(), ".") {
+		if baseURLHostLabelCarriesCredential(label) {
+			seeds = append(seeds, label)
+		}
+	}
+	for _, slot := range []string{u.Path, u.Opaque} {
+		for _, seg := range strings.Split(slot, "/") {
+			add(seg)
+		}
+	}
+	for key, vals := range u.Query() {
+		add(key)
+		for _, v := range vals {
+			add(v)
+		}
+	}
+	add(strings.TrimSpace(u.Fragment))
+	if u.User != nil {
+		add(u.User.Username())
+		if pw, ok := u.User.Password(); ok {
+			add(pw)
+		}
+	}
+	return seeds
+}
+
+// maskProbeError renders a probe error for a transcript sink, returning it
+// unchanged when nothing needs masking so a benign failure keeps its exact
+// bytes.
+func maskProbeError(err error, baseURL string) error {
+	if err == nil {
+		return nil
+	}
+	if msg := maskProbeTranscript(err.Error(), baseURL); msg != err.Error() {
+		return &probeTranscriptError{msg: msg, err: err}
+	}
+	return err
 }
 
 func isTimeoutErr(err error) bool {
@@ -639,8 +983,17 @@ func isTimeoutErr(err error) bool {
 }
 
 func promptLine(r *bufio.Reader, w io.Writer, prompt, defaultValue string) (string, bool) {
-	if defaultValue != "" && !strings.Contains(prompt, "[") {
-		fmt.Fprintf(w, "%s [%s]: ", prompt, defaultValue)
+	return promptLineDisplay(r, w, prompt, defaultValue, defaultValue)
+}
+
+// promptLineDisplay is promptLine with the bracketed default painted from
+// display while an accepted default still returns defaultValue. The two differ
+// only where the default is a credential-bearing value the prompt must not echo
+// raw (FIX-J): the display copy is a mask of the functional value, so accepting
+// the default keeps writing the RAW value the caller started from.
+func promptLineDisplay(r *bufio.Reader, w io.Writer, prompt, display, defaultValue string) (string, bool) {
+	if display != "" && !strings.Contains(prompt, "[") {
+		fmt.Fprintf(w, "%s [%s]: ", prompt, display)
 	} else {
 		fmt.Fprintf(w, "%s: ", prompt)
 	}

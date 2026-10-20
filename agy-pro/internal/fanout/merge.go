@@ -592,11 +592,17 @@ func maskedPartitionSeat(s *SeatResult, redact func(string) string) SeatResult {
 	copySeat.FinalTarget.Provider = providers.MaskProviderForReport(s.FinalTarget.Provider)
 	copySeat.FinalTarget.Model = providers.MaskModelForReport(s.FinalTarget.Model)
 	for i := range copySeat.Failovers {
+		// FIX-8: each hop field is a registry slot (provider name or model id)
+		// serialized into the shareable summary.json, so it renders through
+		// providers.MaskSlot (the registry-slot authority: MaskOperand plus the
+		// underscore-head credential arm) instead of plain MaskOperand, which is
+		// the identity on the "sk_live_..." class. Benign values keep their
+		// exact bytes.
 		copySeat.Failovers[i].Reason = redact(copySeat.Failovers[i].Reason)
-		copySeat.Failovers[i].FromProv = providers.MaskOperand(copySeat.Failovers[i].FromProv)
-		copySeat.Failovers[i].FromMod = providers.MaskOperand(copySeat.Failovers[i].FromMod)
-		copySeat.Failovers[i].ToProv = providers.MaskOperand(copySeat.Failovers[i].ToProv)
-		copySeat.Failovers[i].ToMod = providers.MaskOperand(copySeat.Failovers[i].ToMod)
+		copySeat.Failovers[i].FromProv = providers.MaskSlot(copySeat.Failovers[i].FromProv)
+		copySeat.Failovers[i].FromMod = providers.MaskSlot(copySeat.Failovers[i].FromMod)
+		copySeat.Failovers[i].ToProv = providers.MaskSlot(copySeat.Failovers[i].ToProv)
+		copySeat.Failovers[i].ToMod = providers.MaskSlot(copySeat.Failovers[i].ToMod)
 	}
 	return copySeat
 }

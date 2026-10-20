@@ -246,7 +246,7 @@ func (c *Client) send(ctx context.Context, target providers.Target, reqBody Chat
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, 0, fmt.Errorf("network error calling %s (%s): %w", providers.MaskOperand(target.Provider.Name), endpoint, err)
+		return nil, 0, fmt.Errorf("network error calling %s (%s): %w", providers.MaskSlot(target.Provider.Name), endpoint, err)
 	}
 	defer resp.Body.Close()
 
@@ -260,7 +260,7 @@ func (c *Client) send(ctx context.Context, target providers.Target, reqBody Chat
 		if len(snippet) > 500 {
 			snippet = snippet[:500] + "... (truncated)"
 		}
-		return nil, resp.StatusCode, fmt.Errorf("HTTP %d (%s) from provider %q: %s", resp.StatusCode, resp.Status, providers.MaskOperand(target.Provider.Name), snippet)
+		return nil, resp.StatusCode, fmt.Errorf("HTTP %d (%s) from provider %q: %s", resp.StatusCode, resp.Status, providers.MaskSlot(target.Provider.Name), snippet)
 	}
 
 	var chatResp ChatResponse
@@ -279,11 +279,11 @@ func (c *Client) send(ctx context.Context, target providers.Target, reqBody Chat
 		if len(msg) > 500 {
 			msg = msg[:500] + "... (truncated)"
 		}
-		return nil, resp.StatusCode, fmt.Errorf("API error from %q: %s", providers.MaskOperand(target.Provider.Name), msg)
+		return nil, resp.StatusCode, fmt.Errorf("API error from %q: %s", providers.MaskSlot(target.Provider.Name), msg)
 	}
 
 	if len(chatResp.Choices) == 0 {
-		return nil, resp.StatusCode, fmt.Errorf("empty choices returned by provider %q", providers.MaskOperand(target.Provider.Name))
+		return nil, resp.StatusCode, fmt.Errorf("empty choices returned by provider %q", providers.MaskSlot(target.Provider.Name))
 	}
 
 	return &chatResp, resp.StatusCode, nil

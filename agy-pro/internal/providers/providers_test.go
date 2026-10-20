@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -620,13 +621,15 @@ func TestInteractiveSetupWizard_PastedRawKeyAbsorption(t *testing.T) {
 	}
 }
 
-// TestInteractiveSetupWizard_FamilyDisplayMasksKeyShapedFamily is the C2
-// display fix at the wizard summary: the family column routes through
-// MaskFamilyName, so a key-shaped explicit family renders first-5+****
-// (the folded FamilyName() rode it raw) while a benign family stays
-// readable. The registry itself keeps the typed value: the fix is
-// display-only.
-func TestInteractiveSetupWizard_FamilyDisplayMasksKeyShapedFamily(t *testing.T) {
+// TestInteractiveSetupWizard_RefusesKeyShapedFamily pins the wizard door's
+// secret guard (K-2) on the family slot. The wizard persists straight into
+// providers.json, so a key-shaped value pasted at the Model Family prompt is
+// refused non-echoing and nothing is written, exactly as the TUI model form and
+// the CLI model verbs refuse it. Before the guard the value was persisted and
+// only the summary line masked it: the C2 display rule itself is pinned
+// directly by TestMaskFamilyName, and this pin is the door that keeps the value
+// from reaching the file at all.
+func TestInteractiveSetupWizard_RefusesKeyShapedFamily(t *testing.T) {
 	tmpDir := t.TempDir()
 	provPath := filepath.Join(tmpDir, "providers.json")
 	t.Setenv(EnvProviders, provPath)
@@ -640,49 +643,156 @@ func TestInteractiveSetupWizard_FamilyDisplayMasksKeyShapedFamily(t *testing.T) 
 	defer server.Close()
 
 	keyFamily := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-	// Unknown provider (no presets): name, URL, key, then two custom models.
-	// The first declares a key-shaped family, the second a benign one.
+	// Unknown provider (no presets): name, URL, key, then the custom row. The
+	// family is the planted value, so the wizard refuses before the probe and
+	// before the save.
 	input := strings.Join([]string{
 		"mycustomvendor",
 		server.URL + "/v1",
 		"mock-dummy-key-789",
 		"custom-model-x",
 		keyFamily,
-		"", "", "N", "N", "N", // ctx, maxout, tools, thinking, vision
-		"y",
-		"custom-model-2",
+	}, "\n") + "\n"
+
+	out := &bytes.Buffer{}
+	err := InteractiveSetupWizard(strings.NewReader(input), out)
+	if err == nil {
+		t.Fatalf("wizard accepted a key-shaped family: %s", out.String())
+	}
+	if !strings.Contains(err.Error(), "model family") || !strings.Contains(err.Error(), "value hidden") {
+		t.Errorf("refusal = %q; want the non-echoing family refusal", err)
+	}
+	if strings.Contains(err.Error(), keyFamily) || strings.Contains(out.String(), keyFamily) {
+		t.Errorf("refusal echoes the key-shaped family raw: err=%q output=%s", err, out.String())
+	}
+	if _, statErr := os.Stat(provPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("a refused family must write nothing; stat error = %v", statErr)
+	}
+
+	// The benign half of the pre-guard pin: an explicit benign family still
+	// renders readable in the summary and is persisted verbatim.
+	out.Reset()
+	benign := strings.Join([]string{
+		"mycustomvendor",
+		server.URL + "/v1",
+		"mock-dummy-key-789",
+		"custom-model-x",
 		"gemini",
 		"", "", "N", "N", "N",
 		"N",
 	}, "\n") + "\n"
-
-	in := strings.NewReader(input)
-	out := &bytes.Buffer{}
-	if err := InteractiveSetupWizard(in, out); err != nil {
-		t.Fatalf("wizard returned error: %v\nOutput: %s", err, out.String())
-	}
-
-	if !strings.Contains(out.String(), "[family: wJalr****") {
-		t.Errorf("key-shaped family must render first-5+**** in the summary:\n%s", out.String())
-	}
-	if strings.Contains(out.String(), "wJalrXUtnFEMI") {
-		t.Errorf("summary leaks the key-shaped family raw:\n%s", out.String())
+	if err := InteractiveSetupWizard(strings.NewReader(benign), out); err != nil {
+		t.Fatalf("benign family run returned error: %v\nOutput: %s", err, out.String())
 	}
 	if !strings.Contains(out.String(), "[family: gemini") {
 		t.Errorf("benign family must stay readable in the summary:\n%s", out.String())
 	}
+	if reg, loadErr := LoadFrom(provPath); loadErr != nil {
+		t.Fatalf("benign run did not save: %v", loadErr)
+	} else if got := reg.Providers[0].Models[0].Family; got != "gemini" {
+		t.Errorf("registry family = %q; want gemini", got)
+	}
+}
 
-	// The registry keeps the typed value verbatim (display-only fix).
-	reg, err := LoadFrom(provPath)
-	if err != nil {
-		t.Fatalf("failed to load saved providers: %v", err)
+// TestInteractiveSetupWizard_RefusesDecoratedModelFields pins the wizard door
+// (K-2) against the DECORATED plant class the shared policy closes, on every
+// free-text model field the wizard collects: the Model ID, the Model Family,
+// and the allowed-tools list. Each refusal is non-echoing and writes nothing,
+// and a benign row still persists verbatim, so the guard cannot become an
+// over-refusal of ordinary model names.
+func TestInteractiveSetupWizard_RefusesDecoratedModelFields(t *testing.T) {
+	const plant = "./" + "\u2025/" + slotTestOpaque // refused by SecretShaped, readable to every pre-policy masker
+	const core = slotTestOpaque
+	if !SecretShaped(plant) {
+		t.Fatalf("premise: the decorated plant %q must be classified as credential material", plant)
 	}
-	if len(reg.Providers) != 1 || len(reg.Providers[0].Models) != 2 {
-		t.Fatalf("unexpected saved registry: %+v", reg.Providers)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"choices":[{"message":{"content":"pong"}}]}`))
+	}))
+	defer server.Close()
+
+	cases := []struct {
+		name      string
+		lines     []string
+		wantField string
+	}{
+		{
+			name:      "decorated model ID",
+			lines:     []string{plant},
+			wantField: "model ID",
+		},
+		{
+			name:      "decorated model family",
+			lines:     []string{"acme-fast", plant},
+			wantField: "model family",
+		},
+		{
+			name:      "decorated tool name",
+			lines:     []string{"acme-fast", "", "", "", "Y", plant + ",read_file"},
+			wantField: "model tool name",
+		},
 	}
-	if reg.Providers[0].Models[0].Family != keyFamily {
-		t.Errorf("registry family = %q; want the typed value %q (display-only fix)", reg.Providers[0].Models[0].Family, keyFamily)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			provPath := filepath.Join(t.TempDir(), "providers.json")
+			t.Setenv(EnvProviders, provPath)
+			t.Setenv("MYCUSTOMVENDOR_API_KEY", "")
+
+			input := strings.Join(append([]string{"mycustomvendor", server.URL + "/v1", "mock-dummy-key-789"}, tc.lines...), "\n") + "\n"
+			out := &bytes.Buffer{}
+			err := InteractiveSetupWizard(strings.NewReader(input), out)
+			if err == nil {
+				t.Fatalf("wizard accepted a decorated %s: %s", tc.wantField, out.String())
+			}
+			if !strings.Contains(err.Error(), tc.wantField) || !strings.Contains(err.Error(), "value hidden") {
+				t.Errorf("refusal = %q; want the non-echoing %s refusal", err, tc.wantField)
+			}
+			if strings.Contains(err.Error(), core) || strings.Contains(out.String(), core) {
+				t.Errorf("refusal echoes the credential core: err=%q output=%s", err, out.String())
+			}
+			if _, statErr := os.Stat(provPath); !errors.Is(statErr, os.ErrNotExist) {
+				t.Errorf("a refused value must write nothing; stat error = %v", statErr)
+			}
+		})
 	}
+
+	// Benign ids pass and persist verbatim, tools included.
+	t.Run("benign row persists", func(t *testing.T) {
+		provPath := filepath.Join(t.TempDir(), "providers.json")
+		t.Setenv(EnvProviders, provPath)
+		t.Setenv("MYCUSTOMVENDOR_API_KEY", "")
+
+		input := strings.Join([]string{
+			"mycustomvendor",
+			server.URL + "/v1",
+			"mock-dummy-key-789",
+			"acme-fast",
+			"acme",
+			"", "", "Y", "read_file,list_dir",
+			"N", "N", "N",
+		}, "\n") + "\n"
+		out := &bytes.Buffer{}
+		if err := InteractiveSetupWizard(strings.NewReader(input), out); err != nil {
+			t.Fatalf("benign run returned error: %v\nOutput: %s", err, out.String())
+		}
+		reg, err := LoadFrom(provPath)
+		if err != nil {
+			t.Fatalf("benign run did not save: %v", err)
+		}
+		if len(reg.Providers) != 1 || len(reg.Providers[0].Models) != 1 {
+			t.Fatalf("unexpected saved registry: %+v", reg.Providers)
+		}
+		m := reg.Providers[0].Models[0]
+		if m.ID != "acme-fast" || m.Family != "acme" {
+			t.Errorf("saved model = %+v; want acme-fast/acme verbatim", m)
+		}
+		if got := strings.Join(m.Capabilities.AllowedTools, ","); got != "read_file,list_dir" {
+			t.Errorf("saved tool grants = %q; want read_file,list_dir", got)
+		}
+	})
 }
 
 func TestDeriveTags(t *testing.T) {
@@ -1718,5 +1828,989 @@ func TestInteractiveSetupWizard_GoogleAIStudioPreset(t *testing.T) {
 		if got, want := tgt.Provider.Endpoint(), server.URL+"/v1beta/openai/chat/completions"; got != want {
 			t.Errorf("gateway endpoint = %q; want %q", got, want)
 		}
+	}
+}
+
+// wizardBaseURLTranscript drives the wizard to a completed save against a live
+// loopback endpoint and returns the transcript, the registry it wrote, the Base
+// URL it was given, and that URL without userinfo. userinfo is spliced into the
+// URL authority when non-empty, so the shape under test still reaches a
+// successful probe instead of the probe-failure menu.
+func wizardBaseURLTranscript(t *testing.T, userinfo string) (transcript string, reg *Registry, rawURL, endpoint string) {
+	t.Helper()
+	provPath := filepath.Join(t.TempDir(), "providers.json")
+	t.Setenv(EnvProviders, provPath)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"choices":[{"message":{"content":"pong"}}]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	authority := strings.TrimPrefix(server.URL, "http://")
+	endpoint = "http://" + authority + "/v1"
+	rawURL = endpoint
+	if userinfo != "" {
+		rawURL = "http://" + userinfo + "@" + authority + "/v1"
+	}
+
+	// Catalog name with presets, so the flow stays short: provider name, base
+	// URL, blank key, preset 1, no second model.
+	input := strings.Join([]string{"deepseek", rawURL, "", "1", "N"}, "\n") + "\n"
+	var out bytes.Buffer
+	if err := InteractiveSetupWizard(strings.NewReader(input), &out); err != nil {
+		t.Fatalf("wizard returned error: %v\nOutput: %s", err, out.String())
+	}
+	reg, err := LoadFrom(provPath)
+	if err != nil {
+		t.Fatalf("failed to load saved registry: %v", err)
+	}
+	if len(reg.Providers) != 1 {
+		t.Fatalf("expected 1 saved provider, got %d", len(reg.Providers))
+	}
+	return out.String(), reg, rawURL, endpoint
+}
+
+// TestInteractiveSetupWizard_BaseURLSummaryBenignByteIdentical pins the
+// no-change half of FIX-G: for a URL with no credential shape the completion
+// summary line is byte-identical to the pre-fix expectation (the raw value).
+// Reason it is unchanged: the summary now routes through MaskBaseURL, which is
+// the identity on such a URL. MaskOperand leaves a plain URL readable, url.Parse
+// finds no userinfo, no query and no fragment to strip or mask, and the "@" arm
+// is never reached, so the helper returns its input unchanged.
+func TestInteractiveSetupWizard_BaseURLSummaryBenignByteIdentical(t *testing.T) {
+	transcript, reg, rawURL, _ := wizardBaseURLTranscript(t, "")
+
+	if want := "Base URL        : " + rawURL + "\n"; !strings.Contains(transcript, want) {
+		t.Errorf("summary line is not the pre-fix byte-identical rendering (want %q):\n%s", want, transcript)
+	}
+	if got := MaskBaseURL(rawURL); got != rawURL {
+		t.Fatalf("MaskBaseURL(%q) = %q; the benign identity this pin relies on moved", rawURL, got)
+	}
+	// Masking is display-only: the registry keeps the value the user typed.
+	if reg.Providers[0].BaseURL != rawURL {
+		t.Errorf("saved baseURL = %q; want the typed value %q (masking must be display-only)", reg.Providers[0].BaseURL, rawURL)
+	}
+}
+
+// TestInteractiveSetupWizard_BaseURLSummaryMasksUserinfo pins FIX-G: a
+// credential-shaped userinfo URL (validateBaseURL accepts it: https plus host,
+// or http on a loopback host) must not echo raw in the completion summary. The
+// summary renders through MaskBaseURL, the same layered URL mask the TUI twin
+// uses (tui maskBaseURL, internal/tui/screen_providers.go:418, kept in parity
+// with providers.MaskBaseURL by its cross-package pin in
+// internal/tui/screen_providers_test.go), so the wizard and the TUI render the
+// same input the same way.
+func TestInteractiveSetupWizard_BaseURLSummaryMasksUserinfo(t *testing.T) {
+	const secret = "hunter2sekret"
+	transcript, reg, rawURL, endpoint := wizardBaseURLTranscript(t, "user:"+secret)
+
+	if strings.Contains(transcript, secret) || strings.Contains(transcript, rawURL) {
+		t.Errorf("wizard transcript echoes the userinfo credential raw:\n%s", transcript)
+	}
+	if want := "Base URL        : " + endpoint + "\n"; !strings.Contains(transcript, want) {
+		t.Errorf("summary missing the masked rendering %q:\n%s", want, transcript)
+	}
+	// The rendering is exactly the shared authority's: userinfo dropped, host
+	// and path readable.
+	if got := MaskBaseURL(rawURL); got != endpoint {
+		t.Fatalf("MaskBaseURL(%q) = %q; want the userinfo-free endpoint %q", rawURL, got, endpoint)
+	}
+	// Masking is display-only: the registry keeps the value the user typed, so
+	// the gateway still authenticates against that endpoint.
+	if reg.Providers[0].BaseURL != rawURL {
+		t.Errorf("saved baseURL = %q; want the typed value (masking must be display-only)", reg.Providers[0].BaseURL)
+	}
+}
+
+// wizardEditRun is the outcome of one probe-failure edit-branch run.
+type wizardEditRun struct {
+	transcript string
+	reg        *Registry
+	rawURL     string // the Base URL the wizard was given, userinfo included
+	endpoint   string // rawURL without userinfo: what the masker renders
+	typedURL   string // the value typed at the edit prompt ("" when the default was accepted)
+}
+
+// wizardEditPromptRun drives the wizard through a probe failure into the
+// "3) Edit Base URL" branch and returns the transcript plus the registry it
+// wrote. userinfo is spliced into the Base URL authority when non-empty, so the
+// credential shape under test reaches the edit prompt's default. A non-empty
+// typedPath is typed at that prompt as server URL + typedPath (a path the test
+// server accepts); an empty typedPath accepts the default with an empty line.
+func wizardEditPromptRun(t *testing.T, userinfo, typedPath string) wizardEditRun {
+	t.Helper()
+	provPath := filepath.Join(t.TempDir(), "providers.json")
+	t.Setenv(EnvProviders, provPath)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/models") {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"data":[]}`))
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/ok/chat/completions") {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"choices":[{"message":{"content":"pong"}}]}`))
+			return
+		}
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	t.Cleanup(server.Close)
+
+	authority := strings.TrimPrefix(server.URL, "http://")
+	rawURL := "http://" + authority + "/v1"
+	if userinfo != "" {
+		rawURL = "http://" + userinfo + "@" + authority + "/v1"
+	}
+	run := wizardEditRun{
+		rawURL:   rawURL,
+		endpoint: "http://" + authority + "/v1",
+		typedURL: typedPath,
+	}
+	if typedPath != "" {
+		run.typedURL = server.URL + typedPath
+	}
+
+	steps := []string{
+		"nw",           // catalog name with presets, so the flow stays short
+		rawURL,         // Base URL prompt: the shape under test
+		"sk-test-0000", // synthetic key, so the probe carries a bearer
+		"1",            // preset 1
+		"3",            // choice 3: Edit Base URL or API Key
+		run.typedURL,   // Base URL at the edit prompt ("" accepts the default)
+		"",             // API Key: keep current
+	}
+	if typedPath == "" {
+		steps = append(steps, "1") // the probe failed again: save anyway
+	}
+	steps = append(steps, "N") // no second model
+
+	var out bytes.Buffer
+	if err := InteractiveSetupWizard(strings.NewReader(strings.Join(steps, "\n")+"\n"), &out); err != nil {
+		t.Fatalf("wizard returned error: %v\nOutput: %s", err, out.String())
+	}
+	run.transcript = out.String()
+	saved, err := LoadFrom(provPath)
+	if err != nil {
+		t.Fatalf("failed to load saved registry: %v", err)
+	}
+	if len(saved.Providers) != 1 {
+		t.Fatalf("expected 1 saved provider, got %d", len(saved.Providers))
+	}
+	run.reg = saved
+	return run
+}
+
+// TestInteractiveSetupWizard_EditPromptBenignDefaultByteIdentical pins the
+// no-change half of FIX-J: for a URL with no credential shape the edit prompt's
+// bracketed default is byte-identical to the pre-fix rendering ("Base URL
+// [<current URL>]: "). Reason it is unchanged: the default now routes through
+// MaskBaseURL, which is the identity on such a URL. The prompt line builds
+// exactly the pre-fix format, so the rendering the operator sees did not move.
+func TestInteractiveSetupWizard_EditPromptBenignDefaultByteIdentical(t *testing.T) {
+	run := wizardEditPromptRun(t, "", "")
+
+	if want := "Base URL [" + run.rawURL + "]: "; !strings.Contains(run.transcript, want) {
+		t.Errorf("edit prompt is not the pre-fix byte-identical rendering (want %q):\n%s", want, run.transcript)
+	}
+	if got := MaskBaseURL(run.rawURL); got != run.rawURL {
+		t.Fatalf("MaskBaseURL(%q) = %q; the benign identity this pin relies on moved", run.rawURL, got)
+	}
+	// Accepting the default writes the value the wizard was given.
+	if run.reg.Providers[0].BaseURL != run.rawURL {
+		t.Errorf("saved baseURL = %q; want the current value %q", run.reg.Providers[0].BaseURL, run.rawURL)
+	}
+}
+
+// TestInteractiveSetupWizard_EditPromptMasksUserinfoDefault pins FIX-J: the edit
+// prompt's bracketed default is the CURRENT base URL, and validateBaseURL
+// accepts a userinfo URL, so the raw value used to print at this prompt in
+// captured or piped runs. The default now renders through MaskBaseURL, the same
+// authority the completion summary uses (FIX-G, wizard.go summary block), while
+// the accepted default still returns the RAW value: the wizard writes what the
+// prompt returns, so masking the return value would persist the mask.
+func TestInteractiveSetupWizard_EditPromptMasksUserinfoDefault(t *testing.T) {
+	const secret = "hunter2sekret"
+	run := wizardEditPromptRun(t, "user:"+secret, "")
+
+	if strings.Contains(run.transcript, secret) || strings.Contains(run.transcript, run.rawURL) {
+		t.Errorf("wizard transcript echoes the userinfo credential raw:\n%s", run.transcript)
+	}
+	if want := "Base URL [" + run.endpoint + "]: "; !strings.Contains(run.transcript, want) {
+		t.Errorf("edit prompt missing the masked default %q:\n%s", want, run.transcript)
+	}
+	// The rendering is exactly the shared authority's.
+	if got := MaskBaseURL(run.rawURL); got != run.endpoint {
+		t.Fatalf("MaskBaseURL(%q) = %q; want the userinfo-free endpoint %q", run.rawURL, got, run.endpoint)
+	}
+	// Display-only masking: the accepted default returns the raw current value, so
+	// the gateway still authenticates against that endpoint.
+	if run.reg.Providers[0].BaseURL != run.rawURL {
+		t.Errorf("saved baseURL = %q; want the raw current value %q (the masked default must be display-only)", run.reg.Providers[0].BaseURL, run.rawURL)
+	}
+}
+
+// TestInteractiveSetupWizard_EditPromptTypedURLWins pins the other unchanged
+// half of FIX-J: a value typed at the edit prompt still replaces the base URL,
+// and the default it was offered still renders through the masker.
+func TestInteractiveSetupWizard_EditPromptTypedURLWins(t *testing.T) {
+	run := wizardEditPromptRun(t, "", "/ok")
+
+	if !strings.Contains(run.transcript, "Connection succeeded!") {
+		t.Errorf("the typed base URL did not reach a successful probe:\n%s", run.transcript)
+	}
+	if run.reg.Providers[0].BaseURL != run.typedURL {
+		t.Errorf("saved baseURL = %q; want the typed value %q", run.reg.Providers[0].BaseURL, run.typedURL)
+	}
+	// The offered default is still the pre-edit current URL, rendered masked.
+	if want := "Base URL [" + run.endpoint + "]: "; !strings.Contains(run.transcript, want) {
+		t.Errorf("edit prompt missing the pre-edit default %q:\n%s", want, run.transcript)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FIX-7B: the setup wizard's provider-name and base-URL doors. The wizard is a
+// write path straight into providers.json with no approval gate, so both prompts
+// classify their input with the registry-slot authority before anything is
+// probed or written.
+// ---------------------------------------------------------------------------
+
+// wizardGuardScript drives the wizard past the name and base-URL prompts and
+// through one custom model, then discards it ("4") so the run ends with the
+// no-models abort and writes nothing. It fits both the name table and the URL
+// table: an accepted value reaches the later prompts, a refused one aborts at
+// the prompt under test.
+func wizardGuardScript(name, baseURL string) string {
+	return strings.Join([]string{
+		name, baseURL, "ACMEGUARD_KEY", "", "acme-model",
+		"", "", "", "Y", "", "N", "N", "4", "",
+	}, "\n") + "\n"
+}
+
+// TestInteractiveSetupWizard_NameGuard drives the REAL name prompt with 34 names
+// (18 legal, 16 credential-shaped) and pins the door on both sides: a shape that
+// the charset accepts but the registry-slot authority refuses aborts before the
+// base-URL prompt, value-free, with nothing written; a legal name still reaches
+// the next prompt, so the guard cannot become a blanket refusal.
+func TestInteractiveSetupWizard_NameGuard(t *testing.T) {
+	benignURL := closedLoopbackBaseURL(t) + "/v1"
+	for _, tc := range []struct {
+		name   string
+		refuse bool
+	}{
+		// Legal names: the registry-slot authority is the identity on every one.
+		{name: "acme"},
+		{name: "acmeguard"},
+		{name: "a"},
+		{name: "zz9"},
+		{name: "prov1"},
+		{name: "my-provider"},
+		{name: "my_provider"},
+		{name: "provider-name-with-hyphens"},
+		{name: "key_backup"},
+		{name: "tokenstore"},
+		{name: "sklearn-gateway"},
+		{name: "qwen-gateway"},
+		{name: "cedar.2024"},
+		{name: "my.provider.v2"},
+		{name: "acct_123"},
+		{name: "us-east-1-gw"},
+		{name: "provider-2024"},
+		{name: "provname24"},
+		// Credential shapes: the charset accepts them (letters, digits,
+		// underscore, dot, hyphen) and MaskOperand is the identity on the
+		// underscore family, so only the slot authority refuses them.
+		{name: "sk_live_0123456789abcdef", refuse: true},
+		{name: "sk_live_0123456789abcdef0123456789abcdef", refuse: true},
+		{name: "tok_a1b2c3d4e5f6g7h8i9j0", refuse: true},
+		{name: "pk_live_4f9a2b7c1d3e5f6a", refuse: true},
+		{name: "key_0123456789abcdef", refuse: true},
+		{name: "AKIA_0123456789ABCDEF", refuse: true},
+		{name: "AKIAIOSFODNN7EXAMPLE", refuse: true},
+		{name: "sk-proj-0123456789abcdef", refuse: true},
+		{name: "gsk_0123456789abcdefghij", refuse: true},
+		{name: "nvapi-0123456789abcdef", refuse: true},
+		{name: "ghp_0123456789abcdefghij0123456789abcdef", refuse: true},
+		{name: "xoxb-0123456789-abcdefghij", refuse: true},
+		{name: "eyJhbGciOiJIUzI1NiJ9", refuse: true},
+		{name: "0123456789abcdef", refuse: true},
+		{name: "0123456789abcdef0123456789abcdef", refuse: true},
+		{name: "a1b2c3d4e5f6g7h8i9j0k1l2", refuse: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(defaultEnvFor(tc.name), "")
+			run := runWizardScript(t, wizardGuardScript(tc.name, benignURL))
+
+			if !tc.refuse {
+				if run.err == nil || !strings.Contains(run.err.Error(), "no models configured") {
+					t.Fatalf("legal name %q was not accepted at the name prompt: err=%v\ntranscript:\n%s", tc.name, run.err, run.transcript)
+				}
+				if !strings.Contains(run.transcript, "Enter API Key for") {
+					t.Fatalf("legal name %q did not reach the key prompt:\n%s", tc.name, run.transcript)
+				}
+				return
+			}
+			if run.err == nil {
+				t.Fatalf("credential-shaped name %q was accepted:\n%s", tc.name, run.transcript)
+			}
+			if !strings.Contains(run.err.Error(), "provider name") || !strings.Contains(run.err.Error(), "value hidden") {
+				t.Fatalf("refusal for %q = %q; want the value-free provider-name refusal", tc.name, run.err)
+			}
+			assertNoLeak(t, run.err.Error(), tc.name)
+			assertNoLeak(t, run.transcript, tc.name)
+			// Fail closed at the name prompt: the key prompt was never shown.
+			if strings.Contains(run.transcript, "Enter API Key for") {
+				t.Fatalf("the name refusal landed after the URL prompt for %q:\n%s", tc.name, run.transcript)
+			}
+			if run.wrote {
+				t.Fatalf("a refused name wrote a registry")
+			}
+		})
+	}
+}
+
+// hostDoorProbeJWT is the synthetic JWT this file pastes into the HOST slot
+// (fixture only: the standard eyJ header, so the target machine's classifiers
+// read it as the JWT class).
+const hostDoorProbeJWT = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+
+// TestInteractiveSetupWizard_BaseURLGuard drives the REAL base-URL prompt with
+// 39 URLs (16 legal gateway shapes, 23 credential-bearing ones) and pins the
+// door: a credential in the host, the path, the query, the fragment, or the
+// userinfo is refused value-free before the key prompt and before any write,
+// while ordinary gateway URLs (including the Cloudflare 32-hex account-id path
+// and the identifier shapes) stay accepted. The accept side of the two long
+// gateway hostnames is pinned on the guard
+// (TestWizardBaseURLDoorMatchesSharedAuthority) and end to end on the TUI form
+// and the add-json parser, because a full wizard run for an accepted external
+// host would resolve it (the very leak this unit closes).
+func TestInteractiveSetupWizard_BaseURLGuard(t *testing.T) {
+	base := closedLoopbackBaseURL(t)
+	authority := strings.TrimPrefix(base, "http://")
+	const (
+		underscore = "sk_live_0123456789abcdef"
+		tokHead    = "tok_a1b2c3d4e5f6g7h8i9j0"
+		pkHead     = "pk_live_4f9a2b7c1d3e5f6a"
+		keyHead    = "key_0123456789abcdef"
+		akiaHead   = "AKIA_0123456789ABCDEF"
+	)
+	for _, tc := range []struct {
+		name    string
+		url     string
+		refuse  bool
+		secrets []string
+	}{
+		// Ordinary gateway shapes: every URL part is identity under the slot rule.
+		{name: "root", url: base},
+		{name: "v1", url: base + "/v1"},
+		{name: "chat completions", url: base + "/v1/chat/completions"},
+		{name: "benign query", url: base + "/v1?api-version=2024-08-01"},
+		{name: "benign query pair", url: base + "/v1/chat/completions?alt=sse&api-version=2024-08-01"},
+		{name: "cloudflare account id", url: base + "/v1/0123456789abcdef0123456789abcdef/anthropic"},
+		{name: "32 hex account id", url: base + "/v1/0123456789abcdef0123456789abcdef"},
+		{name: "24 hex object id", url: base + "/v1/507f1f77bcf86cd799439011/users"},
+		{name: "40 hex sha1 id", url: base + "/v1/0123456789abcdef0123456789abcdef012345678"},
+		{name: "uuid id", url: base + "/v1/123e4567-e89b-12d3-a456-426614174000/chat"},
+		{name: "azure deployment", url: base + "/openai/deployments/gpt-4o?api-version=2024-02-01"},
+		{name: "model path", url: base + "/v1/model-2024"},
+		{name: "benign userinfo", url: "http://user:hunter2sekret@" + authority + "/v1"},
+		{name: "benign fragment", url: base + "/v1#section"},
+		{name: "v1beta", url: base + "/v1beta/models"},
+		{name: "gateway name", url: base + "/v1/gw-name"},
+		// Credential-bearing shapes.
+		{name: "path jwt", url: base + "/v1/" + probeTestJWT, refuse: true, secrets: []string{probeTestJWT}},
+		{name: "path underscore head", url: base + "/v1/" + underscore, refuse: true, secrets: []string{underscore}},
+		{name: "path long underscore head", url: base + "/v1/" + underscore + underscore, refuse: true, secrets: []string{underscore}},
+		{name: "path tok head", url: base + "/v1/" + tokHead, refuse: true, secrets: []string{tokHead}},
+		{name: "path pk head", url: base + "/v1/" + pkHead, refuse: true, secrets: []string{pkHead}},
+		{name: "path key head", url: base + "/v1/" + keyHead, refuse: true, secrets: []string{keyHead}},
+		{name: "path akia head", url: base + "/v1/" + akiaHead, refuse: true, secrets: []string{akiaHead}},
+		{name: "path 16 run", url: base + "/v1/0123456789abcdef", refuse: true, secrets: []string{"0123456789abcdef"}},
+		{name: "path mixed case run", url: base + "/v1/AbCdEf0123456789", refuse: true, secrets: []string{"AbCdEf0123456789"}},
+		{name: "path percent encoded", url: base + "/v1/sk%5Flive%5F0123456789abcdef", refuse: true, secrets: []string{underscore}},
+		{name: "query value", url: base + "/v1?api_key=" + underscore, refuse: true, secrets: []string{underscore}},
+		{name: "query key", url: base + "/v1?" + underscore + "=1", refuse: true, secrets: []string{underscore}},
+		{name: "fragment", url: base + "/v1#" + underscore, refuse: true, secrets: []string{underscore}},
+		{name: "userinfo username", url: "http://" + underscore + "@" + authority + "/v1", refuse: true, secrets: []string{underscore}},
+		{name: "userinfo password", url: "http://user:" + underscore + "@" + authority + "/v1", refuse: true, secrets: []string{underscore}},
+		{name: "whole value key paste", url: "sk-ant-0123456789abcdef", refuse: true, secrets: []string{"sk-ant-0123456789abcdef"}},
+		{name: "hostless opaque", url: "https:" + underscore, refuse: true, secrets: []string{underscore}},
+		// FIX-8f: the HOST slot. The key is the DNS name itself, so the live probe
+		// resolved it (leaking it to the resolver). Each row is refused at the URL
+		// prompt before the key prompt, so no request is composed at all.
+		{name: "host underscore head", url: "https://" + underscore + "/v1", refuse: true, secrets: []string{underscore}},
+		{name: "host tok head", url: "https://" + tokHead + "/v1", refuse: true, secrets: []string{tokHead}},
+		{name: "host ghp head", url: "https://ghp_a1b2c3d4e5f6g7h8i9j0.example.com/v1", refuse: true, secrets: []string{"ghp_a1b2c3d4e5f6g7h8i9j0"}},
+		{name: "host aws key id", url: "https://AKIAIOSFODNN7EXAMPLE/v1", refuse: true, secrets: []string{"AKIAIOSFODNN7EXAMPLE"}},
+		{name: "host jwt", url: "https://" + hostDoorProbeJWT + "/v1", refuse: true, secrets: []string{hostDoorProbeJWT}},
+		{name: "host decorated", url: "https://1-ASIAIOSFODNN7EXAMPLE.example.com/v1", refuse: true, secrets: []string{"ASIAIOSFODNN7EXAMPLE"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("ACMEGUARD_API_KEY", "")
+			run := runWizardScript(t, wizardGuardScript("acmeguard", tc.url))
+
+			if !tc.refuse {
+				if run.err == nil || !strings.Contains(run.err.Error(), "no models configured") {
+					t.Fatalf("gateway URL %q was not accepted: err=%v\ntranscript:\n%s", tc.url, run.err, run.transcript)
+				}
+				if !strings.Contains(run.transcript, "Enter API Key for") {
+					t.Fatalf("gateway URL %q did not reach the key prompt:\n%s", tc.url, run.transcript)
+				}
+				return
+			}
+			if run.err == nil {
+				t.Fatalf("credential-bearing URL %q was accepted:\n%s", tc.url, run.transcript)
+			}
+			if !strings.Contains(run.err.Error(), "Base URL looks like secret material") ||
+				!strings.Contains(run.err.Error(), "value hidden") {
+				t.Fatalf("refusal for %q = %q; want the value-free Base URL refusal", tc.url, run.err)
+			}
+			for _, secret := range tc.secrets {
+				assertNoLeak(t, run.err.Error(), secret)
+				assertNoLeak(t, run.transcript, secret)
+			}
+			// Fail closed at the URL prompt: the key prompt was never shown, so no
+			// key was ever collected for the refused endpoint.
+			if strings.Contains(run.transcript, "Enter API Key for") {
+				t.Fatalf("the URL refusal landed after the key prompt for %q:\n%s", tc.url, run.transcript)
+			}
+			if run.wrote {
+				t.Fatalf("a refused URL wrote a registry")
+			}
+		})
+	}
+}
+
+// TestInteractiveSetupWizard_EditPromptRefusesTypedCredentialURL pins the FIX-7B
+// edit-branch guard: the edit prompt validated nothing, so a credential-bearing
+// replacement typed there reached the probe and the write. A typed replacement
+// now passes the same guard as the step-2 prompt; the accepted default keeps its
+// masked display and raw return (the FIX-J pins).
+func TestInteractiveSetupWizard_EditPromptRefusesTypedCredentialURL(t *testing.T) {
+	const secret = "sk_live_0123456789abcdef"
+	provPath := filepath.Join(t.TempDir(), "providers.json")
+	t.Setenv(EnvProviders, provPath)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/models") {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"data":[]}`))
+			return
+		}
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	t.Cleanup(server.Close)
+
+	// The typed replacement is the only line that differs from a passing edit run;
+	// the wizard refuses it before the API Key prompt and before the second probe.
+	steps := []string{
+		"nw", // catalog name with presets, so the flow stays short
+		server.URL + "/v1",
+		"sk-test-0000", // synthetic key, so the probe carries a bearer
+		"1",            // preset 1
+		"3",            // choice 3: Edit Base URL or API Key
+		server.URL + "/v1/" + secret,
+		"", // API Key: keep current
+	}
+	out := &bytes.Buffer{}
+	err := InteractiveSetupWizard(strings.NewReader(strings.Join(steps, "\n")+"\n"), out)
+	if err == nil {
+		t.Fatalf("the wizard accepted a credential-bearing edit replacement:\n%s", out.String())
+	}
+	if !strings.Contains(err.Error(), "Base URL looks like secret material") ||
+		!strings.Contains(err.Error(), "value hidden") {
+		t.Fatalf("refusal = %q; want the value-free Base URL refusal", err)
+	}
+	assertNoLeak(t, err.Error(), secret)
+	assertNoLeak(t, out.String(), secret)
+	if _, statErr := os.Stat(provPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("a refused edit replacement must write nothing; stat error = %v", statErr)
+	}
+}
+
+// TestInteractiveSetupWizard_RefusesUnderscoreModelFields is the FIX-8e door
+// pin: the wizard's model-field guard classified with SecretShaped alone, so a
+// key-shaped model ID of the underscore class passed the Model ID, family, tags,
+// and tools prompts and persisted raw into models[].id while the TUI model form,
+// the CLI model verbs, and add-json all refused it (fix7-C's report listed the
+// leftover; no unit landed it). Every row is refused value-free, nothing is
+// written, and the pre-write sweep reads the same authority, so a preset row or
+// an endpoint-discovered id cannot slip in either.
+func TestInteractiveSetupWizard_RefusesUnderscoreModelFields(t *testing.T) {
+	probes := []struct{ name, value string }{
+		{"sk underscore head", "sk_live_0123456789abcdef"},
+		{"tok underscore head", "tok_a1b2c3d4e5f6g7h8i9j0"},
+		{"pk underscore head", "pk_live_4f9a2b7c1d3e5f6a"},
+		{"key underscore head", "key_0123456789abcdef"},
+		{"AKIA underscore head", "AKIA_0123456789ABCDEF"},
+	}
+	for _, probe := range probes {
+		// Premise: the pre-fix classifier (SecretShaped alone) is the identity on
+		// every row, so each one exercises exactly the authority switch.
+		if SecretShaped(probe.value) {
+			t.Fatalf("premise: %q is already refused by SecretShaped alone", probe.value)
+		}
+		if !NameCarriesCredential(probe.value) {
+			t.Fatalf("premise: the shared authority does not refuse %q", probe.value)
+		}
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"choices":[{"message":{"content":"pong"}}]}`))
+	}))
+	defer server.Close()
+
+	for _, probe := range probes {
+		t.Run(probe.name, func(t *testing.T) {
+			provPath := filepath.Join(t.TempDir(), "providers.json")
+			t.Setenv(EnvProviders, provPath)
+			t.Setenv("MYCUSTOMVENDOR_API_KEY", "")
+
+			input := strings.Join([]string{
+				"mycustomvendor", server.URL + "/v1", "mock-dummy-key-789", probe.value,
+			}, "\n") + "\n"
+			out := &bytes.Buffer{}
+			err := InteractiveSetupWizard(strings.NewReader(input), out)
+			if err == nil {
+				t.Fatalf("the wizard accepted %q as a model ID: %s", probe.value, out.String())
+			}
+			if !strings.Contains(err.Error(), "model ID") || !strings.Contains(err.Error(), "value hidden") {
+				t.Fatalf("refusal = %q; want the non-echoing model ID refusal", err)
+			}
+			if strings.Contains(err.Error(), probe.value) || strings.Contains(out.String(), probe.value) {
+				t.Fatalf("the refusal echoes the refused value: err=%q output=%s", err, out.String())
+			}
+			if _, statErr := os.Stat(provPath); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("a refused model field must write nothing; stat error = %v", statErr)
+			}
+		})
+	}
+
+	// The pre-write sweep (the path a preset row or a discovered id takes) reads
+	// the same authority on every free-text field the wizard collects.
+	const probe = "tok_a1b2c3d4e5f6g7h8i9j0"
+	for _, field := range []struct {
+		name  string
+		model Model
+	}{
+		{"model ID", Model{ID: probe}},
+		{"model family", Model{ID: "acme-fast", Family: probe}},
+		{"model tag", Model{ID: "acme-fast", Tags: []string{probe}}},
+		{"model tool name", Model{ID: "acme-fast", Capabilities: Capabilities{AllowedTools: []string{probe}}}},
+	} {
+		err := wizardModelFieldsRefused([]Model{field.model})
+		if err == nil {
+			t.Fatalf("wizardModelFieldsRefused accepted a key-shaped %s", field.name)
+		}
+		if !strings.Contains(err.Error(), field.name) || !strings.Contains(err.Error(), "value hidden") {
+			t.Fatalf("%s refusal = %q; want the named, value-free sentence", field.name, err)
+		}
+		if strings.Contains(err.Error(), probe) {
+			t.Fatalf("%s refusal echoes the value: %q", field.name, err)
+		}
+	}
+}
+
+// TestWizardModelFieldsAcceptRealisticIDs is the accept side of FIX-8e: every
+// realistic model ID shape the TUI model form and the CLI model verbs accept
+// (Ollama tags, quant suffixes, Bedrock ARNs, HF and MLX paths, dated and
+// family-qualified ids) is unchanged under the shared authority, so the switch
+// cannot become an over-refusal of ordinary model names. The location-shaped-ID
+// verdict (a model ID that is a path or a URL) is a HELD product decision, pinned
+// on the CLI and TUI sides; this table deliberately contains no such row and does
+// not re-open it.
+func TestWizardModelFieldsAcceptRealisticIDs(t *testing.T) {
+	for _, id := range []string{
+		"llama3.2:latest",
+		"qwen2.5-coder:32b-instruct-q4_K_M",
+		"deepseek-r1:8b-q4_K_M",
+		"mistralai/Mixtral-8x22B-Instruct-v0.1",
+		"meta-llama/Llama-3.3-70B-Instruct-Turbo",
+		"mlx-community/Qwen2.5-72B-Instruct-4bit",
+		"us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+		"arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0",
+		"accounts/fireworks/models/llama-v3p1-70b-instruct",
+		"gpt-4o-2024-08-06",
+		"claude-sonnet-5-5-high",
+		"gemini-3.8-flash",
+		"acme-fast",
+	} {
+		if NameCarriesCredential(id) {
+			t.Errorf("NameCarriesCredential(%q) = true; want false (realistic model ID)", id)
+		}
+		if err := wizardFieldRefused("model ID", id); err != nil {
+			t.Errorf("wizardFieldRefused(model ID, %q) = %v; want accepted", id, err)
+		}
+	}
+}
+
+// TestMaskProbeTranscriptMasksCredentialHost is the FIX-8f defense-in-depth pin
+// on the probe-failure transcript: the seed builder classified the path, the
+// query, the fragment, and the userinfo, but not the HOST, so a key pasted as
+// the DNS name printed raw inside the wrapped *url.Error sentence (the same
+// value the resolver saw). The host labels are now seeded through the shared host
+// rule, and a benign gateway host still yields no seed at all, so its
+// transcript stays byte-identical.
+func TestMaskProbeTranscriptMasksCredentialHost(t *testing.T) {
+	const secret = "sk_live_0123456789abcdef"
+	for _, tc := range []struct {
+		name string
+		base string
+		host string
+	}{
+		{"bare host", "https://" + secret + "/v1", secret},
+		{"host with port", "https://" + secret + ":8443/v1", secret + ":8443"},
+		{"host behind a benign label", "https://" + secret + ".example.com/v1", secret + ".example.com"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sentence := `network error contacting ` + tc.host + `: Post "` + tc.base + `/chat/completions": dial tcp: lookup ` + tc.host + `: no such host`
+			got := maskProbeTranscript(sentence, tc.base)
+			if strings.Contains(got, secret) {
+				t.Fatalf("the host credential survived masking: %q", got)
+			}
+			if !strings.Contains(got, "[REDACTED]") {
+				t.Fatalf("the host credential was not redacted: %q", got)
+			}
+			if !strings.Contains(got, "network error contacting") {
+				t.Fatalf("the sentence wording was lost: %q", got)
+			}
+		})
+	}
+
+	// Benign long gateway hostnames: the host rule is the identity on both, so the
+	// seed set stays empty and the transcript keeps its exact bytes.
+	for _, base := range []string{
+		"https://gw.example/v1",
+		"https://mycompany2024gateway.example.com/v1",
+		"https://acmeprod2024gateway.example.com/v1",
+	} {
+		if seeds := probeCredentialPathSeeds(base); len(seeds) != 0 {
+			t.Fatalf("probeCredentialPathSeeds(%q) = %q; want no seeds on a benign gateway host", base, seeds)
+		}
+		sentence := `network error contacting gw.example: Post "` + base + `/chat/completions": dial tcp 10.0.0.1:443: connect: connection refused`
+		if got := maskProbeTranscript(sentence, base); got != sentence {
+			t.Fatalf("maskProbeTranscript changed a benign sentence:\n got %q\nwant %q", got, sentence)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FIX-8 (module-wide echo sweep): Registry.Validate quotes the duplicated
+// provider NAME and the duplicated model ID. Both are registry slots, so they
+// render through MaskSlot (the registry-slot authority) rather than the
+// operand masker, whose underscore-head arm is the identity. The benign
+// sentences the pre-fix suite pins stay byte-identical.
+// ---------------------------------------------------------------------------
+
+func TestValidateEchoesRegistrySlotsThroughSlotAuthority(t *testing.T) {
+	const (
+		plant     = "sk_live_0123456789abcdef"
+		plantMask = "sk_li****"
+	)
+
+	// Duplicate provider NAME.
+	reg := &Registry{Providers: []Provider{
+		{Name: plant, BaseURL: "https://a.example/v1"},
+		{Name: plant, BaseURL: "https://b.example/v1"},
+	}}
+	err := reg.Validate()
+	if err == nil {
+		t.Fatal("Validate must reject a duplicated provider name")
+	}
+	if strings.Contains(err.Error(), plant) {
+		t.Errorf("Validate error echoes the duplicated name raw: %v", err)
+	}
+	if want := `provider "` + plantMask + `" is defined twice`; err.Error() != want {
+		t.Errorf("Validate error drifted\n got: %q\nwant: %q", err.Error(), want)
+	}
+
+	// Duplicate model ID inside one provider.
+	reg = &Registry{Providers: []Provider{{
+		Name:    "acme",
+		BaseURL: "https://acme.example/v1",
+		Models:  []Model{{ID: plant}, {ID: plant}},
+	}}}
+	err = reg.Validate()
+	if err == nil {
+		t.Fatal("Validate must reject a duplicated model id")
+	}
+	if strings.Contains(err.Error(), plant) {
+		t.Errorf("Validate error echoes the duplicated model id raw: %v", err)
+	}
+	if want := `provider "acme": model "` + plantMask + `" is listed twice`; err.Error() != want {
+		t.Errorf("Validate error drifted\n got: %q\nwant: %q", err.Error(), want)
+	}
+
+	// Benign corpus: byte-identical sentences.
+	for _, tc := range []struct {
+		name string
+		reg  *Registry
+		want string
+	}{
+		{"duplicate provider", &Registry{Providers: []Provider{
+			{Name: "acme", BaseURL: "https://a.example/v1"},
+			{Name: "acme", BaseURL: "https://b.example/v1"},
+		}}, `provider "acme" is defined twice`},
+		{"duplicate model", &Registry{Providers: []Provider{{
+			Name: "acme", BaseURL: "https://acme.example/v1",
+			Models: []Model{{ID: "acme-fast"}, {ID: "acme-fast"}},
+		}}}, `provider "acme": model "acme-fast" is listed twice`},
+		{"duplicate vendor model", &Registry{Providers: []Provider{{
+			Name: "nw", BaseURL: "https://api.example/v1",
+			Models: []Model{{ID: "meta-llama/Llama-3-70B"}, {ID: "meta-llama/Llama-3-70B"}},
+		}}}, `provider "nw": model "meta-llama/Llama-3-70B" is listed twice`},
+	} {
+		err := tc.reg.Validate()
+		if err == nil {
+			t.Fatalf("%s: expected a validation error", tc.name)
+		}
+		if err.Error() != tc.want {
+			t.Errorf("%s: error drifted\n got: %q\nwant: %q", tc.name, err.Error(), tc.want)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// fix8-3 continuation: the wizard's registry-borne model-ID sinks.
+//
+// A model ID is a registry name (providers.json models[].id) and the wizard
+// carries it in its own state (typed prompt, preset catalog, endpoint
+// discovery). Eight ID sinks rendered through MaskOperand, whose underscore-head
+// class ("sk_live_0123456789abcdef") is the identity, so a hand-edited or
+// discovered credential-shaped ID printed raw. All of them now route through
+// wizardModelLabel (MaskSlot), the same registry-slot authority wizardProvLabel
+// uses, plus the two preset-list renders (the row and the synthesized
+// description).
+// ---------------------------------------------------------------------------
+
+// wizardModelIDBenignCorpus is the benign side: the model IDs the existing
+// wizard pins use plus ordinary catalog and path-shaped names that are NOT
+// location-shaped (a leading "./", a drive prefix, or a URL scheme would be
+// rewritten by the registry-slot authority, and those are refused at ingest by
+// the held location-shaped-ID decision).
+var wizardModelIDBenignCorpus = []string{
+	"acme-fast",
+	"acme",
+	"acme-slow",
+	"custom-model-x",
+	"gpt-4o",
+	"deepseek-chat",
+	"meta-llama/Llama-3.3-70B-Instruct-Turbo",
+	"qwen2.5-coder:32b-instruct-q4_K_M",
+	"llama3.2:latest",
+	"gemini-3.8-flash",
+}
+
+// TestWizardModelLabelMasksRegistryBorneID pins the renderer: the underscore
+// class (and the rest of the shared authority's refuse set) renders first-5 +
+// ****, and every benign ID is byte-identical.
+func TestWizardModelLabelMasksRegistryBorneID(t *testing.T) {
+	for _, probe := range []string{
+		"sk_live_0123456789abcdef",
+		"tok_a1b2c3d4e5f6g7h8i9j0",
+		"pk_live_0123456789abcdef",
+		"key_0123456789abcdef",
+		"AKIA_0123456789ABCDEF",
+	} {
+		// Premise: the pre-fix renderer (MaskOperand) is the identity on the
+		// underscore class, so each probe exercises exactly the authority switch.
+		if MaskOperand(probe) != probe {
+			t.Fatalf("premise: MaskOperand already masks %q", probe)
+		}
+		got := wizardModelLabel(probe)
+		if got != MaskSlot(probe) {
+			t.Fatalf("wizardModelLabel(%q) = %q; want the slot authority's %q", probe, got, MaskSlot(probe))
+		}
+		if got == probe || strings.Contains(got, probe) {
+			t.Fatalf("wizardModelLabel(%q) = %q; the ID rendered raw", probe, got)
+		}
+	}
+	for _, id := range wizardModelIDBenignCorpus {
+		if got := wizardModelLabel(id); got != id {
+			t.Fatalf("wizardModelLabel(%q) = %q; a benign ID must render byte-identically", id, got)
+		}
+	}
+}
+
+// TestWizardModelIDSitesRouteThroughTheSlotAuthority is the call-site pin: it
+// fails if any of the eight ID sinks (or the two preset-list renders) is
+// reverted to MaskOperand or deleted. The counts are exact on purpose, so a new
+// sink must be added here too.
+func TestWizardModelIDSitesRouteThroughTheSlotAuthority(t *testing.T) {
+	src, err := os.ReadFile("wizard.go")
+	if err != nil {
+		t.Fatalf("read wizard.go: %v", err)
+	}
+	code := string(src)
+
+	// No model-ID operand may render through the operand masker: it is the
+	// identity on the underscore class this unit closes.
+	operandID := regexp.MustCompile(`MaskOperand\(\s*[A-Za-z0-9_\[\]]*\.ID\s*\)`)
+	if hits := operandID.FindAllString(code, -1); len(hits) != 0 {
+		t.Fatalf("a model-ID sink still renders through MaskOperand: %q", hits)
+	}
+
+	// The eight ID sinks, by operand group.
+	for _, want := range []struct {
+		operand string
+		count   int
+	}{
+		{"wizardModelLabel(selectedModel.ID)", 5}, // duplicate, probe, saved, discard x2
+		{"wizardModelLabel(m.ID)", 1},             // summary row
+		{"wizardModelLabel(models[0].ID)", 2},     // native agy -m, fanout --models
+		{"wizardModelLabel(p.ID)", 1},             // preset list row
+		{"wizardModelLabel(rm)", 1},               // synthesized discovered description
+	} {
+		if got := strings.Count(code, want.operand); got != want.count {
+			t.Fatalf("%s appears %d times; want %d", want.operand, got, want.count)
+		}
+	}
+	if got := strings.Count(code, "wizardModelLabel("); got != 11 { // 10 call sites + the definition
+		t.Fatalf("wizardModelLabel appears %d times; want 11 (10 call sites plus the definition)", got)
+	}
+}
+
+// wizardDiscoveryServer serves a /models list (the discovery path) and refuses
+// every completion request, so a selected model always reaches the probe-failure
+// options with no network dependency.
+func wizardDiscoveryServer(t *testing.T, ids ...string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/models") {
+			w.Header().Set("Content-Type", "application/json")
+			var b strings.Builder
+			b.WriteString(`{"data":[`)
+			for i, id := range ids {
+				if i > 0 {
+					b.WriteString(",")
+				}
+				b.WriteString(`{"id":"` + id + `"}`)
+			}
+			b.WriteString(`]}`)
+			w.Write([]byte(b.String()))
+			return
+		}
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// wizardDiscoveryScript builds one scripted wizard run that discovers the
+// endpoint's model list and then follows the given answer lines.
+func wizardDiscoveryScript(baseURL string, lines ...string) string {
+	return strings.Join(append([]string{"mycustomvendor", baseURL + "/v1", "mock-dummy-key-789"}, lines...), "\n") + "\n"
+}
+
+// TestInteractiveSetupWizard_TranscriptMasksSavedCredentialModelID drives the
+// REAL wizard through the discovery path (the one path that can carry a
+// credential-shaped ID past the prompts, since the prompt guard refuses a typed
+// one) and pins the duplicate, live-probe, and save-anyway sinks: every render
+// is masked, the transcript carries no raw value, and the pre-write sweep still
+// refuses the record so nothing is written.
+func TestInteractiveSetupWizard_TranscriptMasksSavedCredentialModelID(t *testing.T) {
+	const plant = "sk_live_0123456789abcdef"
+	masked := MaskSlot(plant)
+	if masked == plant {
+		t.Fatalf("premise: MaskSlot is the identity on %q", plant)
+	}
+	srv := wizardDiscoveryServer(t, plant, "acme-fast")
+
+	provPath := filepath.Join(t.TempDir(), "providers.json")
+	t.Setenv(EnvProviders, provPath)
+	t.Setenv("MYCUSTOMVENDOR_API_KEY", "")
+
+	// select the plant, save it anyway after the failed probe, add another
+	// model, select the plant again (duplicate notice), then leave the model
+	// loop through the custom row with an empty ID.
+	script := wizardDiscoveryScript(srv.URL, "1", "1", "y", "1", "c", "")
+	out := &bytes.Buffer{}
+	err := InteractiveSetupWizard(strings.NewReader(script), out)
+	if err == nil {
+		t.Fatalf("the wizard persisted a credential-shaped model ID:\n%s", out.String())
+	}
+	if !strings.Contains(err.Error(), "model ID") || !strings.Contains(err.Error(), "value hidden") {
+		t.Fatalf("error = %q; want the non-echoing model ID refusal", err)
+	}
+
+	transcript := out.String()
+	for _, want := range []string{
+		`Model "` + masked + `" is already configured for mycustomvendor.`,
+		`with model "` + masked + `"...`,
+		`Saved model "` + masked + `" anyway.`,
+		`1) ` + masked + ` (` + masked + ` (auto-discovered))`,
+	} {
+		if !strings.Contains(transcript, want) {
+			t.Fatalf("transcript is missing the masked render %q:\n%s", want, transcript)
+		}
+	}
+	if strings.Contains(transcript, plant) || strings.Contains(err.Error(), plant) {
+		t.Fatalf("the transcript echoed the credential-shaped model ID raw:\n%s", transcript)
+	}
+	if _, statErr := os.Stat(provPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("a refused model ID must write nothing; stat error = %v", statErr)
+	}
+}
+
+// TestInteractiveSetupWizard_TranscriptMasksDiscardedCredentialModelID pins the
+// two discard sinks (the "4"/"d" case and the default branch) and the benign
+// side of the same transcript: the plant is discarded, a benign discovered model
+// is saved, the run reaches the summary, and the summary renders the benign ID
+// byte-identically while no raw plant appears anywhere.
+func TestInteractiveSetupWizard_TranscriptMasksDiscardedCredentialModelID(t *testing.T) {
+	const plant = "sk_live_0123456789abcdef"
+	masked := MaskSlot(plant)
+	if masked == plant {
+		t.Fatalf("premise: MaskSlot is the identity on %q", plant)
+	}
+	for _, discardChoice := range []string{"4", "x"} {
+		t.Run("discard "+discardChoice, func(t *testing.T) {
+			srv := wizardDiscoveryServer(t, plant, "acme-fast")
+			provPath := filepath.Join(t.TempDir(), "providers.json")
+			t.Setenv(EnvProviders, provPath)
+			t.Setenv("MYCUSTOMVENDOR_API_KEY", "")
+
+			// select the plant, discard it after the failed probe, then select
+			// the benign row, save it anyway, and decline another model.
+			script := wizardDiscoveryScript(srv.URL, "1", discardChoice, "y", "2", "1", "n")
+			out := &bytes.Buffer{}
+			if err := InteractiveSetupWizard(strings.NewReader(script), out); err != nil {
+				t.Fatalf("the benign run failed: %v\n%s", err, out.String())
+			}
+
+			transcript := out.String()
+			if !strings.Contains(transcript, `Discarded model "`+masked+`".`) {
+				t.Fatalf("transcript is missing the masked discard render:\n%s", transcript)
+			}
+			if strings.Contains(transcript, plant) {
+				t.Fatalf("the transcript echoed the credential-shaped model ID raw:\n%s", transcript)
+			}
+			// The benign side of the same sinks is byte-identical: the saved
+			// notice, the summary row, and the two ready-to-use commands.
+			for _, want := range []string{
+				`Saved model "acme-fast" anyway.`,
+				"1. acme-fast",
+				`agy -m "acme-fast (mycustomvendor)"`,
+				`--models "mycustomvendor/acme-fast"`,
+			} {
+				if !strings.Contains(transcript, want) {
+					t.Fatalf("transcript is missing the benign render %q:\n%s", want, transcript)
+				}
+			}
+			reg, err := LoadFrom(provPath)
+			if err != nil {
+				t.Fatalf("the benign run did not save: %v", err)
+			}
+			if len(reg.Providers) != 1 || len(reg.Providers[0].Models) != 1 {
+				t.Fatalf("unexpected saved registry: %+v", reg.Providers)
+			}
+			if got := reg.Providers[0].Models[0].ID; got != "acme-fast" {
+				t.Fatalf("saved model ID = %q; want acme-fast", got)
+			}
+		})
 	}
 }

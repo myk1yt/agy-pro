@@ -1,11 +1,16 @@
 package providers
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -1434,5 +1439,268 @@ func TestDecoratedClass_BenignOverMaskTradeOffPinned(t *testing.T) {
 		if got := MaskOperand(benign); got != benign {
 			t.Errorf("MaskOperand(%q) = %q; want unchanged", benign, got)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FIX-M: a credential-bearing base URL must not reach the wizard transcript
+// when the live probe fails. The transport error (*url.Error) embeds the whole
+// endpoint, path included, and no shared URL masker covers the path.
+// ---------------------------------------------------------------------------
+
+// probeTestJWT is a synthetic JWT-shaped path credential (fixture only).
+const probeTestJWT = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+
+// closedLoopbackBaseURL returns the base URL of a server that has already been
+// closed, so a probe against it fails at connect time with no network
+// dependency and no live listener.
+func closedLoopbackBaseURL(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	base := srv.URL
+	srv.Close()
+	return base
+}
+
+// wizardProbeFailureScript drives the setup wizard to one probe failure: a
+// provider record, one custom model, then "4" (discard) so the run aborts with
+// "no models configured" and writes no registry.
+func wizardProbeFailureScript(baseURL string) string {
+	return strings.Join([]string{
+		"acmeprobe", baseURL, "ACMEPROBE_KEY", "", "acme-model",
+		"", "", "", "Y", "", "N", "N", "4", "",
+	}, "\n") + "\n"
+}
+
+// wizardScriptRun is one scripted wizard run in its own temp AGY_PRO_HOME.
+type wizardScriptRun struct {
+	transcript string
+	err        error
+	wrote      bool
+}
+
+// runWizardScript runs one scripted wizard with a temp AGY_PRO_HOME and reports
+// the transcript, the returned error, and whether a registry was written.
+func runWizardScript(t *testing.T, script string) wizardScriptRun {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv(EnvHome, home)
+	t.Setenv(EnvProviders, filepath.Join(home, "providers.json"))
+
+	out := &bytes.Buffer{}
+	err := InteractiveSetupWizard(strings.NewReader(script), out)
+	_, statErr := os.ReadFile(filepath.Join(home, "providers.json"))
+	return wizardScriptRun{transcript: out.String(), err: err, wrote: statErr == nil}
+}
+
+// runWizardProbeFailure runs the scripted wizard in a temp AGY_PRO_HOME and
+// returns the transcript. The run is expected to abort with the no-models
+// error, which is what keeps every fixture out of a providers.json.
+func runWizardProbeFailure(t *testing.T, baseURL string) string {
+	t.Helper()
+	run := runWizardScript(t, wizardProbeFailureScript(baseURL))
+	if run.err == nil || !strings.Contains(run.err.Error(), "no models configured") {
+		t.Fatalf("wizard error = %v, want the no-models abort (nothing written)", run.err)
+	}
+	if run.wrote {
+		t.Fatalf("the aborted wizard wrote a registry")
+	}
+	return run.transcript
+}
+
+// TestInteractiveSetupWizard_RefusesCredentialInBaseURLPath is the FIX-7B door
+// pin for the shape the FIX-M transcript pin used to carry: the wizard now
+// refuses a credential-bearing base URL at the URL prompt, fail closed, before
+// the live probe is ever reached, so the *url.Error is never composed at all.
+// The FIX-M masking itself stays pinned on the real probe path
+// (TestProbeEndpoint_TranscriptMasksCredentialInEveryURLSlot) and on the masker
+// (TestMaskProbeTranscript).
+func TestInteractiveSetupWizard_RefusesCredentialInBaseURLPath(t *testing.T) {
+	run := runWizardScript(t, wizardProbeFailureScript(closedLoopbackBaseURL(t)+"/v1/"+probeTestJWT))
+
+	if run.err == nil {
+		t.Fatalf("the wizard accepted a JWT-bearing base URL path; transcript:\n%s", run.transcript)
+	}
+	if !strings.Contains(run.err.Error(), "Base URL looks like secret material") ||
+		!strings.Contains(run.err.Error(), "value hidden") {
+		t.Fatalf("refusal = %q; want the value-free Base URL refusal", run.err)
+	}
+	assertNoLeak(t, run.err.Error(), probeTestJWT)
+	assertNoLeak(t, run.transcript, probeTestJWT)
+	if strings.Contains(run.transcript, "Live Probe") || strings.Contains(run.transcript, "Connection test failed:") {
+		t.Fatalf("the refusal must land before the probe; transcript:\n%s", run.transcript)
+	}
+	if run.wrote {
+		t.Fatalf("a refused base URL must write nothing")
+	}
+}
+
+// TestInteractiveSetupWizard_ProbeFailureBenignTranscriptUnchanged is the
+// byte-identity pin: a benign base URL masks to itself, so the echoed sentence
+// is exactly the pre-fix wrap rendered around the same transport error.
+func TestInteractiveSetupWizard_ProbeFailureBenignTranscriptUnchanged(t *testing.T) {
+	base := closedLoopbackBaseURL(t) + "/v1"
+	transcript := runWizardProbeFailure(t, base)
+
+	// The pre-fix wrap was fmt.Errorf("network error contacting %s: %w", dest, err).
+	// Reproduce the inner text with a raw request to the same endpoint, then
+	// require the transcript line to carry exactly that rendering.
+	endpoint := strings.TrimRight(base, "/") + "/chat/completions"
+	resp, rawErr := http.Post(endpoint, "application/json", nil)
+	if resp != nil {
+		resp.Body.Close()
+	}
+	if rawErr == nil {
+		t.Fatalf("the benign probe target unexpectedly answered; fixture is not a failing endpoint")
+	}
+	want := fmt.Sprintf("Connection test failed: network error contacting %s: %v\n", endpointHost(base), rawErr)
+	if !strings.Contains(transcript, want) {
+		t.Fatalf("benign probe transcript changed by masking:\nwant line: %q\ngot:\n%s", want, transcript)
+	}
+	if strings.Contains(transcript, "[REDACTED]") {
+		t.Fatalf("a benign probe transcript was masked; transcript:\n%s", transcript)
+	}
+}
+
+// TestProbeEndpoint_TranscriptMasksCredentialInEveryURLSlot is the FIX-7B
+// transcript pin on the REAL probe path: the URL prompt now refuses these URLs,
+// and this is the defense in depth behind it. ProbeEndpoint composes the
+// *url.Error sentence (the exact text the wizard echoes as "Connection test
+// failed: ..."), and every URL slot the transport prints verbatim is covered by
+// the extended seed builder: the path, a query value, a query key, the fragment,
+// and the userinfo username. The password slot is printed as "***" by net/http
+// itself, so it is asserted leak-free rather than redaction-marked.
+func TestProbeEndpoint_TranscriptMasksCredentialInEveryURLSlot(t *testing.T) {
+	base := closedLoopbackBaseURL(t)
+	authority := strings.TrimPrefix(base, "http://")
+	const secret = "sk_live_0123456789abcdef"
+
+	for _, tc := range []struct {
+		name      string
+		url       string
+		wantToken bool   // the transcript must carry a redaction marker
+		wantHost  string // the destination that must survive the masking ("" = hostless)
+	}{
+		{name: "path", url: base + "/v1/" + secret, wantToken: true, wantHost: "127.0.0.1:"},
+		// Hostless: the transport rule accepts a scheme-only "https:", and the
+		// destination is empty, so only the masking is asserted.
+		{name: "opaque path", url: "https:" + secret, wantToken: true},
+		{name: "query value", url: base + "/v1?api_key=" + secret, wantToken: true, wantHost: "127.0.0.1:"},
+		{name: "query key", url: base + "/v1?" + secret + "=1", wantToken: true, wantHost: "127.0.0.1:"},
+		{name: "fragment", url: base + "/v1#" + secret, wantToken: true, wantHost: "127.0.0.1:"},
+		{name: "userinfo username", url: "http://" + secret + "@" + authority + "/v1", wantToken: true, wantHost: "127.0.0.1:"},
+		{name: "userinfo password", url: "http://user:" + secret + "@" + authority + "/v1", wantHost: "127.0.0.1:"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ProbeEndpoint(tc.url, "sk-test-0000", "acme-model")
+			if err == nil {
+				t.Fatalf("the closed loopback target unexpectedly answered")
+			}
+			assertNoLeak(t, err.Error(), secret)
+			if tc.wantToken && !strings.Contains(err.Error(), "[REDACTED]") {
+				t.Fatalf("the transcript carries no redaction marker: %q", err.Error())
+			}
+			// The benign wording and the destination survive: only the credential
+			// is replaced.
+			if tc.wantHost != "" && !strings.Contains(err.Error(), "network error contacting "+tc.wantHost) {
+				t.Fatalf("the transport sentence lost its destination: %q", err.Error())
+			}
+			// The wrap still carries the transport error, so timeout classification
+			// keeps working through it.
+			var urlErr *url.Error
+			if !errors.As(err, &urlErr) {
+				t.Fatalf("the transcript wrap broke errors.As on *url.Error: %T", err)
+			}
+		})
+	}
+}
+
+// TestMaskProbeTranscript pins the masker itself: identity for benign text, the
+// credential gone for a credential-bearing URL path, and the seeded redactor
+// closing the SeedEligible gap for the separator-carrying class.
+func TestMaskProbeTranscript(t *testing.T) {
+	benignURL := "https://gw.example/v1/chat/completions"
+	benign := `network error contacting gw.example: Post "` + benignURL + `": dial tcp 10.0.0.1:443: connect: connection refused`
+	if got := maskProbeTranscript(benign, benignURL); got != benign {
+		t.Fatalf("maskProbeTranscript changed a benign sentence:\n got %q\nwant %q", got, benign)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		base   string
+		secret string
+	}{
+		{"jwt path", "https://gw.example/v1/" + probeTestJWT, probeTestJWT},
+		{"bare run path", "https://gw.example/v1/0123456789abcdef", "0123456789abcdef"},
+		{"head path", "https://gw.example/v1/nvapi-0123456789abcdef", "nvapi-0123456789abcdef"},
+		// SeedEligible declines this shape (no known head, no contiguous run), so
+		// the seeded redactor pass is what masks it.
+		{"underscore path", "https://gw.example/v1/sk_live_0123456789abcdef", "sk_live_0123456789abcdef"},
+		// Non-hierarchical spelling: the transport rule accepts a hostless
+		// "https:", and url.Parse reports the key as Opaque with an empty Path.
+		{"opaque path", "https:sk_live_0123456789abcdef", "sk_live_0123456789abcdef"},
+		// FIX-7B: the seed builder covered Path/Opaque only, so these three slots
+		// printed raw inside the wrapped *url.Error.
+		{"query value", "https://gw.example/v1?api_key=sk_live_0123456789abcdef", "sk_live_0123456789abcdef"},
+		{"query key", "https://gw.example/v1?sk_live_0123456789abcdef=1", "sk_live_0123456789abcdef"},
+		{"fragment", "https://gw.example/v1#sk_live_0123456789abcdef", "sk_live_0123456789abcdef"},
+		{"userinfo username", "https://sk_live_0123456789abcdef@gw.example/v1", "sk_live_0123456789abcdef"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sentence := `network error contacting gw.example: Post "` + tc.base + `/chat/completions": dial tcp: connect: connection refused`
+			got := maskProbeTranscript(sentence, tc.base)
+			if strings.Contains(got, tc.secret) {
+				t.Fatalf("the path credential survived masking: %q", got)
+			}
+			if !strings.Contains(got, "network error contacting gw.example") {
+				t.Fatalf("the sentence wording was lost: %q", got)
+			}
+		})
+	}
+}
+
+// TestMaskProbeError pins the error wrapper: a benign error comes back as the
+// same value (so its bytes are untouched), and a masked one keeps the chain, so
+// isTimeoutErr's errors.Is/errors.As checks still see the transport error.
+func TestMaskProbeError(t *testing.T) {
+	benign := errors.New("network error contacting gw.example: connect: connection refused")
+	if got := maskProbeError(benign, "https://gw.example/v1"); got != benign {
+		t.Fatalf("maskProbeError rewrapped a benign error: %v", got)
+	}
+
+	base := "https://gw.example/v1/" + probeTestJWT
+	inner := &url.Error{Op: "Post", URL: base + "/chat/completions", Err: context.DeadlineExceeded}
+	masked := maskProbeError(inner, base)
+	if masked == nil || strings.Contains(masked.Error(), probeTestJWT) {
+		t.Fatalf("masked error still carries the credential: %v", masked)
+	}
+	if !errors.Is(masked, context.DeadlineExceeded) {
+		t.Fatalf("the wrap broke errors.Is on context.DeadlineExceeded")
+	}
+	var urlErr *url.Error
+	if !errors.As(masked, &urlErr) || urlErr != inner {
+		t.Fatalf("the wrap broke errors.As on *url.Error")
+	}
+	if !isTimeoutErr(masked) {
+		t.Fatalf("isTimeoutErr no longer sees the wrapped deadline error")
+	}
+
+	// FIX-7B: the same chain must survive when the credential sits in a slot the
+	// extended seed builder now covers (a query value), so a query-credential
+	// probe failure is masked AND still classified as a timeout.
+	queryBase := "https://gw.example/v1?api_key=sk_live_0123456789abcdef"
+	queryInner := &url.Error{Op: "Post", URL: queryBase + "/chat/completions", Err: context.DeadlineExceeded}
+	queryMasked := maskProbeError(queryInner, queryBase)
+	if queryMasked == nil || strings.Contains(queryMasked.Error(), "sk_live_0123456789abcdef") {
+		t.Fatalf("the query credential survived masking: %v", queryMasked)
+	}
+	if !strings.Contains(queryMasked.Error(), "[REDACTED]") {
+		t.Fatalf("the query-credential transcript carries no redaction marker: %v", queryMasked)
+	}
+	if !errors.Is(queryMasked, context.DeadlineExceeded) || !errors.As(queryMasked, &urlErr) {
+		t.Fatalf("the query-credential wrap broke the transport chain: %v", queryMasked)
+	}
+	if !isTimeoutErr(queryMasked) {
+		t.Fatalf("isTimeoutErr no longer sees the wrapped deadline error behind a masked query credential")
 	}
 }

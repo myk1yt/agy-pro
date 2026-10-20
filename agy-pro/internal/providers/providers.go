@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 )
 
 // EnvProviders overrides the registry file location.
@@ -299,9 +300,23 @@ func LoadFrom(path string) (*Registry, error) {
 func validateBaseURL(baseURL string) error {
 	u, err := url.Parse(strings.TrimSpace(baseURL))
 	if err != nil {
-		// B2/U8: url.Error text embeds the operand; pattern-redact before
-		// returning so a misdirected key paste cannot ride along (U8).
-		return fmt.Errorf("baseURL is not a valid URL: %s", NewRedactor()(err.Error()))
+		// FIX-8h: this sentence is VALUE-FREE, and it has to be. url.Error
+		// embeds the operand twice over: %q quotes the whole parsed string, and
+		// the inner error can embed a fragment of it as well ("invalid port
+		// \":...\" after host"). Redacting the text through NewRedactor only
+		// looked safe: its patterns are the identity on the underscore-head
+		// credential class (skRe requires a hyphen, and "sk_live_<16>" carries an
+		// underscore), so a key pasted into an unparseable URL rode into every
+		// consumer of this error: the wizard refusal (wizard.go:110 appends
+		// MaskOperand, also identity on that class), the loader
+		// (providers.go:393), the mutation op (registry_ops.go:157), and the TUI
+		// message line (screen_provider_form.go:1084/:1121, MaskOperand of the
+		// sentence). The shared URL authority now refuses every unparseable value
+		// at the three ingest doors, so this branch fires only for a record read
+		// back from disk or handed to the op layer directly; dropping the reason
+		// text costs that operator a syntax hint and guarantees no
+		// operand-derived byte can ride along.
+		return errors.New("baseURL is not a valid URL (value hidden)")
 	}
 	switch strings.ToLower(u.Scheme) {
 	case "https":
@@ -330,8 +345,12 @@ func isLoopbackHost(host string) bool {
 }
 
 // Validate checks structural rules. It never echoes apiKeyEnv values because a
-// mistaken paste of a real key must not leak into logs; provider names pass
-// through MaskOperand for the same reason (B2/U8).
+// mistaken paste of a real key must not leak into logs; provider names and model
+// IDs are registry slots and pass through MaskSlot, the single registry-slot
+// display authority, for the same reason (B2/U8). MaskSlot's first stage is
+// MaskOperand, so a benign name or id renders byte-identically, while the
+// underscore-head credential class ("sk_live_...", "tok_...", "AKIA_...") that
+// the operand masker cannot classify no longer rides raw into a load error.
 //
 // Load-time control-rune rule (round-5 R9/seat3-R3, extended round-6 F1): a
 // registry file with disk-borne C0/C1 control bytes must fail here, at the
@@ -362,11 +381,11 @@ func (r *Registry) Validate() error {
 			return fmt.Errorf("providers[%d]: name is required", i)
 		}
 		if seen[p.Name] {
-			return fmt.Errorf("provider %q is defined twice", MaskOperand(p.Name))
+			return fmt.Errorf("provider %q is defined twice", MaskSlot(p.Name))
 		}
 		seen[p.Name] = true
 		if strings.Contains(p.Name, "/") {
-			return fmt.Errorf("provider %q: name must not contain '/'", MaskOperand(p.Name))
+			return fmt.Errorf("provider %q: name must not contain '/'", MaskSlot(p.Name))
 		}
 		if hasControlRunes(p.Name) {
 			return fmt.Errorf("providers[%d]: name contains control characters", i)
@@ -379,44 +398,92 @@ func (r *Registry) Validate() error {
 			return fmt.Errorf("providers[%d]: %w", i, err)
 		}
 		if strings.TrimSpace(p.BaseURL) == "" {
-			return fmt.Errorf("provider %q: baseURL is required", MaskOperand(p.Name))
+			return fmt.Errorf("provider %q: baseURL is required", MaskSlot(p.Name))
 		}
 		if hasControlRunes(p.BaseURL) {
-			return fmt.Errorf("provider %q: baseURL contains control characters", MaskOperand(p.Name))
+			return fmt.Errorf("provider %q: baseURL contains control characters", MaskSlot(p.Name))
 		}
 		if err := validateBaseURL(p.BaseURL); err != nil {
-			return fmt.Errorf("provider %q: %w", MaskOperand(p.Name), err)
+			return fmt.Errorf("provider %q: %w", MaskSlot(p.Name), err)
 		}
 		if p.APIKeyEnv != "" && hasControlRunes(p.APIKeyEnv) {
-			return fmt.Errorf("provider %q: apiKeyEnv contains control characters", MaskOperand(p.Name))
+			return fmt.Errorf("provider %q: apiKeyEnv contains control characters", MaskSlot(p.Name))
 		}
 		if p.APIKeyEnv != "" && !envNameRe.MatchString(p.APIKeyEnv) {
-			return fmt.Errorf("provider %q: apiKeyEnv must be an environment variable NAME, not a key (value hidden)", MaskOperand(p.Name))
+			return fmt.Errorf("provider %q: apiKeyEnv must be an environment variable NAME, not a key (value hidden)", MaskSlot(p.Name))
 		}
 		mseen := map[string]bool{}
 		for j, m := range p.Models {
 			if strings.TrimSpace(m.ID) == "" {
-				return fmt.Errorf("provider %q: models[%d].id is required", MaskOperand(p.Name), j)
+				return fmt.Errorf("provider %q: models[%d].id is required", MaskSlot(p.Name), j)
 			}
 			if mseen[m.ID] {
-				return fmt.Errorf("provider %q: model %q is listed twice", MaskOperand(p.Name), MaskOperand(m.ID))
+				return fmt.Errorf("provider %q: model %q is listed twice", MaskSlot(p.Name), MaskSlot(m.ID))
 			}
 			mseen[m.ID] = true
 			if err := checkModelFields(p.Name, m); err != nil {
 				return err
+			}
+			// Convergence round: the load-time rule covers the whole invisible
+			// class (Cc + Cf), not only Cc. A Cf rune carries no visible
+			// identity (bidi overrides and isolates, zero-width spaces and
+			// joiners, the BOM), so a value decorated with one must not persist
+			// at rest either; checkModelFields above already reports the Cc
+			// class, so this check reports only the shape it cannot see. The
+			// wording stays the established field-class sentence and never
+			// echoes the offending value.
+			if kind := invisibleModelField(m); kind != "" {
+				return fmt.Errorf("provider %q: %s contains control characters", MaskSlot(p.Name), kind)
 			}
 			// Round-6 F1: reasoningEffort is registry-persisted free text that
 			// reaches CLI echoes with no frame strip (CapabilitySummary via
 			// `agy pro status` / `agy pro models --all`, the wizard list, the
 			// fanout defaults notice), so a disk-borne control rune there must
 			// fail the load, with the same non-echoing error style as
-			// checkModelFields.
-			if hasControlRunes(m.Capabilities.ReasoningEffort) {
-				return fmt.Errorf("provider %q: reasoningEffort contains control characters", MaskOperand(p.Name))
+			// checkModelFields. The check carries the same Cc + Cf widening as
+			// the model fields above.
+			if hasControlRunes(m.Capabilities.ReasoningEffort) || hasInvisibleFormatRunes(m.Capabilities.ReasoningEffort) {
+				return fmt.Errorf("provider %q: reasoningEffort contains control characters", MaskSlot(p.Name))
 			}
 		}
 	}
 	return nil
+}
+
+// hasInvisibleFormatRunes reports whether s carries an invisible FORMAT rune
+// (the Cf class: the bidi overrides and isolates, the zero-width space and
+// joiners, the byte order mark). It is the load-time companion of the policy's
+// invisible class: a Cf rune carries no visible identity, so a registry value
+// decorated with one cannot persist at rest. The combining marks (Mn, Me) are
+// deliberately NOT covered here: an NFD-encoded name legitimately carries them,
+// and the policy folds them at classification and display time.
+func hasInvisibleFormatRunes(s string) bool {
+	return strings.IndexFunc(s, func(r rune) bool { return unicode.Is(unicode.Cf, r) }) >= 0
+}
+
+// invisibleModelField returns the field class of the first model field that
+// carries an invisible FORMAT rune (see hasInvisibleFormatRunes), or "" when
+// the model is clean. It names exactly the fields checkModelFields names, so
+// the two checks report the same classes; reasoningEffort is checked by the
+// model loop separately.
+func invisibleModelField(m Model) string {
+	switch {
+	case hasInvisibleFormatRunes(m.ID):
+		return "model id"
+	case hasInvisibleFormatRunes(m.Family):
+		return "model family"
+	}
+	for _, t := range m.Tags {
+		if hasInvisibleFormatRunes(t) {
+			return "model tag"
+		}
+	}
+	for _, tool := range m.Capabilities.AllowedTools {
+		if hasInvisibleFormatRunes(tool) {
+			return "model tool name"
+		}
+	}
+	return ""
 }
 
 // Provider returns the named provider.

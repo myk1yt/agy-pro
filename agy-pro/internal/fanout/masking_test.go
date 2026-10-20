@@ -1,6 +1,7 @@
 package fanout
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"agypro/internal/paths"
 	"agypro/internal/providers"
 )
 
@@ -205,5 +207,193 @@ func TestExecuteMasksUnresolvedSeatModel(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "sk-pl****") {
 		t.Errorf("Execute error should carry the readable mask: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FIX-8 (module-wide echo sweep): the fanout client's four error sentences
+// quote target.Provider.Name, a registry slot. Each routes through
+// providers.MaskSlot (the registry-slot authority: MaskOperand plus the
+// underscore-head credential arm), so the "sk_live_..." class that the operand
+// masker renders raw masks here, and every benign name keeps its exact bytes.
+// ---------------------------------------------------------------------------
+
+func TestClient_ErrorSinksMaskRegistryProviderNameThroughSlotAuthority(t *testing.T) {
+	const (
+		plant     = "sk_live_0123456789abcdef"
+		plantMask = "sk_li****"
+	)
+	newTarget := func(baseURL string) providers.Target {
+		return providers.Target{
+			Provider: providers.Provider{Name: plant, BaseURL: baseURL},
+			Model:    providers.Model{ID: "m"},
+		}
+	}
+	server := func(status int, body string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(body))
+		}))
+	}
+
+	// "empty choices returned by provider %q" (200 with no choices).
+	srv := server(http.StatusOK, `{"choices":[]}`)
+	defer srv.Close()
+	_, _, err := NewClient().send(context.Background(), newTarget(srv.URL), ChatRequest{Model: "m"})
+	if err == nil {
+		t.Fatal("send must fail on an empty choices list")
+	}
+	if strings.Contains(err.Error(), plant) {
+		t.Errorf("empty-choices error echoes the registry name raw: %v", err)
+	}
+	if want := `empty choices returned by provider "` + plantMask + `"`; err.Error() != want {
+		t.Errorf("empty-choices error drifted\n got: %q\nwant: %q", err.Error(), want)
+	}
+
+	// "API error from %q" (provider error object inside a 200).
+	srv2 := server(http.StatusOK, `{"error":{"message":"rejected"}}`)
+	defer srv2.Close()
+	_, _, err = NewClient().send(context.Background(), newTarget(srv2.URL), ChatRequest{Model: "m"})
+	if err == nil {
+		t.Fatal("send must surface a provider error object")
+	}
+	if strings.Contains(err.Error(), plant) {
+		t.Errorf("API-error sentence echoes the registry name raw: %v", err)
+	}
+	if want := `API error from "` + plantMask + `": rejected`; err.Error() != want {
+		t.Errorf("API-error sentence drifted\n got: %q\nwant: %q", err.Error(), want)
+	}
+
+	// "HTTP %d (%s) from provider %q: %s" (non-2xx).
+	srv3 := server(http.StatusInternalServerError, `{"error":{"message":"boom"}}`)
+	defer srv3.Close()
+	_, _, err = NewClient().send(context.Background(), newTarget(srv3.URL), ChatRequest{Model: "m"})
+	if err == nil {
+		t.Fatal("send must fail on a 500")
+	}
+	if strings.Contains(err.Error(), plant) {
+		t.Errorf("non-2xx sentence echoes the registry name raw: %v", err)
+	}
+	if !strings.Contains(err.Error(), `from provider "`+plantMask+`":`) {
+		t.Errorf("non-2xx sentence must render the name as %q: %v", plantMask, err)
+	}
+
+	// "network error calling %s (%s): %w" (unreachable endpoint).
+	_, _, err = NewClient().send(context.Background(), newTarget("http://127.0.0.1:1"), ChatRequest{Model: "m"})
+	if err == nil {
+		t.Fatal("send must fail against a closed port")
+	}
+	if strings.Contains(err.Error(), plant) {
+		t.Errorf("network-error sentence echoes the registry name raw: %v", err)
+	}
+	if !strings.HasPrefix(err.Error(), "network error calling "+plantMask+" (") {
+		t.Errorf("network-error sentence must render the name as %q: %v", plantMask, err)
+	}
+
+	// Benign corpus: byte-identical sentences.
+	for _, name := range []string{"nw", "openai", "gemini", "deepseek", "charm", "acme-corp"} {
+		target := providers.Target{
+			Provider: providers.Provider{Name: name, BaseURL: srv.URL},
+			Model:    providers.Model{ID: "m"},
+		}
+		_, _, err := NewClient().send(context.Background(), target, ChatRequest{Model: "m"})
+		if err == nil {
+			t.Fatalf("%s: send must fail on an empty choices list", name)
+		}
+		if want := `empty choices returned by provider "` + name + `"`; err.Error() != want {
+			t.Errorf("%s: sentence drifted\n got: %q\nwant: %q", name, err.Error(), want)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FIX-8 (module-wide echo sweep, fanout surface): the progress-line seat spec's
+// provider form ("provider/model") and the CLI banner's seat-report lines are
+// built from registry slots (provider name, model id), so both render through
+// providers.MaskSlot. Benign specs keep their exact bytes; the underscore-head
+// credential class masks. The native form ("native:<id>") is NOT a registry
+// slot (the id arrives through --seats or the native catalog), so it keeps the
+// operand masker; the pin below holds its benign rendering byte-identical.
+// ---------------------------------------------------------------------------
+
+func TestSeatSpecLabelMasksRegistrySlots(t *testing.T) {
+	const (
+		plant     = "sk_live_0123456789abcdef"
+		plantMask = "sk_li****"
+	)
+	provSeat := func(name, id string) providers.Target {
+		return providers.Target{Provider: providers.Provider{Name: name}, Model: providers.Model{ID: id}}
+	}
+	cases := []struct {
+		name string
+		kind SeatKind
+		tgt  providers.Target
+		want string
+	}{
+		// The "native:<id>" form: byte-identical, on the unchanged authority.
+		{"native benign", SeatKindNative, provSeat("", "gemini-3.8-flash-high"), "native:gemini-3.8-flash-high"},
+		{"native catalog id", SeatKindNative, provSeat("", "claude-opus-5-5-high"), "native:claude-opus-5-5-high"},
+		// The "provider/model" form (Target.FullName): both halves are slots.
+		{"provider benign", SeatKindProvider, provSeat("openai", "gpt-5.1"), "openai/gpt-5.1"},
+		{"provider nw", SeatKindProvider, provSeat("nw", "glm-5.3-flash"), "nw/glm-5.3-flash"},
+		{"provider name plant", SeatKindProvider, provSeat(plant, "m"), plantMask},
+		{"model id plant", SeatKindProvider, provSeat("nw", plant), "nw/sk****"},
+	}
+	for _, tc := range cases {
+		if got := seatSpecLabel(tc.kind, tc.tgt); got != tc.want {
+			t.Errorf("%s: seatSpecLabel = %q; want %q", tc.name, got, tc.want)
+		}
+	}
+	// Either half of the composed provider form is caught whole.
+	for _, bad := range []string{plant, "nw/" + plant, plant + "/glm-5.3-flash"} {
+		if got := seatSpecLabel(SeatKindProvider, provSeat("nw", bad)); strings.Contains(got, plant) {
+			t.Errorf("seatSpecLabel(provider, %q) = %q; the plant must not ride raw", bad, got)
+		}
+	}
+}
+
+// TestRunBannerSeatReportLineMasksRegistrySlots pins the banner twin of the
+// seat report file name: the CLI prints the masked pair (sanitizeFilename turns
+// the mask's stars into dashes, the I2 rule), and a benign seat keeps the exact
+// line the banner printed before the conversion.
+func TestRunBannerSeatReportLineMasksRegistrySlots(t *testing.T) {
+	const plant = "sk_live_0123456789abcdef"
+	t.Setenv(paths.EnvAgyProHome, t.TempDir())
+
+	old := executeEngine
+	executeEngine = func(ctx context.Context, cfg RunConfig) (*SummaryReport, error) {
+		return &SummaryReport{
+			Task:       cfg.Task,
+			NRequested: 2,
+			Seats: []SeatResult{
+				{SeatID: 1, FinalTarget: providers.Target{
+					Provider: providers.Provider{Name: plant},
+					Model:    providers.Model{ID: plant},
+				}},
+				{SeatID: 2, FinalTarget: providers.Target{
+					Provider: providers.Provider{Name: "openai"},
+					Model:    providers.Model{ID: "gpt-5.1"},
+				}},
+			},
+		}, nil
+	}
+	t.Cleanup(func() { executeEngine = old })
+
+	var out, errw bytes.Buffer
+	if code := Run([]string{"-prompt", "p"}, nil, &out, &errw); code != 0 {
+		t.Fatalf("Run exit = %d\nstderr:\n%s", code, errw.String())
+	}
+	banner := out.String()
+	if strings.Contains(banner, plant) {
+		t.Errorf("banner leaks the credential-shaped registry slots:\n%s", banner)
+	}
+	for _, want := range []string{
+		"  Seat 1 Report:       seat-1-sk_li-----sk_li----.md",
+		"  Seat 2 Report:       seat-2-openai-gpt-5.1.md",
+	} {
+		if !strings.Contains(banner, want) {
+			t.Errorf("banner lost the byte-exact seat line %q:\n%s", want, banner)
+		}
 	}
 }

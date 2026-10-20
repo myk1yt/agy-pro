@@ -186,7 +186,11 @@ func ResolveRepairTargets(reg *Registry, arg string) ([]string, error) {
 		seen[strings.ToLower(tok)] = true
 		if p, ok := reg.Provider(tok); ok {
 			if strings.TrimSpace(p.APIKeyEnv) == "" {
-				return nil, fmt.Errorf("provider %q declares no API key variable; nothing to repair", MaskOperand(p.Name))
+				// FIX-8: p.Name is a registry slot (providers.json borne), so the
+				// echo goes through the registry-slot authority MaskSlot. Its first
+				// stage is MaskOperand, so a benign name renders byte-identically,
+				// while the underscore-head credential class masks.
+				return nil, fmt.Errorf("provider %q declares no API key variable; nothing to repair", MaskSlot(p.Name))
 			}
 			out = append(out, strings.TrimSpace(p.APIKeyEnv))
 			continue

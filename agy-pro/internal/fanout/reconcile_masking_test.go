@@ -338,3 +338,214 @@ func TestFormatSeatReportNilRedactorMasksCredentialShapes(t *testing.T) {
 		t.Errorf("explicit redactor leaked the planted credential:\n%s", md2)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// FIX-8 (module-wide echo sweep, registry-name sinks): every registry-borne
+// provider NAME and model ID that reconciles into the shareable artifacts
+// renders through providers.MaskSlot, the registry-slot authority. MaskOperand
+// is stage one of that authority, so every benign value renders byte-identical;
+// only the underscore-head credential class (invisible to the operand masker)
+// changes. These pins hold the SERIALIZED surfaces: summary.json fields, the
+// reconciliation.md rows and the seat report file name.
+// ---------------------------------------------------------------------------
+
+// fix8SlotPlant is a synthetic underscore-head credential-shaped name: the
+// class MaskOperand renders RAW and MaskSlot masks to first-5 + "****".
+const (
+	fix8SlotPlant = "sk_live_0123456789abcdef"
+	fix8SlotMask  = "sk_li****"
+)
+
+func TestReconcileRegistrySlotsMaskUnderscoreHeadClass(t *testing.T) {
+	// The same plant rides the provider NAME and the model ID, plus all four
+	// failover-hop slots (provider name and model ID pairs), so a leak of any
+	// one slot cannot hide behind another slot's mask.
+	prov := providers.Provider{
+		Name:      fix8SlotPlant,
+		BaseURL:   "https://api.acme.example/v1",
+		APIKeyEnv: "NW_API_KEY",
+		Models:    []providers.Model{{ID: fix8SlotPlant, Family: "glm"}},
+	}
+	target := providers.Target{Provider: prov, Model: prov.Models[0]}
+	seat := s4Seat(t, target)
+	seat.Failovers = []FailoverRecord{{
+		Step: 1, FromProv: fix8SlotPlant, FromMod: fix8SlotPlant,
+		ToProv: fix8SlotPlant, ToMod: fix8SlotPlant,
+		Reason: "upstream 429",
+	}}
+
+	outDir := t.TempDir()
+	summary, err := Reconcile("review", t.TempDir(), outDir, 1, []*SeatResult{seat})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	// The summary copy carries the mask on every registry slot.
+	got := summary.Seats[0]
+	for field, value := range map[string]string{
+		"provider name":     got.FinalTarget.Provider.Name,
+		"model id":          got.FinalTarget.Model.ID,
+		"failover FromProv": got.Failovers[0].FromProv,
+		"failover FromMod":  got.Failovers[0].FromMod,
+		"failover ToProv":   got.Failovers[0].ToProv,
+		"failover ToMod":    got.Failovers[0].ToMod,
+	} {
+		if value != fix8SlotMask {
+			t.Errorf("summary %s = %q; want %q", field, value, fix8SlotMask)
+		}
+	}
+	// The findings matrix attributes each finding to the same slots.
+	if len(summary.Issues) == 0 || len(summary.Issues[0].Findings) == 0 {
+		t.Fatalf("expected one finding in the matrix, got %+v", summary.Issues)
+	}
+	if f := summary.Issues[0].Findings[0]; f.Provider != fix8SlotMask || f.Model != fix8SlotMask {
+		t.Errorf("finding attribution = %q/%q; want %q on both", f.Provider, f.Model, fix8SlotMask)
+	}
+
+	// summary.json on disk never carries the raw value, and carries the mask.
+	sumRaw := readOutFile(t, outDir, "summary.json")
+	if strings.Contains(sumRaw, fix8SlotPlant) {
+		t.Errorf("summary.json leaks the credential-shaped registry slot:\n%s", sumRaw)
+	}
+	if !strings.Contains(sumRaw, `"name": "`+fix8SlotMask+`"`) {
+		t.Errorf("summary.json lost the masked provider name:\n%s", sumRaw)
+	}
+
+	// reconciliation.md never carries the raw value; the matrix attributes the
+	// finding to the masked registry slots.
+	md := readOutFile(t, outDir, "reconciliation.md")
+	if strings.Contains(md, fix8SlotPlant) {
+		t.Errorf("reconciliation.md leaks the credential-shaped registry slot:\n%s", md)
+	}
+	if want := "Seat 1 (" + fix8SlotMask + "/" + fix8SlotMask + ")"; !strings.Contains(md, want) {
+		t.Errorf("reconciliation.md lost the masked attribution %q:\n%s", want, md)
+	}
+
+	// The seat report file name AND body mask the same slots (stars render as
+	// dashes in a file name, the I2 rule sanitizeFilename applies).
+	seatRaw := readOutFile(t, outDir, "seat-1-*.md")
+	if strings.Contains(seatRaw, fix8SlotPlant) {
+		t.Errorf("seat report leaks the credential-shaped registry slot:\n%s", seatRaw)
+	}
+	if !strings.Contains(seatRaw, "| Provider | `"+fix8SlotMask+"` |") {
+		t.Errorf("seat report lost the masked provider row:\n%s", seatRaw)
+	}
+	if !strings.Contains(seatRaw, "Step 1 ("+fix8SlotMask+"/"+fix8SlotMask+" -> ") {
+		t.Errorf("seat report lost the masked failover row:\n%s", seatRaw)
+	}
+	if _, statErr := os.Stat(filepath.Join(outDir, "seat-1-sk_li-----sk_li----.md")); statErr != nil {
+		t.Errorf("seat report file name is not the masked pair: %v", statErr)
+	}
+}
+
+// TestReconcileBenignRegistrySlotsRenderByteIdentically pins the other half of
+// the conversion: MaskSlot is a superset of MaskOperand, so a benign registry
+// corpus (the sibling sweep's corpus plus the values these pins already use)
+// keeps its exact bytes in every serialized surface.
+func TestReconcileBenignRegistrySlotsRenderByteIdentically(t *testing.T) {
+	for _, name := range []string{"openai", "gemini", "deepseek", "nw", "charm", "acme-corp"} {
+		prov := providers.Provider{Name: name, APIKeyEnv: "NW_API_KEY", Models: []providers.Model{{ID: "glm-5.3-flash", Family: "glm"}}}
+		target := providers.Target{Provider: prov, Model: prov.Models[0]}
+		seat := s4Seat(t, target)
+		seat.Failovers = []FailoverRecord{{Step: 1, FromProv: name, FromMod: "glm-5.3-flash", ToProv: "nw", ToMod: "glm-5.3-flash", Reason: "upstream 429"}}
+
+		outDir := t.TempDir()
+		summary, err := Reconcile("review", t.TempDir(), outDir, 1, []*SeatResult{seat})
+		if err != nil {
+			t.Fatalf("%s: Reconcile: %v", name, err)
+		}
+		got := summary.Seats[0]
+		if got.FinalTarget.Provider.Name != name || got.FinalTarget.Model.ID != "glm-5.3-flash" {
+			t.Errorf("%s: benign target drifted to %q/%q", name, got.FinalTarget.Provider.Name, got.FinalTarget.Model.ID)
+		}
+		if got.Failovers[0].FromProv != name || got.Failovers[0].ToProv != "nw" {
+			t.Errorf("%s: benign hop provider drifted to %q/%q", name, got.Failovers[0].FromProv, got.Failovers[0].ToProv)
+		}
+		if got.Failovers[0].FromMod != "glm-5.3-flash" || got.Failovers[0].ToMod != "glm-5.3-flash" {
+			t.Errorf("%s: benign hop model drifted to %q/%q", name, got.Failovers[0].FromMod, got.Failovers[0].ToMod)
+		}
+
+		seatRaw := readOutFile(t, outDir, "seat-1-*.md")
+		for _, want := range []string{
+			"| Provider | `" + name + "` |",
+			"| Model | `glm-5.3-flash` (family: `glm`) |",
+			"Step 1 (" + name + "/glm-5.3-flash -> nw/glm-5.3-flash: upstream 429)",
+		} {
+			if !strings.Contains(seatRaw, want) {
+				t.Errorf("%s: seat report lost the byte-identical row %q:\n%s", name, want, seatRaw)
+			}
+		}
+		if _, statErr := os.Stat(filepath.Join(outDir, "seat-1-"+name+"-glm-5.3-flash.md")); statErr != nil {
+			t.Errorf("%s: seat report file name drifted: %v", name, statErr)
+		}
+	}
+}
+
+// TestMergePartitionRegistrySlotsMaskFailoverHops pins the partition twin
+// (maskedPartitionSeat): its failover hops land in the shareable summary.json
+// of a partition run, so the same registry-slot authority masks them.
+func TestMergePartitionRegistrySlotsMaskFailoverHops(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "src", "alpha"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "src", "alpha", "ok.go"), []byte("package alpha\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	units := []Unit{{ID: "unit-alpha", Title: "Alpha work", Scope: []string{"src/alpha"}, Deliverable: "d", Seat: "prov-a/model-a"}}
+	prov := providers.Provider{
+		Name:      fix8SlotPlant,
+		BaseURL:   "https://api.acme.example/v1",
+		APIKeyEnv: "NW_API_KEY",
+		Models:    []providers.Model{{ID: fix8SlotPlant}},
+	}
+	target := providers.Target{Provider: prov, Model: prov.Models[0]}
+	results := []*SeatResult{{
+		SeatID:        1,
+		UnitID:        "unit-alpha",
+		InitialTarget: target,
+		FinalTarget:   target,
+		Status:        "success",
+		Content:       "WORK-PRODUCT-A: plain analysis prose for the alpha unit",
+		Failovers: []FailoverRecord{{
+			Step: 1, FromProv: fix8SlotPlant, FromMod: fix8SlotPlant,
+			ToProv: fix8SlotPlant, ToMod: fix8SlotPlant,
+			Reason: "upstream 429",
+		}},
+	}}
+
+	outDir := filepath.Join(t.TempDir(), "reports")
+	if _, err := MergePartition("review", root, outDir, units, results); err != nil {
+		t.Fatalf("MergePartition: %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(outDir, "summary.json"))
+	if err != nil {
+		t.Fatalf("read summary.json: %v", err)
+	}
+	if strings.Contains(string(raw), fix8SlotPlant) {
+		t.Errorf("partition summary.json leaks the credential-shaped registry slot:\n%s", raw)
+	}
+	var s SummaryReport
+	if err := json.Unmarshal(raw, &s); err != nil {
+		t.Fatalf("summary.json is not parseable: %v\n%s", err, raw)
+	}
+	if len(s.Seats) != 1 || len(s.Seats[0].Failovers) != 1 {
+		t.Fatalf("partition summary seats = %+v; want one seat with one hop", s.Seats)
+	}
+	hop := s.Seats[0].Failovers[0]
+	for field, value := range map[string]string{
+		"FromProv": hop.FromProv, "FromMod": hop.FromMod,
+		"ToProv": hop.ToProv, "ToMod": hop.ToMod,
+	} {
+		if value != fix8SlotMask {
+			t.Errorf("partition summary hop %s = %q; want %q", field, value, fix8SlotMask)
+		}
+	}
+	// The benign target of the same seat stays readable (the slot authority is
+	// identity on every benign value).
+	if got := s.Seats[0].UnitID; got != "unit-alpha" {
+		t.Errorf("partition summary unit id = %q; want unit-alpha", got)
+	}
+}

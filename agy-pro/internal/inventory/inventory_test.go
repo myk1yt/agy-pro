@@ -313,8 +313,9 @@ func TestLoadCarriesCasePreservedFamily(t *testing.T) {
 }
 
 // S5: RenderNumbered masks the Group (provider name) and the native
-// DisplayName column through MaskOperand; the benign model ID of the same
-// row stays readable (the pinned format test above keeps its fixtures).
+// DisplayName column through the registry-slot masker; the benign model ID of
+// the same row stays readable (the pinned format test above keeps its
+// fixtures).
 func TestRenderNumberedMasksKeyShapedDisplayFields(t *testing.T) {
 	keyGroup := "AKIAIOSFODNN7EXAMPLE"
 	keyDisplay := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
@@ -384,16 +385,16 @@ func TestRenderNumbered_MasksCapabilityColumnAndAlignsMaskedWidths(t *testing.T)
 	}
 }
 
-// Round-3 LOW — the capability-column mask (maskMidColumn's MaskOperand) is
-// defense in depth on top of the composition mask inside Capabilities.Summary.
-// A separator-carrying key effort is already masked at the composition, so the
-// sink mask is redundant for it and reverting the sink does not fail the pin
-// above. This fixture discriminates the SINK: an IDENTIFIER-SEGMENTED plant
-// (>=4 short segments) evades the composition's display class, but the composed
-// 1-space summary "tools, thinking(<plant>)" becomes secret-shaped once the
-// "thinking(" prefix merges the first segment past the 16-rune identifier
-// floor, so ONLY the RenderNumbered sink mask catches it. Reverting
-// maskMidColumn's MaskOperand leaks the plant raw.
+// Round-3 LOW: the capability-column mask (maskMidColumn's registry-slot
+// mask) is defense in depth on top of the composition mask inside
+// Capabilities.Summary. A separator-carrying key effort is already masked at
+// the composition, so the sink mask is redundant for it and reverting the sink
+// does not fail the pin above. This fixture discriminates the SINK: an
+// IDENTIFIER-SEGMENTED plant (>=4 short segments) evades the composition's
+// display class, but the composed 1-space summary "tools, thinking(<plant>)"
+// becomes secret-shaped once the "thinking(" prefix merges the first segment
+// past the 16-rune identifier floor, so ONLY the RenderNumbered sink mask
+// catches it. Dropping the sink mask leaks the plant raw.
 func TestRenderNumbered_MaskMidColumnSinkDiscriminatesComposite(t *testing.T) {
 	plant := "abcdefgh.IJKL.mnop.QRSTUVWX"
 	reg := &providers.Registry{Providers: []providers.Provider{{
@@ -426,6 +427,47 @@ func TestRenderNumbered_MaskMidColumnSinkDiscriminatesComposite(t *testing.T) {
 	// The benign row stays readable.
 	if !strings.Contains(out, "tools, vision") {
 		t.Errorf("benign capability row must stay readable:\n%s", out)
+	}
+}
+
+// TestRenderNumberedMasksLookAlikeRegistrySlot pins the listing conversion: the
+// model ID and the mid column are registry-derived display slots, so they route
+// through providers.MaskSlot. The plant is the discriminating shape for the
+// pre-policy masker: providers.MaskOperand is identity on it (the ASCII-marker
+// location exemption covers the "./" forms and the look-alike rune breaks the
+// contiguous run), so the pre-conversion sink printed the credential core raw
+// in `agy pro models --all` while the models --json twin masked the same record.
+func TestRenderNumberedMasksLookAlikeRegistrySlot(t *testing.T) {
+	const core = "ab3def7gh9jk1mnpqr5t"
+	const masked = "ab3de****"
+	plant := "\u2025/" + core
+	if got := providers.MaskOperand(plant); got != plant {
+		t.Fatalf("premise broken: MaskOperand is not identity on the plant (%q)", got)
+	}
+
+	reg := &providers.Registry{Providers: []providers.Provider{{
+		Name:   "nw",
+		Models: []providers.Model{{ID: plant}, {ID: "glm-5.3-flash-flex"}},
+	}}}
+	native := []NativeModel{
+		{ID: "gemini-3.8-flash-high", DisplayName: "Gemini 3.8 Flash (High)"},
+		{ID: "gpt-oss-120b-medium", DisplayName: plant},
+	}
+	inv, err := Load(context.Background(), reg, &stubFetcher{models: native})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf strings.Builder
+	inv.RenderNumbered(&buf)
+	out := buf.String()
+	if strings.Contains(out, core) || strings.Contains(out, plant) {
+		t.Errorf("numbered listing leaks the look-alike plant raw:\n%s", out)
+	}
+	if strings.Count(out, masked) != 2 {
+		t.Errorf("numbered listing must mask the id column and the mid column to %q:\n%s", masked, out)
+	}
+	if !strings.Contains(out, "glm-5.3-flash-flex") || !strings.Contains(out, "Gemini 3.8 Flash (High)") {
+		t.Errorf("benign rows must stay readable:\n%s", out)
 	}
 }
 

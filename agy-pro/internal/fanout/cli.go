@@ -329,11 +329,13 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 		// G6/H2: banner seat-report lines echo registry-derived provider/model
 		// names; mask FIRST, then sanitize (sanitizing first breaks the
 		// contiguous-run classifier and leaks key-shaped ids). Benign names
-		// stay readable.
+		// stay readable. FIX-8: both are registry slots, so they take the
+		// registry-slot authority (MaskSlot) rather than the operand masker,
+		// which is the identity on the underscore-head credential class.
 		fmt.Fprintf(out, "  Seat %d Report:       seat-%d-%s-%s.md\n",
 			seat.SeatID, seat.SeatID,
-			sanitizeFilename(providers.MaskOperand(seat.FinalTarget.Provider.Name)),
-			sanitizeFilename(providers.MaskOperand(seat.FinalTarget.Model.ID)),
+			sanitizeFilename(providers.MaskSlot(seat.FinalTarget.Provider.Name)),
+			sanitizeFilename(providers.MaskSlot(seat.FinalTarget.Model.ID)),
 		)
 	}
 

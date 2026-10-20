@@ -20,7 +20,15 @@ func TestPrintPathsNeverEmitRawKeys(t *testing.T) {
 	rawValueID := regexp.MustCompile(`\b(keyValue|keyInput|newKey|existingVal|envVal|planted|apiKey)\b|args\[`)
 	// allowed lists the maskers a print line may route a raw identifier
 	// through: the providers maskers plus the cmd/agy sentence maskers.
-	allowed := regexp.MustCompile(`MaskSecret|MaskOperand|RedactEchoLine|Redactor|redact|REDACTED|redactProbeDetail|maskOperandSentence|invalidModeArgMessage`)
+	// regOperand is the cmd/agy registry-slot masker (a delegation to
+	// providers.MaskSlot, which is the control-rune strip plus the
+	// registry-slot authority plus the shared policy's identity-fallback), i.e.
+	// strictly stronger than the MaskOperand arm for the same operand: a
+	// registry slot is never a legitimate path, so it does not take
+	// MaskOperand's location exemption. MaskSlot is the shared authority
+	// itself, allowed for the same reason. Allowing them here keeps the
+	// grep-assert about masking, not about which of the maskers a sink picked.
+	allowed := regexp.MustCompile(`MaskSecret|MaskOperand|MaskSlot|MaskRegistryValue|regOperand|RedactEchoLine|Redactor|redact|REDACTED|redactProbeDetail|maskOperandSentence|invalidModeArgMessage`)
 
 	roots := []string{
 		".",

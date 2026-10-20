@@ -159,26 +159,31 @@ func MaskOperand(s string) string {
 
 // MaskFamilyName renders a model's family for display (C2). An explicit
 // registry family is CASE-PRESERVED and masked through the registry-slot
-// display authority MaskRegistryValue, so a key-shaped value pasted into the
-// family slot renders first-5+****: the decorated class requires an uppercase
-// letter, which the folded FamilyName() would have destroyed and let a
+// display authority MaskSlot, so a key-shaped value pasted into the family
+// slot renders first-5+****: the decorated class requires an uppercase letter,
+// which the folded FamilyName() would have destroyed and let a
 // lowercase-shaped secret ride raw. With no explicit family the id-inferred
 // FamilyName() is masked instead (the id itself can carry a key-shaped
 // token). Benign families ("gemini", "glm") keep their readable form.
 //
-// K2: MaskRegistryValue trims at the top, so a padded explicit family no
+// K2: MaskSlot's authority trims at the top, so a padded explicit family no
 // longer defeats the classifier (the display class's interior-space and
 // tab/newline gates rejected a separator-carrying key-shaped family when it
 // was padded).
 //
 // K1b/L1: the family slot is never a legitimate path and has no readability
 // requirement, so a LOCATION-shaped key-shaped family (relative ./, a URL
-// scheme, a Windows drive, an absolute path) still masks through
-// MaskRegistryValue. MaskOperand alone exempts locations so a spawn error can
-// name the binary; that exemption does not apply to a registry slot.
+// scheme, a Windows drive, an absolute path) still masks. MaskOperand alone
+// exempts locations so a spawn error can name the binary; that exemption does
+// not apply to a registry slot.
+//
+// Convergence: the family slot is a registry slot like every other, so it
+// routes through MaskSlot rather than the bare authority, which adds the
+// shared policy's identity-fallback (a look-alike-decorated family masks the
+// same way a look-alike-decorated id does).
 func MaskFamilyName(m Model) string {
 	if strings.TrimSpace(m.Family) != "" {
-		return MaskRegistryValue(m.Family)
+		return MaskSlot(m.Family)
 	}
 	return MaskOperand(m.FamilyName())
 }
@@ -446,9 +451,9 @@ func maskURLSecretParams(u *url.URL) bool {
 //     url.Parse misreads the credential as a host (a "/" inside it reads as
 //     a path separator), so the authority is cut at the last "@" before any
 //     "?" / "#" and the remainder re-audited;
-//   - when even that cannot isolate the host, the registry-slot masker
-//     (MaskRegistryValue, the package's display authority for registry
-//     slots) gets the final say.
+//   - when even that cannot isolate the host, the registry-slot display
+//     authority (MaskSlot: the control strip, MaskRegistryValue, and the shared
+//     policy's look-alike fallback) gets the final say.
 //
 // Benign URLs ("https://example.com") stay byte-identical.
 func MaskBaseURL(raw string) string {
@@ -496,7 +501,7 @@ func MaskBaseURL(raw string) string {
 			}
 			return cut
 		}
-		if m := MaskRegistryValue(trimmed); m != trimmed {
+		if m := MaskSlot(trimmed); m != trimmed {
 			return m
 		}
 	}
@@ -505,16 +510,23 @@ func MaskBaseURL(raw string) string {
 
 // MaskProviderForReport renders a Provider for a report/JSON sink (S4):
 // every string field that can carry a registry value (Name, APIKeyEnv,
-// BaseURL, and every Model string field) routes through the operand masker,
-// so a nested Target.Provider serialized into summary.json or --json output
-// cannot leak a key-shaped value while benign names, env-var names, URLs,
-// and model IDs stay readable. BaseURL routes through MaskBaseURL (the
-// layered URL mask) instead of plain MaskOperand, so credential material in
-// the userinfo slot cannot ride raw in the serialized registry copy. The
-// input is not mutated.
+// BaseURL, and every Model string field) routes through a masker, so a nested
+// Target.Provider serialized into summary.json or --json output cannot leak a
+// key-shaped value while benign names, env-var names, URLs, and model IDs stay
+// readable. The NAME is a registry slot, so it routes through the registry-slot
+// display authority MaskSlot: MaskSlot's first stage is MaskOperand itself, so
+// every name that rendered unchanged before (openai, gemini, deepseek, nw,
+// charm) still renders byte-identically, while a name that only the shared
+// policy classifies (the underscore-headed "sk_live_...", a decorated, or a
+// location-shaped key) masks here instead of rendering raw in a shareable
+// report. The env-var NAME keeps MaskOperand (it is an env-var slot, not a
+// registry free-text slot). BaseURL routes through MaskBaseURL (the layered
+// URL mask) instead of plain MaskOperand, so credential material in the
+// userinfo slot cannot ride raw in the serialized registry copy. The input is
+// not mutated.
 func MaskProviderForReport(p Provider) Provider {
 	out := p
-	out.Name = MaskOperand(p.Name)
+	out.Name = MaskSlot(p.Name)
 	out.BaseURL = MaskBaseURL(p.BaseURL)
 	out.APIKeyEnv = MaskOperand(p.APIKeyEnv)
 	if p.Models != nil {
@@ -527,13 +539,16 @@ func MaskProviderForReport(p Provider) Provider {
 }
 
 // MaskModelForReport renders one Model for a report/JSON sink (S4): the ID,
-// tags, and allowed tools through MaskOperand, an explicit family through
-// MaskFamilyName (case-preserved so a key-shaped explicit family still catches
-// the decorated class), and the reasoning effort through the registry-slot
-// display authority MaskRegistryValue (L1: the effort is registry-persisted
-// free-form text, so a location-shaped key-shaped effort must mask here rather
-// than ride raw under MaskOperand's location exemption). Benign values are
-// unchanged; the input is not mutated.
+// tags, and allowed tools through the registry-slot display authority MaskSlot,
+// an explicit family through MaskFamilyName (case-preserved so a key-shaped
+// explicit family still catches the decorated class), and the reasoning effort
+// through MaskSlot too (L1: the effort is registry-persisted free-form text, so
+// a location-shaped key-shaped effort must mask here rather than ride raw under
+// MaskOperand's location exemption). Every field is a registry slot holding a
+// providers.json value, so the shared policy is the masker: a decorated value
+// (a look-alike marker, a drive prefix, an invisible) masks instead of riding
+// the operand masker's classification gaps into a shareable report. Benign
+// values are unchanged; the input is not mutated.
 //
 // K3: an EMPTY explicit family stays empty. The id-inferred FamilyName() is
 // no longer fabricated into the report copy, so the serialized model keeps
@@ -541,25 +556,27 @@ func MaskProviderForReport(p Provider) Provider {
 // never declared).
 func MaskModelForReport(m Model) Model {
 	out := m
-	out.ID = MaskOperand(m.ID)
+	out.ID = MaskSlot(m.ID)
 	if strings.TrimSpace(m.Family) != "" {
 		out.Family = MaskFamilyName(m)
 	}
 	out.Tags = maskStringSliceForReport(m.Tags)
 	out.Capabilities.AllowedTools = maskStringSliceForReport(m.Capabilities.AllowedTools)
-	out.Capabilities.ReasoningEffort = MaskRegistryValue(m.Capabilities.ReasoningEffort)
+	out.Capabilities.ReasoningEffort = MaskSlot(m.Capabilities.ReasoningEffort)
 	return out
 }
 
 // maskStringSliceForReport masks each element of a registry-controlled
-// string slice for a report sink; a nil slice stays nil.
+// string slice for a report sink through the registry-slot display authority
+// (each element is one slot, so one credential-shaped entry cannot hide behind
+// the join separator of its neighbors); a nil slice stays nil.
 func maskStringSliceForReport(in []string) []string {
 	if in == nil {
 		return nil
 	}
 	out := make([]string, len(in))
 	for i, s := range in {
-		out[i] = MaskOperand(s)
+		out[i] = MaskSlot(s)
 	}
 	return out
 }
@@ -835,12 +852,13 @@ func operandLooksSecret(s string) bool {
 	if credentialShapeRe.MatchString(t) {
 		return true
 	}
+	// The credential-head list is shared with the registry-slot policy
+	// (slotSecretPrefixes), so the display side and both ingest doors cannot
+	// disagree on a prefix: the display side used to miss the docker-pat and
+	// bearer heads and rendered those values raw here while the ingest doors
+	// refused them.
 	lower := strings.ToLower(t)
-	for _, p := range []string{
-		"sk-", "key-", "gsk_", "nvapi-", "live_", "secret_",
-		"ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_",
-		"xox", "glpat-", "npm_", "dckr_pat_", "eyj",
-	} {
+	for _, p := range slotSecretPrefixes {
 		if strings.HasPrefix(lower, p) {
 			return true
 		}

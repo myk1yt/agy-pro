@@ -833,3 +833,40 @@ func TestRollbackRefusalErrorsMaskPlantedEntryNames(t *testing.T) {
 		}
 	})
 }
+
+// ---------------------------------------------------------------------------
+// FIX-8 (module-wide echo sweep): the "--fix-keys" target resolver quotes the
+// registry provider NAME it found. It is a registry slot, so it renders
+// through MaskSlot; benign names keep their exact bytes.
+// ---------------------------------------------------------------------------
+
+func TestResolveRepairTargetsEchoesRegistryNameThroughSlotAuthority(t *testing.T) {
+	const (
+		plant     = "sk_live_0123456789abcdef"
+		plantMask = "sk_li****"
+	)
+
+	reg := &Registry{Providers: []Provider{{Name: plant, BaseURL: "https://plant.example/v1"}}}
+	if _, err := ResolveRepairTargets(reg, plant); err == nil {
+		t.Fatal("a provider without an apiKeyEnv must be a repair-target error")
+	} else if strings.Contains(err.Error(), plant) {
+		t.Errorf("repair-target error echoes the registry name raw: %v", err)
+	} else if want := `provider "` + plantMask + `" declares no API key variable; nothing to repair`; err.Error() != want {
+		t.Errorf("repair-target error drifted\n got: %q\nwant: %q", err.Error(), want)
+	}
+
+	// Benign corpus: the sentence is byte-identical.
+	benign := &Registry{Providers: []Provider{
+		{Name: "acme", BaseURL: "https://acme.example/v1"},
+		{Name: "acme-corp", BaseURL: "https://acme-corp.example/v1"},
+	}}
+	for _, name := range []string{"acme", "acme-corp"} {
+		_, err := ResolveRepairTargets(benign, name)
+		if err == nil {
+			t.Fatalf("%s: expected a repair-target error", name)
+		}
+		if want := `provider "` + name + `" declares no API key variable; nothing to repair`; err.Error() != want {
+			t.Errorf("%s: sentence drifted\n got: %q\nwant: %q", name, err.Error(), want)
+		}
+	}
+}

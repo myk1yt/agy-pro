@@ -188,7 +188,7 @@ func (inv *Inventory) RenderNumbered(out io.Writer) {
 		// K5: widths are computed from the MASKED strings, the same text the
 		// cells render, so a row whose raw id/capabilities are long but mask
 		// short does not pad every other row past its rendered text.
-		if n := len(providers.MaskOperand(e.ModelID)); n > idW {
+		if n := len(providers.MaskSlot(e.ModelID)); n > idW {
 			idW = n
 		}
 		if n := len(maskMidColumn(e)); n > midW {
@@ -204,30 +204,34 @@ func (inv *Inventory) RenderNumbered(out io.Writer) {
 		if e.KeyMissing {
 			suffix = "      (key missing)"
 		}
-		// G6: registry-derived model ID — mask key-shaped ones, keep benign
-		// IDs readable (display consistency with the seat list and summary).
-		// S5: the same mask covers the native display name (maskMidColumn)
-		// and the group column (the provider name); K1: the capability text
-		// of a provider row carries the registry-persisted reasoningEffort
-		// (Capabilities.Summary composes thinking(<effort>)), so it routes
-		// through MaskOperand as well — masked at the composition and again
-		// at this sink.
-		fmt.Fprintf(out, "%s %-*s  %-*s  [%s]%s\n", num, idW, providers.MaskOperand(e.ModelID), midW, maskMidColumn(e), providers.MaskOperand(e.Group), suffix)
+		// G6/S5/K1: the model ID, the mid column, and the group tag are
+		// registry-derived display slots, so all three route through
+		// providers.MaskSlot, the one registry-slot display authority. This
+		// listing used to ride MaskOperand: its location exemption printed a
+		// "./<key>"-shaped id raw and its classifiers predate the shared
+		// policy's look-alike class, so the human listing and its models --json
+		// twin disagreed about the same record. The slot masker keeps benign
+		// rows byte-identical and adds the policy fallback (a look-alike
+		// separator, an inner plant behind an ASCII marker) plus the
+		// composed-label arm. The capability text of a provider row embeds the
+		// registry-persisted reasoningEffort (Capabilities.Summary composes
+		// thinking(<effort>)), so the mid column masks it as well.
+		fmt.Fprintf(out, "%s %-*s  %-*s  [%s]%s\n", num, idW, providers.MaskSlot(e.ModelID), midW, maskMidColumn(e), providers.MaskSlot(e.Group), suffix)
 	}
 }
 
 // maskMidColumn renders the middle column with its display text masked (S5):
 // the native display name comes from the `agy models` catalog and can carry
-// a key-shaped value, so it routes through MaskOperand; the provider
-// capability text embeds the registry-controlled reasoningEffort (nothing on
-// the add-json / hand-edit write path validates that field), so it routes
-// through MaskOperand too — Capabilities.Summary masks the effort at the
-// composition and this sink masks the composed text again (defense in depth).
+// a key-shaped value, so it routes through the registry-slot masker; the
+// provider capability text embeds the registry-controlled reasoningEffort
+// (nothing on the add-json / hand-edit write path validates that field), so it
+// routes through the same masker, which starts with the operand rules
+// Capabilities.Summary applies at the composition (defense in depth).
 func maskMidColumn(e Entry) string {
 	if e.Kind == "native" {
-		return providers.MaskOperand(e.DisplayName)
+		return providers.MaskSlot(e.DisplayName)
 	}
-	return providers.MaskOperand(e.Capabilities)
+	return providers.MaskSlot(e.Capabilities)
 }
 
 // IsK3Excluded reports whether a bare model id belongs to the k3 family

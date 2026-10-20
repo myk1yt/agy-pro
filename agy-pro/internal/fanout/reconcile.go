@@ -195,10 +195,16 @@ func Reconcile(task, root, outDir string, nRequested int, seats []*SeatResult) (
 		}
 		usage.addSeat(seat.Usage)
 
+		// FIX-8: the provider name and model id here are registry slots feeding a
+		// file name, the findings matrix and summary.json, so each renders
+		// through providers.MaskSlot (the registry-slot authority: MaskOperand
+		// plus the underscore-head credential arm) instead of plain
+		// MaskOperand, which is the identity on the "sk_live_..." class. Benign
+		// values keep their exact bytes.
 		seatFile := filepath.Join(outDir, fmt.Sprintf("seat-%d-%s-%s.md",
 			seat.SeatID,
-			sanitizeFilename(providers.MaskOperand(seat.FinalTarget.Provider.Name)),
-			sanitizeFilename(providers.MaskOperand(seat.FinalTarget.Model.ID)),
+			sanitizeFilename(providers.MaskSlot(seat.FinalTarget.Provider.Name)),
+			sanitizeFilename(providers.MaskSlot(seat.FinalTarget.Model.ID)),
 		))
 
 		seatMarkdown := formatSeatReport(ts, task, seat, redact)
@@ -207,8 +213,10 @@ func Reconcile(task, root, outDir string, nRequested int, seats []*SeatResult) (
 		}
 
 		// R2-2: seat content can quote raw keys, so the extraction input is
-		// redacted too - findings land in the shareable summary.json.
-		findings := parseFindings(seat.SeatID, providers.MaskOperand(seat.FinalTarget.Provider.Name), providers.MaskOperand(seat.FinalTarget.Model.ID), redact(seat.Content))
+		// redacted too - findings land in the shareable summary.json. The
+		// provider/model attribution on each finding is a registry slot, so it
+		// takes the same FIX-8 registry-slot authority (MaskSlot).
+		findings := parseFindings(seat.SeatID, providers.MaskSlot(seat.FinalTarget.Provider.Name), providers.MaskSlot(seat.FinalTarget.Model.ID), redact(seat.Content))
 		allFindings = append(allFindings, findings...)
 	}
 
@@ -271,11 +279,15 @@ func Reconcile(task, root, outDir string, nRequested int, seats []*SeatResult) (
 		copySeat.FinalTarget.Provider = providers.MaskProviderForReport(s.FinalTarget.Provider)
 		copySeat.FinalTarget.Model = providers.MaskModelForReport(s.FinalTarget.Model)
 		for i := range copySeat.Failovers {
+			// FIX-8: hop fields are registry slots (provider name, model id)
+			// serialized into summary.json, so they take the registry-slot
+			// authority (MaskSlot) rather than the operand masker, which is the
+			// identity on the underscore-head credential class.
 			copySeat.Failovers[i].Reason = redact(copySeat.Failovers[i].Reason)
-			copySeat.Failovers[i].FromProv = providers.MaskOperand(copySeat.Failovers[i].FromProv)
-			copySeat.Failovers[i].FromMod = providers.MaskOperand(copySeat.Failovers[i].FromMod)
-			copySeat.Failovers[i].ToProv = providers.MaskOperand(copySeat.Failovers[i].ToProv)
-			copySeat.Failovers[i].ToMod = providers.MaskOperand(copySeat.Failovers[i].ToMod)
+			copySeat.Failovers[i].FromProv = providers.MaskSlot(copySeat.Failovers[i].FromProv)
+			copySeat.Failovers[i].FromMod = providers.MaskSlot(copySeat.Failovers[i].FromMod)
+			copySeat.Failovers[i].ToProv = providers.MaskSlot(copySeat.Failovers[i].ToProv)
+			copySeat.Failovers[i].ToMod = providers.MaskSlot(copySeat.Failovers[i].ToMod)
 		}
 		summary.Seats = append(summary.Seats, copySeat)
 	}
@@ -317,14 +329,16 @@ func formatSeatReport(ts, task string, seat *SeatResult, redact func(string) str
 	// same MaskSentence seeding as summary.json applies here - a bare secret
 	// embedded in the task cannot survive into the seat report.
 	sb.WriteString(fmt.Sprintf("| Task | `%s` |\n", providers.MaskSentence(task, providers.FlagSeedOperands(task)...)))
-	sb.WriteString(fmt.Sprintf("| Provider | `%s` |\n", providers.MaskOperand(seat.FinalTarget.Provider.Name)))
+	sb.WriteString(fmt.Sprintf("| Provider | `%s` |\n", providers.MaskSlot(seat.FinalTarget.Provider.Name)))
 	sb.WriteString(fmt.Sprintf("| Kind | %s |\n", seatKindLabel(seat.Kind)))
 	sb.WriteString(fmt.Sprintf("| Quota/Cost | %s |\n", seatQuotaNote(seat.Kind)))
 	// C2: the family renders through the case-preserving display authority
 	// (MaskFamilyName). MaskOperand(Model.FamilyName()) folded the family to
 	// lowercase first, which destroyed the uppercase letter the decorated class
 	// requires, so a key-shaped family pasted into the registry rode raw.
-	sb.WriteString(fmt.Sprintf("| Model | `%s` (family: `%s`) |\n", providers.MaskOperand(seat.FinalTarget.Model.ID), providers.MaskFamilyName(seat.FinalTarget.Model)))
+	// FIX-8: the sibling id column is a registry slot too, so it renders through
+	// the registry-slot authority (MaskSlot) rather than the operand masker.
+	sb.WriteString(fmt.Sprintf("| Model | `%s` (family: `%s`) |\n", providers.MaskSlot(seat.FinalTarget.Model.ID), providers.MaskFamilyName(seat.FinalTarget.Model)))
 	sb.WriteString(fmt.Sprintf("| Status | `%s` |\n", seat.Status))
 	sb.WriteString(fmt.Sprintf("| Degraded | `%v` |\n", seat.Degraded))
 	// The thin row is rendered only for a thin seat, so a seat that did the job
@@ -343,9 +357,11 @@ func formatSeatReport(ts, task string, seat *SeatResult, redact func(string) str
 			if i > 0 {
 				sb.WriteString("; ")
 			}
+			// FIX-8: hop fields are registry slots (provider name, model id), so
+			// the reconciliation report renders them through MaskSlot too.
 			sb.WriteString(fmt.Sprintf("Step %d (%s/%s -> %s/%s: %s)", f.Step,
-				providers.MaskOperand(f.FromProv), providers.MaskOperand(f.FromMod),
-				providers.MaskOperand(f.ToProv), providers.MaskOperand(f.ToMod), redact(f.Reason)))
+				providers.MaskSlot(f.FromProv), providers.MaskSlot(f.FromMod),
+				providers.MaskSlot(f.ToProv), providers.MaskSlot(f.ToMod), redact(f.Reason)))
 		}
 		sb.WriteString(" |\n")
 	}

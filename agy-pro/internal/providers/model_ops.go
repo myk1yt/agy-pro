@@ -62,6 +62,17 @@ func hasControlRunes(s string) bool {
 // field class through the masked provider name only and never echoes the
 // value itself, so a rejected ESC byte cannot replay in the caller's
 // terminal or transcript.
+//
+// FIX-8 (module-wide echo sweep): every provider-NAME and model-ID operand in
+// this file's error sentences routes through MaskSlot, the registry-slot
+// display authority. Both classes are registry slots when the verbs are called
+// from the TUI (the name and the id are the stored providers.json values), and
+// MaskSlot's first stage is MaskOperand, so a benign name or id renders
+// byte-identically while the underscore-head credential class
+// ("sk_live_...", "tok_...", "AKIA_..."), which MaskOperand is the identity
+// on, masks. The callers display these errors through MaskOperand on the whole
+// sentence, which cannot fix a name embedded mid-sentence; the composition
+// site is the only place the name can be masked.
 func checkModelFields(providerName string, m Model) error {
 	kind := ""
 	switch {
@@ -86,7 +97,7 @@ func checkModelFields(providerName string, m Model) error {
 		}
 	}
 	if kind != "" {
-		return fmt.Errorf("provider %q: %s contains control characters", MaskOperand(providerName), kind)
+		return fmt.Errorf("provider %q: %s contains control characters", MaskSlot(providerName), kind)
 	}
 	return nil
 }
@@ -96,7 +107,7 @@ func checkModelFields(providerName string, m Model) error {
 func checkToolNames(providerName string, tools []string) error {
 	for _, tool := range tools {
 		if hasControlRunes(tool) {
-			return fmt.Errorf("provider %q: model tool name contains control characters", MaskOperand(providerName))
+			return fmt.Errorf("provider %q: model tool name contains control characters", MaskSlot(providerName))
 		}
 	}
 	return nil
@@ -121,11 +132,11 @@ func AddModel(reg *Registry, providerName string, m Model) error {
 	}
 	idx := findProviderIdx(reg, providerName)
 	if idx < 0 {
-		return fmt.Errorf("provider %q not found", MaskOperand(providerName))
+		return fmt.Errorf("provider %q not found", MaskSlot(providerName))
 	}
 	p := &reg.Providers[idx]
 	if modelIDTaken(p, m.ID, -1) {
-		return fmt.Errorf("provider %q: model %q already exists", MaskOperand(p.Name), MaskOperand(m.ID))
+		return fmt.Errorf("provider %q: model %q already exists", MaskSlot(p.Name), MaskSlot(m.ID))
 	}
 	saved := make([]Model, len(p.Models))
 	copy(saved, p.Models)
@@ -148,12 +159,12 @@ func DeleteModel(reg *Registry, providerName, modelID string) error {
 	modelID = strings.TrimSpace(modelID)
 	idx := findProviderIdx(reg, providerName)
 	if idx < 0 {
-		return fmt.Errorf("provider %q not found", MaskOperand(providerName))
+		return fmt.Errorf("provider %q not found", MaskSlot(providerName))
 	}
 	p := &reg.Providers[idx]
 	mj := findModelIdx(p, modelID)
 	if mj < 0 {
-		return fmt.Errorf("provider %q: model %q not found", MaskOperand(p.Name), MaskOperand(modelID))
+		return fmt.Errorf("provider %q: model %q not found", MaskSlot(p.Name), MaskSlot(modelID))
 	}
 	p.Models = append(p.Models[:mj], p.Models[mj+1:]...)
 	return nil
@@ -179,15 +190,15 @@ func UpdateModel(reg *Registry, providerName, modelID string, m Model) error {
 	}
 	idx := findProviderIdx(reg, providerName)
 	if idx < 0 {
-		return fmt.Errorf("provider %q not found", MaskOperand(providerName))
+		return fmt.Errorf("provider %q not found", MaskSlot(providerName))
 	}
 	p := &reg.Providers[idx]
 	mj := findModelIdx(p, modelID)
 	if mj < 0 {
-		return fmt.Errorf("provider %q: model %q not found", MaskOperand(p.Name), MaskOperand(modelID))
+		return fmt.Errorf("provider %q: model %q not found", MaskSlot(p.Name), MaskSlot(modelID))
 	}
 	if m.ID != modelID && modelIDTaken(p, m.ID, mj) {
-		return fmt.Errorf("provider %q: model %q already exists", MaskOperand(p.Name), MaskOperand(m.ID))
+		return fmt.Errorf("provider %q: model %q already exists", MaskSlot(p.Name), MaskSlot(m.ID))
 	}
 	saved := p.Models[mj]
 	p.Models[mj] = m
@@ -229,12 +240,12 @@ func mutateModel(reg *Registry, providerName, modelID string, fn func(*Model)) e
 	modelID = strings.TrimSpace(modelID)
 	idx := findProviderIdx(reg, providerName)
 	if idx < 0 {
-		return fmt.Errorf("provider %q not found", MaskOperand(providerName))
+		return fmt.Errorf("provider %q not found", MaskSlot(providerName))
 	}
 	p := &reg.Providers[idx]
 	mj := findModelIdx(p, modelID)
 	if mj < 0 {
-		return fmt.Errorf("provider %q: model %q not found", MaskOperand(p.Name), MaskOperand(modelID))
+		return fmt.Errorf("provider %q: model %q not found", MaskSlot(p.Name), MaskSlot(modelID))
 	}
 	fn(&p.Models[mj])
 	return nil
@@ -255,19 +266,19 @@ func RenameModel(reg *Registry, providerName, modelID, newID string) error {
 		return fmt.Errorf("model id is required")
 	}
 	if hasControlRunes(newID) {
-		return fmt.Errorf("provider %q: model id contains control characters", MaskOperand(providerName))
+		return fmt.Errorf("provider %q: model id contains control characters", MaskSlot(providerName))
 	}
 	idx := findProviderIdx(reg, providerName)
 	if idx < 0 {
-		return fmt.Errorf("provider %q not found", MaskOperand(providerName))
+		return fmt.Errorf("provider %q not found", MaskSlot(providerName))
 	}
 	p := &reg.Providers[idx]
 	mj := findModelIdx(p, modelID)
 	if mj < 0 {
-		return fmt.Errorf("provider %q: model %q not found", MaskOperand(p.Name), MaskOperand(modelID))
+		return fmt.Errorf("provider %q: model %q not found", MaskSlot(p.Name), MaskSlot(modelID))
 	}
 	if newID != modelID && modelIDTaken(p, newID, mj) {
-		return fmt.Errorf("provider %q: model %q already exists", MaskOperand(p.Name), MaskOperand(newID))
+		return fmt.Errorf("provider %q: model %q already exists", MaskSlot(p.Name), MaskSlot(newID))
 	}
 	p.Models[mj].ID = newID
 	if err := reg.Validate(); err != nil {

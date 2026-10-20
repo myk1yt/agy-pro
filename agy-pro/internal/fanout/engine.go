@@ -269,6 +269,11 @@ func Execute(ctx context.Context, cfg RunConfig) (*SummaryReport, error) {
 			}
 			tgt, terr := reg.FindTarget(spec.ModelID)
 			if terr != nil {
+				// FIX-8 scope note: spec.ModelID is the operand the operator typed
+				// in --seats (or the plan's seat field), not a providers.json
+				// value, so this error operand stays on MaskOperand with every
+				// other CLI operand echo (the registry-resolved renderings are
+				// masked at seatSpecLabel and in the summary).
 				return nil, fmt.Errorf("failed to resolve model %q: %w", providers.MaskOperand(spec.ModelID), terr)
 			}
 			targets = append(targets, tgt)
@@ -731,11 +736,21 @@ func (p *progressEmitter) seatFinished(seatID, total int, initialKind SeatKind, 
 // seat, "provider/model" (Target.FullName) for a provider seat. Registry- and
 // user-derived ids are masked like every other echoed model name (E8), so a
 // key-shaped id cannot ride onto the console or into the log.
+//
+// FIX-8: only the provider form is a registry slot (both halves come from
+// providers.json), so it renders through the registry-slot authority
+// (MaskSlot) rather than the operand masker, which is the identity on the
+// underscore-head credential class and would let a key-shaped provider name or
+// model id ride. The composed "provider/model" form is caught whole, so a plant
+// in either half masks. The native branch keeps MaskOperand on purpose: its id
+// arrives through the --seats operand or the native catalog, never through
+// providers.json, so it is a CLI operand like every other typed value. Benign
+// specs keep their exact bytes in both branches.
 func seatSpecLabel(kind SeatKind, t providers.Target) string {
 	if kind == SeatKindNative {
 		return providers.MaskOperand(nativePrefix + t.Model.ID)
 	}
-	return providers.MaskOperand(t.FullName())
+	return providers.MaskSlot(t.FullName())
 }
 
 // newSwarmClient resolves the shared provider client for a run: an injected
@@ -858,6 +873,8 @@ func partitionTargets(cfg RunConfig, reg *providers.Registry, state *FanoutState
 		case spec.Kind != "":
 			tgt, terr := reg.FindTarget(spec.ModelID)
 			if terr != nil {
+				// FIX-8 scope note: same plan-authored operand as the seat path
+				// above, so it stays on MaskOperand.
 				return nil, nil, nil, maskPlanError(cfg.Units, fmt.Errorf("unit %q: failed to resolve model %q: %w", u.ID, providers.MaskOperand(spec.ModelID), terr))
 			}
 			targets = append(targets, tgt)

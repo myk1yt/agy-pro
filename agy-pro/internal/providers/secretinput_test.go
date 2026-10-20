@@ -179,12 +179,14 @@ func TestWizardTranscript_MasksKeyEcho(t *testing.T) {
 	}
 }
 
-// TestWizardTranscript_KeyShapedNameWithholdsDerivedEnv (C5/U8): a pasted key
-// in the provider-name slot passes the B5 name charset, and defaultEnvFor
-// derives an env name that embeds it verbatim (case-folded, separators swapped
-// for "_": "AKIAIOSFODNN7EXAMPLE" -> "AKIAIOSFODNN7EXAMPLE_API_KEY"). The
-// wizard must never echo that derived name.
-func TestWizardTranscript_KeyShapedNameWithholdsDerivedEnv(t *testing.T) {
+// TestWizardTranscript_KeyShapedNameRefusedAtPrompt (C5/U8 + FIX-7B): a pasted
+// key in the provider-name slot passes the B5 name charset, and FIX-7B closes
+// the door the C5 pin used to watch from the transcript side: the name is
+// refused at the prompt, before the base-URL prompt and before any write, so the
+// derived env name that embedded it verbatim
+// ("AKIAIOSFODNN7EXAMPLE" -> "AKIAIOSFODNN7EXAMPLE_API_KEY") is never computed
+// for this run at all. The refusal names the field and never the value.
+func TestWizardTranscript_KeyShapedNameRefusedAtPrompt(t *testing.T) {
 	tmpDir := t.TempDir()
 	provPath := filepath.Join(tmpDir, "providers.json")
 	t.Setenv(EnvProviders, provPath)
@@ -198,27 +200,84 @@ func TestWizardTranscript_KeyShapedNameWithholdsDerivedEnv(t *testing.T) {
 		"http://127.0.0.1:9/v1",
 		keyValue,
 		"model-x",
-		"",  // family (accept inferred)
-		"",  // context length default
-		"",  // max output default
-		"Y", // supports tools
-		"",  // allowed tools default
-		"N", // no thinking
-		"N", // no vision
-		"",  // probe choice default 1 = save anyway
-		"",  // more models default N
 	}, "\n") + "\n"
 
 	out := &bytes.Buffer{}
-	if err := InteractiveSetupWizard(strings.NewReader(input), out); err != nil {
-		t.Fatalf("InteractiveSetupWizard returned error: %v\nOutput: %s", err, out.String())
+	err := InteractiveSetupWizard(strings.NewReader(input), out)
+	if err == nil {
+		t.Fatalf("the wizard accepted a key-shaped provider name:\n%s", out.String())
+	}
+	if !strings.Contains(err.Error(), "provider name") || !strings.Contains(err.Error(), "value hidden") {
+		t.Errorf("refusal = %q; want the value-free provider-name refusal", err)
 	}
 	transcript := out.String()
+	assertNoLeak(t, err.Error(), pasted)
 	assertNoLeak(t, transcript, pasted)
+	assertNoLeak(t, transcript, keyValue)
 	if strings.Contains(transcript, derived) {
 		t.Errorf("transcript echoes the derived env name that embeds the pasted key:\n%s", transcript)
 	}
-	assertNoLeak(t, transcript, keyValue)
+	// Fail closed at the name prompt: the base-URL prompt was never reached.
+	if strings.Contains(transcript, "OpenAI-compatible Base URL") {
+		t.Errorf("the name refusal landed after the URL prompt:\n%s", transcript)
+	}
+	if _, statErr := os.Stat(provPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("a refused name must write nothing; stat error = %v", statErr)
+	}
+}
+
+// TestWizardNameLabelWithholdsDerivedEnv is the C5 display half after FIX-7B.
+// The door now refuses this class, so the remaining exposure is a hand-edited
+// registry (or a future ingest path): the wizard's name label must render
+// through the registry-slot mask, and the derived env name must be withheld
+// whenever that same mask changes the name. MaskOperand alone is the identity on
+// the underscore family ("sk_live_0123456789abcdef"), which is why the rule now
+// reads MaskSlot.
+func TestWizardNameLabelWithholdsDerivedEnv(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		withhold bool
+	}{
+		{"AKIAIOSFODNN7EXAMPLE", true},
+		{"sk_live_0123456789abcdef", true},
+		{"tok_a1b2c3d4e5f6g7h8i9j0", true},
+		{"pk_live_4f9a2b7c1d3e5f6a", true},
+		{"key_0123456789abcdef", true},
+		{"acme", false},
+		{"nw", false},
+		{"my-provider", false},
+		{"key_backup", false},
+		{"ANTHROPIC_API_KEY", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := wizardWithholdsDerivedEnv(tc.name); got != tc.withhold {
+				t.Fatalf("wizardWithholdsDerivedEnv(%q) = %v; want %v", tc.name, got, tc.withhold)
+			}
+			label := wizardProvLabel(tc.name)
+			derived := defaultEnvFor(tc.name)
+			if tc.withhold {
+				// defaultEnvFor embeds the name in the derived variable, which is
+				// exactly why the wizard withholds it. The label must neither
+				// render the name raw nor carry the derived variable.
+				if !strings.Contains(derived, strings.ToUpper(tc.name)) {
+					t.Fatalf("fixture: defaultEnvFor(%q) = %q does not embed the name", tc.name, derived)
+				}
+				if strings.Contains(label, tc.name) || strings.Contains(label, derived) {
+					t.Fatalf("wizardProvLabel(%q) = %q; the credential-shaped name rendered raw", tc.name, label)
+				}
+				if !strings.Contains(label, "****") {
+					t.Fatalf("wizardProvLabel(%q) = %q; want the canonical mask", tc.name, label)
+				}
+				return
+			}
+			if label != tc.name {
+				t.Fatalf("wizardProvLabel(%q) = %q; a benign name must stay byte-identical", tc.name, label)
+			}
+			if strings.Contains(label, "****") {
+				t.Fatalf("wizardProvLabel(%q) = %q; a benign name must not be masked", tc.name, label)
+			}
+		})
+	}
 }
 
 // TestWizardTranscript_BenignNameKeepsDerivedEnvReadable (C5 UX guard): a

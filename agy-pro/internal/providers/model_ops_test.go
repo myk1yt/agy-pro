@@ -574,3 +574,98 @@ func TestModelOps_0600AtomicRoundTrip(t *testing.T) {
 		t.Errorf("reloaded registry does not validate: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// FIX-8 (module-wide echo sweep): every provider NAME and model ID quoted by a
+// model verb's error is a registry slot. The TUI selects both values from the
+// registry and displays the returned error through MaskOperand on the WHOLE
+// sentence, which cannot classify an underscore-head credential embedded
+// mid-sentence, so the composition site is the only place the name can mask.
+// MaskSlot's first stage is MaskOperand, which is why every benign sentence
+// below must keep its exact bytes.
+// ---------------------------------------------------------------------------
+
+func TestModelOpsEchoRegistrySlotsThroughSlotAuthority(t *testing.T) {
+	const (
+		plant     = "sk_live_0123456789abcdef"
+		plantMask = "sk_li****"
+	)
+	fixture := func() *Registry {
+		return &Registry{Providers: []Provider{
+			{Name: plant, BaseURL: "https://plant.example/v1", APIKeyEnv: "PLANT_KEY",
+				Models: []Model{{ID: plant}, {ID: "plant-model"}}},
+			{Name: "acme", BaseURL: "https://acme.example/v1", APIKeyEnv: "ACME_API_KEY",
+				Models: []Model{{ID: "acme-fast"}, {ID: "acme-pro"}}},
+		}}
+	}
+
+	// "already exists" quotes the found provider name and the incoming id.
+	reg := fixture()
+	err := AddModel(reg, plant, Model{ID: plant})
+	if err == nil {
+		t.Fatal("AddModel must reject a duplicate model id")
+	}
+	if strings.Contains(err.Error(), plant) {
+		t.Errorf("AddModel error echoes the registry name/id raw: %v", err)
+	}
+	if !strings.Contains(err.Error(), `provider "`+plantMask+`": model "`+plantMask+`" already exists`) {
+		t.Errorf("AddModel error must render both registry slots masked: %v", err)
+	}
+
+	// "not found" quotes the registry-selected provider name and a sibling id.
+	err = SetModelEnabled(reg, plant, "no-such-model", true)
+	if err == nil {
+		t.Fatal("SetModelEnabled must reject an unknown model id")
+	}
+	if strings.Contains(err.Error(), plant) {
+		t.Errorf("SetModelEnabled error echoes the registry name raw: %v", err)
+	}
+	if !strings.Contains(err.Error(), `provider "`+plantMask+`": model "no-such-model" not found`) {
+		t.Errorf("SetModelEnabled error must mask the name and keep the benign id: %v", err)
+	}
+
+	// RenameModel's collision check quotes the found name and the NEW id.
+	err = RenameModel(reg, plant, "plant-model", plant)
+	if err == nil {
+		t.Fatal("RenameModel must reject a collision with the sibling id")
+	}
+	if strings.Contains(err.Error(), plant) {
+		t.Errorf("RenameModel error echoes the registry name/id raw: %v", err)
+	}
+	if !strings.Contains(err.Error(), `provider "`+plantMask+`": model "`+plantMask+`" already exists`) {
+		t.Errorf("RenameModel error must render both registry slots masked: %v", err)
+	}
+
+	// Benign corpus: byte-identical sentences (the operand corpus the existing
+	// pins use, plus the preset names).
+	for _, tc := range []struct {
+		name string
+		got  func() error
+		want string
+	}{
+		{"already exists", func() error { return AddModel(fixture(), "acme", Model{ID: "acme-fast"}) },
+			`provider "acme": model "acme-fast" already exists`},
+		{"not found", func() error { return DeleteModel(fixture(), "acme", "missing-model") },
+			`provider "acme": model "missing-model" not found`},
+		{"rename collision", func() error { return RenameModel(fixture(), "acme", "acme-fast", "acme-pro") },
+			`provider "acme": model "acme-pro" already exists`},
+		{"provider not found", func() error { return mutateModel(fixture(), "ghost", "x", func(*Model) {}) },
+			`provider "ghost" not found`},
+	} {
+		err := tc.got()
+		if err == nil {
+			t.Fatalf("%s: expected an error", tc.name)
+		}
+		if err.Error() != tc.want {
+			t.Errorf("%s: error drifted\n got: %q\nwant: %q", tc.name, err.Error(), tc.want)
+		}
+	}
+
+	// The benign identity corpus is what keeps the pre-fix transcripts stable.
+	for _, benign := range []string{"openai", "gemini", "deepseek", "nw", "charm", "acme-corp",
+		"claude-opus-5-5-high", "gemini-3.8-flash-high", "gpt-oss-120b", "meta-llama/Llama-3-70B"} {
+		if got := MaskSlot(benign); got != benign {
+			t.Errorf("MaskSlot(%q) = %q; want byte-identical (benign registry value)", benign, got)
+		}
+	}
+}
