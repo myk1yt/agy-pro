@@ -2,6 +2,197 @@
 Antigravity-cli (agy-tools) Changelog
 ================================================================================
 
+Version: 0.10.10
+Release Date: 2026-10-21
+Previous Version: 0.10.9
+
+--------------------------------------------------------------------------------
+[Overview]
+--------------------------------------------------------------------------------
+Follow-up release for the full-screen setup TUI. It closes the defects found by
+using the 0.10.9 TUI on a real Windows console and the gaps that release left
+open: the model form gains the capability fields the registry already stored,
+providers gain an in-place add and edit form whose only write path is the
+exact-diff approval, and the form fields and the prompt editor gain a visible
+caret with the standard editing keys. On a real console the arrow keys no
+longer deadlock behind a window of mouse noise, a multi-line paste no longer
+submits a form early, and the M4 approval gate can no longer be pushed off an
+80x24 frame and answered blind. Credential masking is now one shared policy
+with a recorded boundary instead of per-site patches, and the masking class is
+closed. Every planted test credential moved into a concatenation-built
+contract package. The live providers.json (md5 d17c70ad...) and state.json
+(md5 2d6861d3...) were byte-unchanged across the whole mission.
+
+[Added]
+- Model form capability fields: the add and edit form gains Thinking, Reasoning
+  effort, Vision, and Video, in that order between the max-output row and the
+  tool allow-list. Reasoning effort accepts a closed set (default, none, low,
+  medium, high, xhigh, max); an empty value means the runtime default, and a
+  value outside the set is refused with the cursor left on the failing field.
+  A key-shaped value is refused by the secret check before the closed-set
+  check and is never echoed. Edit prefills all four fields, the approval diff
+  prints only the fields that changed, and an untouched edit still reads
+  "(no field changes)". Stored flags for an existing model are visible instead
+  of being passed through invisibly.
+- The same four fields in the CLI twins: `model-add-json` and `model-update`
+  print `supportsThinking`, `reasoningEffort`, `supportsVision`, and
+  `supportsVideo` in the approval diff through the shared operand masker.
+  `model-update` re-reads the registry after consent and re-verifies the
+  presented diff before the write, so a change made while the approval was
+  open refuses the write instead of being overwritten.
+- Models list: each row carries the capability note from the stored flags
+  (`vision`, `video`, `thinking(<effort>)`), and the sticky selection starts at
+  none, so a verb pressed with no selection refuses ("Select a model row
+  first.") instead of acting on the first row. The selected row is marked with
+  a solid dot and the cursor is restored by row id after a mutation.
+- Provider add and edit in the TUI: add takes a name, base URL, and key-env
+  name; edit takes the base URL and key-env name only and renders the provider
+  name as a fixed line no keystroke can reach. Both modes show the read-only
+  providers.json defaults block and end at the M4 approval, which states the
+  exact diff (`+ field: value`, `  field: before -> after`, or
+  "(no field changes)") and the atomic 0600 write before anything is written.
+  A missing, ambiguous, or unreadable provider refuses every save before an
+  approval opens. The write is an in-place edit that leaves the model list and
+  every key value untouched.
+- Caret and text editing: Left and Right move the caret, Home and End jump,
+  Delete removes forward, and typing inserts at the caret, on the form fields
+  and in the prompt editor. The caret is drawn in-line: reverse video (SGR
+  7/27) on the color tiers, a `|` marker with one-cell tail truncation on
+  plain, and no application escape bytes on plain. No hardware cursor is used.
+
+[Changed]
+- `agy pro setup` opens the TUI only when both stdin and stdout are consoles. A
+  piped stdin now degrades to the line-mode wizard instead of opening a TUI
+  that cannot accept text.
+- The settings row that told the user to run `agy pro setup` from inside the
+  TUI now names the in-TUI route (Hub > Providers > Add provider) and keeps
+  `agy pro setup --wizard` and `providers add-interactive` as the terminal
+  alternatives.
+- Root Esc asks before exiting: the second Esc exits and any other key
+  cancels, while the hub Quit row still exits on one key.
+- The base footer legend is fitted to the frame width: the full legend when it
+  fits, the compact one below that, and the `Ctrl+C exit` reminder never leaves
+  the line.
+- Messages are labelled by kind at the screens that set them, so a success no
+  longer renders in the warning color. A message no longer follows the user to
+  the next screen.
+- Minor screen fixes: the hub keeps its cursor across a rebuild, the doctor
+  hint names the refresh key and the settings path, the help overlay closes
+  only on Esc, q, or Enter (and says so), and the first-run language footer
+  states the rows-past-9 clause.
+- The line-mode vocabulary gains `r`, so the doctor refresh gesture also works
+  off console.
+
+[Fixed]
+- Arrow keys dead on a real console: the reader returned "consume 0" forever
+  when the first 32 queued records were all mouse noise, so every key behind
+  them, arrows and digits alike, was unreachable. The reader now drains the
+  noise window, the takeover clears ENABLE_MOUSE_INPUT, normalizes
+  ENABLE_VIRTUAL_TERMINAL_INPUT, and sets ENABLE_WINDOW_INPUT, and Ctrl+C
+  restores both console modes. The same full-window livelock is fixed in the
+  older settings console reader.
+- Multi-line paste submitting a form early: a pasted newline arrives as a CR,
+  which mapped to Enter, submitted the form, and leaked the rest of the paste
+  into the next surface including the approval modal. The reader now detects a
+  paste burst and holds the interior newlines. Both gates also hold any answer
+  typed within 25 ms of opening until the next key arrives, so a leaked
+  remainder cannot confirm a registry write.
+- The M3/M4 approval modal could sit entirely off-frame at 80x24 whenever the
+  body filled the page, while the gate still swallowed every key, so the only
+  providers.json write path could be approved blind. The composer now reserves
+  the rows the modal, the message and the footer need, and the modal replaces
+  the body instead of falling off the frame.
+- The 105-cell base footer wrapped at 80 columns and cost a row the painter
+  could not erase; the legend is now fitted to the width.
+- Approval summaries and message lines are clamped to the frame width at the
+  shared composition point, with a priority cut that keeps the modal and the
+  legend.
+- Lists on the presets and prompts screens, the providers list, and the preset
+  editor host window were sized from fixed arithmetic and lost their own hint
+  and the base footer when full; the page size now derives from the frame
+  height.
+- The banner height gate follows plan-v2 again (full block at 30 rows and
+  above, short block at 22 and above, wordmark below), so the footer legend is
+  no longer cut on 24-27 row consoles.
+- A console resize is applied to the frame geometry through App.Resize and a
+  full repaint, instead of being latched and never used.
+
+[Security]
+- One shared masking policy for the registry-slot class
+  (internal/providers/slotpolicy.go): both twins and the in-scope display sinks
+  delegate to it, no enumerated per-site lists remain in either twin, and the
+  classifier's validate step now covers Cc and Cf. The class is closed, landed
+  across four rotated review swarms, and the stop rule fired twice.
+- The masking round closed the census's seven open sites: the two-arm word/wide
+  split that rendered a decorated credential raw at the banner and the
+  `models --json` display-name sinks, the Zl/Zp URL part arms, the fanout
+  worker error operands, the bridge JSON error payloads, the fanout CLI preset
+  scalar, the preset name and numbers on the settings surfaces, and the
+  agenttools log refusal. Two closures filed by the review swarm landed with
+  them: the swarm preset twin and the percent-encoded path and Opaque segments.
+- The host label is now classified raw and decoded-when-legal through
+  url.PathUnescape (not the form decoder, so a literal `+` stays a base64
+  rune), which closes the doubled-encoding hole at all three ingest doors.
+- Test fixtures: every planted credential moved to
+  internal/testfixtures/planted.go, where each value is a concatenation-built
+  constant byte-identical to the literal it replaced; roughly 100 test files
+  and 11 production files' doc comments reference the constants, and the
+  14-alternative pattern scan over the tracked tree returns zero. Runtime byte
+  identity was proven three independent ways: per-line reconstruction, a
+  scanner-based attribution census, and a runtime value audit.
+
+[Limits]
+- Masking boundary as measured: the host arm refuses single and double encoding
+  and accepts triple, the path arm refuses double and accepts triple, Opaque
+  refuses single and accepts double and triple, and the userinfo, query and
+  fragment arms accept double. Also open and recorded: the `%252`-suffixed host
+  door miss, the raw-only probe seed reader, the display-side MaskBaseURL
+  part-rule gap, the stale renders at providers.go:84 and wizard.go:525, the
+  view.go:404 load-error echo, and the variant-C slash boundary, which is a
+  product decision. No further unit is dispatched for the class without a user
+  word.
+- Caret scope: no horizontal scroll past the frame width, so a caret past the
+  edge keeps its true cell and paints nothing; no caret glyph in an RTL
+  session; the preset editor consumes Right as a close request, so only Left
+  moves the caret there.
+- Console-only behavior stays the user's manual pass. The mouse sweep, IME,
+  physical Ctrl+C mode restore, per-terminal glyph rendering, and
+  real-clipboard paste timing are not claimed as visually verified (T1-T7 and
+  M1-M15).
+
+[Tests]
+- Corpus-parity guard: the CLI test's drift guard against the TUI model-form
+  corpus now resolves `testfixtures.<Name>` references from a go/parser AST,
+  so a comment that merely names a constant can no longer satisfy a dropped
+  row. The three existing failure paths and the missing-row check still fire,
+  and the new negative direction is proven by mutation.
+- Synthetic-shape guard: a new test inventories all 54 constants in the
+  contract package and requires each value to be provably synthetic, either by
+  shape (40 constants) or by an explicitly reviewed exact-value pin (14
+  constants). A companion self-guard scans the contract file and the guard
+  itself with the provider pattern gate and reports an exact file position, so
+  a contiguous provider-key spelling cannot land there. A real credential
+  added in concatenation form fails the inventory test.
+- The launcher picker test's Windows-only SysProcAttr use is split behind build
+  tags, which restores `go vet` on linux and darwin.
+
+[Verification]
+- `go build ./...`, `go vet ./...` (also on GOOS=linux and GOOS=darwin), and
+  `go test ./... -count=1 -p 1`: 22 test packages ok, 0 FAIL; the linux and
+  darwin cross-builds pass.
+- Blind-qa (single instance, headless through a Windows pseudo-console): 0 FAIL
+  on every gate it could run, 1 PARTIAL by the headless rule for the
+  console-only items. Observed live: exactly one SGR 7/27 pair per color frame
+  at the correct cell and the `|` marker with zero application escape bytes
+  across a 12,398-byte plain capture; the 25 ms window holds a 20 ms
+  console-paced y while a paced y writes exactly the presented diff; a piped
+  stdin degrades to the line wizard.
+- Review: rotated 4+4 double-blind swarms (four code and four security seats)
+  per code-changing round; the final state is code P0=0/P1=0 and security
+  CRITICAL=0/HIGH=0.
+- Live registry checksums (providers.json md5 d17c70ad..., state.json md5
+  2d6861d3...) unchanged across the mission.
+
 Version: 0.10.9
 Release Date: 2026-10-18
 Previous Version: 0.10.8
