@@ -367,3 +367,17 @@
 
 - **Pushed** `9258c5f..481c476` to origin main (myk1yt/agy-tools): the four P0 trio commits plus the six SESSION6 landing commits (f78c3ec, 89272e8, 2968199, 7708ec6, ddfbcb6, 481c476). Gate on the committed tree before push: build OK, vet x3 OK, cross-builds x2 OK, `go test ./... -count=1 -p 1` 23 packages ok / 0 FAIL, provider-pattern gate 0. Local main == origin/main after the push. Protected home files byte-unchanged (providers.json 37635d43..., state.json f6b23e77...).
 - **Not done (still gated):** GitHub repository rename (D6), P4/P5 work pending D1/D2/D4/D5/D6/F3, and the F04/Cf-bidi/P1-7 sub-decisions listed in the final report.
+
+## 2026-10-22 - The nine open decisions ANSWERED by the user (binds P4 and P5)
+
+- **D1 = (a).** The user-owned exclusion list lives in providers.json: add `excludeModels` beside the existing `defaults.excludeFamilies`. Both subsystems already read that file; no new store, no Deps seam.
+- **D2 = (b).** One rule for every exclusion: auto-seating and failover skip, an explicit pick is honored WITH a warning, nothing is rejected. The k3 constant keeps its stricter behavior only if folding it into the default list entry is cleaner; the two disagreeing predicates (IsK3Family vs IsK3Excluded) must be unified so a user list cannot inherit the split.
+- **D4 = (a)+(c).** "native vs agy-tools" means per-feature deployment toggles (statusLine, hooks, rules, plugins, skills) plus one composed preset meaning native (nothing deployed) vs tools (all deployed). No second binary.
+- **D5 = (a).** agy-pro owns ~/.gemini/antigravity-cli/settings.json through the agysettings ledger (key set extended); configure-statusline.js stops writing it. Requires a migration for existing installs and a rollback story.
+- **D6 = (a).** One repo: delete the nested stale clone after confirming nothing unique lives in it, add a committed .gitignore entry for it, then treat the GitHub rename as a name-and-path change (the GitHub-side rename itself is a separate external approval).
+- **F3 = (a).** Every write path gets the exact-diff approval, including the line-mode wizard on non-console hosts and the legacy `agy pro settings` panel. This is the gate that unlocks P5-1 and must land before any new control-plane surface.
+- **F04 = (a).** Implement saved-preset name selectability (swarm/select.go, builder.go, pro_swarm.go, launcher/picker.go) rather than keeping the refusal variant; keep the on-screen honesty note until it ships.
+- **Cf/bidi = (a).** Widen the FetchRemoteModels decode strip to the full Cc+Cf class (one line) so no bidi residual survives in the edit buffer.
+- **P1-7 = (a).** Unify on the hub and deprecate the legacy panel gradually: it keeps working, gets a deprecation notice, and routes users to the hub; its ungated writes are fixed by P5-1 (write discipline), not by this notice.
+
+Consequences for sequencing: F3(a) and P1-7(a) are prerequisites for P5; P4 (28 code sites + 11 test pins) and P5 stay in separate sessions per the plan rule. SESSION7 scope = the three small items (Cf/bidi strip, F04 name selection, P1-7 deprecation notice) plus P4. P5 waits for its own session.
