@@ -1470,7 +1470,7 @@ func closedLoopbackBaseURL(t *testing.T) string {
 func wizardProbeFailureScript(baseURL string) string {
 	return strings.Join([]string{
 		"acmeprobe", baseURL, "ACMEPROBE_KEY", "", "acme-model",
-		"", "", "", "Y", "", "N", "N", "4", "",
+		"", "", "", "Y", "", "N", "N", "N", "4", "",
 	}, "\n") + "\n"
 }
 

@@ -4,13 +4,18 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode"
 
 	"agypro/internal/cellwidth"
+	"agypro/internal/i18n"
 	"agypro/internal/openaiup"
 	"agypro/internal/providers"
 	"agypro/internal/settings"
@@ -80,6 +85,11 @@ func TestModelFormAddEndToEnd(t *testing.T) {
 	keys := []Key{}
 	keys = append(keys, typeRunes("acme-new")...)
 	keys = append(keys, KeyTab)
+	// P2-5: the ID commit auto-fills the family ("acme"); the typed family
+	// replaces the prefill, the same keystrokes a user seeing it types.
+	for i := 0; i < len("acme"); i++ {
+		keys = append(keys, KeyBackspace)
+	}
 	keys = append(keys, typeRunes("swift")...)
 	keys = append(keys, KeyTab)
 	keys = append(keys, typeRunes("beta,fast")...)
@@ -506,7 +516,7 @@ func TestModelFormContextInvalid(t *testing.T) {
 	keys = append(keys, KeyEnter)
 	out := app.CaptureRun(&ScriptedKeys{Keys: keys})
 
-	if !strings.Contains(out, "Context length must be a positive number.") {
+	if !strings.Contains(out, "Context length must be a positive number, or -1 for server maximum.") {
 		t.Fatalf("context error missing; frames:\n%s", out)
 	}
 	scr := app.Top().(*modelFormScreen)
@@ -751,19 +761,18 @@ func TestModelFormToolsEmptyRefused(t *testing.T) {
 }
 
 // TestModelFormAddCapabilityFlags pins the phase-2 capability parity
-// fields in add mode: thinking=y, effort=high, vision=y, video=n land on
-// disk with all four flags, and the M4 approval diff shows the non-default
-// lines (video=n is the default, so it gets no line).
+// fields in add mode under the P2-4 defaults: thinking and vision are seeded
+// "y" (left untouched), effort=high is typed, and video is overridden to "n";
+// all four flags land on disk and the M4 approval diff shows the signed lines.
 func TestModelFormAddCapabilityFlags(t *testing.T) {
 	app, path := newModelFormTestApp(t, "add", "")
 
 	keys := append(typeRunes("acme-caps"), KeyTab, KeyTab, KeyTab, KeyTab, KeyTab, KeyTab) // to thinking
-	keys = append(keys, typeRunes("y")...)
-	keys = append(keys, KeyTab)
+	keys = append(keys, KeyTab)                                                            // thinking seeded "y", untouched
 	keys = append(keys, typeRunes("high")...)
-	keys = append(keys, KeyTab)
-	keys = append(keys, typeRunes("y")...)
-	keys = append(keys, KeyTab)
+	keys = append(keys, KeyTab) // vision seeded "y", untouched
+	keys = append(keys, KeyTab) // to video
+	keys = append(keys, KeyBackspace)
 	keys = append(keys, typeRunes("n")...)
 	keys = append(keys, KeyTab, KeyTab, KeyEnter) // caps row, save row, approval
 	out := app.CaptureRun(&ScriptedKeys{Keys: keys})
@@ -1799,6 +1808,11 @@ func TestModelFormBenignMarkerValuePersisted(t *testing.T) {
 	}
 	app, path := newModelFormTestApp(t, "add", "")
 	keys := append(typeRunes("acme-path"), KeyTab)
+	// P2-5: the ID commit auto-fills the family ("acme"); the typed marker
+	// value replaces it, the same keystrokes a user seeing the prefill types.
+	for i := 0; i < len("acme"); i++ {
+		keys = append(keys, KeyBackspace)
+	}
 	keys = append(keys, typeRunes(family)...)
 	for i := 0; i <= fCount; i++ {
 		keys = append(keys, KeyTab)
@@ -2226,6 +2240,11 @@ func TestModelFormMessageRoles(t *testing.T) {
 	keys := []Key{}
 	keys = append(keys, typeRunes("acme-new")...)
 	keys = append(keys, KeyTab)
+	// P2-5: the ID commit auto-fills the family ("acme"); the typed family
+	// replaces the prefill, the same keystrokes a user seeing it types.
+	for i := 0; i < len("acme"); i++ {
+		keys = append(keys, KeyBackspace)
+	}
 	keys = append(keys, typeRunes("swift")...)
 	keys = append(keys, KeyTab)
 	keys = append(keys, typeRunes("beta,fast")...)
@@ -2850,11 +2869,20 @@ func TestModelFormPaddedValuesAccepted(t *testing.T) {
 
 // TestModelFormAddPaddedFamilyAccepted drives the padded-family case end to
 // end: the field advances, the approval opens, and the stored bytes are the
-// trimmed family (the same bytes buildModel already produced).
+// trimmed family (the same bytes buildModel already produced). Since P2-5
+// the commit of the ID auto-fills the family, so the typed text replaces
+// the inferred value (the same keystrokes a user seeing the prefill types).
 func TestModelFormAddPaddedFamilyAccepted(t *testing.T) {
 	app, path := newModelFormTestApp(t, "add", "")
 
-	keys := append(typeRunes("acme-new"), KeyTab)
+	app.CaptureRun(&ScriptedKeys{Keys: append(typeRunes("acme-new"), KeyTab)})
+	if got := app.Top().(*modelFormScreen).form.Value(fFamily); got != "acme" {
+		t.Fatalf("family after the ID commit = %q, want the inferred acme", got)
+	}
+	keys := []Key{}
+	for i := 0; i < len("acme"); i++ {
+		keys = append(keys, KeyBackspace)
+	}
 	keys = append(keys, typeRunes("  swift  ")...)
 	keys = append(keys, KeyTab)
 	keys = append(keys, typeRunes("beta")...)
@@ -2878,5 +2906,1694 @@ func TestModelFormAddPaddedFamilyAccepted(t *testing.T) {
 	}
 	if got := models[2].Family; got != "swift" {
 		t.Fatalf("family on disk = %q; want the trimmed %q", got, "swift")
+	}
+}
+
+// wizardPresetModel is the wizard's preset-selection conversion
+// (internal/providers/wizard.go:264-277) reproduced against the compiled
+// preset table: a preset row becomes the registry record with
+// ContextLength/MaxOutputTokens carried through verbatim. That conversion is
+// how the -1 "server maximum" sentinel reaches providers.json in the first
+// place, so seeding it here IS the wizard path for this package (promptCustom-
+// Model is unexported in internal/providers).
+func wizardPresetModel(t *testing.T, providerName string, idx int) providers.Model {
+	t.Helper()
+	presets := providers.GetModelPresets(providerName)
+	if len(presets) <= idx {
+		t.Fatalf("provider %q has %d presets, need index %d", providerName, len(presets), idx)
+	}
+	p := presets[idx]
+	caps := p.Capabilities
+	if caps.SupportsThinking && caps.ReasoningEffort == "" {
+		caps.ReasoningEffort = "default"
+	}
+	return providers.Model{
+		ID:              p.ID,
+		Family:          p.Family,
+		Tags:            p.Tags,
+		ContextLength:   p.ContextLength,
+		MaxOutputTokens: p.MaxOutputTokens,
+		Capabilities:    caps,
+	}
+}
+
+// serverMaxFixtureReg is a two-model registry built the two ways a
+// "server maximum" limit reaches disk: acme-preset comes from the compiled
+// preset table (MaxOutputTokens -1), acme-max is the wizard's custom prompt
+// answered with -1 at both limit questions (wizard.go:687-697).
+func serverMaxFixtureReg(t *testing.T) *providers.Registry {
+	t.Helper()
+	preset := wizardPresetModel(t, "deepseek", 0)
+	if preset.MaxOutputTokens != -1 {
+		t.Fatalf("preset fixture MaxOutputTokens = %d, want -1 (fixture contract)", preset.MaxOutputTokens)
+	}
+	return &providers.Registry{Providers: []providers.Provider{
+		{
+			Name:      "acme",
+			BaseURL:   "https://acme.example/v1",
+			APIKeyEnv: "ACME_KEY",
+			Models: []providers.Model{
+				{ID: preset.ID, Family: preset.Family, ContextLength: preset.ContextLength,
+					MaxOutputTokens: preset.MaxOutputTokens, Capabilities: preset.Capabilities},
+				{ID: "acme-max", Family: "fast", ContextLength: -1, MaxOutputTokens: -1,
+					Capabilities: providers.Capabilities{SupportsTools: true, AllowedTools: []string{"read_file"}}},
+			},
+		},
+	}}
+}
+
+// TestServerMaxTokenInputPinsWireValue pins the one sentinel spelling against
+// the wire value the other doors already speak: the compiled presets carry it,
+// the catalog reads it as "server maximum", and the form's parser must map the
+// typed text back to exactly that integer. A second spelling (or a parser that
+// still folded it away) fails here rather than silently in a saved registry.
+func TestServerMaxTokenInputPinsWireValue(t *testing.T) {
+	if ServerMaxTokenInput != "-1" {
+		t.Fatalf("ServerMaxTokenInput = %q, want the pinned spelling %q", ServerMaxTokenInput, "-1")
+	}
+	preset := wizardPresetModel(t, "deepseek", 0)
+	if got := parseTokenLimit(ServerMaxTokenInput); got != preset.MaxOutputTokens {
+		t.Fatalf("parseTokenLimit(%q) = %d, want the preset wire value %d", ServerMaxTokenInput, got, preset.MaxOutputTokens)
+	}
+	if got := parseTokenLimit(ServerMaxTokenInput); got != -1 {
+		t.Fatalf("parseTokenLimit(%q) = %d, want -1", ServerMaxTokenInput, got)
+	}
+	// Unset stays 0 and a positive limit round-trips unchanged: the sentinel
+	// widened the parser by exactly one spelling.
+	for _, tc := range []struct {
+		in   string
+		want int
+	}{
+		{"", 0},
+		{"   ", 0},
+		{"200000", 200000},
+		{" 8192 ", 8192},
+		{"-1", -1},
+		{" -1 ", -1},
+		{"-01", 0}, // not the canonical spelling, and not a positive limit
+		{"-5", 0},  // unreachable defensive path: the validator refuses it first
+	} {
+		if got := parseTokenLimit(tc.in); got != tc.want {
+			t.Fatalf("parseTokenLimit(%q) = %d, want %d", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestModelFormServerMaxEditRoundTrip is the F2 regression: open a
+// wizard-created model whose limits are the server-maximum sentinel, save it
+// untouched, and assert the sentinel survives byte-for-byte. Before P2-1 the
+// field seeded blank and the save wrote 0, which the catalog reads as "no limit
+// declared" and replaced with its 131072/16384 fallbacks.
+func TestModelFormServerMaxEditRoundTrip(t *testing.T) {
+	app, path := newModelFormTestAppReg(t, serverMaxFixtureReg(t), "edit", "acme-max")
+	out := app.CaptureRun(&ScriptedKeys{})
+
+	scr := app.Top().(*modelFormScreen)
+	if got := scr.form.Value(fContext); got != ServerMaxTokenInput {
+		t.Fatalf("context field seeded %q, want the sentinel %q; frames:\n%s", got, ServerMaxTokenInput, out)
+	}
+	if got := scr.form.Value(fMaxOut); got != ServerMaxTokenInput {
+		t.Fatalf("max output field seeded %q, want the sentinel %q; frames:\n%s", got, ServerMaxTokenInput, out)
+	}
+	if n := strings.Count(out, ServerMaxTokenInput); n < 2 {
+		t.Fatalf("seeded sentinel rendered %d times, want both limit rows; frames:\n%s", n, out)
+	}
+	if scr.dirty() {
+		t.Fatal("form is dirty on open: the sentinel seed does not round-trip through buildModel")
+	}
+
+	// Walk to the Save row and open the approval without editing anything.
+	keys := make([]Key, 0, fCount+1)
+	for i := 0; i < fCount; i++ {
+		keys = append(keys, KeyDown)
+	}
+	keys = append(keys, KeyEnter)
+	out = app.CaptureRun(&ScriptedKeys{Keys: keys})
+
+	if !strings.Contains(out, "Updates model acme-max in provider acme.") {
+		t.Fatalf("approval never opened; frames:\n%s", out)
+	}
+	if !strings.Contains(out, "(no field changes)") {
+		t.Fatalf("pristine save raised a phantom diff; frames:\n%s", out)
+	}
+
+	app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyYes}})
+
+	models := reloadModels(t, path)
+	var got *providers.Model
+	for i := range models {
+		if models[i].ID == "acme-max" {
+			got = &models[i]
+		}
+	}
+	if got == nil {
+		t.Fatal("acme-max missing after save")
+	}
+	if got.ContextLength != -1 || got.MaxOutputTokens != -1 {
+		t.Fatalf("persisted limits = context %d / maxOut %d, want -1 / -1 (sentinel destroyed)",
+			got.ContextLength, got.MaxOutputTokens)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read providers.json: %v", err)
+	}
+	for _, want := range []string{`"contextLength": -1`, `"maxOutputTokens": -1`} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("on-disk JSON missing %s:\n%s", want, raw)
+		}
+	}
+	if !strings.Contains(app.Message(), "Model acme-max updated in acme.") {
+		t.Errorf("success message missing; message = %q", app.Message())
+	}
+}
+
+// TestModelFormServerMaxPresetSeed pins the preset-built sibling: a record
+// whose MaxOutputTokens came from the compiled preset table (-1) displays the
+// sentinel and keeps it through a save that only touches another field.
+func TestModelFormServerMaxPresetSeed(t *testing.T) {
+	reg := serverMaxFixtureReg(t)
+	presetID := reg.Providers[0].Models[0].ID
+	app, path := newModelFormTestAppReg(t, reg, "edit", presetID)
+	out := app.CaptureRun(&ScriptedKeys{})
+
+	scr := app.Top().(*modelFormScreen)
+	if got := scr.form.Value(fMaxOut); got != ServerMaxTokenInput {
+		t.Fatalf("preset max output seeded %q, want %q; frames:\n%s", got, ServerMaxTokenInput, out)
+	}
+	if got := scr.form.Value(fContext); got != "128000" {
+		t.Fatalf("preset context seeded %q, want 128000", got)
+	}
+
+	// Retag the model, then save: an unrelated edit must not disturb the limit.
+	keys := []Key{KeyDown, KeyDown, RuneKey('x')}
+	for i := 0; i < fCount-2; i++ {
+		keys = append(keys, KeyDown)
+	}
+	keys = append(keys, KeyEnter)
+	out = app.CaptureRun(&ScriptedKeys{Keys: keys})
+	if strings.Contains(out, "maxOutputTokens") {
+		t.Fatalf("phantom maxOutputTokens diff on a tag-only edit; frames:\n%s", out)
+	}
+	app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyYes}})
+
+	models := reloadModels(t, path)
+	if models[0].ID != presetID {
+		t.Fatalf("first model id = %q, want %q", models[0].ID, presetID)
+	}
+	if models[0].MaxOutputTokens != -1 {
+		t.Fatalf("preset maxOutputTokens = %d after save, want -1", models[0].MaxOutputTokens)
+	}
+	if models[0].ContextLength != 128000 {
+		t.Fatalf("preset contextLength = %d after save, want 128000", models[0].ContextLength)
+	}
+}
+
+// TestModelFormServerMaxAddTyped drives the add flow with the sentinel typed
+// into both limit fields: the typed spelling is accepted, signs the approval
+// diff, and is persisted as the -1 wire value.
+func TestModelFormServerMaxAddTyped(t *testing.T) {
+	app, path := newModelFormTestApp(t, "add", "")
+
+	keys := typeRunes("acme-typed")
+	keys = append(keys, KeyTab) // family
+	keys = append(keys, KeyTab) // tags
+	keys = append(keys, KeyTab) // enabled (seeded "y", left untouched)
+	keys = append(keys, KeyTab) // context
+	keys = append(keys, typeRunes(ServerMaxTokenInput)...)
+	keys = append(keys, KeyTab)
+	keys = append(keys, typeRunes(ServerMaxTokenInput)...)
+	for i := 0; i < 6; i++ {
+		keys = append(keys, KeyTab)
+	}
+	keys = append(keys, KeyEnter)
+	out := app.CaptureRun(&ScriptedKeys{Keys: keys})
+
+	for _, want := range []string{
+		"+ contextLength: -1",
+		"+ maxOutputTokens: -1",
+		"Model count: 2 -> 3",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("add approval missing %q; frames:\n%s", want, out)
+		}
+	}
+	app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyYes}})
+
+	models := reloadModels(t, path)
+	m := models[2]
+	if m.ID != "acme-typed" {
+		t.Fatalf("new model id = %q, want acme-typed", m.ID)
+	}
+	if m.ContextLength != -1 || m.MaxOutputTokens != -1 {
+		t.Fatalf("typed sentinel persisted as context %d / maxOut %d, want -1 / -1",
+			m.ContextLength, m.MaxOutputTokens)
+	}
+}
+
+// TestModelFormServerMaxOtherNegativesRefused pins the width of the widening:
+// only the canonical sentinel joined the accepted set, so a negative limit that
+// is not -1 is still refused by the existing catalog message and writes nothing.
+func TestModelFormServerMaxOtherNegativesRefused(t *testing.T) {
+	app, path := newModelFormTestApp(t, "add", "")
+	diskBefore, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read providers.json: %v", err)
+	}
+
+	keys := append(typeRunes("acme-neg"), KeyTab, KeyTab, KeyTab, KeyTab) // to context
+	keys = append(keys, typeRunes("-5")...)
+	keys = append(keys, KeyEnter)
+	out := app.CaptureRun(&ScriptedKeys{Keys: keys})
+
+	if !strings.Contains(out, "Context length must be a positive number, or -1 for server maximum.") {
+		t.Fatalf("non-sentinel negative accepted; frames:\n%s", out)
+	}
+	scr := app.Top().(*modelFormScreen)
+	if scr.form.Cursor() != fContext {
+		t.Fatalf("cursor = %d, want %d (advance blocked)", scr.form.Cursor(), fContext)
+	}
+	if got, _ := os.ReadFile(path); string(got) != string(diskBefore) {
+		t.Fatal("on-disk JSON changed after a refused negative limit")
+	}
+
+	// Same for a second sentinel-shaped spelling that is not canonical: the
+	// comparison is exact, so "-01" parses to -1 but is not the accepted
+	// spelling, and Atoi's negative value keeps it out of the accepted set.
+	keys = []Key{KeyBackspace, KeyBackspace, RuneKey('-'), RuneKey('0'), RuneKey('1'), KeyEnter}
+	out = app.CaptureRun(&ScriptedKeys{Keys: keys})
+	if !strings.Contains(out, "Context length must be a positive number, or -1 for server maximum.") {
+		t.Fatalf("non-canonical spelling -01 accepted; frames:\n%s", out)
+	}
+	if got, _ := os.ReadFile(path); string(got) != string(diskBefore) {
+		t.Fatal("on-disk JSON changed after a refused non-canonical sentinel")
+	}
+}
+
+// limitPickerTestRows pins the P2-2 picker contract from a single place: the
+// label column is locale-neutral literals plus the server-maximum label, the
+// value column is exactly what typing the choice would produce, and the
+// sentinel row writes the ONE P2-1 spelling (never its own wire value).
+func limitPickerTestRows(t *testing.T) {
+	t.Helper()
+	want := []limitPickerOption{
+		{"128k", "131072"},
+		{"256k", "262144"},
+		{"512k", "524288"},
+		{"1M", "1048576"},
+		{limitPickerServerMaxLabel, ServerMaxTokenInput},
+	}
+	if len(limitPickerOptions) != len(want) {
+		t.Fatalf("limitPickerOptions = %d rows, want %d", len(limitPickerOptions), len(want))
+	}
+	for i, w := range want {
+		if limitPickerOptions[i] != w {
+			t.Fatalf("limitPickerOptions[%d] = %+v, want %+v", i, limitPickerOptions[i], w)
+		}
+	}
+	if limitPickerOptions[len(want)-1].value != "-1" {
+		t.Fatalf("server-max row value = %q, want the P2-1 spelling %q",
+			limitPickerOptions[len(want)-1].value, "-1")
+	}
+	for _, o := range limitPickerOptions[:len(want)-1] {
+		n, err := strconv.Atoi(o.value)
+		if err != nil || n <= 0 {
+			t.Fatalf("preset row %q writes non-positive value %q", o.label, o.value)
+		}
+		if err := validateTokenLimit(o.value, "msg"); err != nil {
+			t.Fatalf("preset row %q value %q fails the field validator: %v", o.label, o.value, err)
+		}
+	}
+}
+
+// driveLimitPicker navigates from the form open state to one limit field,
+// opens the picker on Enter, and returns the screen for further assertions.
+func driveLimitPicker(t *testing.T, app *App, downs int) *modelFormScreen {
+	t.Helper()
+	for i := 0; i < downs; i++ {
+		app.Step(KeyDown)
+	}
+	app.Step(KeyEnter)
+	if _, ok := app.Modal().(*Choice); !ok {
+		t.Fatalf("modal after Enter on limit field = %T, want *Choice; frames:\n%s",
+			app.Modal(), app.CaptureRun(&ScriptedKeys{}))
+	}
+	return app.Top().(*modelFormScreen)
+}
+
+// TestModelFormLimitPickerContext pins the P2-2 dispatch for the context
+// field: Enter opens the shared Choice overlay, arrow-select lands the chosen
+// row's numeric bytes in the SAME free-text field, the field stays focused
+// and editable (typing still appends), and the value flows to disk on save.
+func TestModelFormLimitPickerContext(t *testing.T) {
+	limitPickerTestRows(t)
+	app, path := newModelFormTestApp(t, "add", "")
+	// Type the id first (add mode requires one), then walk down to the field.
+	app.CaptureRun(&ScriptedKeys{Keys: typeRunes("acme-pick")})
+	scr := driveLimitPicker(t, app, fContext) // cursor starts on fModelID
+
+	ch := app.Modal().(*Choice)
+	if title := ch.Title(); title != "Context length" {
+		t.Fatalf("picker title = %q, want the reused field label %q", title, "Context length")
+	}
+	body := strings.Join(ch.Body(80), "\n")
+	for _, o := range limitPickerOptions {
+		if !strings.Contains(body, o.label) {
+			t.Fatalf("picker body missing row label %q; body:\n%s", o.label, body)
+		}
+	}
+
+	// Arrow down to "256k", Enter writes back. The overlay closes; on a dirty
+	// form the Esc-guard re-arms behind it (same contract as the tools
+	// overlay), so the assertion is "no Choice", not "no modal".
+	app.Step(KeyDown)
+	app.Step(KeyEnter)
+	if _, ok := app.Modal().(*Choice); ok {
+		t.Fatal("picker still open after Enter")
+	}
+	if got := scr.form.Value(fContext); got != "262144" {
+		t.Fatalf("context field = %q, want 262144 (picker write-back)", got)
+	}
+	if scr.form.Cursor() != fContext {
+		t.Fatalf("cursor = %d, want %d (field stays focused)", scr.form.Cursor(), fContext)
+	}
+	if !scr.dirty() {
+		t.Fatal("picker write-back left the form clean")
+	}
+
+	// The field stays the authority: typing still edits it.
+	app.Step(RuneKey('7'))
+	if got := scr.form.Value(fContext); got != "2621447" {
+		t.Fatalf("field not editable after picker; value = %q, want 2621447", got)
+	}
+	app.Step(KeyBackspace)
+
+	// Save end to end: the picked value is what the approval signs and disk
+	// receives.
+	keys := make([]Key, 0, fCount+2)
+	for i := fContext; i < fCount; i++ {
+		keys = append(keys, KeyDown)
+	}
+	keys = append(keys, KeyEnter)
+	out := app.CaptureRun(&ScriptedKeys{Keys: keys})
+	if !strings.Contains(out, "+ contextLength: 262144") {
+		t.Fatalf("add approval missing the picked limit; frames:\n%s", out)
+	}
+	app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyYes}})
+	m := reloadModels(t, path)[2]
+	if m.ContextLength != 262144 {
+		t.Fatalf("contextLength on disk = %d, want 262144", m.ContextLength)
+	}
+}
+
+// TestModelFormLimitPickerMaxOut pins the same dispatch for the max output
+// field and the server-maximum entry: the last row writes the ONE P2-1
+// spelling into the field, save persists the -1 wire value.
+func TestModelFormLimitPickerMaxOut(t *testing.T) {
+	app, path := newModelFormTestApp(t, "add", "")
+	app.CaptureRun(&ScriptedKeys{Keys: typeRunes("acme-maxout")})
+	scr := driveLimitPicker(t, app, fMaxOut)
+
+	ch := app.Modal().(*Choice)
+	if title := ch.Title(); title != "Max output tokens" {
+		t.Fatalf("picker title = %q, want the reused field label %q", title, "Max output tokens")
+	}
+	for i := 0; i < len(limitPickerOptions)-1; i++ {
+		app.Step(KeyDown)
+	}
+	if label := ch.list.Row(ch.Cursor()).Label; label != limitPickerServerMaxLabel {
+		t.Fatalf("last row label = %q, want %q", label, limitPickerServerMaxLabel)
+	}
+	app.Step(KeyEnter)
+	if got := scr.form.Value(fMaxOut); got != ServerMaxTokenInput {
+		t.Fatalf("max out field = %q, want the sentinel spelling %q", got, ServerMaxTokenInput)
+	}
+	if err := validateTokenLimit(scr.form.Value(fMaxOut), "msg"); err != nil {
+		t.Fatalf("picker-written sentinel fails the field validator: %v", err)
+	}
+
+	keys := make([]Key, 0, fCount+2)
+	for i := fMaxOut; i < fCount; i++ {
+		keys = append(keys, KeyDown)
+	}
+	keys = append(keys, KeyEnter)
+	out := app.CaptureRun(&ScriptedKeys{Keys: keys})
+	if !strings.Contains(out, "+ maxOutputTokens: -1") {
+		t.Fatalf("add approval missing the sentinel; frames:\n%s", out)
+	}
+	app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyYes}})
+	m := reloadModels(t, path)[2]
+	if m.MaxOutputTokens != -1 {
+		t.Fatalf("maxOutputTokens on disk = %d, want -1", m.MaxOutputTokens)
+	}
+}
+
+// TestModelFormLimitPickerSnapshotRestore pins that a picker-written value is
+// ordinary field state: it appears in Snapshot, dirty tracking sees it, and
+// Restore (the discard-confirm path) returns the field to its construction
+// value with the form clean again.
+func TestModelFormLimitPickerSnapshotRestore(t *testing.T) {
+	reg := serverMaxFixtureReg(t)
+	presetID := reg.Providers[0].Models[0].ID // contextLength 128000, maxOut -1
+	app, _ := newModelFormTestAppReg(t, reg, "edit", presetID)
+	scr := driveLimitPicker(t, app, fContext) // seeds "128000"
+
+	app.Step(KeyDown) // "256k"
+	app.Step(KeyDown) // "512k"
+	app.Step(KeyEnter)
+	if got := scr.form.Value(fContext); got != "524288" {
+		t.Fatalf("context field = %q, want 524288", got)
+	}
+	if got := scr.form.Snapshot()[fContext]; got != "524288" {
+		t.Fatalf("Snapshot[fContext] = %q, want the picker value 524288", got)
+	}
+	if !scr.dirty() {
+		t.Fatal("form clean after a picker write on a seeded record")
+	}
+
+	scr.form.Restore(scr.baseVals)
+	if got := scr.form.Value(fContext); got != "128000" {
+		t.Fatalf("restored context field = %q, want the seeded 128000", got)
+	}
+	if got := scr.form.Value(fMaxOut); got != ServerMaxTokenInput {
+		t.Fatalf("restore disturbed the sibling limit: %q", got)
+	}
+	if scr.dirty() {
+		t.Fatal("form still dirty after Restore")
+	}
+}
+
+// TestModelFormLimitPickerEscKeepsTypedValue pins the cancel arm: Esc closes
+// the overlay, leaves the free-text field byte-identical (even when it holds
+// typed junk the picker opened over... it cannot: the picker only opens over
+// an accepted value, so here a typed valid value), and the form keeps its
+// dirty state.
+func TestModelFormLimitPickerEscKeepsValue(t *testing.T) {
+	app, _ := newModelFormTestApp(t, "add", "")
+	keys := append(typeRunes("acme-esc"), KeyTab, KeyTab, KeyTab, KeyTab) // to context
+	keys = append(keys, typeRunes("999")...)
+	app.CaptureRun(&ScriptedKeys{Keys: keys})
+	scr := app.Top().(*modelFormScreen)
+
+	app.Step(KeyEnter)
+	if _, ok := app.Modal().(*Choice); !ok {
+		t.Fatalf("picker did not open over a valid typed value; modal = %T", app.Modal())
+	}
+	app.Step(KeyDown)
+	app.Step(KeyEsc)
+	if _, ok := app.Modal().(*Choice); ok {
+		t.Fatal("overlay still open after Esc")
+	}
+	if got := scr.form.Value(fContext); got != "999" {
+		t.Fatalf("Esc changed the field: %q, want 999", got)
+	}
+	if !scr.dirty() {
+		t.Fatal("Esc cancelled the overlay but cleared the typed dirty state")
+	}
+}
+
+// TestModelFormLimitPickerRefusedValueBlocksOpen pins the validate-then-open
+// arm: Enter over a value the field refuses keeps the plain Enter behaviour
+// (the catalog refusal message, no advance, no overlay), so the picker never
+// opens on top of text the save would reject.
+func TestModelFormLimitPickerRefusedValueBlocksOpen(t *testing.T) {
+	app, path := newModelFormTestApp(t, "add", "")
+	diskBefore, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read providers.json: %v", err)
+	}
+	keys := append(typeRunes("acme-blk"), KeyTab, KeyTab, KeyTab, KeyTab) // to context
+	keys = append(keys, typeRunes("12x")...)
+	out := app.CaptureRun(&ScriptedKeys{Keys: append(keys, KeyEnter)})
+	if _, ok := app.Modal().(*Choice); ok {
+		t.Fatal("picker opened over a refused value")
+	}
+	if !strings.Contains(out, "Context length must be a positive number, or -1 for server maximum.") {
+		t.Fatalf("refusal message missing; frames:\n%s", out)
+	}
+	scr := app.Top().(*modelFormScreen)
+	if scr.form.Cursor() != fContext {
+		t.Fatalf("cursor = %d, want %d (advance blocked)", scr.form.Cursor(), fContext)
+	}
+	if got, _ := os.ReadFile(path); string(got) != string(diskBefore) {
+		t.Fatal("on-disk JSON changed after a refused limit value")
+	}
+}
+
+// effortPickerTestRows pins the P2-3 picker contract from a single place: the
+// row set is EXACTLY the validEffortValues closed set (no drift in either
+// direction), every row passes the field validator, and the rows are plain
+// locale-neutral literals (label == value; no per-value catalog labels exist,
+// so nothing can be reused and nothing new is needed).
+func effortPickerTestRows(t *testing.T) {
+	t.Helper()
+	if len(effortPickerOptions) != len(validEffortValues) {
+		t.Fatalf("effortPickerOptions = %d rows, want %d (the validEffortValues set size)",
+			len(effortPickerOptions), len(validEffortValues))
+	}
+	seen := map[string]bool{}
+	for _, v := range effortPickerOptions {
+		if seen[v] {
+			t.Fatalf("effortPickerOptions has duplicate row %q", v)
+		}
+		seen[v] = true
+		if !validEffortValues[v] {
+			t.Fatalf("picker row %q is not in validEffortValues", v)
+		}
+		// The validator's acceptance arm for a literal is normEffort + the set
+		// lookup (the secret guard is irrelevant for plain words).
+		if e := normEffort(v); e == "" || !validEffortValues[e] {
+			t.Fatalf("picker row %q fails the field validator's acceptance rule", v)
+		}
+	}
+	for v := range validEffortValues {
+		if !seen[v] {
+			t.Fatalf("validEffortValues entry %q missing from effortPickerOptions", v)
+		}
+	}
+}
+
+// TestModelFormEffortPickerRoundTrip drives every picker row end to end: open
+// the picker on the effort field, arrow to the row, Enter writes the literal
+// back into the SAME free-text field, the field stays focused and editable,
+// and save persists the picked value to disk. One subtest per row so a row
+// regression names itself.
+func TestModelFormEffortPickerRoundTrip(t *testing.T) {
+	effortPickerTestRows(t)
+	for idx, want := range effortPickerOptions {
+		t.Run(want, func(t *testing.T) {
+			app, path := newModelFormTestApp(t, "add", "")
+			app.CaptureRun(&ScriptedKeys{Keys: typeRunes("acme-effort-" + want)})
+			for i := 0; i < fEffort; i++ {
+				app.Step(KeyDown)
+			}
+			app.Step(KeyEnter)
+			ch, ok := app.Modal().(*Choice)
+			if !ok {
+				t.Fatalf("modal after Enter on effort field = %T, want *Choice; frames:\n%s",
+					app.Modal(), app.CaptureRun(&ScriptedKeys{}))
+			}
+			if title := ch.Title(); title != "Reasoning effort" {
+				t.Fatalf("picker title = %q, want the reused field label %q", title, "Reasoning effort")
+			}
+			body := strings.Join(ch.Body(80), "\n")
+			for _, o := range effortPickerOptions {
+				if !strings.Contains(body, o) {
+					t.Fatalf("picker body missing row %q; body:\n%s", o, body)
+				}
+			}
+			for i := 0; i < idx; i++ {
+				app.Step(KeyDown)
+			}
+			app.Step(KeyEnter)
+			if _, ok := app.Modal().(*Choice); ok {
+				t.Fatal("picker still open after Enter")
+			}
+			scr := app.Top().(*modelFormScreen)
+			if got := scr.form.Value(fEffort); got != want {
+				t.Fatalf("effort field = %q, want %q (picker write-back)", got, want)
+			}
+			if scr.form.Cursor() != fEffort {
+				t.Fatalf("cursor = %d, want %d (field stays focused)", scr.form.Cursor(), fEffort)
+			}
+			if !scr.dirty() {
+				t.Fatal("picker write-back left the form clean")
+			}
+
+			// The field stays the authority: typing still edits it.
+			app.Step(RuneKey('x'))
+			if got := scr.form.Value(fEffort); got != want+"x" {
+				t.Fatalf("field not editable after picker; value = %q, want %q", got, want+"x")
+			}
+			app.Step(KeyBackspace)
+			if got := scr.form.Value(fEffort); got != want {
+				t.Fatalf("field value = %q after the probe edit, want %q", got, want)
+			}
+
+			// Save end to end: the picked value is what the approval signs and
+			// disk receives.
+			keys := make([]Key, 0, fCount+2)
+			for i := fEffort; i < fCount; i++ {
+				keys = append(keys, KeyDown)
+			}
+			keys = append(keys, KeyEnter)
+			out := app.CaptureRun(&ScriptedKeys{Keys: keys})
+			if !strings.Contains(out, "+ reasoningEffort: "+want) {
+				t.Fatalf("add approval missing the picked effort; frames:\n%s", out)
+			}
+			app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyYes}})
+			m := reloadModels(t, path)[2]
+			if m.Capabilities.ReasoningEffort != want {
+				t.Fatalf("reasoningEffort on disk = %q, want %q", m.Capabilities.ReasoningEffort, want)
+			}
+		})
+	}
+}
+
+// TestModelFormEffortPickerEditModeChange pins the edit-mode arm of a picker
+// write: the form field is rebuilt by setFieldValue, which never runs the
+// effortTouched latch (a key-path-only bit), yet a pick that differs from the
+// on-disk value must still flow to disk through the normalized value
+// comparison in buildModel.
+func TestModelFormEffortPickerEditModeChange(t *testing.T) {
+	reg := &providers.Registry{Providers: []providers.Provider{
+		{
+			Name:      "acme",
+			BaseURL:   "https://acme.example/v1",
+			APIKeyEnv: "ACME_KEY",
+			Models: []providers.Model{
+				{ID: "acme-e1", Family: "fast", ContextLength: 1000, MaxOutputTokens: 500,
+					Capabilities: providers.Capabilities{SupportsThinking: true, ReasoningEffort: "high"}},
+			},
+		},
+	}}
+	app, path := newModelFormTestAppReg(t, reg, "edit", "acme-e1")
+	scr := app.Top().(*modelFormScreen)
+	if got := scr.form.Value(fEffort); got != "high" {
+		t.Fatalf("seeded effort field = %q, want high", got)
+	}
+	for i := 0; i < fEffort; i++ {
+		app.Step(KeyDown)
+	}
+	app.Step(KeyEnter)
+	if _, ok := app.Modal().(*Choice); !ok {
+		t.Fatalf("picker did not open on the effort field; modal = %T", app.Modal())
+	}
+	// Arrow to "xhigh" (index 5).
+	for i := 0; i < 5; i++ {
+		app.Step(KeyDown)
+	}
+	app.Step(KeyEnter)
+	if got := scr.form.Value(fEffort); got != "xhigh" {
+		t.Fatalf("effort field = %q, want xhigh (picker write-back)", got)
+	}
+	if scr.effortTouched {
+		t.Fatal("picker write-back set effortTouched; the latch is key-path-only")
+	}
+
+	keys := make([]Key, 0, fCount+2)
+	for i := fEffort; i < fCount; i++ {
+		keys = append(keys, KeyDown)
+	}
+	keys = append(keys, KeyEnter)
+	out := app.CaptureRun(&ScriptedKeys{Keys: keys})
+	if !strings.Contains(out, "  reasoningEffort: high -> xhigh") {
+		t.Fatalf("edit approval missing the picked effort change; frames:\n%s", out)
+	}
+	app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyYes}})
+	m := reloadModels(t, path)[0]
+	if m.Capabilities.ReasoningEffort != "xhigh" {
+		t.Fatalf("reasoningEffort on disk = %q, want xhigh", m.Capabilities.ReasoningEffort)
+	}
+}
+
+// TestModelFormEffortPickerEscKeepsValue pins the cancel arm: Esc closes the
+// overlay, leaves the free-text field byte-identical, and keeps the dirty
+// state.
+func TestModelFormEffortPickerEscKeepsValue(t *testing.T) {
+	app, _ := newModelFormTestApp(t, "add", "")
+	keys := append(typeRunes("acme-effesc"), KeyTab, KeyTab, KeyTab, KeyTab, KeyTab, KeyTab, KeyTab) // to effort
+	keys = append(keys, typeRunes("medium")...)
+	app.CaptureRun(&ScriptedKeys{Keys: keys})
+	scr := app.Top().(*modelFormScreen)
+
+	app.Step(KeyEnter)
+	if _, ok := app.Modal().(*Choice); !ok {
+		t.Fatalf("picker did not open over a valid typed value; modal = %T", app.Modal())
+	}
+	app.Step(KeyDown)
+	app.Step(KeyEsc)
+	if _, ok := app.Modal().(*Choice); ok {
+		t.Fatal("overlay still open after Esc")
+	}
+	if got := scr.form.Value(fEffort); got != "medium" {
+		t.Fatalf("Esc changed the field: %q, want medium", got)
+	}
+	if !scr.dirty() {
+		t.Fatal("Esc cancelled the overlay but cleared the typed dirty state")
+	}
+}
+
+// TestModelFormEffortPickerRefusedValueBlocksOpen pins the validate-then-open
+// arm: Enter over a value the field refuses keeps the plain Enter behaviour
+// (the catalog refusal message, no advance, no overlay), so the picker never
+// opens on top of text the save would reject.
+func TestModelFormEffortPickerRefusedValueBlocksOpen(t *testing.T) {
+	app, path := newModelFormTestApp(t, "add", "")
+	diskBefore, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read providers.json: %v", err)
+	}
+	keys := append(typeRunes("acme-effblk"), KeyTab, KeyTab, KeyTab, KeyTab, KeyTab, KeyTab, KeyTab) // to effort
+	keys = append(keys, typeRunes("bogus")...)
+	out := app.CaptureRun(&ScriptedKeys{Keys: append(keys, KeyEnter)})
+	if _, ok := app.Modal().(*Choice); ok {
+		t.Fatal("picker opened over a refused value")
+	}
+	if !strings.Contains(out, "Reasoning effort must be one of:") {
+		t.Fatalf("refusal message missing; frames:\n%s", out)
+	}
+	scr := app.Top().(*modelFormScreen)
+	if scr.form.Cursor() != fEffort {
+		t.Fatalf("cursor = %d, want %d (advance blocked)", scr.form.Cursor(), fEffort)
+	}
+	if got, _ := os.ReadFile(path); string(got) != string(diskBefore) {
+		t.Fatal("on-disk JSON changed after a refused effort value")
+	}
+}
+
+// TestModelFormCapabilityDefaultsAddMode pins U3 (P2-4): in add mode the
+// thinking, vision and video flags seed "y" and persist true on save, and an
+// explicit "n" typed over the seed stays the manual override. Wizard parity
+// lives in TestWizardCapabilityDefaultsYTaken.
+func TestModelFormCapabilityDefaultsAddMode(t *testing.T) {
+	cases := []struct {
+		name    string
+		field   int
+		enabled func(providers.Capabilities) bool
+	}{
+		{"thinking", fThinking, func(c providers.Capabilities) bool { return c.SupportsThinking }},
+		{"vision", fVision, func(c providers.Capabilities) bool { return c.SupportsVision }},
+		{"video", fVideo, func(c providers.Capabilities) bool { return c.SupportsVideo }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name+"/default_y_saved", func(t *testing.T) {
+			app, path := newModelFormTestApp(t, "add", "")
+			out := app.CaptureRun(&ScriptedKeys{})
+
+			scr := app.Top().(*modelFormScreen)
+			if got := scr.form.Value(tc.field); got != "y" {
+				t.Fatalf("add-mode %s seed = %q, want \"y\"; frames:\n%s", tc.name, got, out)
+			}
+			if scr.dirty() {
+				t.Fatal("form is dirty on open: the Y seed must be the pristine state")
+			}
+
+			// Walk to the Save row, open the approval, confirm.
+			keys := typeRunes("acme-def-" + tc.name)
+			for i := 0; i < fCount; i++ {
+				keys = append(keys, KeyTab)
+			}
+			keys = append(keys, KeyEnter)
+			out = app.CaptureRun(&ScriptedKeys{Keys: keys})
+			if !strings.Contains(out, "Adds model acme-def-"+tc.name+" to provider acme.") {
+				t.Fatalf("approval never opened; frames:\n%s", out)
+			}
+			app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyYes}})
+
+			m := reloadModels(t, path)[2]
+			if m.ID != "acme-def-"+tc.name {
+				t.Fatalf("new model id = %q", m.ID)
+			}
+			if !tc.enabled(m.Capabilities) {
+				t.Fatalf("saved %s = false, want true (Y default did not persist)", tc.name)
+			}
+		})
+
+		t.Run(tc.name+"/manual_n_override", func(t *testing.T) {
+			app, path := newModelFormTestApp(t, "add", "")
+
+			// Type the ID, tab to the flag field, replace the seeded "y" with "n".
+			keys := append(typeRunes("acme-nov-"+tc.name), KeyTab)
+			for i := 1; i < tc.field; i++ {
+				keys = append(keys, KeyTab)
+			}
+			keys = append(keys, KeyBackspace)
+			keys = append(keys, typeRunes("n")...)
+			for i := tc.field; i < fCount; i++ {
+				keys = append(keys, KeyTab)
+			}
+			keys = append(keys, KeyEnter)
+			out := app.CaptureRun(&ScriptedKeys{Keys: keys})
+			if !strings.Contains(out, "Adds model acme-nov-"+tc.name+" to provider acme.") {
+				t.Fatalf("approval never opened; frames:\n%s", out)
+			}
+			app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyYes}})
+
+			m := reloadModels(t, path)[2]
+			if tc.enabled(m.Capabilities) {
+				t.Fatalf("saved %s = true, want false (manual n override lost)", tc.name)
+			}
+		})
+	}
+}
+
+// TestModelFormLimitPickerServerMaxLabelLocalized pins the P2-4 wiring of the
+// P1-3 residual: the server-maximum row label resolves through the catalog key
+// models.form.limit_server_max (present in all 12 locales since P1-3), not the
+// English const. Under ko the overlay must show the Korean catalog value and
+// never the English fallback; under en the catalog value and the const agree.
+func TestModelFormLimitPickerServerMaxLabelLocalized(t *testing.T) {
+	koLabel := i18n.Load("ko").T("models.form.limit_server_max")
+	if koLabel == limitPickerServerMaxLabel {
+		t.Fatalf("ko catalog value equals the English const %q; the localization pin is vacuous", koLabel)
+	}
+	if enLabel := i18n.Load("en").T("models.form.limit_server_max"); enLabel != limitPickerServerMaxLabel {
+		t.Fatalf("en catalog value = %q, want the const %q (missing-key fallback contract)", enLabel, limitPickerServerMaxLabel)
+	}
+
+	SetLanguage("ko")
+	defer SetLanguage("en")
+	app, _ := newModelFormTestApp(t, "add", "")
+	// Bind the ko bundle directly: the constructor reads the language from
+	// persisted state, which the fixture home does not carry, and the wiring
+	// under test is openLimitPicker's missingOr resolution over s.b.
+	scr := &modelFormScreen{b: i18n.Load("ko"), app: app}
+	scr.openLimitPicker(fContext)
+
+	body := strings.Join(app.Modal().(*Choice).Body(80), "\n")
+	if !strings.Contains(body, koLabel) {
+		t.Fatalf("picker body missing the ko catalog label %q; body:\n%s", koLabel, body)
+	}
+	if strings.Contains(body, limitPickerServerMaxLabel) {
+		t.Fatalf("picker body still shows the English const %q under ko; body:\n%s", limitPickerServerMaxLabel, body)
+	}
+}
+
+// --- P2-6/P2-7: the model-ID picker (server model list download) -----------
+
+// modelsListStub serves one fixed /models body (or one fixed non-200 status)
+// for the model-ID picker tests. The ids and numbers are the sanitized
+// samples recorded by the T-B live probe (survey-tb-models-live.md).
+func modelsListStub(t *testing.T, status int, body string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if status != http.StatusOK {
+			w.WriteHeader(status)
+			return
+		}
+		w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// modelIDPickerApp seeds a one-provider registry whose base URL points at the
+// stub server (loopback http is allowed) and opens the add-mode form.
+func modelIDPickerApp(t *testing.T, baseURL string) (*App, string) {
+	t.Helper()
+	reg := &providers.Registry{Providers: []providers.Provider{{
+		Name:    "acme",
+		BaseURL: baseURL,
+		Models:  nil,
+	}}}
+	return newModelFormTestAppReg(t, reg, "add", "")
+}
+
+// driveModelIDPicker opens the picker from the form-open state (the cursor
+// starts on fModelID) and returns the screen.
+func driveModelIDPicker(t *testing.T, app *App) *modelFormScreen {
+	t.Helper()
+	app.Step(KeyEnter)
+	if _, ok := app.Modal().(*Choice); !ok {
+		t.Fatalf("modal after Enter on model ID field = %T, want *Choice; frames:\n%s",
+			app.Modal(), app.CaptureRun(&ScriptedKeys{}))
+	}
+	return app.Top().(*modelFormScreen)
+}
+
+// savePickedModel drives from the model ID field to the save row, confirms the
+// approval, and returns the first (only) model on disk.
+func savePickedModel(t *testing.T, app *App, path string) providers.Model {
+	t.Helper()
+	keys := make([]Key, 0, fCount+2)
+	for i := 0; i < fCount; i++ {
+		keys = append(keys, KeyDown)
+	}
+	keys = append(keys, KeyEnter)
+	app.CaptureRun(&ScriptedKeys{Keys: keys})
+	app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyYes}})
+	models := reloadModels(t, path)
+	if len(models) != 1 {
+		t.Fatalf("models on disk = %d, want exactly the picked one", len(models))
+	}
+	return models[0]
+}
+
+const charmListFixture = `{"data":[
+	{"id":"charm-small","context_window":256000,"max_output_tokens":16000},
+	{"id":"charm-mid","context_window":262144,"max_output_tokens":26214},
+	{"id":"charm-big","context_window":1048576,"max_output_tokens":384000}
+]}`
+
+const nwListFixture = `{"data":[
+	{"id":"nw-ctx-256k","max_model_len":262128},
+	{"id":"nw-ctx-1m","max_model_len":1048560}
+]}`
+
+// TestModelFormModelIDPickerCharmSeedsCeilings pins the full P2-7 happy path
+// on the Charm-shaped payload (context_window + max_output_tokens, the T-B
+// verified shape): the pick writes the id, seeds BOTH limit fields from the
+// advertised ceilings, and the values flow to disk through the approval.
+func TestModelFormModelIDPickerCharmSeedsCeilings(t *testing.T) {
+	srv := modelsListStub(t, http.StatusOK, charmListFixture)
+	app, path := modelIDPickerApp(t, srv.URL)
+	scr := driveModelIDPicker(t, app)
+
+	ch := app.Modal().(*Choice)
+	if title := ch.Title(); title != "Model ID" {
+		t.Fatalf("picker title = %q, want the reused field label %q", title, "Model ID")
+	}
+	body := strings.Join(ch.Body(80), "\n")
+	for _, id := range []string{"charm-small", "charm-mid", "charm-big"} {
+		if !strings.Contains(body, id) {
+			t.Fatalf("picker body missing %q; body:\n%s", id, body)
+		}
+	}
+
+	app.Step(KeyDown) // charm-mid
+	app.Step(KeyEnter)
+	if _, ok := app.Modal().(*Choice); ok {
+		t.Fatal("picker still open after Enter")
+	}
+	if got := scr.form.Value(fModelID); got != "charm-mid" {
+		t.Fatalf("model ID field = %q, want charm-mid", got)
+	}
+	if got := scr.form.Value(fContext); got != "262144" {
+		t.Fatalf("context field = %q, want 262144 (advertised ceiling)", got)
+	}
+	if got := scr.form.Value(fMaxOut); got != "26214" {
+		t.Fatalf("max out field = %q, want 26214 (advertised ceiling)", got)
+	}
+	if err := validateTokenLimit(scr.form.Value(fContext), "msg"); err != nil {
+		t.Fatalf("seeded context fails the validator: %v", err)
+	}
+	if err := validateTokenLimit(scr.form.Value(fMaxOut), "msg"); err != nil {
+		t.Fatalf("seeded max out fails the validator: %v", err)
+	}
+	if !scr.dirty() {
+		t.Fatal("picker seed left the form clean")
+	}
+
+	keys := make([]Key, 0, fCount+2)
+	for i := 0; i < fCount; i++ {
+		keys = append(keys, KeyDown)
+	}
+	keys = append(keys, KeyEnter)
+	out := app.CaptureRun(&ScriptedKeys{Keys: keys})
+	for _, want := range []string{"+ contextLength: 262144", "+ maxOutputTokens: 26214"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("add approval missing %q; frames:\n%s", want, out)
+		}
+	}
+	app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyYes}})
+	m := reloadModels(t, path)[0]
+	if m.ID != "charm-mid" || m.ContextLength != 262144 || m.MaxOutputTokens != 26214 {
+		t.Fatalf("on-disk model = %+v, want charm-mid with 262144/26214", m)
+	}
+}
+
+// TestModelFormModelIDPickerNWPartialCeilings pins the T-B caveat for the
+// nw-shaped payload (max_model_len only): the context field seeds from the
+// vLLM-named ceiling and the max-output field falls back to the
+// server-maximum sentinel, so the sentinel finally has its data source on
+// one of the two slots.
+func TestModelFormModelIDPickerNWPartialCeilings(t *testing.T) {
+	srv := modelsListStub(t, http.StatusOK, nwListFixture)
+	app, path := modelIDPickerApp(t, srv.URL)
+	scr := driveModelIDPicker(t, app)
+
+	app.Step(KeyEnter) // first row: nw-ctx-256k
+	if got := scr.form.Value(fModelID); got != "nw-ctx-256k" {
+		t.Fatalf("model ID field = %q, want nw-ctx-256k", got)
+	}
+	if got := scr.form.Value(fContext); got != "262128" {
+		t.Fatalf("context field = %q, want 262128 (max_model_len alias)", got)
+	}
+	if got := scr.form.Value(fMaxOut); got != ServerMaxTokenInput {
+		t.Fatalf("max out field = %q, want the sentinel %q (no advertised ceiling)", got, ServerMaxTokenInput)
+	}
+
+	keys := make([]Key, 0, fCount+2)
+	for i := 0; i < fCount; i++ {
+		keys = append(keys, KeyDown)
+	}
+	keys = append(keys, KeyEnter)
+	out := app.CaptureRun(&ScriptedKeys{Keys: keys})
+	if !strings.Contains(out, "+ maxOutputTokens: -1") {
+		t.Fatalf("add approval missing the sentinel max-out; frames:\n%s", out)
+	}
+	app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyYes}})
+	m := reloadModels(t, path)[0]
+	if m.ContextLength != 262128 || m.MaxOutputTokens != -1 {
+		t.Fatalf("on-disk limits = %d/%d, want 262128/-1", m.ContextLength, m.MaxOutputTokens)
+	}
+}
+
+// TestModelFormModelIDPickerNoCeilings pins the no-hard-dependency half: an
+// ids-only payload (the pre-P2-7 contract) seeds BOTH fields with the
+// sentinel and changes nothing else about the form's behaviour.
+func TestModelFormModelIDPickerNoCeilings(t *testing.T) {
+	srv := modelsListStub(t, http.StatusOK, `{"data":[{"id":"plain-1"},{"id":"plain-2"}]}`)
+	app, path := modelIDPickerApp(t, srv.URL)
+	scr := driveModelIDPicker(t, app)
+
+	app.Step(KeyDown)
+	app.Step(KeyEnter) // plain-2
+	if got := scr.form.Value(fModelID); got != "plain-2" {
+		t.Fatalf("model ID field = %q, want plain-2", got)
+	}
+	if got := scr.form.Value(fContext); got != ServerMaxTokenInput {
+		t.Fatalf("context field = %q, want the sentinel %q (no ceilings advertised)", got, ServerMaxTokenInput)
+	}
+	if got := scr.form.Value(fMaxOut); got != ServerMaxTokenInput {
+		t.Fatalf("max out field = %q, want the sentinel %q (no ceilings advertised)", got, ServerMaxTokenInput)
+	}
+
+	m := savePickedModel(t, app, path)
+	if m.ContextLength != -1 || m.MaxOutputTokens != -1 {
+		t.Fatalf("on-disk limits = %d/%d, want -1/-1 (sentinel wire values)", m.ContextLength, m.MaxOutputTokens)
+	}
+}
+
+// TestModelFormModelIDPickerMasksRemoteIDLabels pins the display rule of the
+// picker (FIX-SEC-F1, review F-1) together with the r3 M-1 pick-door refusal:
+// the option LABELS route through the registry-slot authority
+// providers.MaskSlot, so a credential-shaped id served by the provider endpoint
+// cannot ride raw into the overlay frame, while a benign id stays
+// byte-identical (the picker keeps its readability). Picking the
+// credential-shaped row is refused AT THE PICK by the save door's own rule: the
+// field keeps its previous value (the raw bytes never enter the edit buffer, so
+// Form.Render has nothing hostile to paint), no ceiling or family seeding runs,
+// the refusal names itself on the message line, and nothing reaches
+// providers.json. The benign row still picks, so the refusal costs the picker
+// nothing.
+func TestModelFormModelIDPickerMasksRemoteIDLabels(t *testing.T) {
+	srv := modelsListStub(t, http.StatusOK,
+		`{"data":[{"id":"`+testfixtures.SKLive+`"},{"id":"acme-fast"}]}`)
+	app, path := modelIDPickerApp(t, srv.URL)
+	scr := driveModelIDPicker(t, app)
+
+	ch := app.Modal().(*Choice)
+	rendered := strings.Join(ch.Body(80), "\n")
+	if strings.Contains(rendered, testfixtures.SKLive) {
+		t.Fatalf("picker body rendered the credential-shaped remote id raw; body:\n%s", rendered)
+	}
+	masked := providers.MaskSlot(testfixtures.SKLive)
+	if masked == testfixtures.SKLive {
+		t.Fatalf("fixture premise broken: MaskSlot(%q) is the identity", testfixtures.SKLive)
+	}
+	if !strings.Contains(rendered, masked) {
+		t.Fatalf("picker body missing the masked label %q; body:\n%s", masked, rendered)
+	}
+	if !strings.Contains(rendered, "acme-fast") {
+		t.Fatalf("benign id is no longer byte-identical in the picker; body:\n%s", rendered)
+	}
+	if !looksSecretValue(testfixtures.SKLive) {
+		t.Fatalf("fixture premise broken: the pick door does not refuse %q", testfixtures.SKLive)
+	}
+
+	diskBefore, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read providers.json: %v", err)
+	}
+
+	// Row 0 is the credential-shaped id: the pick is refused at the door, so the
+	// raw bytes never reach the field and no frame can paint them (M-1).
+	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyEnter}})
+	if _, ok := app.Modal().(*Choice); ok {
+		t.Fatalf("picker still open after a refused pick; frames:\n%s", out)
+	}
+	if strings.Contains(out, testfixtures.SKLive) {
+		t.Fatalf("frames painted the raw credential-shaped id after the pick; frames:\n%s", out)
+	}
+	if got := scr.form.Value(fModelID); got != "" {
+		t.Fatalf("refused pick wrote the model ID field: %q, want the previous (empty) value", got)
+	}
+	if got := scr.form.Value(fFamily); got != "" {
+		t.Fatalf("refused pick seeded the family field: %q, want it untouched", got)
+	}
+	if got := scr.form.Value(fContext); got != "" {
+		t.Fatalf("refused pick seeded the context field: %q, want it untouched", got)
+	}
+	if got := scr.form.Value(fMaxOut); got != "" {
+		t.Fatalf("refused pick seeded the max-out field: %q, want it untouched", got)
+	}
+	if scr.dirty() {
+		t.Fatal("refused pick left the form dirty: nothing was written")
+	}
+	msg := scr.messageLine()
+	if msg == "" || strings.Contains(msg, testfixtures.SKLive) {
+		t.Fatalf("refusal message = %q, want the named secret refusal with no echoed value", msg)
+	}
+	if want := scr.b.T("models.validation.secret"); msg != want {
+		t.Fatalf("refusal message = %q, want the save door's own sentence %q", msg, want)
+	}
+	if !strings.Contains(out, "looks like secret/key material") {
+		t.Fatalf("frames missing the refusal sentence; frames:\n%s", out)
+	}
+	if got, _ := os.ReadFile(path); string(got) != string(diskBefore) {
+		t.Fatal("on-disk JSON changed after a refused picked id")
+	}
+
+	// The benign row still picks through the same door: the refusal is a rule,
+	// not a broken picker.
+	app.Step(KeyEnter)
+	if _, ok := app.Modal().(*Choice); !ok {
+		t.Fatalf("picker did not reopen after the refusal; modal = %T", app.Modal())
+	}
+	app.Step(KeyDown)
+	app.Step(KeyEnter)
+	if got := scr.form.Value(fModelID); got != "acme-fast" {
+		t.Fatalf("benign picked id = %q, want acme-fast", got)
+	}
+}
+
+// TestModelFormModelIDPickerFailureModes pins the P2-6 failure surfacing:
+// every silent nil of the old contract is now one in-screen message, the
+// form is byte-untouched, and no overlay opens. The 3s deadline lives inside
+// providers; these stubs answer (or refuse) immediately.
+func TestModelFormModelIDPickerFailureModes(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		body   string
+		want   string
+	}{
+		{
+			name:   "non-200 surfaces the status",
+			status: http.StatusForbidden,
+			want:   "status 403",
+		},
+		{
+			name:   "unreadable body surfaces the decode failure",
+			status: http.StatusOK,
+			body:   `{not json`,
+			want:   missingModelFormFetchDecode,
+		},
+		{
+			name:   "empty list surfaces its own message",
+			status: http.StatusOK,
+			body:   `{"data":[]}`,
+			want:   missingModelFormFetchEmpty,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := modelsListStub(t, tc.status, tc.body)
+			app, path := modelIDPickerApp(t, srv.URL)
+			diskBefore, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read providers.json: %v", err)
+			}
+
+			out := app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyEnter}})
+			if app.Modal() != nil {
+				t.Fatalf("modal after a failed fetch = %T, want none; frames:\n%s", app.Modal(), out)
+			}
+			if !strings.Contains(out, tc.want) {
+				t.Fatalf("frames missing %q; frames:\n%s", tc.want, out)
+			}
+			if got, _ := os.ReadFile(path); string(got) != string(diskBefore) {
+				t.Fatal("on-disk JSON changed after a failed fetch")
+			}
+		})
+	}
+
+	t.Run("unreachable endpoint surfaces the connect failure", func(t *testing.T) {
+		app, _ := modelIDPickerApp(t, "http://127.0.0.1:59999")
+		out := app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyEnter}})
+		if app.Modal() != nil {
+			t.Fatalf("modal after a failed fetch = %T, want none; frames:\n%s", app.Modal(), out)
+		}
+		// The connect message carries the sanitized host operand.
+		if !strings.Contains(out, "could not be reached") || !strings.Contains(out, "127.0.0.1:59999") {
+			t.Fatalf("frames missing the connect sentence with host; frames:\n%s", out)
+		}
+	})
+	// Note: the missing/blank base URL sentinel (ErrModelsNoBaseURL) has no
+	// TUI-level case here, because the registry loader itself refuses such a
+	// record before the form opens (loadErr arm). It is pinned at the
+	// providers level in TestFetchRemoteModelsFailureKinds.
+}
+
+// TestModelFormModelIDPickerConnectHostMasked pins the FIX-SEC-F2 rule
+// (review F-2 / MED-1): the fetch-failure sentence interpolates the provider
+// host through fillHubSlots, which substitutes verbatim, so the connect arm
+// masks the detail with providers.MaskOperand before the slot fill. A
+// credential-shaped HOST is reachable from a hand-edited providers.json
+// (load-time validation enforces scheme/host transport only, so a token-shaped
+// label passes), and an unreachable endpoint then echoes it on every failed
+// fetch. A benign host stays byte-identical, which is why the frame pin in
+// TestModelFormModelIDPickerFailureModes keeps its raw loopback assertion.
+func TestModelFormModelIDPickerConnectHostMasked(t *testing.T) {
+	app, _ := newModelFormTestApp(t, "add", "")
+	scr := app.Top().(*modelFormScreen)
+
+	shapedHost := testfixtures.SKProj + ".example.com"
+	want := providers.MaskOperand(shapedHost)
+	if want == shapedHost {
+		t.Fatalf("fixture premise broken: MaskOperand(%q) is the identity", shapedHost)
+	}
+	msg := scr.modelsFetchMessage(fmt.Errorf("%w (%s)", providers.ErrModelsConnect, shapedHost))
+	if strings.Contains(msg, shapedHost) {
+		t.Fatalf("connect message echoed the credential-shaped host raw: %q", msg)
+	}
+	if !strings.Contains(msg, want) {
+		t.Fatalf("connect message = %q, want the masked host %q", msg, want)
+	}
+	if !strings.Contains(msg, "could not be reached") {
+		t.Fatalf("connect message = %q, want the catalog connect sentence", msg)
+	}
+
+	// Benign hosts are identity under MaskOperand: the pinned raw form stays.
+	benign := scr.modelsFetchMessage(fmt.Errorf("%w (%s)", providers.ErrModelsConnect, "127.0.0.1:59999"))
+	if !strings.Contains(benign, "127.0.0.1:59999") {
+		t.Fatalf("benign host no longer renders raw: %q", benign)
+	}
+}
+
+// TestModelFormModelIDPickerEscKeepsValues pins the cancel arm: Esc closes
+// the overlay, leaves every field byte-identical, and keeps the form clean.
+func TestModelFormModelIDPickerEscKeepsValues(t *testing.T) {
+	srv := modelsListStub(t, http.StatusOK, charmListFixture)
+	app, _ := modelIDPickerApp(t, srv.URL)
+	scr := driveModelIDPicker(t, app)
+
+	app.Step(KeyEsc)
+	if _, ok := app.Modal().(*Choice); ok {
+		t.Fatal("overlay still open after Esc")
+	}
+	if got := scr.form.Value(fModelID); got != "" {
+		t.Fatalf("Esc changed the model ID field: %q", got)
+	}
+	if got := scr.form.Value(fContext); got != "" {
+		t.Fatalf("Esc changed the context field: %q", got)
+	}
+	if scr.dirty() {
+		t.Fatal("Esc cancelled the overlay but left the form dirty")
+	}
+}
+
+// TestModelFormModelIDPickerRefusedValueBlocksOpen pins the validate-then-open
+// arm shared with the limit pickers: Enter over a value the ID field refuses
+// keeps the plain Enter behaviour (no fetch, no overlay), so no network call
+// is ever triggered on top of text the save would reject.
+func TestModelFormModelIDPickerRefusedValueBlocksOpen(t *testing.T) {
+	srv := modelsListStub(t, http.StatusOK, charmListFixture)
+	app, path := modelIDPickerApp(t, srv.URL)
+	diskBefore, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read providers.json: %v", err)
+	}
+
+	out := app.CaptureRun(&ScriptedKeys{Keys: append(typeRunes(testfixtures.SKLive), KeyEnter)})
+	// A dirty form arms the Esc guard behind any modal interaction; the pin is
+	// that NO Choice (picker) opened and the plain Enter refusal blocked the
+	// advance, not that the modal slot is empty.
+	if _, ok := app.Modal().(*Choice); ok {
+		t.Fatalf("picker opened over a refused ID value; frames:\n%s", out)
+	}
+	scr := app.Top().(*modelFormScreen)
+	if scr.form.Cursor() != fModelID {
+		t.Fatalf("cursor = %d, want %d (advance blocked)", scr.form.Cursor(), fModelID)
+	}
+	if got := scr.form.Value(fModelID); got != testfixtures.SKLive {
+		t.Fatalf("refused ID value changed: %q", got)
+	}
+	if got, _ := os.ReadFile(path); string(got) != string(diskBefore) {
+		t.Fatal("on-disk JSON changed after a refused ID value")
+	}
+}
+
+// TestLimitSeedFor pins the seeding rule from both sides: a present ceiling
+// becomes the decimal field value, an absent one (0 = "not advertised", any
+// non-positive likewise) becomes the sentinel spelling, and every possible
+// output passes the field validator by construction.
+func TestLimitSeedFor(t *testing.T) {
+	for _, tc := range []struct {
+		in   int
+		want string
+	}{
+		{0, ServerMaxTokenInput},
+		{-1, ServerMaxTokenInput},
+		{16000, "16000"},
+		{262128, "262128"},
+		{1048576, "1048576"},
+	} {
+		if got := limitSeedFor(tc.in); got != tc.want {
+			t.Fatalf("limitSeedFor(%d) = %q, want %q", tc.in, got, tc.want)
+		}
+		if err := validateTokenLimit(limitSeedFor(tc.in), "msg"); err != nil {
+			t.Fatalf("limitSeedFor(%d) fails the validator: %v", tc.in, err)
+		}
+	}
+}
+
+// --- P2-5: the family field auto-fills from the model ID --------------------
+
+// walkToSaveRow appends the Tab keys that move the cursor from field `from`
+// off the grid onto the Save row, then the Enter that opens the approval.
+func walkToSaveRow(from int) []Key {
+	keys := make([]Key, 0, fCount-from+1)
+	for i := from; i < fCount; i++ {
+		keys = append(keys, KeyTab)
+	}
+	return append(keys, KeyEnter)
+}
+
+// TestModelFormFamilyAutofillOnAdvance pins the core P2-5 behaviour: typing a
+// model ID and committing it with Tab infers the family through
+// providers.InferFamily (lowercased leading letters after the vendor
+// prefix), the field stays manually editable afterwards, and the inferred
+// value flows through the approval to disk.
+func TestModelFormFamilyAutofillOnAdvance(t *testing.T) {
+	if got := providers.InferFamily("acme/Qwen3-8B"); got != "qwen" {
+		t.Fatalf("fixture premise broken: InferFamily(acme/Qwen3-8B) = %q, want qwen", got)
+	}
+	app, path := newModelFormTestApp(t, "add", "")
+	scr := app.Top().(*modelFormScreen)
+
+	app.CaptureRun(&ScriptedKeys{Keys: append(typeRunes("acme/Qwen3-8B"), KeyTab)})
+	if scr.form.Cursor() != fFamily {
+		t.Fatalf("cursor = %d, want %d after Tab off the ID field", scr.form.Cursor(), fFamily)
+	}
+	if got := scr.form.Value(fFamily); got != "qwen" {
+		t.Fatalf("family field = %q, want the inferred %q", got, "qwen")
+	}
+	if scr.familyTouched {
+		t.Fatal("the auto-fill set familyTouched: the latch must follow hand edits only")
+	}
+	if !scr.dirty() {
+		t.Fatal("auto-filled family left the form clean")
+	}
+
+	// The field stays the authority: typing still edits it.
+	app.Step(RuneKey('2'))
+	if got := scr.form.Value(fFamily); got != "qwen2" {
+		t.Fatalf("family not editable after auto-fill: %q, want qwen2", got)
+	}
+	app.Step(KeyBackspace)
+
+	// Save end to end: the inferred value is what the approval signs and disk
+	// receives.
+	out := app.CaptureRun(&ScriptedKeys{Keys: walkToSaveRow(fFamily)})
+	if !strings.Contains(out, "+ family: qwen") {
+		t.Fatalf("add approval missing the inferred family; frames:\n%s", out)
+	}
+	app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyYes}})
+	m := reloadModels(t, path)[2]
+	if m.Family != "qwen" {
+		t.Fatalf("family on disk = %q, want qwen", m.Family)
+	}
+}
+
+// TestModelFormFamilyAutofillReinfersOnIdChange pins that an untouched family
+// follows the ID: editing the committed ID and advancing again re-infers the
+// family from the new ID (the auto-fill is a mirror of the ID, not a
+// one-time prefill).
+func TestModelFormFamilyAutofillReinfersOnIdChange(t *testing.T) {
+	app, _ := newModelFormTestApp(t, "add", "")
+	scr := app.Top().(*modelFormScreen)
+
+	keys := append(typeRunes("qwen3-8b"), KeyTab) // family -> "qwen"
+	keys = append(keys, KeyUp)                    // back to the ID field
+	for i := 0; i < len("qwen3-8b"); i++ {
+		keys = append(keys, KeyBackspace)
+	}
+	keys = append(keys, typeRunes("mistral-large")...)
+	keys = append(keys, KeyTab)
+	app.CaptureRun(&ScriptedKeys{Keys: keys})
+	if got := scr.form.Value(fModelID); got != "mistral-large" {
+		t.Fatalf("model ID field = %q, want mistral-large", got)
+	}
+	if got := scr.form.Value(fFamily); got != "mistral" {
+		t.Fatalf("family field = %q, want the re-inferred mistral", got)
+	}
+}
+
+// TestModelFormFamilyManualValueSurvives pins the precedence rule: a
+// hand-edited family (even one that started as an auto-fill) is never
+// overwritten by inference. The latch follows the text, so appending to the
+// auto-filled value counts as a hand set.
+func TestModelFormFamilyManualValueSurvives(t *testing.T) {
+	app, path := newModelFormTestApp(t, "add", "")
+	scr := app.Top().(*modelFormScreen)
+
+	keys := append(typeRunes("qwen3-8b"), KeyTab) // auto-fill: family "qwen"
+	keys = append(keys, typeRunes("2")...)        // hand edit: family "qwen2"
+	keys = append(keys, KeyUp)                    // back to the ID field
+	for i := 0; i < len("qwen3-8b"); i++ {
+		keys = append(keys, KeyBackspace)
+	}
+	keys = append(keys, typeRunes("mistral-large")...)
+	keys = append(keys, KeyTab) // would re-infer "mistral" if the latch failed
+	app.CaptureRun(&ScriptedKeys{Keys: keys})
+	if !scr.familyTouched {
+		t.Fatal("familyTouched not set by a real hand edit")
+	}
+	if got := scr.form.Value(fFamily); got != "qwen2" {
+		t.Fatalf("hand-set family overwritten by inference: %q, want qwen2", got)
+	}
+
+	out := app.CaptureRun(&ScriptedKeys{Keys: walkToSaveRow(fFamily)})
+	if !strings.Contains(out, "+ family: qwen2") {
+		t.Fatalf("add approval missing the hand-set family; frames:\n%s", out)
+	}
+	app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyYes}})
+	m := reloadModels(t, path)[2]
+	if m.Family != "qwen2" || m.ID != "mistral-large" {
+		t.Fatalf("on-disk model = id %q family %q, want mistral-large/qwen2", m.ID, m.Family)
+	}
+}
+
+// TestModelFormFamilyClearedStaysCleared pins that clearing the auto-filled
+// family is itself a hand edit: the emptied field survives the save, and a
+// later ID change does not resurrect an inferred family behind the user's
+// back.
+func TestModelFormFamilyClearedStaysCleared(t *testing.T) {
+	app, path := newModelFormTestApp(t, "add", "")
+	scr := app.Top().(*modelFormScreen)
+
+	keys := append(typeRunes("qwen3"), KeyTab) // auto-fill: family "qwen"
+	for i := 0; i < len("qwen"); i++ {
+		keys = append(keys, KeyBackspace) // clear the field: a hand edit
+	}
+	keys = append(keys, KeyUp) // back to the ID field
+	keys = append(keys, typeRunes("-v2")...)
+	keys = append(keys, KeyTab) // commit again; must NOT refill the family
+	app.CaptureRun(&ScriptedKeys{Keys: keys})
+	if got := scr.form.Value(fFamily); got != "" {
+		t.Fatalf("cleared family resurrected by the ID commit: %q, want empty", got)
+	}
+	if got := scr.form.Value(fModelID); got != "qwen3-v2" {
+		t.Fatalf("model ID field = %q, want qwen3-v2", got)
+	}
+
+	out := app.CaptureRun(&ScriptedKeys{Keys: walkToSaveRow(fFamily)})
+	if strings.Contains(out, "+ family:") {
+		t.Fatalf("add approval signed a family the user cleared; frames:\n%s", out)
+	}
+	app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyYes}})
+	m := reloadModels(t, path)[2]
+	if m.Family != "" {
+		t.Fatalf("family on disk = %q, want empty (the user's clear is the authority)", m.Family)
+	}
+}
+
+// TestModelFormFamilyEditModeKeepsStored pins that edit mode never
+// auto-fills: the stored family seeds the field, advancing off the ID field
+// (edited or not) leaves it byte-identical, and the form stays clean.
+func TestModelFormFamilyEditModeKeepsStored(t *testing.T) {
+	app, path := newModelFormTestApp(t, "edit", "acme-fast")
+	scr := app.Top().(*modelFormScreen)
+	if got := scr.form.Value(fFamily); got != "fast" {
+		t.Fatalf("edit seed family = %q, want the stored fast", got)
+	}
+
+	// Edit the ID, then commit it: the stored family must not be re-inferred
+	// from the new ID.
+	app.CaptureRun(&ScriptedKeys{Keys: append(typeRunes("-v2"), KeyTab)})
+	if got := scr.form.Value(fModelID); got != "acme-fast-v2" {
+		t.Fatalf("model ID field = %q, want acme-fast-v2", got)
+	}
+	if got := scr.form.Value(fFamily); got != "fast" {
+		t.Fatalf("edit mode overwrote the stored family: %q, want fast", got)
+	}
+
+	// Save: disk keeps the stored family under the renamed ID.
+	out := app.CaptureRun(&ScriptedKeys{Keys: walkToSaveRow(fFamily)})
+	if !strings.Contains(out, "family: fast -> fast") && strings.Contains(out, "family:") {
+		t.Fatalf("approval signed an unexpected family change; frames:\n%s", out)
+	}
+	app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyYes}})
+	found := false
+	for _, m := range reloadModels(t, path) {
+		if m.ID == "acme-fast-v2" {
+			found = true
+			if m.Family != "fast" {
+				t.Fatalf("family on disk = %q, want the stored fast", m.Family)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("renamed model missing on disk")
+	}
+}
+
+// TestModelFormFamilyDiscardClearsLatch pins the H-4 sweep for the new
+// latch: the discard-confirm restores the construction values AND clears
+// familyTouched before the form pops. The confirmed discard closes the form
+// (the standing TestModelFormDirtyDiscard contract: y pops back to the
+// caller), so there is no in-form auto-fill after it; the pin is that the
+// restored screen object carries no stale latch.
+func TestModelFormFamilyDiscardClearsLatch(t *testing.T) {
+	app, _ := newModelFormTestApp(t, "add", "")
+	scr := app.Top().(*modelFormScreen)
+
+	// Type an ID, commit (family auto-fills), then hand-clear the family:
+	// dirty, latch set. Esc opens the discard-confirm (through the formGuard),
+	// y restores the construction state and pops the form.
+	keys := append(typeRunes("qwen3"), KeyTab)
+	for i := 0; i < len("qwen"); i++ {
+		keys = append(keys, KeyBackspace)
+	}
+	app.CaptureRun(&ScriptedKeys{Keys: append(keys, KeyEsc, KeyYes)})
+	if app.Depth() != 1 || app.Top().Title() != "Models" {
+		t.Fatalf("stack = depth %d top %q, want 1/Models after the confirmed discard",
+			app.Depth(), app.Top().Title())
+	}
+	if scr.familyTouched {
+		t.Fatal("familyTouched survived the discard: the H-4 sweep is missing")
+	}
+	if got := scr.form.Value(fFamily); got != "" {
+		t.Fatalf("family after restore = %q, want the construction value empty", got)
+	}
+	if scr.effortTouched {
+		t.Fatal("effortTouched survived the discard")
+	}
+}
+
+// TestModelFormFamilyPickerPickSeedsFamily pins the P2-7 seeding path: a pick
+// from the model-ID fetch picker seeds the family from the picked id under
+// the same gate as the typed-ID commit, and the value flows to disk.
+func TestModelFormFamilyPickerPickSeedsFamily(t *testing.T) {
+	srv := modelsListStub(t, http.StatusOK, charmListFixture)
+	app, path := modelIDPickerApp(t, srv.URL)
+	scr := driveModelIDPicker(t, app)
+
+	app.Step(KeyDown) // charm-mid
+	app.Step(KeyEnter)
+	if got := scr.form.Value(fModelID); got != "charm-mid" {
+		t.Fatalf("model ID field = %q, want charm-mid", got)
+	}
+	if got := scr.form.Value(fFamily); got != providers.InferFamily("charm-mid") {
+		t.Fatalf("family field = %q, want the inferred %q", got, providers.InferFamily("charm-mid"))
+	}
+	if scr.familyTouched {
+		t.Fatal("the picker seed set familyTouched")
+	}
+
+	m := savePickedModel(t, app, path)
+	if m.Family != "charm" {
+		t.Fatalf("family on disk = %q, want charm", m.Family)
+	}
+}
+
+// TestModelFormFamilyPickerPickKeepsManualFamily pins the picker-side
+// precedence: a hand-set family survives a pick that rewrites the ID.
+func TestModelFormFamilyPickerPickKeepsManualFamily(t *testing.T) {
+	srv := modelsListStub(t, http.StatusOK, charmListFixture)
+	app, path := modelIDPickerApp(t, srv.URL)
+	scr := driveModelIDPicker(t, app)
+
+	// Set the family by hand BEFORE picking. The overlay from
+	// driveModelIDPicker is open; Esc cancels it (nothing is written), then
+	// the form accepts keys again: type an ID, commit (the family
+	// auto-fills), replace the auto-fill by hand, and clear the ID so the
+	// picker becomes the id source again.
+	app.Step(KeyEsc)
+	if _, ok := app.Modal().(*Choice); ok {
+		t.Fatal("stale overlay still open")
+	}
+	keys := append(typeRunes("tmp"), KeyTab)
+	for i := 0; i < len("tmp"); i++ {
+		keys = append(keys, KeyBackspace)
+	}
+	keys = append(keys, typeRunes("custom")...)
+	keys = append(keys, KeyUp)
+	for i := 0; i < len("tmp"); i++ {
+		keys = append(keys, KeyBackspace)
+	}
+	app.CaptureRun(&ScriptedKeys{Keys: keys})
+	if got := scr.form.Value(fModelID); got != "" {
+		t.Fatalf("model ID field = %q, want empty before the fresh pick", got)
+	}
+	if got := scr.form.Value(fFamily); got != "custom" {
+		t.Fatalf("family field = %q, want the hand-set custom", got)
+	}
+	if !scr.familyTouched {
+		t.Fatal("familyTouched not set by the hand edit")
+	}
+
+	// Reopen the picker (empty ID) and pick charm-mid: the ID changes, the
+	// hand-set family must not.
+	app.Step(KeyEnter)
+	if _, ok := app.Modal().(*Choice); !ok {
+		t.Fatalf("picker did not reopen; frames:\n%s", app.CaptureRun(&ScriptedKeys{}))
+	}
+	app.Step(KeyDown)
+	app.Step(KeyEnter)
+	if got := scr.form.Value(fModelID); got != "charm-mid" {
+		t.Fatalf("model ID field = %q, want charm-mid", got)
+	}
+	if got := scr.form.Value(fFamily); got != "custom" {
+		t.Fatalf("picker pick overwrote the hand-set family: %q, want custom", got)
+	}
+
+	m := savePickedModel(t, app, path)
+	if m.Family != "custom" {
+		t.Fatalf("family on disk = %q, want custom", m.Family)
+	}
+}
+
+// TestModelFormFamilyPickerPickEditModeKeepsStored pins that a pick in edit
+// mode rewrites the ID and seeds the limits (P2-7) but never touches the
+// stored family.
+func TestModelFormFamilyPickerPickEditModeKeepsStored(t *testing.T) {
+	srv := modelsListStub(t, http.StatusOK, charmListFixture)
+	reg := &providers.Registry{Providers: []providers.Provider{{
+		Name:    "acme",
+		BaseURL: srv.URL,
+		Models:  []providers.Model{{ID: "old-model", Family: "keptfam"}},
+	}}}
+	app, path := newModelFormTestAppReg(t, reg, "edit", "old-model")
+	scr := app.Top().(*modelFormScreen)
+
+	app.Step(KeyEnter) // seeded ID is valid -> picker opens
+	if _, ok := app.Modal().(*Choice); !ok {
+		t.Fatalf("picker did not open in edit mode; frames:\n%s", app.CaptureRun(&ScriptedKeys{}))
+	}
+	app.Step(KeyDown) // charm-mid
+	app.Step(KeyEnter)
+	if got := scr.form.Value(fModelID); got != "charm-mid" {
+		t.Fatalf("model ID field = %q, want charm-mid", got)
+	}
+	if got := scr.form.Value(fFamily); got != "keptfam" {
+		t.Fatalf("edit-mode pick overwrote the stored family: %q, want keptfam", got)
+	}
+
+	// Save and confirm disk: renamed ID, stored family, seeded limits.
+	keys := make([]Key, 0, fCount+2)
+	for i := 0; i < fCount; i++ {
+		keys = append(keys, KeyDown)
+	}
+	keys = append(keys, KeyEnter)
+	app.CaptureRun(&ScriptedKeys{Keys: keys})
+	app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyYes}})
+	models := reloadModels(t, path)
+	if len(models) != 1 {
+		t.Fatalf("models on disk = %d, want exactly the picked one", len(models))
+	}
+	m := models[0]
+	if m.ID != "charm-mid" || m.Family != "keptfam" {
+		t.Fatalf("on-disk model = id %q family %q, want charm-mid/keptfam", m.ID, m.Family)
+	}
+	if m.ContextLength != 262144 || m.MaxOutputTokens != 26214 {
+		t.Fatalf("on-disk limits = %d/%d, want the seeded 262144/26214", m.ContextLength, m.MaxOutputTokens)
 	}
 }

@@ -198,7 +198,12 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 
 	// Step 4: Model Configuration
 	presets := GetModelPresets(provName)
-	remoteModels := FetchRemoteModels(baseURL, keyValue)
+	// P2-7: the fetch now returns ceilings alongside ids, but the wizard's
+	// synthesized presets keep their historical constants (1M context, -1
+	// max output): this call site is a caller update for the new signature,
+	// not a behaviour change. Ceiling-seeded defaults live in the TUI model
+	// form's model-ID picker.
+	remoteModels, _ := FetchRemoteModels(baseURL, keyValue)
 
 	// If no predefined presets exist, synthesize presets from discovered remote models
 	if len(presets) == 0 && len(remoteModels) > 0 {
@@ -211,9 +216,9 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 			// masked form the menu renders: a credential-shaped ID cannot ride raw
 			// into the preset list through its own annotation.
 			presets = append(presets, ModelPreset{
-				ID:              rm,
-				Family:          InferFamily(rm),
-				Description:     wizardModelLabel(rm) + " (auto-discovered)",
+				ID:              rm.ID,
+				Family:          InferFamily(rm.ID),
+				Description:     wizardModelLabel(rm.ID) + " (auto-discovered)",
 				Recommended:     i == 0,
 				ContextLength:   1048576,
 				MaxOutputTokens: -1,
@@ -729,8 +734,11 @@ func promptCustomModel(r *bufio.Reader, w io.Writer, modelID string) (Model, err
 		}
 	}
 
-	visionAns, _ := promptLine(r, w, "Supports Vision / Images? (y/N)", "N")
-	supportsVision := strings.EqualFold(visionAns, "y") || strings.EqualFold(visionAns, "yes")
+	visionAns, _ := promptLine(r, w, "Supports Vision / Images? (Y/n)", "Y")
+	supportsVision := !strings.EqualFold(visionAns, "n") && !strings.EqualFold(visionAns, "no")
+
+	videoAns, _ := promptLine(r, w, "Supports Video? (Y/n)", "Y")
+	supportsVideo := !strings.EqualFold(videoAns, "n") && !strings.EqualFold(videoAns, "no")
 
 	caps := Capabilities{
 		SupportsTools:    supportsTools,
@@ -738,6 +746,7 @@ func promptCustomModel(r *bufio.Reader, w io.Writer, modelID string) (Model, err
 		SupportsThinking: supportsThinking,
 		ReasoningEffort:  reasoningEffort,
 		SupportsVision:   supportsVision,
+		SupportsVideo:    supportsVideo,
 	}
 
 	tags := DeriveTags(caps)

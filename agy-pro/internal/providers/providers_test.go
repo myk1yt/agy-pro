@@ -276,7 +276,8 @@ func TestInteractiveSetupWizard(t *testing.T) {
 	// 10. Allowed tools: (accept default)
 	// 11. Supports Thinking: N
 	// 12. Supports Vision: N
-	// 13. More models: N
+	// 13. Supports Video: N
+	// 14. More models: N
 	input := strings.Join([]string{
 		"mockprov",
 		server.URL + "/v1",
@@ -288,6 +289,7 @@ func TestInteractiveSetupWizard(t *testing.T) {
 		"",
 		"Y",
 		"",
+		"N",
 		"N",
 		"N",
 		"N",
@@ -392,15 +394,215 @@ func TestFetchRemoteModels(t *testing.T) {
 	}))
 	defer server.Close()
 
-	models := FetchRemoteModels(server.URL, "test-synthetic-key-0123456789abcdef")
-	if len(models) != 2 || models[0] != "remote-model-1" || models[1] != "remote-model-2" {
+	models, err := FetchRemoteModels(server.URL, "test-synthetic-key-0123456789abcdef")
+	if err != nil {
+		t.Fatalf("FetchRemoteModels: %v", err)
+	}
+	if len(models) != 2 || models[0].ID != "remote-model-1" || models[1].ID != "remote-model-2" {
 		t.Fatalf("unexpected fetched models: %+v", models)
 	}
+	// Ids-only payloads advertise no ceilings: both slots stay 0 ("not
+	// advertised"), the pre-P2-7 behaviour for every field downstream.
+	if models[0].ContextLength != 0 || models[0].MaxOutputTokens != 0 {
+		t.Fatalf("ids-only payload carried ceilings: %+v", models[0])
+	}
 
-	// Unreachable server should return nil
-	empty := FetchRemoteModels("http://127.0.0.1:59999", "key")
+	// Unreachable server surfaces ErrModelsConnect (P2-6: the five silent
+	// failures are now distinguishable errors).
+	empty, err := FetchRemoteModels("http://127.0.0.1:59999", "key")
+	if !errors.Is(err, ErrModelsConnect) {
+		t.Fatalf("unreachable server err = %v, want ErrModelsConnect", err)
+	}
 	if len(empty) != 0 {
 		t.Fatalf("expected empty slice for unreachable server, got %+v", empty)
+	}
+}
+
+// TestFetchRemoteModelsCeilings pins the P2-7 alias decode against the two
+// real payload shapes the T-B live probe recorded (Charm-style and nw-style),
+// their union, and payloads advertising nothing at all. Fixture values are the
+// sanitized samples from survey-tb-models-live.md (ids + numbers only).
+func TestFetchRemoteModelsCeilings(t *testing.T) {
+	charmStyle := `{"data":[
+		{"id":"charm-small","context_window":256000,"max_output_tokens":16000},
+		{"id":"charm-mid","context_window":262144,"max_output_tokens":26214},
+		{"id":"charm-big","context_window":1048576,"max_output_tokens":384000}
+	]}`
+	nwStyle := `{"data":[
+		{"id":"nw-ctx-256k","max_model_len":262128},
+		{"id":"nw-ctx-1m","max_model_len":1048560}
+	]}`
+	unionStyle := `{"data":[
+		{"id":"union-a","context_window":1000000,"max_output_tokens":262144},
+		{"id":"union-b","context_length":128000,"max_tokens":4096},
+		{"id":"union-c","context_size":65536,"max_completion_tokens":8192},
+		{"id":"union-d","max_context_tokens":32768},
+		{"id":"union-e","max_input_tokens":16384}
+	]}`
+	junkShape := `{"data":[
+		{"id":"junk-neg","context_window":-5,"max_output_tokens":-1},
+		{"id":"junk-zero","context_window":0,"max_output_tokens":0},
+		{"id":"junk-absurd","context_window":999999999999},
+		{"id":"junk-string","context_window":"262144","max_output_tokens":"8192"},
+		{"id":"junk-badstring","context_window":"unlimited","max_output_tokens":"4o96"},
+		{"id":"junk-bool","context_window":true,"max_output_tokens":8192},
+		{"id":"junk-fraction","context_window":128000.5,"max_output_tokens":4096},
+		{"id":"","context_window":262144},
+		{"id":"junk-multi","max_model_len":999999999999,"context_window":524288}
+	]}`
+
+	cases := []struct {
+		name   string
+		body   string
+		ids    []string
+		ctx    []int
+		maxOut []int
+	}{
+		{
+			name:   "charm style (context_window + max_output_tokens)",
+			body:   charmStyle,
+			ids:    []string{"charm-small", "charm-mid", "charm-big"},
+			ctx:    []int{256000, 262144, 1048576},
+			maxOut: []int{16000, 26214, 384000},
+		},
+		{
+			name:   "nw style (max_model_len only, no max-output field)",
+			body:   nwStyle,
+			ids:    []string{"nw-ctx-256k", "nw-ctx-1m"},
+			ctx:    []int{262128, 1048560},
+			maxOut: []int{0, 0},
+		},
+		{
+			name:   "union of alias families",
+			body:   unionStyle,
+			ids:    []string{"union-a", "union-b", "union-c", "union-d", "union-e"},
+			ctx:    []int{1000000, 128000, 65536, 32768, 16384},
+			maxOut: []int{262144, 4096, 8192, 0, 0},
+		},
+		{
+			name:   "neither shape (ids only)",
+			body:   `{"data":[{"id":"plain-1"},{"id":"plain-2"}]}`,
+			ids:    []string{"plain-1", "plain-2"},
+			ctx:    []int{0, 0},
+			maxOut: []int{0, 0},
+		},
+		{
+			name: "junk and sanity floor",
+			body: junkShape,
+			ids:  []string{"junk-neg", "junk-zero", "junk-absurd", "junk-string", "junk-badstring", "junk-bool", "junk-fraction", "junk-multi"},
+			// -5/-1/0/999999999999 rejected; quoted numbers accepted; bools and
+			// fractions rejected (context side; the sibling numeric ceiling
+			// still parses); an empty id drops the whole row; the absurd
+			// max_model_len is skipped and the sane context_window wins.
+			ctx:    []int{0, 0, 0, 262144, 0, 0, 0, 524288},
+			maxOut: []int{0, 0, 0, 8192, 0, 8192, 4096, 0},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+
+			models, err := FetchRemoteModels(server.URL, "")
+			if err != nil {
+				t.Fatalf("FetchRemoteModels: %v", err)
+			}
+			if len(models) != len(tc.ids) {
+				t.Fatalf("got %d models %+v, want %d", len(models), models, len(tc.ids))
+			}
+			for i := range models {
+				if models[i].ID != tc.ids[i] || models[i].ContextLength != tc.ctx[i] || models[i].MaxOutputTokens != tc.maxOut[i] {
+					t.Fatalf("model %d = %+v, want id=%s ctx=%d maxOut=%d",
+						i, models[i], tc.ids[i], tc.ctx[i], tc.maxOut[i])
+				}
+			}
+		})
+	}
+}
+
+// TestFetchRemoteModelsStripsControlRunes pins the decode-boundary rule
+// (FIX-SEC-F1b, review MED-2): a remote id carrying C0 control runes or DEL is
+// stripped before it leaves FetchRemoteModels, so no caller (TUI picker, wizard,
+// the persisted registry) can paint a terminal escape sequence the endpoint
+// planted in its /models answer. The strip runs BEFORE the trim, so a
+// control-padded id keeps neither the rune nor its surrounding whitespace; an
+// id that is nothing but control runes drops out of the list entirely, and a
+// benign id stays byte-identical.
+func TestFetchRemoteModelsStripsControlRunes(t *testing.T) {
+	body := `{"data":[
+		{"id":"\u001b[2J\u001b[1;1HFAKE-MODEL"},
+		{"id":"\u007fdel-head"},
+		{"id":" \u001btrim-me\u001b "},
+		{"id":"\u001b\u0001\u007f"},
+		{"id":"plain-model"}
+	]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	models, err := FetchRemoteModels(server.URL, "")
+	if err != nil {
+		t.Fatalf("FetchRemoteModels: %v", err)
+	}
+	want := []string{"[2J[1;1HFAKE-MODEL", "del-head", "trim-me", "plain-model"}
+	if len(models) != len(want) {
+		t.Fatalf("got %d models %+v, want %d (the all-control id drops)", len(models), models, len(want))
+	}
+	for i, id := range want {
+		if models[i].ID != id {
+			t.Fatalf("model %d id = %q, want %q", i, models[i].ID, id)
+		}
+		for _, r := range models[i].ID {
+			if r < 0x20 || r == 0x7f {
+				t.Fatalf("model %d id %q still carries control rune %U", i, models[i].ID, r)
+			}
+		}
+	}
+}
+
+// TestFetchRemoteModelsFailureKinds pins the five P2-6 failure surfaces: each
+// silent nil of the old contract is now one sentinel, with sanitized detail
+// (status code / host, never the URL or key material).
+func TestFetchRemoteModelsFailureKinds(t *testing.T) {
+	if _, err := FetchRemoteModels("   ", "key"); !errors.Is(err, ErrModelsNoBaseURL) {
+		t.Fatalf("empty baseURL err = %v, want ErrModelsNoBaseURL", err)
+	}
+
+	statusServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer statusServer.Close()
+	_, err := FetchRemoteModels(statusServer.URL, "key")
+	if !errors.Is(err, ErrModelsStatus) {
+		t.Fatalf("non-200 err = %v, want ErrModelsStatus", err)
+	}
+	if !strings.Contains(err.Error(), "403") {
+		t.Fatalf("status detail missing code: %v", err)
+	}
+
+	decodeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{not json`))
+	}))
+	defer decodeServer.Close()
+	if _, err := FetchRemoteModels(decodeServer.URL, "key"); !errors.Is(err, ErrModelsDecode) {
+		t.Fatalf("bad JSON err = %v, want ErrModelsDecode", err)
+	}
+
+	// A valid payload with an empty data array is NOT an error: the endpoint
+	// answered fine and simply lists nothing (e.g. a keyless gateway).
+	emptyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"data":[]}`))
+	}))
+	defer emptyServer.Close()
+	models, err := FetchRemoteModels(emptyServer.URL, "key")
+	if err != nil || len(models) != 0 {
+		t.Fatalf("empty data: models=%+v err=%v, want empty nil", models, err)
 	}
 }
 
@@ -866,6 +1068,7 @@ func TestInteractiveSetupWizard_ServerMaximumTokens(t *testing.T) {
 		"y",       // reasoning: y
 		"default", // reasoning effort
 		"y",       // vision: y
+		"y",       // video: y
 		"N",       // add another: N
 	}, "\n") + "\n"
 
@@ -980,6 +1183,7 @@ func TestInteractiveSetupWizard_ProbeFailure_SaveAnyway(t *testing.T) {
 		"n",
 		"n",
 		"n",
+		"n", // video: n
 		"1", // choice 1: Save model configuration anyway [Recommended]
 		"N", // add another: N
 	}, "\n") + "\n"
@@ -2087,7 +2291,7 @@ func TestInteractiveSetupWizard_EditPromptTypedURLWins(t *testing.T) {
 func wizardGuardScript(name, baseURL string) string {
 	return strings.Join([]string{
 		name, baseURL, "ACMEGUARD_KEY", "", "acme-model",
-		"", "", "", "Y", "", "N", "N", "4", "",
+		"", "", "", "Y", "", "N", "N", "N", "4", "",
 	}, "\n") + "\n"
 }
 
@@ -2665,7 +2869,7 @@ func TestWizardModelIDSitesRouteThroughTheSlotAuthority(t *testing.T) {
 		{"wizardModelLabel(m.ID)", 1},             // summary row
 		{"wizardModelLabel(models[0].ID)", 2},     // native agy -m, fanout --models
 		{"wizardModelLabel(p.ID)", 1},             // preset list row
-		{"wizardModelLabel(rm)", 1},               // synthesized discovered description
+		{"wizardModelLabel(rm.ID)", 1},            // synthesized discovered description
 	} {
 		if got := strings.Count(code, want.operand); got != want.count {
 			t.Fatalf("%s appears %d times; want %d", want.operand, got, want.count)
@@ -2814,5 +3018,66 @@ func TestInteractiveSetupWizard_TranscriptMasksDiscardedCredentialModelID(t *tes
 				t.Fatalf("saved model ID = %q; want acme-fast", got)
 			}
 		})
+	}
+}
+
+// TestWizardCapabilityDefaultsYTaken pins U3 (P2-4) on the wizard surface:
+// accepting the defaults at the thinking, vision and video prompts saves all
+// three flags true, and explicit "n" answers remain the manual override. Form
+// parity lives in TestModelFormCapabilityDefaultsAddMode.
+func TestWizardCapabilityDefaultsYTaken(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"choices":[{"message":{"content":"pong"}}]}`))
+	}))
+	defer server.Close()
+
+	run := func(name, modelID string, answers []string) Model {
+		t.Helper()
+		provPath := filepath.Join(t.TempDir(), "providers.json")
+		t.Setenv(EnvProviders, provPath)
+		lines := []string{
+			name, server.URL + "/v1", name + "_API_KEY", "", modelID,
+			"", // family
+			"", // context length
+			"", // max output tokens
+		}
+		lines = append(lines, answers...)
+		lines = append(lines, "N") // add another: N
+		out := &bytes.Buffer{}
+		if err := InteractiveSetupWizard(strings.NewReader(strings.Join(lines, "\n")+"\n"), out); err != nil {
+			t.Fatalf("InteractiveSetupWizard returned error: %v\nOutput: %s", err, out.String())
+		}
+		reg, err := LoadFrom(provPath)
+		if err != nil {
+			t.Fatalf("failed to load saved providers: %v", err)
+		}
+		return reg.Providers[0].Models[0]
+	}
+
+	// Empty answers accept the bracketed defaults at every capability prompt.
+	m := run("defprov", "custom-def-model", []string{"n", "", "", "", ""})
+	// tools n, thinking "" -> Y, effort "" -> default, vision "" -> Y, video "" -> Y
+	if !m.Capabilities.SupportsThinking {
+		t.Error("SupportsThinking = false; want true (Y default)")
+	}
+	if m.Capabilities.ReasoningEffort != "default" {
+		t.Errorf("reasoningEffort = %q; want \"default\"", m.Capabilities.ReasoningEffort)
+	}
+	if !m.Capabilities.SupportsVision {
+		t.Error("SupportsVision = false; want true (Y default)")
+	}
+	if !m.Capabilities.SupportsVideo {
+		t.Error("SupportsVideo = false; want true (Y default)")
+	}
+	if !m.HasTag("reasoning") || !m.HasTag("vision") {
+		t.Errorf("expected reasoning+vision tags, got %v", m.Tags)
+	}
+
+	// Explicit "n" at every capability prompt overrides the Y default.
+	m = run("novprov", "custom-nov-model", []string{"n", "n", "n", "n"})
+	if m.Capabilities.SupportsThinking || m.Capabilities.SupportsVision || m.Capabilities.SupportsVideo {
+		t.Errorf("manual n override lost: %+v", m.Capabilities)
 	}
 }

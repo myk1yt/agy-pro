@@ -41,8 +41,11 @@ const (
 // in en.json (the models.form.* labels, models.validation.id_*/context/max_out,
 // models.delete.count via the models screen const) resolve directly.
 const (
-	// catalog-resolved, fallback kept: models.form.hint
-	missingModelFormHint = "Enter advances · Enter on Capabilities opens the tool picker · Esc asks to discard unsaved edits"
+	// catalog-resolved, fallback kept: models.form.hint. The const is
+	// byte-identical to the current en.json value (the catalog is the shipped
+	// truth; this is the missing-key fallback), so a catalog miss renders the
+	// same sentence the catalogs ship, picker clause included.
+	missingModelFormHint = "Enter advances · Enter on Model ID opens the model list picker · Enter on Capabilities opens the tool picker · Enter on a limit or effort field opens the preset picker · Esc asks to discard unsaved edits"
 	// catalog-resolved, fallback kept: models.form.caps_none
 	missingModelFormCapsNone = "(none)"
 	// catalog-resolved, fallback kept: models.validation.enabled
@@ -89,6 +92,21 @@ const (
 	// 12 catalogs; the const stays as the documented fallback. The message
 	// carries no operands, so nothing untrusted can echo through it.
 	missingModelFormStaleBase = "The model changed on disk since this form opened. Close and reopen the form; nothing was written."
+	// P2-6/P2-7 fetch fallbacks: every user-visible string of the model-ID
+	// picker resolves through a models.form.fetch_* catalog key first, and the
+	// keys are now shipped in all 12 catalogs (the P2-4 locale pass landed
+	// them), so these consts are the documented missing-key fallback only. The
+	// {{host}} slot is filled with a MaskOperand-masked host (see
+	// modelsFetchMessage) and {{status}} with the numeric code; the
+	// providers-side error detail is already sanitized (host and/or status code
+	// only).
+	missingModelFormFetchNoURL   = "This provider has no base URL; the model list cannot be fetched."
+	missingModelFormFetchRequest = "The model list request could not be built (base URL invalid)."
+	missingModelFormFetchConnect = "The provider could not be reached ({{host}}); the model list was not fetched."
+	missingModelFormFetchStatus  = "The provider answered the model list request with status {{status}}."
+	missingModelFormFetchDecode  = "The provider's model list response could not be read."
+	missingModelFormFetchEmpty   = "The provider returned an empty model list."
+	missingModelFormFetchLoad    = "The provider registry could not be read; the model list was not fetched."
 )
 
 // looksSecretValue is the model form's ingest guard: it answers whether a
@@ -193,6 +211,17 @@ type modelFormScreen struct {
 	// follows the text, not the key: a keystroke that wrote nothing must not
 	// rewrite pristine raw bytes on the next save.
 	effortTouched bool
+
+	// familyTouched latches a real edit of the family field (P2-5): the field
+	// auto-fills from the model ID (providers.InferFamily, the wizard's
+	// prefill at providers/wizard.go) whenever the ID is committed, but only
+	// while the user has not hand-set the field. The latch follows the text,
+	// not the key (same contract as effortTouched): an auto-fill write goes
+	// through the form rebuild, never through the key handler, so it never
+	// sets the latch. Clearing the field with backspace IS a hand edit and
+	// sets the latch: a cleared family stays cleared, and a later ID change
+	// does not resurrect it.
+	familyTouched bool
 }
 
 // NewModelFormScreen builds the add/edit form for one provider. mode is
@@ -236,6 +265,16 @@ func NewModelFormScreen(core *settings.Core, providerName, modeName, modelID str
 	s.baseTools = append([]string(nil), s.tools...)
 	vals := make([]string, fCount)
 	vals[fEnabled] = "y"
+	if !s.origFound {
+		// P2-4 (U3 defaults half): in add mode the three capability flags
+		// default to Y, matching the wizard's Y-default prompts for thinking,
+		// vision and video. The seed is a real field value, so typing "n" is
+		// the manual override and flows through parseYesNo like any edit.
+		// Edit mode never reaches this arm: it seeds from the record below.
+		vals[fThinking] = "y"
+		vals[fVision] = "y"
+		vals[fVideo] = "y"
+	}
 	if s.origFound {
 		vals[fModelID] = s.orig.ID
 		vals[fFamily] = s.orig.Family
@@ -243,11 +282,19 @@ func NewModelFormScreen(core *settings.Core, providerName, modeName, modelID str
 		if !s.orig.IsEnabled() {
 			vals[fEnabled] = "n"
 		}
-		if s.orig.ContextLength > 0 {
-			vals[fContext] = strconv.Itoa(s.orig.ContextLength)
+		// P2-1: EVERY non-zero limit seeds verbatim, so the server-maximum
+		// sentinel the wizard and the compiled presets persist (-1) reaches the
+		// field as "-1" instead of a blank. Blanking it was not cosmetic: an
+		// empty field saves as 0, which silently rewrote the record and handed
+		// the catalog its fallback limits on the next run. A value that is
+		// neither positive nor the sentinel (a hand-edited -5) also seeds
+		// verbatim: the validator then refuses it by name instead of the save
+		// quietly rewriting it to 0.
+		if n := s.orig.ContextLength; n != 0 {
+			vals[fContext] = strconv.Itoa(n)
 		}
-		if s.orig.MaxOutputTokens > 0 {
-			vals[fMaxOut] = strconv.Itoa(s.orig.MaxOutputTokens)
+		if n := s.orig.MaxOutputTokens; n != 0 {
+			vals[fMaxOut] = strconv.Itoa(n)
 		}
 		c := s.orig.Capabilities
 		if c.SupportsThinking {
@@ -455,13 +502,28 @@ func (s *modelFormScreen) dupMessage(id string) string {
 	return s.b.Tf("models.validation.id_exists", map[string]string{"id": maskSlotOperand(id)})
 }
 
+// idSecretRefusal is the save door's credential arm, expressed once. It is the
+// arm of validateID that refuses credential material, and it exists as a named
+// predicate because the pick door (applyModelIDPick) refuses a picked remote id
+// with the SAME rule before the id reaches the field: one predicate, one
+// catalog key, so the pick door and the save door cannot disagree about one id
+// (r3 M-1). The value is trimmed first, exactly as validateID and buildModel
+// read it, so padding cannot walk a credential past either door. It returns the
+// refusal sentence, or "" when the id is admissible; the value is never echoed.
+func (s *modelFormScreen) idSecretRefusal(id string) string {
+	if looksSecretValue(strings.TrimSpace(id)) {
+		return missingOr(s.b, "models.validation.secret", missingModelFormSecret)
+	}
+	return ""
+}
+
 func (s *modelFormScreen) validateID(v string) error {
 	id := strings.TrimSpace(v)
 	if id == "" {
 		return errors.New(s.b.T("models.validation.id_empty"))
 	}
-	if looksSecretValue(id) {
-		return errors.New(missingOr(s.b, "models.validation.secret", missingModelFormSecret))
+	if msg := s.idSecretRefusal(id); msg != "" {
+		return errors.New(msg)
 	}
 	if s.idTaken(id) {
 		return errors.New(s.dupMessage(id))
@@ -532,6 +594,25 @@ var validEffortValues = map[string]bool{
 	"max":     true,
 }
 
+// effortPickerOptions is the fixed row set of the reasoning-effort cursor
+// picker, in ascending-effort order. Every entry is one of validEffortValues
+// and the label IS the value: the closed set carries no per-value catalog
+// labels (checked across all 12 locales; only the models.validation.effort
+// message lists the spellings), so the literals are locale-neutral by
+// construction. The picker writes a row back as the exact bytes typing it
+// would produce, so free text stays the authority and the validator is the
+// only acceptance door. effortPickerTestRows pins the slice against the
+// validEffortValues set so the two cannot drift.
+var effortPickerOptions = []string{
+	"default",
+	"none",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+}
+
 // normEffort applies the validator's normalization (trim + lowercase) to a
 // reasoning-effort value. Every comparison site (validator, dirty/diff
 // path, buildModel) routes through it so a non-normalized on-disk value
@@ -558,18 +639,92 @@ func (s *modelFormScreen) validateEffort(v string) error {
 	return nil
 }
 
+// ServerMaxTokenInput is the ONE spelling of the "server maximum" token limit
+// this form can type, seed and save. The persisted wire value is the same
+// integer the wizard prompts promise ("... or -1 for server maximum",
+// internal/providers/wizard.go) and the compiled presets carry
+// (providers.GetModelPresets, "server max output"), and the hybrid catalog
+// already reads any non-positive limit as "use the fallback"
+// (internal/hybrid/catalog.go maxTokensFor/maxOutputTokensFor). Nothing about
+// the storage format or the catalog changes here: this constant is the form's
+// text-side name for that wire value, and it is the spelling the P2-2 cursor
+// picker's "server maximum" entry writes. TestServerMaxTokenInputPinsWireValue
+// pins the spelling against the preset value so the two doors cannot drift.
+const ServerMaxTokenInput = "-1"
+
+// serverMaxTokens is the integer ServerMaxTokenInput parses to and the value
+// the form persists for it. It is derived from the spelling, not a second
+// literal to keep in step: buildModel reads it back through parseTokenLimit.
+func serverMaxTokens() int {
+	n, err := strconv.Atoi(ServerMaxTokenInput)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// isServerMaxTokenInput reports whether v is the sentinel spelling. The
+// comparison is exact after trimming, so "-01" or "-1 " typed variants do not
+// sneak a second spelling into the registry: the canonical bytes are the only
+// ones the catalog and the wizard agree on.
+func isServerMaxTokenInput(v string) bool {
+	return strings.TrimSpace(v) == ServerMaxTokenInput
+}
+
+// limitPickerServerMaxLabel is the English fallback of the picker's
+// "server maximum" entry. The display label resolves through the catalog key
+// models.form.limit_server_max at picker-open time (landed in all 12 locales
+// by P1-3); this const is only the missing-key fallback, and the picker test
+// pins catalog and const to the same string. The VALUE written back is not
+// this label but ServerMaxTokenInput, per the P2-1 decision: the label is a
+// display decision over the constant, not a second spelling.
+const limitPickerServerMaxLabel = "Server maximum (-1)"
+
+// limitPickerOption is one cursor-picker row: the plain literal label shown
+// in the overlay and the exact field bytes the pick writes back. The value
+// column is what typing the choice would produce (a numeric literal the
+// validator accepts, or the P2-1 sentinel spelling), so the picker never
+// introduces a second input language: free text stays the authority.
+type limitPickerOption struct {
+	label string
+	value string
+}
+
+// limitPickerOptions is the fixed row set for both limit fields, ordered
+// small to large with the server-maximum sentinel last. One table builds the
+// labels and the write-back values, so the two cannot drift apart.
+var limitPickerOptions = []limitPickerOption{
+	{label: "128k", value: "131072"},
+	{label: "256k", value: "262144"},
+	{label: "512k", value: "524288"},
+	{label: "1M", value: "1048576"},
+	{label: limitPickerServerMaxLabel, value: ServerMaxTokenInput},
+}
+
 func (s *modelFormScreen) validateContext(v string) error {
-	return validatePositiveInt(v, s.b.T("models.validation.context"))
+	return validateTokenLimit(v, s.b.T("models.validation.context"))
 }
 
 func (s *modelFormScreen) validateMaxOut(v string) error {
-	return validatePositiveInt(v, s.b.T("models.validation.max_out"))
+	return validateTokenLimit(v, s.b.T("models.validation.max_out"))
 }
 
-// validatePositiveInt accepts empty (unset) or a positive integer.
-func validatePositiveInt(v, msg string) error {
+// validateTokenLimit accepts empty (unset), the server-maximum sentinel
+// (ServerMaxTokenInput), or a positive integer. P2-1 widened the old
+// positive-only rule by exactly the sentinel: a limit the wizard can persist
+// must be a limit this form can retype, or the first save on a wizard-created
+// model destroys it. Every other value stays refused, so the choice is "a
+// positive number or -1", not "anything goes".
+//
+// The refusal message resolves through the existing
+// models.validation.context / models.validation.max_out keys, whose shipped
+// wording names the sentinel ("must be a positive number, or -1 for server
+// maximum") in all 12 catalogs, so the refusal and the accepted sentinel
+// spelling agree. The key stays shared with the CLI twin, and no new
+// user-visible string is introduced here.
+func validateTokenLimit(v, msg string) error {
 	v = strings.TrimSpace(v)
-	if v == "" {
+	if v == "" || isServerMaxTokenInput(v) {
 		return nil
 	}
 	n, err := strconv.Atoi(v)
@@ -661,7 +816,13 @@ func (s *modelFormScreen) HandleKey(k Key, a *App) {
 }
 
 // dispatch routes one key between the Save row and the field grid. Enter on
-// the capabilities row opens the tool picker instead of advancing.
+// the capabilities row opens the tool picker instead of advancing; Enter on
+// a limit field or the effort field opens its preset picker, but only over a
+// value the field already accepts (a refused value keeps the plain Enter
+// behaviour: validation message, no advance, no picker). Enter on the model
+// ID field opens the server model-list picker under the same rule; from that
+// field, Tab/Down still advances and commit the ID (the family field
+// auto-fills from the committed ID, P2-5).
 func (s *modelFormScreen) dispatch(k Key) {
 	s.errMsg = ""
 	if s.onSaveRow {
@@ -681,10 +842,46 @@ func (s *modelFormScreen) dispatch(k Key) {
 			return
 		}
 	case KeyEnter:
-		if s.form.Cursor() == fCaps {
+		switch s.form.Cursor() {
+		case fModelID:
+			// The picker IS the id source in add mode, so an EMPTY field must
+			// open it: the gate below blocks only a non-empty value the field
+			// refuses (the plain Enter behaviour: refusal message, no fetch,
+			// no overlay), mirroring the limit pickers.
+			if v := s.form.Value(fModelID); strings.TrimSpace(v) != "" {
+				if f := s.form.Field(fModelID); f.Validate != nil && f.Validate(v) != nil {
+					s.form.HandleKey(k)
+					return
+				}
+			}
+			s.openModelIDPicker()
+			return
+		case fCaps:
 			s.openTools()
 			return
+		case fContext, fMaxOut:
+			if f := s.form.Field(s.form.Cursor()); f.Validate != nil && f.Validate(s.form.Value(s.form.Cursor())) != nil {
+				s.form.HandleKey(k)
+				return
+			}
+			s.openLimitPicker(s.form.Cursor())
+			return
+		case fEffort:
+			if f := s.form.Field(fEffort); f.Validate != nil && f.Validate(s.form.Value(fEffort)) != nil {
+				s.form.HandleKey(k)
+				return
+			}
+			s.openEffortPicker()
+			return
 		}
+	}
+	if s.form.Cursor() == fFamily && fieldEditKey(k) {
+		before := s.form.Value(fFamily)
+		s.form.HandleKey(k)
+		if s.form.Value(fFamily) != before {
+			s.familyTouched = true
+		}
+		return
 	}
 	if s.form.Cursor() == fEffort && fieldEditKey(k) {
 		before := s.form.Value(fEffort)
@@ -695,6 +892,14 @@ func (s *modelFormScreen) dispatch(k Key) {
 		return
 	}
 	s.form.HandleKey(k)
+	// P2-5: committing the model ID (Tab/Down off the field) auto-fills the
+	// family from the ID, mirroring the wizard's InferFamily prefill. Enter
+	// never advances off the ID field (it opens the model-list picker), so
+	// the advance keys are the only commit door here; the picker pick has its
+	// own seeding arm in applyModelIDPick.
+	if (k == KeyTab || k == KeyDown) && s.form.Cursor() == fFamily {
+		s.maybeAutofillFamily()
+	}
 }
 
 // fieldEditKey reports whether k is one of the keys Form.HandleKey writes the
@@ -730,7 +935,9 @@ func (s *modelFormScreen) rearmGuard(a *App) {
 // bit that the Form does not own, so Restore alone left it set; a save of the
 // restored (pristine-looking) form then persisted the normalized bytes over a
 // raw original. Restore is the one path that returns the form to its
-// construction values, so the latch is cleared here, next to it.
+// construction values, so the latch is cleared here, next to it. The same
+// holds for the family latch (P2-5): after a discard the field is untouched
+// again, so a later ID commit must auto-fill it.
 func (s *modelFormScreen) askDiscard() {
 	a := s.app
 	if a == nil {
@@ -747,6 +954,7 @@ func (s *modelFormScreen) askDiscard() {
 			s.form.Restore(s.baseVals)
 			s.tools = append([]string(nil), s.baseTools...)
 			s.effortTouched = false
+			s.familyTouched = false
 			a.Pop()
 			a.SetMessage(missingOr(s.b, "models.msg.cancelled", missingModelsCancelled))
 		}))
@@ -801,6 +1009,318 @@ func (s *modelFormScreen) syncCapsField() {
 	cursor := s.form.Cursor()
 	s.form = NewForm(s.buildFields(vals))
 	s.form.SetCursor(cursor)
+}
+
+// openLimitPicker opens the shared M2 single-choice overlay over the fixed
+// limit rows for the focused field (context length or max output tokens).
+// Enter writes the chosen row's value back into the SAME free-text field and
+// keeps the field in input mode: the picker is an input convenience, never a
+// replacement for the field. Esc cancels without touching the field. The
+// title reuses the field's own catalog label, so no new user-visible key is
+// introduced; the row labels are plain literals, locale-neutral by
+// construction, except the server-maximum entry whose label resolves through
+// models.form.limit_server_max (see limitPickerServerMaxLabel).
+func (s *modelFormScreen) openLimitPicker(field int) {
+	a := s.app
+	if a == nil {
+		return
+	}
+	title := s.b.T("models.form.context")
+	if field == fMaxOut {
+		title = s.b.T("models.form.max_out")
+	}
+	opts := make([]string, len(limitPickerOptions))
+	for i, o := range limitPickerOptions {
+		opts[i] = o.label
+		if isServerMaxTokenInput(o.value) {
+			// The server-maximum row is the one localized label; the numeric
+			// rows are locale-neutral literals.
+			opts[i] = missingOr(s.b, "models.form.limit_server_max", limitPickerServerMaxLabel)
+		}
+	}
+	ch := NewChoice(title, opts, func(idx int, _ string) {
+		if idx < 0 {
+			a.SetMessage(missingOr(s.b, "models.msg.cancelled", missingModelsCancelled))
+			s.rearmGuard(a)
+			return
+		}
+		s.setFieldValue(field, limitPickerOptions[idx].value)
+		s.rearmGuard(a)
+	})
+	a.ShowModal(ch)
+}
+
+// openEffortPicker opens the shared M2 single-choice overlay over the seven
+// closed reasoning-effort values for the effort field. Enter writes the chosen
+// literal back into the SAME free-text field and keeps the field in input
+// mode, exactly like openLimitPicker; the write deliberately does NOT set
+// effortTouched, because the latch exists for a different purpose (G-M5: a
+// pristine edit-mode save must keep the RAW original bytes). A picked value
+// that differs from the original flows to disk through the normalized value
+// comparison in buildModel; a pick equal to the original has nothing to
+// persist, so leaving the latch alone is the correct behaviour in both cases.
+// Esc cancels without touching the field. The title reuses the field's own
+// catalog label (models.form.effort), so no new user-visible key is
+// introduced; the row labels are the closed-set literals, locale-neutral by
+// construction (no per-value catalog labels exist; see effortPickerOptions).
+func (s *modelFormScreen) openEffortPicker() {
+	a := s.app
+	if a == nil {
+		return
+	}
+	ch := NewChoice(
+		missingOr(s.b, "models.form.effort", missingModelFormEffortLabel),
+		append([]string(nil), effortPickerOptions...),
+		func(idx int, _ string) {
+			if idx < 0 {
+				a.SetMessage(missingOr(s.b, "models.msg.cancelled", missingModelsCancelled))
+				s.rearmGuard(a)
+				return
+			}
+			s.setFieldValue(fEffort, effortPickerOptions[idx])
+			s.rearmGuard(a)
+		})
+	a.ShowModal(ch)
+}
+
+// setFieldValue writes one field's value back through a form rebuild, keeping
+// the cursor on the field. The pickers use it instead of reaching into the
+// Form from outside a key handler: validators are closures over the screen,
+// so the rebuild is the supported write path (same contract as
+// syncCapsField). s.dirty() is value-based, so the rebuild loses no dirty
+// state, and Snapshot/Restore keep covering the value: it lives in the field
+// grid like a typed one, so the discard-confirm restores it with everything
+// else.
+func (s *modelFormScreen) setFieldValue(i int, v string) {
+	vals := s.form.Snapshot()
+	vals[i] = v
+	cursor := s.form.Cursor()
+	s.form = NewForm(s.buildFields(vals))
+	s.form.SetCursor(cursor)
+}
+
+// familyAutoFillOK reports whether the family field may still receive an
+// inferred value: add mode, and the user has not hand-edited the field (the
+// familyTouched latch). Edit mode of an existing model never auto-fills: the
+// stored family seeds the field at construction and is the value the user
+// sees, exactly as before this wave.
+func (s *modelFormScreen) familyAutoFillOK() bool {
+	return s.mode == modelFormModeAdd && !s.familyTouched
+}
+
+// maybeAutofillFamily mirrors the wizard's family inference (P2-5): the
+// family field auto-fills from the committed model ID through
+// providers.InferFamily (the same call the wizard prefills with at
+// providers/wizard.go), but only while familyAutoFillOK holds. The write
+// goes through the setFieldValue rebuild, so it never sets familyTouched and
+// Snapshot/Restore, dirty tracking and the M4 approval diff all see the
+// value as ordinary field state. An untouched field re-infers on every
+// commit, so editing the ID and advancing again follows the new ID; an empty
+// ID infers the empty family, so clearing the ID and re-advancing clears an
+// earlier auto-fill. No user-visible string is involved: the auto-fill is
+// silent.
+func (s *modelFormScreen) maybeAutofillFamily() {
+	if !s.familyAutoFillOK() {
+		return
+	}
+	fam := providers.InferFamily(strings.TrimSpace(s.form.Value(fModelID)))
+	if s.form.Value(fFamily) == fam {
+		return
+	}
+	s.setFieldValue(fFamily, fam)
+}
+
+// openModelIDPicker (P2-6) downloads the provider's GET /models list and opens
+// the shared M2 single-choice overlay over the returned ids. The pick writes
+// the id into the model ID field, seeds the family field from the picked id
+// (P2-5, same familyAutoFillOK gate as the typed-ID commit) and seeds BOTH
+// limit fields from the endpoint's advertised ceilings (P2-7): a present
+// ceiling becomes the field
+// value, an absent one becomes the server-maximum sentinel
+// (ServerMaxTokenInput), so a provider that omits ceilings behaves exactly as
+// the sentinel contract always has. The fetch is synchronous inside the key
+// handler (the TUI loop has no async precedent) and bounded by the 3s
+// deadline inside providers.FetchRemoteModels; the visible status is the
+// message line after the attempt, because a pre-fetch status cannot paint
+// before the blocking call returns.
+//
+// Every failure mode surfaces as an in-screen message instead of the old
+// silent empty list: registry read, missing base URL, request build, connect,
+// non-200 status, decode, and the empty list each get their own sentence
+// (models.form.fetch_* keys, present in all 12 catalogs; the consts stay as
+// the documented fallbacks). The error detail arrives pre-sanitized from the
+// providers side (host and/or status code only).
+//
+// The option LABELS render through the registry-slot masking authority
+// (providers.MaskSlot), the same authority the wizard's eleven model-ID sinks
+// use (wizardModelLabel) and this screen's own diff/messages use
+// (maskSlotOperand). An id is REMOTE RESPONSE MATERIAL: a hostile or broken
+// endpoint can answer with a credential-shaped string, and an unmasked label
+// would paint it into the frame and the transcript. The pick callbacks resolve
+// through the INDEX into remote, so the write-back value is unaffected; a
+// benign id is byte-identical under MaskSlot, which is why the label-only mask
+// costs the picker nothing.
+//
+// The FORM FIELD never receives wire-hostile bytes (D1, revised in r3): a
+// picked id the save door would refuse is refused AT THE PICK, before the
+// field write, exactly like the typed-refusal path. The picker's ids are
+// remote response material and Form.Render prints a field value verbatim, so
+// painting a credential-shaped id into the editable buffer and waiting for the
+// save door to refuse it left one display sink unguarded. applyModelIDPick
+// therefore runs the save door's own predicate (idSecretRefusal) first; a
+// refused pick leaves the field byte-identical, seeds nothing, names the
+// refusal on the message line, and closes the overlay back to the form.
+// Benign ids are identity under that predicate, so their picks are unchanged.
+func (s *modelFormScreen) openModelIDPicker() {
+	a := s.app
+	if a == nil {
+		return
+	}
+	baseURL, key, err := s.providerFetchEndpoint()
+	if err != nil {
+		s.errMsg = err.Error()
+		return
+	}
+	remote, err := providers.FetchRemoteModels(baseURL, key)
+	if err != nil {
+		s.errMsg = s.modelsFetchMessage(err)
+		return
+	}
+	if len(remote) == 0 {
+		s.errMsg = missingOr(s.b, "models.form.fetch_empty", missingModelFormFetchEmpty)
+		return
+	}
+	opts := make([]string, len(remote))
+	for i, m := range remote {
+		opts[i] = providers.MaskSlot(m.ID)
+	}
+	ch := NewChoice(s.b.T("models.form.id"), opts, func(idx int, _ string) {
+		if idx < 0 {
+			a.SetMessage(missingOr(s.b, "models.msg.cancelled", missingModelsCancelled))
+			s.rearmGuard(a)
+			return
+		}
+		s.applyModelIDPick(remote[idx])
+		s.rearmGuard(a)
+	})
+	a.ShowModal(ch)
+}
+
+// providerFetchEndpoint resolves the provider's base URL and current key
+// value for the /models download. The registry is re-read here rather than
+// cached at construction: the form can sit open across a provider edit, and a
+// fetch against a stale base URL would probe the wrong endpoint. The key
+// value is used only as a request header and never shown.
+func (s *modelFormScreen) providerFetchEndpoint() (baseURL, key string, err error) {
+	reg, err := providers.Load()
+	if err != nil {
+		return "", "", errors.New(missingOr(s.b, "models.form.fetch_load", missingModelFormFetchLoad))
+	}
+	p := findProviderCI(reg, s.providerName)
+	if p == nil {
+		return "", "", errors.New(missingOr(s.b, "models.form.fetch_load", missingModelFormFetchLoad))
+	}
+	return p.BaseURL, p.KeyValue(), nil
+}
+
+// fetchErrDetail extracts the sanitized parenthesized detail providers wraps
+// onto an ErrModels* sentinel ("(host)" or "(status from host)"). The
+// sentinels themselves carry no parentheses, so the LAST "(" opens the detail
+// the fetcher appended.
+func fetchErrDetail(err error) string {
+	msg := err.Error()
+	if i := strings.LastIndex(msg, "("); i >= 0 && strings.HasSuffix(msg, ")") {
+		return msg[i+1 : len(msg)-1]
+	}
+	return ""
+}
+
+// modelsFetchMessage maps one providers.FetchRemoteModels sentinel to its
+// in-screen sentence. The wrapped detail arrives pre-sanitized (host and/or
+// status code only) AND is masked before it is interpolated: fillHubSlots is
+// i18n.Fill, which substitutes verbatim and is not a masking authority, so the
+// host operand routes through providers.MaskOperand on the way in. That is the
+// same authority every sibling host/detail sink uses (providers.test.fail, the
+// settings screens' MaskSentence seeds); a benign host such as
+// "127.0.0.1:59999" is byte-identical under it, while a credential-shaped
+// hostname planted in a hand-edited providers.json (BASE_URL is transport-
+// validated only, so load accepts one) renders masked instead of raw.
+// Anything unmapped stays behind the generic load sentence rather than echoing
+// raw error text into the frame. The status arm needs no mask: it extracts the
+// numeric code and drops the host.
+func (s *modelFormScreen) modelsFetchMessage(err error) string {
+	switch {
+	case errors.Is(err, providers.ErrModelsNoBaseURL):
+		return missingOr(s.b, "models.form.fetch_no_url", missingModelFormFetchNoURL)
+	case errors.Is(err, providers.ErrModelsRequest):
+		return missingOr(s.b, "models.form.fetch_request", missingModelFormFetchRequest)
+	case errors.Is(err, providers.ErrModelsConnect):
+		return fillHubSlots(missingOr(s.b, "models.form.fetch_connect", missingModelFormFetchConnect),
+			map[string]string{"host": providers.MaskOperand(fetchErrDetail(err))})
+	case errors.Is(err, providers.ErrModelsStatus):
+		detail := fetchErrDetail(err)
+		status := detail
+		if i := strings.Index(detail, " from "); i >= 0 {
+			status = detail[:i]
+		}
+		return fillHubSlots(missingOr(s.b, "models.form.fetch_status", missingModelFormFetchStatus),
+			map[string]string{"status": status})
+	case errors.Is(err, providers.ErrModelsDecode):
+		return missingOr(s.b, "models.form.fetch_decode", missingModelFormFetchDecode)
+	default:
+		return missingOr(s.b, "models.form.fetch_load", missingModelFormFetchLoad)
+	}
+}
+
+// applyModelIDPick writes one picked server model into the form: the id into
+// the model ID field, then both limit fields seeded from the fetched
+// ceilings through limitSeedFor. The family field seeds from the picked id
+// through providers.InferFamily under the same familyAutoFillOK gate as the
+// typed-ID commit (P2-5): add mode with a hand-untouched family follows the
+// pick, a hand-set family survives it, and edit mode keeps the stored
+// family. The whole write is one form rebuild (the setFieldValue contract),
+// so Snapshot/Restore, dirty tracking and the M4 approval diff all see the
+// seeds as ordinary field state.
+//
+// A picked id the save door refuses is refused HERE, before the rebuild
+// (D1, revised in r3 M-1). The id is remote response material, Form.Render
+// prints a field value verbatim, and the save-time refusal runs too late to
+// keep a credential-shaped id off the frame: the field would carry the raw
+// bytes until the user pressed Enter on Save. The refusal is the save door's
+// own, not a second classifier: idSecretRefusal is the credential arm of
+// validateID, so one predicate (looksSecretValue -> the providers name
+// authority) decides both doors and they cannot disagree about one id. A
+// refused pick writes nothing at all: the field keeps its previous value, no
+// ceiling and no family seed runs, the refusal sentence lands on the message
+// line without echoing the value, and the overlay closes back to the form
+// (the typed-refusal behaviour). A benign id is identity under that predicate,
+// so it takes the unchanged seeding arm below.
+func (s *modelFormScreen) applyModelIDPick(m providers.RemoteModel) {
+	if msg := s.idSecretRefusal(m.ID); msg != "" {
+		s.errMsg = msg
+		return
+	}
+	vals := s.form.Snapshot()
+	vals[fModelID] = m.ID
+	if s.familyAutoFillOK() {
+		vals[fFamily] = providers.InferFamily(m.ID)
+	}
+	vals[fContext] = limitSeedFor(m.ContextLength)
+	vals[fMaxOut] = limitSeedFor(m.MaxOutputTokens)
+	cursor := s.form.Cursor()
+	s.form = NewForm(s.buildFields(vals))
+	s.form.SetCursor(cursor)
+}
+
+// limitSeedFor turns one fetched ceiling into the exact field bytes a pick
+// seeds: a present ceiling is the decimal literal, an absent one (0, the
+// "not advertised" value) is the server-maximum sentinel spelling. The result
+// always passes validateTokenLimit by construction.
+func limitSeedFor(ceiling int) string {
+	if ceiling > 0 {
+		return strconv.Itoa(ceiling)
+	}
+	return ServerMaxTokenInput
 }
 
 // trySave validates every field, then opens the M4 Approval modal with the
@@ -918,8 +1438,8 @@ func (s *modelFormScreen) buildModel() (providers.Model, []string) {
 		Family:          strings.TrimSpace(s.form.Value(fFamily)),
 		Tags:            splitTags(s.form.Value(fTags)),
 		Enabled:         enabledPtr,
-		ContextLength:   parsePositiveInt(s.form.Value(fContext)),
-		MaxOutputTokens: parsePositiveInt(s.form.Value(fMaxOut)),
+		ContextLength:   parseTokenLimit(s.form.Value(fContext)),
+		MaxOutputTokens: parseTokenLimit(s.form.Value(fMaxOut)),
 		Capabilities:    caps,
 	}
 	return m, append([]string(nil), s.tools...)
@@ -934,8 +1454,9 @@ func parseEnabled(v string) bool {
 }
 
 // parseYesNo interprets a capability-flag field: only an explicit y/yes is
-// on, everything else (empty, n, no) is off. Unlike parseEnabled the flags
-// default to off.
+// on; everything else (empty, n, no) is off. The add-mode DEFAULT of Y lives
+// in the constructor seed (P2-4), not here: an emptied field saves as off,
+// which is the user's manual override.
 func parseYesNo(v string) bool {
 	switch strings.ToLower(strings.TrimSpace(v)) {
 	case "y", "yes":
@@ -944,9 +1465,23 @@ func parseYesNo(v string) bool {
 	return false
 }
 
-func parsePositiveInt(v string) int {
-	n, err := strconv.Atoi(strings.TrimSpace(v))
-	if err != nil || n < 0 {
+// parseTokenLimit maps a limit field to its persisted integer, mirroring
+// validateTokenLimit: empty (unset) stores 0, the server-maximum sentinel
+// stores its wire value verbatim, and every other value stores what Atoi reads.
+// The sentinel arm is the point of P2-1: the old positive-only parser sent a
+// typed or seeded "-1" to 0, which the catalog reads as "no limit declared" and
+// replaces with its fallback. A value the validator refused (negative, junk)
+// still lands on 0 here, but that path is unreachable from the save row.
+func parseTokenLimit(v string) int {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0
+	}
+	if isServerMaxTokenInput(v) {
+		return serverMaxTokens()
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
 		return 0
 	}
 	return n
@@ -986,10 +1521,13 @@ func (s *modelFormScreen) addedDiffLines(m providers.Model, tools []string) []st
 	if m.Enabled != nil && !*m.Enabled {
 		add("enabled", "false")
 	}
-	if m.ContextLength > 0 {
+	// P2-1: a limit is "set" whenever it is non-zero, so the server-maximum
+	// sentinel signs the add diff as "+ contextLength: -1" instead of vanishing
+	// from the consent summary the user approves.
+	if m.ContextLength != 0 {
 		add("contextLength", strconv.Itoa(m.ContextLength))
 	}
-	if m.MaxOutputTokens > 0 {
+	if m.MaxOutputTokens != 0 {
 		add("maxOutputTokens", strconv.Itoa(m.MaxOutputTokens))
 	}
 	if len(tools) > 0 {

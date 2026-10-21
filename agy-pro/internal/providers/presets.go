@@ -3,9 +3,13 @@ package providers
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
+	"net/url"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -462,11 +466,155 @@ func GetModelPresets(providerName string) []ModelPreset {
 	}
 }
 
+// RemoteModel is one entry of a provider's GET /models data array. ID is the
+// model id. ContextLength and MaxOutputTokens are the per-model ceilings the
+// endpoint advertises under any of the known alias names, or 0 when the field
+// is absent or carries an unusable value: 0 is never a real token ceiling, so
+// it reads unambiguously as "not advertised". Callers that persist a ceiling
+// map 0 to their own "unknown" representation (the model form maps it to the
+// server-maximum sentinel), so a provider whose /models omits ceilings keeps
+// behaving exactly as it did before this type existed.
+type RemoteModel struct {
+	ID              string
+	ContextLength   int
+	MaxOutputTokens int
+}
+
+// Failure sentinels for FetchRemoteModels. Every silent failure of the old
+// ids-only contract is now one distinguishable error, so a caller can surface
+// WHICH step failed instead of guessing from an empty list. Match with
+// errors.Is; the wrapped detail is sanitized (host and/or status code only,
+// never the URL path or key material).
+var (
+	ErrModelsNoBaseURL = errors.New("models fetch: empty base URL")
+	ErrModelsRequest   = errors.New("models fetch: request could not be built")
+	ErrModelsConnect   = errors.New("models fetch: endpoint unreachable")
+	ErrModelsStatus    = errors.New("models fetch: unexpected HTTP status")
+	ErrModelsDecode    = errors.New("models fetch: response could not be decoded")
+)
+
+// maxSaneTokens is the sanity ceiling for an advertised token limit. The
+// largest value observed live (T-B probe, 2026-10-22) is 1,048,576 (Gemini 1M
+// context on both nw and Charm); 10,000,000 keeps ~10x headroom above that
+// while rejecting absurd or misparsed values (a 64-bit overflow, a stringly
+// "999999999999", a metadata blob misread as a count). Non-positive values are
+// rejected separately: 0 doubles as "not advertised" in RemoteModel, and a
+// negative ceiling is a broken payload, not a limit.
+const maxSaneTokens = 10_000_000
+
+// contextCeilingAliases and outputCeilingAliases are the field names live
+// /models payloads use for the two token ceilings, most-preferred first: the
+// first alias that parses to a sane value wins. Names are NOT standardized
+// across providers (the T-B probe verified both shapes below):
+//
+//	context_window:      Charm (live-verified), several aggregators
+//	max_model_len:       vLLM (nw, live-verified)
+//	context_length:      OpenRouter convention
+//	context_size:        generic gateway naming
+//	max_context_tokens:  gateway-style variant of context_window
+//	max_input_tokens:    OpenAI-style naming used by aggregators
+//	max_output_tokens:   Charm (live-verified), OpenAI convention
+//	max_tokens:          legacy OpenAI
+//	max_completion_tokens: Anthropic / OpenAI responses naming
+var contextCeilingAliases = []string{
+	"context_window",
+	"max_model_len",
+	"context_length",
+	"context_size",
+	"max_context_tokens",
+	"max_input_tokens",
+}
+
+var outputCeilingAliases = []string{
+	"max_output_tokens",
+	"max_tokens",
+	"max_completion_tokens",
+}
+
+// saneTokenCount coerces one decoded JSON value into a usable token count.
+// Live payloads carry ceilings as bare numbers; a quoted-number string is
+// accepted too (some gateways serialize every scalar as a string). Bools,
+// nulls, junk strings, fractions and out-of-range values are rejected.
+func saneTokenCount(v any) (int, bool) {
+	var f float64
+	switch n := v.(type) {
+	case float64:
+		f = n
+	case string:
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(n), 64)
+		if err != nil {
+			return 0, false
+		}
+		f = parsed
+	default:
+		return 0, false
+	}
+	if f <= 0 || f > maxSaneTokens || f != float64(int64(f)) {
+		return 0, false
+	}
+	return int(f), true
+}
+
+// firstCeiling returns the first alias that yields a sane count, else 0.
+func firstCeiling(m map[string]any, aliases []string) int {
+	for _, name := range aliases {
+		if v, ok := m[name]; ok {
+			if n, sane := saneTokenCount(v); sane {
+				return n
+			}
+		}
+	}
+	return 0
+}
+
+// modelsFetchHost extracts the host for sanitized error detail. The full URL
+// is never echoed: it can carry the /v1 prefix the user typed and, in a
+// hand-edited record, anything else.
+func modelsFetchHost(baseURL string) string {
+	u, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || u.Host == "" {
+		return "provider"
+	}
+	return u.Host
+}
+
+// stripModelIDControls deletes the C0 control runes and DEL from a remote model
+// id at the decode boundary, before the id can reach any caller. The id is
+// REMOTE RESPONSE MATERIAL: a hostile or broken endpoint can answer
+// `{"id":"\x1b[2JFAKE-MODEL"}`, TrimSpace keeps the ESC (it is not a space),
+// and every downstream sink that does not route through a masking authority
+// would paint the rune sequence into the terminal frame. Stripping here rather
+// than at each sink closes the class once for both consumers (the TUI picker
+// and the non-console wizard), including the persisted form: nothing this
+// function touches can be written into providers.json either.
+//
+// The predicate is the narrow reviewed class: the C0 controls plus DEL
+// (r < 0x20 || r == 0x7f), the runes that act on a terminal and break a frame
+// or a transcript line. The wider classes (C1 0x80..0x9f, the Cf bidi and
+// zero-width set) are deliberately NOT stripped here: the option-label path
+// already deletes them through providers.MaskSlot (StripSlotControls uses the
+// Unicode control class plus Cf), so a frame cannot carry one from the picker,
+// and the edit buffer keeps them exactly as a typed or pasted value would.
+// Widening this predicate is a separate decision, recorded in the fix report.
+// A benign id is byte-identical.
+func stripModelIDControls(id string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, id)
+}
+
 // FetchRemoteModels queries <baseURL>/models to discover available models.
-// If the endpoint is unreachable or does not support /models, returns an empty list.
-func FetchRemoteModels(baseURL, apiKey string) []string {
+// If the endpoint is unreachable, answers non-200, or returns an unreadable
+// body, it returns one of the ErrModels* sentinels with sanitized detail
+// (the old ids-only contract swallowed every one of those into a bare nil).
+// Each returned RemoteModel carries whatever ceilings the payload advertised
+// under a known alias, 0 for "not advertised".
+func FetchRemoteModels(baseURL, apiKey string) ([]RemoteModel, error) {
 	if strings.TrimSpace(baseURL) == "" {
-		return nil
+		return nil, ErrModelsNoBaseURL
 	}
 	endpoint := strings.TrimRight(baseURL, "/") + "/models"
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -474,7 +622,7 @@ func FetchRemoteModels(baseURL, apiKey string) []string {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("%w (base URL rejected)", ErrModelsRequest)
 	}
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
@@ -483,31 +631,42 @@ func FetchRemoteModels(baseURL, apiKey string) []string {
 	client := &http.Client{Timeout: 3 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("%w (%s)", ErrModelsConnect, modelsFetchHost(baseURL))
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil
+		return nil, fmt.Errorf("%w (%d from %s)", ErrModelsStatus, resp.StatusCode, modelsFetchHost(baseURL))
 	}
 
+	// The decode contract stays ids-first: only the data array is read (a
+	// top-level models array stays ignored, as before). Each entry is decoded
+	// into a generic map so the alias lookup can see every ceiling name the
+	// payload happens to carry without pinning one provider's schema. The id is
+	// stripped of control runes BEFORE the trim, so a control-padded id
+	// ("\x1b abc") cannot keep its outer whitespace: the strip runs first, the
+	// trim then sees the real edges.
 	var res struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
+		Data []map[string]any `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
-		return nil
+		return nil, fmt.Errorf("%w (%s)", ErrModelsDecode, modelsFetchHost(baseURL))
 	}
 
-	var models []string
+	var models []RemoteModel
 	for _, m := range res.Data {
-		id := strings.TrimSpace(m.ID)
-		if id != "" {
-			models = append(models, id)
+		id, _ := m["id"].(string)
+		id = strings.TrimSpace(stripModelIDControls(id))
+		if id == "" {
+			continue
 		}
+		models = append(models, RemoteModel{
+			ID:              id,
+			ContextLength:   firstCeiling(m, contextCeilingAliases),
+			MaxOutputTokens: firstCeiling(m, outputCeilingAliases),
+		})
 	}
-	return models
+	return models, nil
 }
 
 // credentialShapeRe matches well-known credential formats that are short
