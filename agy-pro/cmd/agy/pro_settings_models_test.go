@@ -11,7 +11,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -2248,9 +2247,12 @@ func TestRunSettingsCmd_ModelVerbs_NameDoorParityWithModelForm(t *testing.T) {
 	// pin carries its fixture rows as references to the planted-fixture
 	// contract, so this guard compares VALUES, not source spellings: a row
 	// counts as present when the pin either spells the value out or names a
-	// contract constant that holds it. A reference the contract cannot resolve,
-	// or a constant with an empty value, fails here instead of passing
-	// vacuously, so the drift guard still fails when a row is genuinely gone.
+	// contract constant that holds it. The constant-reference route reads its
+	// names from the pin's parsed syntax tree, so that route counts only real
+	// selectors: comment text and string literals yield no constant names. A
+	// reference the contract cannot resolve, or a constant with an empty value,
+	// fails here instead of passing vacuously, so the drift guard still fails
+	// when a row is genuinely gone.
 	src, err := os.ReadFile(filepath.Join("..", "..", "internal", "tui", "screen_model_form_test.go"))
 	if err != nil {
 		t.Fatalf("read the TUI model-form pin source: %v", err)
@@ -2264,13 +2266,17 @@ func TestRunSettingsCmd_ModelVerbs_NameDoorParityWithModelForm(t *testing.T) {
 		t.Fatalf("parse the planted-fixture contract: %v", err)
 	}
 	pinned := make(map[string]bool, len(planted))
-	for _, ref := range plantedRef.FindAllStringSubmatch(string(src), -1) {
-		value, ok := planted[ref[1]]
+	pinFile, err := parser.ParseFile(token.NewFileSet(), "screen_model_form_test.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse the TUI model-form pin source: %v", err)
+	}
+	for _, name := range plantedPinRefs(pinFile) {
+		value, ok := planted[name]
 		if !ok {
-			t.Fatalf("the TUI model-form pin references testfixtures.%s, which the contract does not define; the two corpora have diverged", ref[1])
+			t.Fatalf("the TUI model-form pin references testfixtures.%s, which the contract does not define; the two corpora have diverged", name)
 		}
 		if value == "" {
-			t.Fatalf("the TUI model-form pin references testfixtures.%s, whose value is empty; a containment check would pass vacuously", ref[1])
+			t.Fatalf("the TUI model-form pin references testfixtures.%s, whose value is empty; a containment check would pass vacuously", name)
 		}
 		pinned[value] = true
 	}
@@ -2286,8 +2292,83 @@ func TestRunSettingsCmd_ModelVerbs_NameDoorParityWithModelForm(t *testing.T) {
 	}
 }
 
-// plantedRef matches a reference to a constant of the planted-fixture contract.
-var plantedRef = regexp.MustCompile(`testfixtures\.([A-Za-z_][A-Za-z0-9_]*)`)
+// plantedPinRefs returns the planted-fixture contract constant names the pin
+// references in CODE, in source order. Comment text, string literals, struct
+// tags and build-tag lines contribute nothing, because they are not selector
+// expressions in the parsed syntax tree.
+func plantedPinRefs(file *ast.File) []string {
+	var refs []string
+	ast.Inspect(file, func(n ast.Node) bool {
+		sel, ok := n.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		if pkg, ok := sel.X.(*ast.Ident); !ok || pkg.Name != "testfixtures" {
+			return true
+		}
+		refs = append(refs, sel.Sel.Name)
+		return true
+	})
+	return refs
+}
+
+// TestPlantedPinRefsIgnoresNonCodeText pins the comment-exclusion property of
+// plantedPinRefs in memory, so a silent revert to a scan of the pin's text
+// fails a test instead of being caught only by a reader. The synthetic sources
+// are parsed WITH their comments, so the comment text really is in the syntax
+// tree and only the selector walk can explain its absence from the result. A
+// pin source that does not parse is reported as an error, which is how the
+// guard fails closed.
+func TestPlantedPinRefsIgnoresNonCodeText(t *testing.T) {
+	parse := func(t *testing.T, src string) *ast.File {
+		t.Helper()
+		file, err := parser.ParseFile(token.NewFileSet(), "pin.go", src, parser.ParseComments)
+		if err != nil {
+			t.Fatalf("parse the synthetic pin source: %v", err)
+		}
+		return file
+	}
+
+	t.Run("comment only", func(t *testing.T) {
+		src := `package tui
+
+// The form pins testfixtures.JWTFullBadSep and testfixtures.GHPAlphabet.
+func guard(v string) bool { return v == "" }
+`
+		if refs := plantedPinRefs(parse(t, src)); len(refs) != 0 {
+			t.Fatalf("a comment naming two constants yielded refs %v; want none", refs)
+		}
+	})
+
+	t.Run("selector and comment", func(t *testing.T) {
+		src := `package tui
+
+// A comment naming testfixtures.GHPAlphabet must not count.
+func sample() string { return testfixtures.AKIAExample }
+`
+		refs := plantedPinRefs(parse(t, src))
+		if len(refs) != 1 || refs[0] != "AKIAExample" {
+			t.Fatalf("refs = %v; want [AKIAExample]", refs)
+		}
+	})
+
+	t.Run("string literal and struct tag", func(t *testing.T) {
+		src := "package tui\n\n" +
+			"var quoted = \"testfixtures.SKLive\"\n\n" +
+			"type row struct {\n" +
+			"\tID string `json:\"testfixtures.KeyHex\"`\n" +
+			"}\n"
+		if refs := plantedPinRefs(parse(t, src)); len(refs) != 0 {
+			t.Fatalf("a string literal and a struct tag yielded refs %v; want none", refs)
+		}
+	})
+
+	t.Run("unparseable source", func(t *testing.T) {
+		if _, err := parser.ParseFile(token.NewFileSet(), "pin.go", "package tui\n\nvar s = testfixtures.\n", 0); err == nil {
+			t.Fatal("an unparseable pin source parsed without error; the guard must fail closed")
+		}
+	})
+}
 
 // plantedStringConstants returns the contract's string constants by name. Only
 // literal concatenations are accepted, which is how the contract builds every
