@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"agypro/internal/testfixtures"
 )
 
 // repairProbe is a deterministic stand-in for ProbeKeyValidity: the live QA
@@ -698,7 +700,7 @@ func TestRepairWindowsKeyNames_AggregateErrorMasksKeyShapedEnv(t *testing.T) {
 	useFakeProtector(t)
 
 	t.Run("rewrite failure masks the env prefix", func(t *testing.T) {
-		const skPlant = "sk-ant-api03-PLANT0123456789abcdef"
+		const skPlant = testfixtures.AnthropicPlanted
 		store := newMockEnvStore()
 		store.data[EnvRootUser] = map[string]string{
 			"\ufeff" + skPlant: "sk-real-nw-valid-key-0001", // BOM variant probes VALID
@@ -731,7 +733,7 @@ func TestRepairWindowsKeyNames_AggregateErrorMasksKeyShapedEnv(t *testing.T) {
 	})
 
 	t.Run("remove-variant failure masks the env prefix", func(t *testing.T) {
-		const akiaPlant = "AKIAIOSFODNN7EXAMPLE"
+		const akiaPlant = testfixtures.AKIAExample
 		store := newMockEnvStore()
 		store.data[EnvRootUser] = map[string]string{
 			akiaPlant:            "mock-nw-key-999",           // clean present, probe INVALID
@@ -771,7 +773,7 @@ func TestRollbackRefusalErrorsMaskPlantedEntryNames(t *testing.T) {
 	opts := RepairOptions{Store: store, Probe: repairProbe}
 
 	t.Run("root refusal masks the planted name", func(t *testing.T) {
-		const skPlant = "sk-ant-api03-PLANT0123456789abcdef"
+		const skPlant = testfixtures.AnthropicPlanted
 		path := writeCraftedBackup(t, `{"version":2,"tool":"`+repairToolName+`","entries":[
 			{"root":"machine","name":"`+skPlant+`","existed":true,"value":"Qw=="}]}`)
 		err := RollbackWindowsKeyNames(path, opts)
@@ -787,7 +789,7 @@ func TestRollbackRefusalErrorsMaskPlantedEntryNames(t *testing.T) {
 	})
 
 	t.Run("shape refusal masks the planted name", func(t *testing.T) {
-		const skPlant = "sk-ant-api03-PLANT0123456789abcdef"
+		const skPlant = testfixtures.AnthropicPlanted
 		path := writeCraftedBackup(t, `{"version":2,"tool":"`+repairToolName+`","entries":[
 			{"root":"user","name":"`+skPlant+`","existed":true,"value":"Qw=="}]}`)
 		err := RollbackWindowsKeyNames(path, opts)
@@ -803,7 +805,7 @@ func TestRollbackRefusalErrorsMaskPlantedEntryNames(t *testing.T) {
 	})
 
 	t.Run("decode refusal masks the planted name", func(t *testing.T) {
-		const plant = "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"
+		const plant = testfixtures.AWSSecretNoSlash
 		path := writeCraftedBackup(t, `{"version":2,"tool":"`+repairToolName+`","entries":[
 			{"root":"user","name":"`+plant+`","existed":true,"value":"!!!not-base64!!!"}]}`)
 		err := RollbackWindowsKeyNames(path, opts)
@@ -842,7 +844,7 @@ func TestRollbackRefusalErrorsMaskPlantedEntryNames(t *testing.T) {
 
 func TestResolveRepairTargetsEchoesRegistryNameThroughSlotAuthority(t *testing.T) {
 	const (
-		plant     = "sk_live_0123456789abcdef"
+		plant     = testfixtures.SKLive
 		plantMask = "sk_li****"
 	)
 

@@ -10,6 +10,7 @@ import (
 
 	"agypro/internal/cellwidth"
 	"agypro/internal/fanout"
+	"agypro/internal/testfixtures"
 )
 
 // newPromptEditorApp pushes the prompt editor over a stub root so save
@@ -285,7 +286,7 @@ func TestPromptTextLooksSecret(t *testing.T) {
 		{"bearer prefix", "Bearer abcdef0123456789", true},
 		{"opaque mixed token", "AbCdEf0123456789GhIjKl9876543210", true},
 		{"token inside prose", "Use key AbCdEf0123456789GhIjKl9876543210 for the API.", false},
-		{"akia class 20 rune", "AKIAIOSFODNN7EXAMPLE", true},
+		{"akia class 20 rune", testfixtures.AKIAExample, true},
 		{"16 rune opaque token", "ABCD1234EFGH5678", true},
 		{"23 rune opaque token", "AbCdEf0123456789GhIjKl9", true},
 		{"15 rune run stays readable", "AbCdEf012345678", false},

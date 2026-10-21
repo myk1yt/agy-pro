@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"unicode"
+
+	"agypro/internal/testfixtures"
 )
 
 // This file pins the registry-slot value policy (slotpolicy.go): the class the
@@ -20,8 +22,8 @@ import (
 // carries a premise check, so a reverted fold, strip, or classifier fails the
 // entry that covers it.
 
-const slotTestOpaque = "ab3def7gh9jk1mnpqr5t"                  // 20 runes, lowercase, mixed classes
-const slotTestAWS = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" // 40 runes, base64 "/" run
+const slotTestOpaque = "ab3def7gh9jk1mnpqr5t"     // 20 runes, lowercase, mixed classes
+const slotTestAWS = testfixtures.AWSSecretExample // 40 runes, base64 "/" run
 
 // TestSlotPolicyRefusesDecoratedClasses pins the refuse side: every decoration
 // class the enumerated lists missed (or covered on only one side) reduces to a
@@ -55,7 +57,7 @@ func TestSlotPolicyRefusesDecoratedClasses(t *testing.T) {
 		{"drive plus look-alike", `C:\` + "\u2025/" + slotTestAWS},
 		{"bidi override inside marker", "./\u202E" + slotTestAWS},
 		{"bidi isolate and zero width", "\u2067akia\u200bosfodnn7example\u2069"},
-		{"byte order mark", "\uFEFFAKIAIOSFODNN7EXAMPLE"},
+		{"byte order mark", "\uFEFF" + testfixtures.AKIAExample},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -73,7 +75,7 @@ func TestSlotPolicyRefusesDecoratedClasses(t *testing.T) {
 	}
 
 	// The undecorated credential shapes stay refused by the shape test itself.
-	for _, v := range []string{slotTestOpaque, "AKIAIOSFODNN7EXAMPLE", slotTestAWS, "Ab3dEf7Gh9jK1mNp+/Qr=", "sk-abc", "bearer abc"} {
+	for _, v := range []string{slotTestOpaque, testfixtures.AKIAExample, slotTestAWS, "Ab3dEf7Gh9jK1mNp+/Qr=", "sk-abc", "bearer abc"} {
 		if !SecretShaped(v) {
 			t.Errorf("SecretShaped(%q) = false; want true (credential shape)", v)
 		}
@@ -344,11 +346,11 @@ func TestSlotPolicyStripTerminates(t *testing.T) {
 // before/after comparison rather than a restatement of the union.
 func TestNameCarriesCredentialIsTheUnion(t *testing.T) {
 	probes := []string{
-		"sk_live_0123456789abcdef",
-		"tok_a1b2c3d4e5f6g7h8i9j0",
-		"pk_live_0123456789abcdef",
-		"key_0123456789abcdef",
-		"AKIA_0123456789ABCDEF",
+		testfixtures.SKLive,
+		testfixtures.TokSample,
+		testfixtures.PKLive,
+		testfixtures.KeyHex,
+		testfixtures.AKIAUnderscore,
 	}
 	for _, p := range probes {
 		// The premise: both pre-fix arms are the identity, the slot authority is
@@ -404,7 +406,7 @@ func TestNameCarriesCredentialIsTheUnion(t *testing.T) {
 		"qwen2point5turbo",           // 16-rune opaque run
 		"eu-west1.fastproxy.example", // dotted id the operand masker refuses
 		"provider0123456789",         // 19-rune opaque run
-		"sk-proj-0123456789abcdef",   // "sk-" head
+		testfixtures.SKProj,          // "sk-" head
 	}
 	for _, v := range refused {
 		if !SecretShaped(v) && MaskOperand(v) == v {
@@ -625,33 +627,33 @@ var baseURLAuthorityCorpus = []struct {
 	// refused so the host rule is not an accept-side regression.
 	{"bare run host", "https://0123456789abcdef/v1", true},
 	// HOST slot (FIX-8f).
-	{"host underscore head", "https://sk_live_0123456789abcdef/v1", true},
-	{"host tok head", "https://tok_a1b2c3d4e5f6g7h8i9j0/v1", true},
-	{"host ghp head", "https://ghp_a1b2c3d4e5f6g7h8i9j0.example.com/v1", true},
-	{"host aws key id", "https://AKIAIOSFODNN7EXAMPLE/v1", true},
-	{"host jwt", "https://eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U/v1", true},
-	{"host decorated", "https://1-ASIAIOSFODNN7EXAMPLE.example.com/v1", true},
+	{"host underscore head", "https://" + testfixtures.SKLive + "/v1", true},
+	{"host tok head", "https://" + testfixtures.TokSample + "/v1", true},
+	{"host ghp head", "https://" + testfixtures.GHPShort + ".example.com/v1", true},
+	{"host aws key id", "https://" + testfixtures.AKIAExample + "/v1", true},
+	{"host jwt", "https://" + testfixtures.JWTHeader + "." + testfixtures.JWTPayload + ".dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U/v1", true},
+	{"host decorated", "https://1-" + testfixtures.ASIADocExample + ".example.com/v1", true},
 	// Userinfo slot.
-	{"userinfo username", "https://sk_live_0123456789abcdef@host/v1", true},
-	{"userinfo password", "https://user:sk_live_0123456789abcdef@host/v1", true},
+	{"userinfo username", "https://" + testfixtures.SKLive + "@host/v1", true},
+	{"userinfo password", "https://user:" + testfixtures.SKLive + "@host/v1", true},
 	// Path slot, hierarchical and Opaque.
-	{"path underscore head", "https://host/v1/sk_live_0123456789abcdef", true},
+	{"path underscore head", "https://host/v1/" + testfixtures.SKLive, true},
 	{"path 16 run", "https://host/v1/0123456789abcdef", true},
-	{"path jwt", "https://host/v1/eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U", true},
-	{"opaque path", "https:sk_live_0123456789abcdef", true},
+	{"path jwt", "https://host/v1/" + testfixtures.JWTHeader + "." + testfixtures.JWTPayload + ".dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U", true},
+	{"opaque path", "https:" + testfixtures.SKLive, true},
 	{"path sk head", "https://gw.example/v1/sk-live-0123456789abcdefXYZ", true},
-	{"path nvapi head", "https://gw.example/v1/nvapi-0123456789abcdef", true},
+	{"path nvapi head", "https://gw.example/v1/" + testfixtures.NvidiaKey, true},
 	// Query and fragment slots.
-	{"query value", "https://host/v1?api_key=sk_live_0123456789abcdef", true},
-	{"query key", "https://host/v1?sk_live_0123456789abcdef=1", true},
-	{"fragment", "https://host/v1#sk_live_0123456789abcdef", true},
+	{"query value", "https://host/v1?api_key=" + testfixtures.SKLive, true},
+	{"query key", "https://host/v1?" + testfixtures.SKLive + "=1", true},
+	{"fragment", "https://host/v1#" + testfixtures.SKLive, true},
 	// FIX-8h H-1: a query pair whose percent-escape does not decode. url.Query()
 	// unwraps the decode error and drops the pair, so these three rows are the
 	// regression pins for the raw-pair read: the credential rides the pair that
 	// the decoded view cannot see.
-	{"query malformed value", "https://gw.example/v1?api_key=sk_live_0123456789abcdef%2", true},
-	{"query malformed key", "https://gw.example/v1?sk_live_0123456789abcdef=1%2", true},
-	{"query malformed second pair", "https://gw.example/v1?api-version=2024-02-01&api_key=sk_live_0123456789abcdef%2", true},
+	{"query malformed value", "https://gw.example/v1?api_key=" + testfixtures.SKLive + "%2", true},
+	{"query malformed key", "https://gw.example/v1?" + testfixtures.SKLive + "=1%2", true},
+	{"query malformed second pair", "https://gw.example/v1?api-version=2024-02-01&api_key=" + testfixtures.SKLive + "%2", true},
 	// FIX-8h H-1 accept side: escapes that are odd but legal (or that decode to a
 	// benign value) keep their verdict, so the raw read narrowed nothing.
 	{"query odd escape pct25", "https://gw.example/v1?q=100%25", false},
@@ -665,22 +667,22 @@ var baseURLAuthorityCorpus = []struct {
 	// FIX-8h H-3: an invisible rune inside the host label. url.Parse keeps it in
 	// Hostname and no transport rule rejects it, so the label sits in the one
 	// slot the display strip never reached.
-	{"host zwsp", "https://sk_live_0123456789ab\u200bcdef/v1", true},
-	{"host zwj", "https://sk_live_0123456789ab\u200dcdef/v1", true},
-	{"host bidi override", "https://sk_live_0123456789ab\u202ecdef/v1", true},
-	{"host bom", "https://sk_live_0123456789ab\ufeffcdef/v1", true},
-	{"host combining mark", "https://sk_live_0123456789ab\u0301cdef/v1", true},
+	{"host zwsp", "https://" + testfixtures.SKLiveShort + "\u200bcdef/v1", true},
+	{"host zwj", "https://" + testfixtures.SKLiveShort + "\u200dcdef/v1", true},
+	{"host bidi override", "https://" + testfixtures.SKLiveShort + "\u202ecdef/v1", true},
+	{"host bom", "https://" + testfixtures.SKLiveShort + "\ufeffcdef/v1", true},
+	{"host combining mark", "https://" + testfixtures.SKLiveShort + "\u0301cdef/v1", true},
 	// FIX-8h H-3 accept side: the strip is the identity without an invisible
 	// rune, so a benign host keeps its verdict (and the pinned long gateway
 	// hosts above stay accepted).
 	{"host benign zwsp", "https://mycompany2024\u200bgateway.example.com/v1", false},
 	// FIX-8h H-2: a value url.Parse cannot read is REFUSED, not left to a
 	// transport rule that echoed the operand into every consumer.
-	{"unparseable path escape", "https://gw.example/v1/sk_live_0123456789abcdef%2", true},
+	{"unparseable path escape", "https://gw.example/v1/" + testfixtures.SKLive + "%2", true},
 	{"unparseable path escape benign", "https://gw.example/%zz", true},
-	{"unparseable port", "https://gw.example:sk_live_0123456789abcdef/v1", true},
-	{"unparseable fragment escape", "https://gw.example/v1#sk_live_0123456789abcdef%2", true},
-	{"unparseable userinfo escape", "https://sk_live_0123456789abcdef%2@gw.example/v1", true},
+	{"unparseable port", "https://gw.example:" + testfixtures.SKLive + "/v1", true},
+	{"unparseable fragment escape", "https://gw.example/v1#" + testfixtures.SKLive + "%2", true},
+	{"unparseable userinfo escape", "https://" + testfixtures.SKLive + "%2@gw.example/v1", true},
 	// fix8-7: a credential run split by a separator-SPACE rune (Zs, Zl, Zp) in the
 	// host label. url.Parse keeps the rune in Hostname, no transport rule rejects
 	// it, and the host-label strip carried the four invisible classes only, so
@@ -688,17 +690,17 @@ var baseURLAuthorityCorpus = []struct {
 	// read by stripHostLabelInvisibles, and the whole-value arms stay the identity
 	// on these rows (TestBaseURLHostLabelSpaceSeparatorStrip recomputes that
 	// premise), which is what made the host arm the only arm that could decide it.
-	{"host nbsp mid run", "https://sk_live_0123456789ab\u00a0cdef/v1", true},
-	{"host ideographic space mid run", "https://sk_live_0123456789ab\u3000cdef/v1", true},
-	{"host figure space mid run", "https://sk_live_0123456789ab\u2007cdef/v1", true},
-	{"host narrow nbsp mid run", "https://sk_live_0123456789ab\u202fcdef/v1", true},
-	{"host line separator mid run", "https://sk_live_0123456789ab\u2028cdef/v1", true},
-	{"host paragraph separator mid run", "https://sk_live_0123456789ab\u2029cdef/v1", true},
+	{"host nbsp mid run", "https://" + testfixtures.SKLiveShort + "\u00a0cdef/v1", true},
+	{"host ideographic space mid run", "https://" + testfixtures.SKLiveShort + "\u3000cdef/v1", true},
+	{"host figure space mid run", "https://" + testfixtures.SKLiveShort + "\u2007cdef/v1", true},
+	{"host narrow nbsp mid run", "https://" + testfixtures.SKLiveShort + "\u202fcdef/v1", true},
+	{"host line separator mid run", "https://" + testfixtures.SKLiveShort + "\u2028cdef/v1", true},
+	{"host paragraph separator mid run", "https://" + testfixtures.SKLiveShort + "\u2029cdef/v1", true},
 	{"host nbsp behind head", "https://sk_live\u00a00123456789abcdef/v1", true},
-	{"host nbsp in last label", "https://gw.example.sk_live_0123456789ab\u00a0cdef/v1", true},
-	{"host line separator in middle label", "https://gw.sk_live_0123456789ab\u2028cdef.example.com/v1", true},
-	{"host nbsp with port", "https://sk_live_0123456789ab\u00a0cdef:8443/v1", true},
-	{"host line separator behind tok head", "https://tok_a1b2c3d4e5f6g7h8i9j0\u2028xx/v1", true},
+	{"host nbsp in last label", "https://gw.example." + testfixtures.SKLiveShort + "\u00a0cdef/v1", true},
+	{"host line separator in middle label", "https://gw." + testfixtures.SKLiveShort + "\u2028cdef.example.com/v1", true},
+	{"host nbsp with port", "https://" + testfixtures.SKLiveShort + "\u00a0cdef:8443/v1", true},
+	{"host line separator behind tok head", "https://" + testfixtures.TokSample + "\u2028xx/v1", true},
 	// fix8-7 accept side: a space separator in a NON-credential position, and the
 	// host shapes this unit must not move (unicode and punycode labels, an IPv6
 	// loopback, the long gateway labels, the identifier-class parts).
@@ -743,16 +745,16 @@ func TestBaseURLCarriesCredentialCorpus(t *testing.T) {
 // location-shaped gateway hostname (the false dichotomy the review rejected).
 func TestBaseURLHostLabelRule(t *testing.T) {
 	refuse := []string{
-		"sk_live_0123456789abcdef",
-		"tok_a1b2c3d4e5f6g7h8i9j0",
-		"pk_live_4f9a2b7c1d3e5f6a",
-		"key_0123456789abcdef",
-		"ghp_a1b2c3d4e5f6g7h8i9j0",
-		"xoxb-0123456789abcdef",
-		"AKIAIOSFODNN7EXAMPLE",
-		"ASIAIOSFODNN7EXAMPLE",
-		"eyJhbGciOiJIUzI1NiJ9",
-		"1-ASIAIOSFODNN7EXAMPLE",
+		testfixtures.SKLive,
+		testfixtures.TokSample,
+		testfixtures.PKLiveHex,
+		testfixtures.KeyHex,
+		testfixtures.GHPShort,
+		testfixtures.SlackBotHex,
+		testfixtures.AKIAExample,
+		testfixtures.ASIADocExample,
+		testfixtures.JWTHeader,
+		"1-" + testfixtures.ASIADocExample,
 	}
 	for _, label := range refuse {
 		if !baseURLHostLabelCarriesCredential(label) {
@@ -816,10 +818,10 @@ func TestWizardBaseURLDoorMatchesSharedAuthority(t *testing.T) {
 // review listed, so the closure narrowed no benign query.
 func TestBaseURLQueryRawPairClassification(t *testing.T) {
 	refuse := []string{
-		"https://gw.example/v1?api_key=sk_live_0123456789abcdef%2",
-		"https://gw.example/v1?sk_live_0123456789abcdef=1%2",
-		"https://gw.example/v1?api-version=2024-02-01&api_key=sk_live_0123456789abcdef%2",
-		"https://gw.example/v1?a=sk_live_0123456789abcdef;x=1",
+		"https://gw.example/v1?api_key=" + testfixtures.SKLive + "%2",
+		"https://gw.example/v1?" + testfixtures.SKLive + "=1%2",
+		"https://gw.example/v1?api-version=2024-02-01&api_key=" + testfixtures.SKLive + "%2",
+		"https://gw.example/v1?a=" + testfixtures.SKLive + ";x=1",
 	}
 	for _, raw := range refuse {
 		if !BaseURLCarriesCredential(raw) {
@@ -857,7 +859,7 @@ func TestBaseURLQueryRawPairClassification(t *testing.T) {
 		t.Error("a well-formed encoded credential is no longer refused")
 	}
 	// The helper's own fallback: decoded when legal, raw when not.
-	if !baseURLQueryCarriesCredential("k=sk_live_0123456789abcdef%2") {
+	if !baseURLQueryCarriesCredential("k=" + testfixtures.SKLive + "%2") {
 		t.Error("the raw fallback misses a malformed pair")
 	}
 	if baseURLQueryCarriesCredential("k=100%") || baseURLQueryCarriesCredential("q=100%25") {
@@ -874,7 +876,7 @@ func TestBaseURLQueryRawPairClassification(t *testing.T) {
 // verdict.
 func TestBaseURLHostLabelInvisibleStrip(t *testing.T) {
 	for _, r := range []rune{'\u200b', '\u200d', '\u202e', '\ufeff', '\u0301'} {
-		label := "sk_live_0123456789ab" + string(r) + "cdef"
+		label := testfixtures.SKLiveShort + string(r) + "cdef"
 		if !baseURLHostLabelCarriesCredential(label) {
 			t.Errorf("baseURLHostLabelCarriesCredential(%q) = false; want true", label)
 		}
@@ -903,11 +905,11 @@ func TestBaseURLHostLabelInvisibleStrip(t *testing.T) {
 // standard library starts accepting the shape.
 func TestBaseURLUnparseableFailsClosed(t *testing.T) {
 	for _, raw := range []string{
-		"https://gw.example/v1/sk_live_0123456789abcdef%2",
+		"https://gw.example/v1/" + testfixtures.SKLive + "%2",
 		"https://gw.example/%zz",
-		"https://gw.example:sk_live_0123456789abcdef/v1",
-		"https://gw.example/v1#sk_live_0123456789abcdef%2",
-		"https://sk_live_0123456789abcdef%2@gw.example/v1",
+		"https://gw.example:" + testfixtures.SKLive + "/v1",
+		"https://gw.example/v1#" + testfixtures.SKLive + "%2",
+		"https://" + testfixtures.SKLive + "%2@gw.example/v1",
 		"https://gw.example/v1/%",
 	} {
 		if _, err := url.Parse(raw); err == nil {
@@ -936,11 +938,11 @@ func TestBaseURLUnparseableFailsClosed(t *testing.T) {
 // redacted.
 func TestBaseURLParseErrorEchoIsValueFree(t *testing.T) {
 	cases := []struct{ url, secret string }{
-		{"https://gw.example/v1/sk_live_0123456789abcdef%2", "sk_live_0123456789abcdef"},
-		{"https://gw.example:sk_live_0123456789abcdef/v1", "sk_live_0123456789abcdef"},
-		{"https://gw.example/v1#sk_live_0123456789abcdef%2", "sk_live_0123456789abcdef"},
-		{"https://sk_live_0123456789abcdef%2@gw.example/v1", "sk_live_0123456789abcdef"},
-		{"https://gw.example/v1/tok_a1b2c3d4e5f6g7h8i9j0%2", "tok_a1b2c3d4e5f6g7h8i9j0"},
+		{"https://gw.example/v1/" + testfixtures.SKLive + "%2", testfixtures.SKLive},
+		{"https://gw.example:" + testfixtures.SKLive + "/v1", testfixtures.SKLive},
+		{"https://gw.example/v1#" + testfixtures.SKLive + "%2", testfixtures.SKLive},
+		{"https://" + testfixtures.SKLive + "%2@gw.example/v1", testfixtures.SKLive},
+		{"https://gw.example/v1/" + testfixtures.TokSample + "%2", testfixtures.TokSample},
 	}
 	for _, tc := range cases {
 		if NewRedactor()(tc.secret) != tc.secret {
@@ -1053,17 +1055,17 @@ func TestBaseURLHostLabelSpaceSeparatorStrip(t *testing.T) {
 	// value parses, the rune really sits in Hostname, and the whole-value arms are
 	// the identity on it, which is what left the host arm as the only decider.
 	refuse := []struct{ name, url string }{
-		{"nbsp mid run", "https://sk_live_0123456789ab\u00a0cdef/v1"},
-		{"ideographic space mid run", "https://sk_live_0123456789ab\u3000cdef/v1"},
-		{"figure space mid run", "https://sk_live_0123456789ab\u2007cdef/v1"},
-		{"narrow nbsp mid run", "https://sk_live_0123456789ab\u202fcdef/v1"},
-		{"line separator mid run", "https://sk_live_0123456789ab\u2028cdef/v1"},
-		{"paragraph separator mid run", "https://sk_live_0123456789ab\u2029cdef/v1"},
+		{"nbsp mid run", "https://" + testfixtures.SKLiveShort + "\u00a0cdef/v1"},
+		{"ideographic space mid run", "https://" + testfixtures.SKLiveShort + "\u3000cdef/v1"},
+		{"figure space mid run", "https://" + testfixtures.SKLiveShort + "\u2007cdef/v1"},
+		{"narrow nbsp mid run", "https://" + testfixtures.SKLiveShort + "\u202fcdef/v1"},
+		{"line separator mid run", "https://" + testfixtures.SKLiveShort + "\u2028cdef/v1"},
+		{"paragraph separator mid run", "https://" + testfixtures.SKLiveShort + "\u2029cdef/v1"},
 		{"nbsp behind the underscore head", "https://sk_live\u00a00123456789abcdef/v1"},
-		{"nbsp in the last label", "https://gw.example.sk_live_0123456789ab\u00a0cdef/v1"},
-		{"line separator in a middle label", "https://gw.sk_live_0123456789ab\u2028cdef.example.com/v1"},
-		{"nbsp with a port", "https://sk_live_0123456789ab\u00a0cdef:8443/v1"},
-		{"line separator behind the tok head", "https://tok_a1b2c3d4e5f6g7h8i9j0\u2028xx/v1"},
+		{"nbsp in the last label", "https://gw.example." + testfixtures.SKLiveShort + "\u00a0cdef/v1"},
+		{"line separator in a middle label", "https://gw." + testfixtures.SKLiveShort + "\u2028cdef.example.com/v1"},
+		{"nbsp with a port", "https://" + testfixtures.SKLiveShort + "\u00a0cdef:8443/v1"},
+		{"line separator behind the tok head", "https://" + testfixtures.TokSample + "\u2028xx/v1"},
 	}
 	for _, tc := range refuse {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1453,57 +1455,57 @@ func TestBaseURLPartArmLineSeparatorStrip(t *testing.T) {
 	refuse := []struct{ name, url, encoded, part string }{
 		{
 			"path segment, raw U+2028",
-			"https://gw.example/v1/sk_live_0123456789ab\u2028cdefgh56789012",
+			"https://gw.example/v1/" + testfixtures.SKLiveShort + "\u2028cdefgh56789012",
 			"\u2028",
-			"sk_live_0123456789ab\u2028cdefgh56789012",
+			testfixtures.SKLiveShort + "\u2028cdefgh56789012",
 		},
 		{
 			"path segment, raw U+2029",
-			"https://gw.example/v1/sk_live_0123456789ab\u2029cdefgh56789012",
+			"https://gw.example/v1/" + testfixtures.SKLiveShort + "\u2029cdefgh56789012",
 			"\u2029",
-			"sk_live_0123456789ab\u2029cdefgh56789012",
+			testfixtures.SKLiveShort + "\u2029cdefgh56789012",
 		},
 		{
 			"path segment, percent-encoded U+2028",
-			"https://gw.example/v1/sk_live_0123456789ab%E2%80%A8cdefgh56789012",
+			"https://gw.example/v1/" + testfixtures.SKLiveShort + "%E2%80%A8cdefgh56789012",
 			"%E2%80%A8",
-			"sk_live_0123456789ab\u2028cdefgh56789012",
+			testfixtures.SKLiveShort + "\u2028cdefgh56789012",
 		},
 		{
 			"query value, raw U+2028",
-			"https://gw.example/v1?api_key=sk_live_0123456789ab\u2028cdefgh56789012",
+			"https://gw.example/v1?api_key=" + testfixtures.SKLiveShort + "\u2028cdefgh56789012",
 			"\u2028",
-			"sk_live_0123456789ab\u2028cdefgh56789012",
+			testfixtures.SKLiveShort + "\u2028cdefgh56789012",
 		},
 		{
 			"query key, raw U+2028",
-			"https://gw.example/v1?sk_live_0123456789ab\u2028cdefgh56789012=1",
+			"https://gw.example/v1?" + testfixtures.SKLiveShort + "\u2028cdefgh56789012=1",
 			"\u2028",
-			"sk_live_0123456789ab\u2028cdefgh56789012",
+			testfixtures.SKLiveShort + "\u2028cdefgh56789012",
 		},
 		{
 			"fragment, raw U+2028",
-			"https://gw.example/v1#sk_live_0123456789ab\u2028cdefgh56789012",
+			"https://gw.example/v1#" + testfixtures.SKLiveShort + "\u2028cdefgh56789012",
 			"\u2028",
-			"sk_live_0123456789ab\u2028cdefgh56789012",
+			testfixtures.SKLiveShort + "\u2028cdefgh56789012",
 		},
 		{
 			"userinfo password, percent-encoded U+2028",
-			"https://user:sk_live_0123456789ab%E2%80%A8cdefgh56789012@gw.example/v1",
+			"https://user:" + testfixtures.SKLiveShort + "%E2%80%A8cdefgh56789012@gw.example/v1",
 			"%E2%80%A8",
-			"sk_live_0123456789ab\u2028cdefgh56789012",
+			testfixtures.SKLiveShort + "\u2028cdefgh56789012",
 		},
 		{
 			"userinfo username, percent-encoded U+2029",
-			"https://sk_live_0123456789ab%E2%80%A9cdefgh56789012@gw.example/v1",
+			"https://" + testfixtures.SKLiveShort + "%E2%80%A9cdefgh56789012@gw.example/v1",
 			"%E2%80%A9",
-			"sk_live_0123456789ab\u2029cdefgh56789012",
+			testfixtures.SKLiveShort + "\u2029cdefgh56789012",
 		},
 		{
 			"opaque slot, raw U+2028",
-			"https:sk_live_0123456789ab\u2028cdefgh56789012",
+			"https:" + testfixtures.SKLiveShort + "\u2028cdefgh56789012",
 			"\u2028",
-			"sk_live_0123456789ab\u2028cdefgh56789012",
+			testfixtures.SKLiveShort + "\u2028cdefgh56789012",
 		},
 	}
 	for _, tc := range refuse {
@@ -1551,8 +1553,8 @@ func TestBaseURLPartArmLineSeparatorStrip(t *testing.T) {
 	// spelling-coverage row, with the governing rule recorded: if the control rule
 	// ever stops changing the value, this row stops being refused and the assertion
 	// below says so.
-	mixedPart := "sk_live_0123456789ab\u2029\u0007cdefgh56789012"
-	mixedURL := "https://gw.example/v1?api_key=sk_live_0123456789ab%E2%80%A9%07cdefgh56789012"
+	mixedPart := testfixtures.SKLiveShort + "\u2029\u0007cdefgh56789012"
+	mixedURL := "https://gw.example/v1?api_key=" + testfixtures.SKLiveShort + "%E2%80%A9%07cdefgh56789012"
 	if MaskSlot(mixedPart) == mixedPart {
 		t.Fatalf("premise broken: the control rune no longer changes %q under MaskSlot, so the row now depends on the Zl/Zp strip", mixedPart)
 	}
@@ -1637,21 +1639,21 @@ func TestBaseURLPercentDecodedPartArm(t *testing.T) {
 	}{
 		{
 			name:    "hostless Opaque slot, escape-encoded U+2028",
-			url:     "https:sk_live_0123456789ab%e2%80%a8cdefgh5678",
-			rawPart: "sk_live_0123456789ab%e2%80%a8cdefgh5678",
-			decoded: "sk_live_0123456789ab\u2028cdefgh5678",
+			url:     "https:" + testfixtures.SKLiveShort + "%e2%80%a8cdefgh5678",
+			rawPart: testfixtures.SKLiveShort + "%e2%80%a8cdefgh5678",
+			decoded: testfixtures.SKLiveShort + "\u2028cdefgh5678",
 		},
 		{
 			name:    "hostless Opaque slot, fully escape-encoded credential",
 			url:     "https:%73%6b%5f%6c%69%76%65%5f%30%31%32%33%34%35%36%37%38%39%61%62%63%64%65%66",
 			rawPart: "%73%6b%5f%6c%69%76%65%5f%30%31%32%33%34%35%36%37%38%39%61%62%63%64%65%66",
-			decoded: "sk_live_0123456789abcdef",
+			decoded: testfixtures.SKLive,
 		},
 		{
 			name:    "path segment, double-encoded credential",
 			url:     "https://gw.example/v1/%2573%256b%255f%256c%2569%2576%2565%255f%2530%2531%2532%2533%2534%2535%2536%2537%2538%2539%2561%2562%2563%2564%2565%2566",
 			rawPart: "%73%6b%5f%6c%69%76%65%5f%30%31%32%33%34%35%36%37%38%39%61%62%63%64%65%66",
-			decoded: "sk_live_0123456789abcdef",
+			decoded: testfixtures.SKLive,
 		},
 	}
 	for _, tc := range isolating {
@@ -1710,18 +1712,18 @@ func TestBaseURLPercentDecodedPartArm(t *testing.T) {
 	}{
 		{
 			name:    "hostless Opaque slot, lowercase escapes at the run floor",
-			url:     "https:sk_live_0123456789ab%e2%80%a8cdefgh56789012",
-			rawPart: "sk_live_0123456789ab%e2%80%a8cdefgh56789012",
+			url:     "https:" + testfixtures.SKLiveShort + "%e2%80%a8cdefgh56789012",
+			rawPart: testfixtures.SKLiveShort + "%e2%80%a8cdefgh56789012",
 		},
 		{
 			name:    "hostless Opaque slot, uppercase escapes",
-			url:     "https:sk_live_0123456789ab%E2%80%A8cdefgh56789012",
-			rawPart: "sk_live_0123456789ab%E2%80%A8cdefgh56789012",
+			url:     "https:" + testfixtures.SKLiveShort + "%E2%80%A8cdefgh56789012",
+			rawPart: testfixtures.SKLiveShort + "%E2%80%A8cdefgh56789012",
 		},
 		{
 			name:    "path segment, single-encoded credential",
 			url:     "https://gw.example/v1/%73%6b%5f%6c%69%76%65%5f0123456789abcdef",
-			rawPart: "sk_live_0123456789abcdef",
+			rawPart: testfixtures.SKLive,
 		},
 	}
 	for _, tc := range coverage {
@@ -1734,7 +1736,7 @@ func TestBaseURLPercentDecodedPartArm(t *testing.T) {
 			}
 		})
 	}
-	if MaskOperand("https:sk_live_0123456789ab%E2%80%A8cdefgh56789012") == "https:sk_live_0123456789ab%E2%80%A8cdefgh56789012" {
+	if MaskOperand("https:"+testfixtures.SKLiveShort+"%E2%80%A8cdefgh56789012") == "https:"+testfixtures.SKLiveShort+"%E2%80%A8cdefgh56789012" {
 		t.Errorf("premise: MaskOperand became the identity on the uppercase spelling; the row's incidental owner changed")
 	}
 
@@ -1744,8 +1746,8 @@ func TestBaseURLPercentDecodedPartArm(t *testing.T) {
 	// and keeps the malformed escape in Opaque, which is what makes this row
 	// reach the part arm at all.
 	const (
-		malformedURL  = "https:sk_live_0123456789ab%2"
-		malformedPart = "sk_live_0123456789ab%2"
+		malformedURL  = "https:" + testfixtures.SKLiveShort + "%2"
+		malformedPart = testfixtures.SKLiveShort + "%2"
 	)
 	if _, err := url.PathUnescape(malformedPart); err == nil {
 		t.Fatalf("premise: url.PathUnescape decodes the malformed escape, so the row no longer tests the raw-only branch")
@@ -1832,25 +1834,25 @@ func TestBaseURLHostDecodedArm(t *testing.T) {
 			name:        "doubled escape-encoded underscore-head host",
 			url:         "https://%2573%256b%255f%256c%2569%2576%2565%255f%2530%2531%2532%2533%2534%2535%2536%2537%2538%2539%2561%2562%2563%2564%2565%2566/v1",
 			rawHost:     "%73%6b%5f%6c%69%76%65%5f%30%31%32%33%34%35%36%37%38%39%61%62%63%64%65%66",
-			decodedHost: "sk_live_0123456789abcdef",
+			decodedHost: testfixtures.SKLive,
 		},
 		{
 			name:        "doubled escape-encoded AWS key-id host",
 			url:         "https://%2541%254b%2549%2541%2549%254f%2553%2546%254f%2544%254e%254e%2537%2545%2558%2541%254d%2550%254c%2545.example.com/v1",
 			rawHost:     "%41%4b%49%41%49%4f%53%46%4f%44%4e%4e%37%45%58%41%4d%50%4c%45.example.com",
-			decodedHost: "AKIAIOSFODNN7EXAMPLE.example.com",
+			decodedHost: testfixtures.AKIAExample + ".example.com",
 		},
 		{
 			name:        "doubled escape-encoded line separator inside a run",
-			url:         "https://sk_live_0123456789ab%25e2%2580%25a8cdefgh5678/v1",
-			rawHost:     "sk_live_0123456789ab%e2%80%a8cdefgh5678",
-			decodedHost: "sk_live_0123456789ab\u2028cdefgh5678",
+			url:         "https://" + testfixtures.SKLiveShort + "%25e2%2580%25a8cdefgh5678/v1",
+			rawHost:     testfixtures.SKLiveShort + "%e2%80%a8cdefgh5678",
+			decodedHost: testfixtures.SKLiveShort + "\u2028cdefgh5678",
 		},
 		{
 			name:        "doubled escape that decodes to a dot",
-			url:         "https://sk_live_0123456789abcdef%252eexample.com/v1",
-			rawHost:     "sk_live_0123456789abcdef%2eexample.com",
-			decodedHost: "sk_live_0123456789abcdef.example.com",
+			url:         "https://" + testfixtures.SKLive + "%252eexample.com/v1",
+			rawHost:     testfixtures.SKLive + "%2eexample.com",
+			decodedHost: testfixtures.SKLive + ".example.com",
 		},
 	}
 	for _, tc := range closing {

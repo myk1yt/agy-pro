@@ -923,7 +923,7 @@ var unquotedJWTRe = regexp.MustCompile(`[A-Za-z0-9][A-Za-z0-9_-]*(?:\.[A-Za-z0-9
 // maskUnquotedEcho masks credential-shaped runs in the UNQUOTED spans of a
 // stdlib flag echo line (E1). The flag package prints an undefined flag name
 // and a bad-syntax argument bare — `flag provided but not defined:
-// -wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY` echoed all 40 runes (live PoC),
+// -wJalr...EXAMPLEKEY` echoed all 40 runes (live PoC),
 // and `bad flag syntax: ----wJalr...` does the same — so the quoted-segment
 // redactor cannot see them and the generic patterns only cover sk-/AKIA
 // shapes. Each 16+ rune base64 run renders through the canonical classifier

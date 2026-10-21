@@ -11,6 +11,7 @@ import (
 
 	"agypro/internal/paths"
 	"agypro/internal/providers"
+	"agypro/internal/testfixtures"
 )
 
 // C2 planted-key sweep (B2/U8 class): every operand echo on the cmd/agy
@@ -26,9 +27,9 @@ const (
 	// D1/D2/D3 delta fixtures: an AWS-secret-shaped key (the live PoC shape,
 	// contiguous base64 with "/") and an AWS access key id (AKIA, the
 	// uppercase class that original-case masking restores).
-	sweepAWSKey   = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	sweepAWSKey   = testfixtures.AWSSecretExample
 	sweepAWSMask  = "wJalr****"
-	sweepAKIAKey  = "AKIAIOSFODNN7EXAMPLE"
+	sweepAKIAKey  = testfixtures.AKIAExample
 	sweepAKIAMask = "AKIAI****"
 
 	// E1 delta fixtures: a JWT (3-segment dotted token; the "eyJ" header
@@ -36,9 +37,9 @@ const (
 	// ASIA-prefixed AWS access key id (the credentialShapeRe sibling of AKIA
 	// that the generic AKIA-only redactor pattern misses, so only the
 	// unquoted-run scan catches it).
-	sweepJWTKey   = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+	sweepJWTKey   = testfixtures.JWTFull + "." + testfixtures.JWTPayloadFull + ".SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
 	sweepJWTMask  = "eyJhb****"
-	sweepASIAKey  = "ASIAIOSFODNN7EXAMPLE"
+	sweepASIAKey  = testfixtures.ASIADocExample
 	sweepASIAMask = "ASIAI****"
 )
 

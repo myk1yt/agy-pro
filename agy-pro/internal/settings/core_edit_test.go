@@ -17,6 +17,7 @@ import (
 	"testing"
 
 	"agypro/internal/providers"
+	"agypro/internal/testfixtures"
 )
 
 // editFixture is the provider-edit fixture: two providers (so every pin also
@@ -233,7 +234,7 @@ func TestProviderEdit_APIKeyEnvRefusalsLeaveFileUntouched(t *testing.T) {
 		"lowercase value":     "acme-key-value",
 		"pasted key value":    secret,
 		"pasted bearer-ish":   "bearer 0123456789abcdef",
-		"pasted AWS key id":   "AKIAIOSFODNN7EXAMPLE",
+		"pasted AWS key id":   testfixtures.AKIAExample,
 		"path instead of var": "./keys/acme.env",
 	}
 	for name, env := range cases {
@@ -350,7 +351,7 @@ func TestProviderEdit_ValidationParityWithTwin(t *testing.T) {
 		{name: "env key value", baseURL: "https://acme.example/v1", env: "sk-parity-0123456789abcdef"},
 		{name: "env empty", baseURL: "https://acme.example/v1", env: ""},
 		{name: "env unprovable name", baseURL: "https://acme.example/v1", env: "AcmeKeyVariable12"},
-		{name: "env aws key id", baseURL: "https://acme.example/v1", env: "AKIAIOSFODNN7EXAMPLE"},
+		{name: "env aws key id", baseURL: "https://acme.example/v1", env: testfixtures.AKIAExample},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

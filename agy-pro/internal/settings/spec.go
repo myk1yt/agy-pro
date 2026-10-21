@@ -89,11 +89,12 @@ func providerSpecModelFieldCarriesCredential(m providers.Model) bool {
 //
 // The shape arm is providers.NameCarriesCredential, the SAME authority the TUI
 // form door calls (FIX-7 closes the twin door this phase recorded): a
-// key-shaped NAME ("sk_live_0123456789abcdef", charset-legal, SecretShaped
-// false) used to be persisted raw here while every MaskOperand name sink echoed
-// it raw and the add-json success line masked it, so the operator saw a masked
-// name over a raw on-disk one. The predicate is the union of the three shared
-// arms, not a list kept in this file, so this door and the TUI door cannot
+// key-shaped NAME (the planted fixture testfixtures.SKLive: charset-legal,
+// SecretShaped false) used to be persisted raw here while every MaskOperand
+// name sink echoed it raw and the add-json success line masked it, so the
+// operator saw a masked name over a raw on-disk one. The predicate is the
+// union of the three shared arms, not a list kept in this file, so this door
+// and the TUI door cannot
 // drift; the twin-parity pin drives both with one corpus. The gate sits before
 // Core.ProviderAdd, so a refused name never reaches UpsertProvider and nothing
 // is written.

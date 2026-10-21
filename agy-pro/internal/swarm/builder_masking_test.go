@@ -10,17 +10,18 @@ import (
 	"agypro/internal/fanout"
 	"agypro/internal/inventory"
 	"agypro/internal/providers"
+	"agypro/internal/testfixtures"
 )
 
 // Plants shared by the E7/E8 masking tests: a Claude-style key, an AWS access
 // key ID, an AWS secret access key, and the first-5 masks MaskSecret renders
 // for them.
 const (
-	skPlant   = "sk-ant-api03-PLANT0123456789abcdef"
+	skPlant   = testfixtures.AnthropicPlanted
 	skMask    = "sk-an****"
-	akiaPlant = "AKIAIOSFODNN7EXAMPLE"
+	akiaPlant = testfixtures.AKIAExample
 	akiaMask  = "AKIAI****"
-	awsPlant  = "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"
+	awsPlant  = testfixtures.AWSSecretNoSlash
 	awsMask   = "wJalr****"
 )
 
@@ -77,10 +78,10 @@ func TestRenderSummaryAndSeatListMaskKeyShapedModelIDs(t *testing.T) {
 // and the builder's seeded pass keeps that form.
 func TestBuilderMasksPlantedTTYTokens(t *testing.T) {
 	const (
-		awsPlant   = "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"
+		awsPlant   = testfixtures.AWSSecretNoSlash
 		nativeP    = "native:" + awsPlant
 		rangeP     = "1-" + awsPlant
-		asiaP      = "1-ASIAIOSFODNN7EXAMPLE"
+		asiaP      = "1-" + testfixtures.ASIADocExample
 		jwtPlant   = "aaaaab.cccccc.dddddd" // non-eyJ, all-lowercase: escapes the squash-uppercase rule
 		redactedMk = "[REDACTED]"
 	)
@@ -159,7 +160,7 @@ func TestBuilderMasksPlantedTTYTokens(t *testing.T) {
 // the spec column; key-shaped values must render masked, benign ones readable.
 func TestResolveSeatsAndSeatLineMaskRegistryDerivedPlants(t *testing.T) {
 	const (
-		awsPlant   = "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"
+		awsPlant   = testfixtures.AWSSecretNoSlash
 		nativeP    = "native:" + awsPlant
 		redactedMk = "[REDACTED]"
 	)
@@ -306,7 +307,7 @@ func TestBuilderPromptSlotMasksShortBareKey(t *testing.T) {
 // location-shaped prompt never seeds as a whole).
 func TestBuilderPromptSlotMasksLongMultiWordPrompt(t *testing.T) {
 	t.Run("bare key in a sentence", func(t *testing.T) {
-		prompt := "please review the attached diff and check sk-ant-api03-PLANT0123456789abcdef before merging upstream"
+		prompt := "please review the attached diff and check " + testfixtures.AnthropicPlanted + " before merging upstream"
 		if len(prompt) <= 60 {
 			t.Fatalf("test prompt must exceed 60 bytes, got %d", len(prompt))
 		}
@@ -409,7 +410,7 @@ func TestBuilderPromptSlotSeedListIsFlagSeedOperands(t *testing.T) {
 			skPlant,
 			akiaPlant,
 			awsPlant,
-			"please review the attached diff and check sk-ant-api03-PLANT0123456789abcdef before merging upstream",
+			"please review the attached diff and check " + testfixtures.AnthropicPlanted + " before merging upstream",
 			"compare https://api.example.com/v1/spec with " + awsPlant + " and report differences",
 			"Bearer " + awsPlant,
 			"wJalrXUtnFEMI K7MDENGbPxRfiCYEXAMPLEKEY",
@@ -462,8 +463,8 @@ func TestBuilderPromptSlotTruncatesOnRuneBoundary(t *testing.T) {
 // name; key-shaped ones render masked while benign IDs stay readable.
 func TestRenderSeatListMasksKeyShapedGroupAndDisplayName(t *testing.T) {
 	const (
-		keyGroup   = "AKIAIOSFODNN7EXAMPLE"
-		keyDisplay = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+		keyGroup   = testfixtures.AKIAExample
+		keyDisplay = testfixtures.AWSSecretExample
 	)
 	inv := buildInventory(t,
 		[]inventory.NativeModel{
@@ -555,7 +556,7 @@ func TestPickTemplateMasksMultiWordLineWithEmbeddedSecret(t *testing.T) {
 
 func TestRenderSummaryMasksUnderscoreHeadModelID(t *testing.T) {
 	const (
-		plant     = "sk_live_0123456789abcdef"
+		plant     = testfixtures.SKLive
 		plantMask = "sk_li****"
 	)
 	var buf bytes.Buffer

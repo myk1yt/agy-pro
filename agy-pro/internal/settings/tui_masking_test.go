@@ -11,12 +11,13 @@ import (
 
 	"agypro/internal/mode"
 	"agypro/internal/providers"
+	"agypro/internal/testfixtures"
 )
 
 // Plants for the F6 TUI masking rows, shaped like the CLI E5 rollback rows.
 const (
-	tuiAWSPlant = "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"
-	tuiSkPlant  = "sk-ant-api03-PLANT0123456789abcdef"
+	tuiAWSPlant = testfixtures.AWSSecretNoSlash
+	tuiSkPlant  = testfixtures.AnthropicPlanted
 	tuiRedact   = "[REDACTED]"
 )
 

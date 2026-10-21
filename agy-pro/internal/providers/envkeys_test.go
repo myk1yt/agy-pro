@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"agypro/internal/testfixtures"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -327,15 +328,15 @@ func TestProbeKeyValidity(t *testing.T) {
 // violates the first-5 rule).
 func TestMaskSecret(t *testing.T) {
 	cases := []struct{ in, want string }{
-		{"", "****"},                        // empty → full mask
-		{"a", "****"},                       // shorter than 5
-		{"abcde", "****"},                   // exactly 5 runes → full mask
-		{"abcdef", "abcde****"},             // 6 runes → first 5 + mask
-		{"sk-proj-abcdef1234567890", "sk-pr****"},
+		{"", "****"},            // empty → full mask
+		{"a", "****"},           // shorter than 5
+		{"abcde", "****"},       // exactly 5 runes → full mask
+		{"abcdef", "abcde****"}, // 6 runes → first 5 + mask
+		{testfixtures.SKProjMixed, "sk-pr****"},
 		{"sk-a83a3c2abcdef1234567890b7569", "sk-a8****"},
 		{"12345678", "12345****"},
 		{"日本語キーX", "日本語キー****"}, // 6 runes, multi-byte → rune boundary
-		{"日本語キー", "****"},               // exactly 5 multi-byte runes
+		{"日本語キー", "****"},       // exactly 5 multi-byte runes
 	}
 	for _, c := range cases {
 		if got := MaskSecret(c.in); got != c.want {

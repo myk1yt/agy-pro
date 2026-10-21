@@ -12,6 +12,7 @@ import (
 	"agypro/internal/mode"
 	"agypro/internal/paths"
 	"agypro/internal/providers"
+	"agypro/internal/testfixtures"
 )
 
 // S-8: --tools parsing is fail-closed. A "restrictive-looking" value must not
@@ -304,15 +305,15 @@ func TestFanoutPlantedKeySweep(t *testing.T) {
 	const (
 		skPlant  = "sk-planted-c2-sweep-key-0123456789abcdef"
 		skMask   = "sk-pl****"
-		awsPlant = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+		awsPlant = testfixtures.AWSSecretExample
 		awsMask  = "wJalr****"
 		// E1 plants: a JWT (3-segment dotted token) and an ASIA-prefixed AWS
 		// access key id (the credentialShapeRe sibling of AKIA; F3 added the
 		// ASIA twin to the generic redactor pattern, so flag echoes of the id
 		// now carry the full marker instead of the first-5 mask).
-		jwtPlant  = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+		jwtPlant  = testfixtures.JWTFull + "." + testfixtures.JWTPayloadFull + ".SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
 		jwtMask   = "eyJhb****"
-		asiaPlant = "ASIAIOSFODNN7EXAMPLE"
+		asiaPlant = testfixtures.ASIADocExample
 	)
 
 	type site struct {
@@ -483,7 +484,7 @@ func TestFanoutPlantedKeySweep(t *testing.T) {
 // cover the restored class).
 func TestFanoutPromptFileMultiWordOperandSeedsCompositeError(t *testing.T) {
 	t.Setenv(paths.EnvAgyProHome, t.TempDir())
-	awsPlant := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	awsPlant := testfixtures.AWSSecretExample
 	// Two interior spaces: the space-gate boundary the wide seed core covers.
 	operand := "my docs/" + awsPlant + " notes"
 
@@ -529,7 +530,7 @@ func TestFanoutPromptFileMultiWordOperandSeedsCompositeError(t *testing.T) {
 // every single-token / one-space / benign path renders byte-identical.
 func TestFanoutPromptFileSlotMasksMultiWordOperand(t *testing.T) {
 	t.Setenv(paths.EnvAgyProHome, t.TempDir())
-	awsPlant := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	awsPlant := testfixtures.AWSSecretExample
 
 	// slot renders the first-5 rendering of the operand, exactly as the writer
 	// prints it: "Error reading prompt file <slot>: <os error>".
@@ -603,7 +604,7 @@ func TestFanoutPromptFileSlotMasksMultiWordOperand(t *testing.T) {
 // slot, so the bare token masks as well.
 func TestFanoutPromptFileSlotMasksCompoundOperand(t *testing.T) {
 	t.Setenv(paths.EnvAgyProHome, t.TempDir())
-	awsPlant := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	awsPlant := testfixtures.AWSSecretExample
 	skPlant := "sk-planted-c2-sweep-key-0123456789abcdef"
 
 	slotOf := func(stderr string) string {
@@ -647,7 +648,7 @@ func TestFanoutPromptFileSlotMasksCompoundOperand(t *testing.T) {
 // classes mask at the slot, and a benign comma list renders byte-identical.
 func TestFanoutPromptFileSlotMasksCommaDecoratedOperand(t *testing.T) {
 	t.Setenv(paths.EnvAgyProHome, t.TempDir())
-	awsPlant := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	awsPlant := testfixtures.AWSSecretExample
 
 	slotOf := func(stderr string) string {
 		const prefix = "Error reading prompt file "
@@ -716,7 +717,7 @@ func TestFanoutPromptFileSlotMasksCommaDecoratedOperand(t *testing.T) {
 // plant reaches stderr through the sentence and the equality pins fail.
 func TestFanoutPromptFileCompositeTailSeedsTokens(t *testing.T) {
 	t.Setenv(paths.EnvAgyProHome, t.TempDir())
-	awsPlant := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	awsPlant := testfixtures.AWSSecretExample
 
 	for _, tc := range []struct{ name, arg, plant, wantSlot string }{
 		{"comma-decorated compound plant", "./backups," + awsPlant, awsPlant, "./backups,[REDACTED]"},
@@ -776,8 +777,8 @@ func TestFanoutPromptFileCompositeTailSeedsTokens(t *testing.T) {
 // the trimmed form of every seed stays armed for parsers that echo the operand
 // without surrounding whitespace.
 func TestE2SeedEligibilityWholeOperandOnly(t *testing.T) {
-	awsPlant := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-	asiaPlant := "ASIAIOSFODNN7EXAMPLE"
+	awsPlant := testfixtures.AWSSecretExample
+	asiaPlant := testfixtures.ASIADocExample
 	asiaMask := "ASIAI****"
 
 	// AWS whole-operand secrets stay masked (classifier verdict seeds the
@@ -820,7 +821,7 @@ func TestE2SeedEligibilityWholeOperandOnly(t *testing.T) {
 	// JWT-shaped operands are masked: the eyJ header classifies, the shape
 	// rule covers headers the classifier cannot see.
 	for _, jwt := range []string{
-		"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+		testfixtures.JWTFull + "." + testfixtures.JWTPayloadFull + ".SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
 		"abcdefghijklmnop.qrstuvwxyz0123.456789",
 	} {
 		msg := fmt.Sprintf("invalid selection token %q", jwt)
@@ -929,8 +930,8 @@ func TestFanoutEngineErrorMasksSeatSpecs(t *testing.T) {
 	t.Cleanup(func() { executeEngine = old })
 
 	const (
-		awsPlant  = "1-wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-		asiaPlant = "1-ASIAIOSFODNN7EXAMPLE"
+		awsPlant  = "1-" + testfixtures.AWSSecretExample
+		asiaPlant = "1-" + testfixtures.ASIADocExample
 	)
 	for _, plant := range []string{awsPlant, asiaPlant} {
 		var out, errw bytes.Buffer

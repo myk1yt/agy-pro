@@ -13,6 +13,7 @@ import (
 	"agypro/internal/i18n"
 	"agypro/internal/providers"
 	"agypro/internal/settings"
+	"agypro/internal/testfixtures"
 )
 
 // providersFixture writes reg to a temp AGY_PRO_HOME and points the process
@@ -268,7 +269,7 @@ func TestProvidersDeleteCancelWritesNothing(t *testing.T) {
 // diff against the SH-3 finding: a BaseURL carrying credential material in
 // the userinfo slot must never render the credential, no matter its shape.
 func TestProvidersDeleteApprovalMasksBaseURLUserinfo(t *testing.T) {
-	awsKey := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	awsKey := testfixtures.AWSSecretExample
 	reg := &providers.Registry{Providers: []providers.Provider{
 		{
 			Name: "leaky", BaseURL: "https://user:hunter2sekret@" + "gw.example/v1", APIKeyEnv: "LEAKY_API_KEY",
@@ -1345,7 +1346,7 @@ func TestProvidersFallbackConstsResolveInAllLocales(t *testing.T) {
 // the shared prefix list), while the registry-slot display authority
 // providers.MaskSlot masks it first-5 + ****.
 const (
-	nameSinkPlant = "sk_live_0123456789abcdef"
+	nameSinkPlant = testfixtures.SKLive
 	nameSinkMask  = "sk_li****"
 )
 

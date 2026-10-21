@@ -22,6 +22,7 @@ import (
 	"agypro/internal/agenttools"
 	"agypro/internal/openaiup"
 	"agypro/internal/providers"
+	"agypro/internal/testfixtures"
 )
 
 // ---------------------------------------------------------------------------
@@ -1458,7 +1459,7 @@ func TestFilterToolDefs_FailClosedUnknownTool(t *testing.T) {
 // used to write the raw tool output upstream.
 func TestServeToolLoop_NilRedactMasksToolOutput(t *testing.T) {
 	ws := t.TempDir()
-	const planted = "AIzaSyDELmE1f2g3h4i5j6k7l8m9n0o1p2q3r4s"
+	const planted = testfixtures.AIzaGeminiLong
 	if err := os.WriteFile(filepath.Join(ws, "secret.txt"), []byte("leak "+planted), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1859,9 +1860,9 @@ func TestToolLoop_UpstreamErrorAuditMasksUnderscoreHeadNames(t *testing.T) {
 	t.Setenv("TEST_BRIDGE_TOOLS_KEY", "secret-upstream-key-abcdef")
 
 	const (
-		provPlant     = "sk_live_0123456789abcdef"
+		provPlant     = testfixtures.SKLive
 		provPlantMask = "sk_li****"
-		modelPlant    = "tok_a1b2c3d4e5f6g7h8i9j0"
+		modelPlant    = testfixtures.TokSample
 		modelMask     = "tok_a****"
 	)
 
@@ -1984,11 +1985,11 @@ func decodeBridgeErrorBody(t *testing.T, raw []byte) map[string]any {
 
 func TestBridgeJSONErrorMasksCredentialOperands(t *testing.T) {
 	const (
-		modelPlant = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+		modelPlant = testfixtures.AWSSecretExample
 		modelMask  = "wJalr****"
-		provPlant  = "sk_live_0123456789abcdef"
+		provPlant  = testfixtures.SKLive
 		provMask   = "sk_li****"
-		envPlant   = "ghp_0123456789abcdefghij"
+		envPlant   = testfixtures.GHPMid
 		envMask    = "ghp_0****"
 	)
 	// Premises: each operand classifies as credential material on the arm the

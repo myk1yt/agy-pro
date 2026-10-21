@@ -20,6 +20,7 @@ import (
 
 	"agypro/internal/providers"
 	"agypro/internal/swarm"
+	"agypro/internal/testfixtures"
 )
 
 // viewRegistryHome isolates the Core's default seams (state load, swarm store)
@@ -132,7 +133,7 @@ func TestView_CJKProviderName_RendersNormally(t *testing.T) {
 // list), renders masked first-5 + **** in both fields and nowhere raw.
 func TestViewProviderNameSinkUsesSlotAuthority(t *testing.T) {
 	const (
-		plant = "sk_live_0123456789abcdef"
+		plant = testfixtures.SKLive
 		mask  = "sk_li****"
 	)
 	// The required names plus the names the pre-existing key-status pins use
@@ -211,10 +212,10 @@ func TestViewProviderNameSinkUsesSlotAuthority(t *testing.T) {
 // class. providers.MaskOperand masks both; benign names and number lists are
 // the identity.
 const (
-	presetSinkNamePlant    = "AKIAIOSFODNN7EXAMPLE"
+	presetSinkNamePlant    = testfixtures.AKIAExample
 	presetSinkNameMask     = "AKIAI****"
 	presetSinkNameTail     = "IOSFODNN7EXAMPLE"
-	presetSinkNumbersPlant = "ghp_a1b2c3d4e5f6g7h8i9j0k1l2"
+	presetSinkNumbersPlant = testfixtures.GHPLong
 	presetSinkNumbersMask  = "ghp_a****"
 	presetSinkNumbersTail  = "a1b2c3d4e5f6g7h8i9j0k1l2"
 )

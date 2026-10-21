@@ -8,6 +8,7 @@ import (
 
 	"agypro/internal/paths"
 	"agypro/internal/providers"
+	"agypro/internal/testfixtures"
 )
 
 // D3 planted-key slots: the registry-driven display lines (status/models
@@ -353,7 +354,7 @@ func TestD3DoctorUnknownOptionMasked(t *testing.T) {
 
 // E1: the stdlib prints undefined flag names and bad-syntax arguments
 // UNQUOTED, so the quoted-segment redactor cannot see a planted secret there
-// (live PoC: `agy pro swarm --wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY`
+// (live PoC: `agy pro swarm --wJalr...EXAMPLEKEY`
 // echoed all 40 runes of the AWS secret). Both flag writers now scan unquoted
 // runs: 16+ rune base64-shaped runs (AWS secrets, ASIA key ids) render through
 // the canonical classifier and JWT-shaped 3-segment tokens render as
@@ -522,7 +523,7 @@ func TestE2SeedEligibilityWholeOperandOnly(t *testing.T) {
 
 func TestEchoSweepBannerKeyAuditAndRepairReportMaskRegistryName(t *testing.T) {
 	const (
-		plant     = "sk_live_0123456789abcdef"
+		plant     = testfixtures.SKLive
 		plantMask = "sk_li****"
 	)
 

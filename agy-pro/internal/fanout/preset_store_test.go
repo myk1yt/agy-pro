@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"agypro/internal/testfixtures"
 )
 
 func TestPresetStoreRoundTrip(t *testing.T) {
@@ -207,7 +209,7 @@ func TestPresetStoreSearchKeyEnvValueRejectedNotEchoed(t *testing.T) {
 	st := &PresetFileStore{Path: filepath.Join(t.TempDir(), "fanout-presets.json")}
 	values := []string{
 		"sk-abcdef1234567890123456789",
-		"AKIAIOSFODNN7EXAMPLE",
+		testfixtures.AKIAExample,
 	}
 	for _, v := range values {
 		err := st.SavePresets(&PresetsFile{Presets: []Preset{{Name: "a", SearchKeyEnv: v}}})

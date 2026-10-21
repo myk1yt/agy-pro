@@ -12,6 +12,7 @@ import (
 
 	"agypro/internal/paths"
 	"agypro/internal/providers"
+	"agypro/internal/testfixtures"
 )
 
 // C2: the unresolved-model errors on the seat/spec resolution paths
@@ -220,7 +221,7 @@ func TestExecuteMasksUnresolvedSeatModel(t *testing.T) {
 
 func TestClient_ErrorSinksMaskRegistryProviderNameThroughSlotAuthority(t *testing.T) {
 	const (
-		plant     = "sk_live_0123456789abcdef"
+		plant     = testfixtures.SKLive
 		plantMask = "sk_li****"
 	)
 	newTarget := func(baseURL string) providers.Target {
@@ -319,7 +320,7 @@ func TestClient_ErrorSinksMaskRegistryProviderNameThroughSlotAuthority(t *testin
 
 func TestSeatSpecLabelMasksRegistrySlots(t *testing.T) {
 	const (
-		plant     = "sk_live_0123456789abcdef"
+		plant     = testfixtures.SKLive
 		plantMask = "sk_li****"
 	)
 	provSeat := func(name, id string) providers.Target {
@@ -358,7 +359,7 @@ func TestSeatSpecLabelMasksRegistrySlots(t *testing.T) {
 // the mask's stars into dashes, the I2 rule), and a benign seat keeps the exact
 // line the banner printed before the conversion.
 func TestRunBannerSeatReportLineMasksRegistrySlots(t *testing.T) {
-	const plant = "sk_live_0123456789abcdef"
+	const plant = testfixtures.SKLive
 	t.Setenv(paths.EnvAgyProHome, t.TempDir())
 
 	old := executeEngine

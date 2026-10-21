@@ -13,6 +13,7 @@ import (
 	"agypro/internal/cellwidth"
 	"agypro/internal/providers"
 	"agypro/internal/settings"
+	"agypro/internal/testfixtures"
 )
 
 // modelsFixtureReg is the standard two-model provider every test here reads:
@@ -653,13 +654,13 @@ func TestModelsReloadOnExternalChange(t *testing.T) {
 // through the registry-slot masker. Benign ids and families stay readable.
 func TestModelsMasksSecretShapedFields(t *testing.T) {
 	reg := modelsFixtureReg()
-	reg.Providers[0].Models[0].ID = "AKIAIOSFODNN7EXAMPLE"
-	reg.Providers[0].Models[0].Family = "AKIAIOSFODNN7EXAMPLE"
+	reg.Providers[0].Models[0].ID = testfixtures.AKIAExample
+	reg.Providers[0].Models[0].Family = testfixtures.AKIAExample
 	app, _, _ := newModelsTestAppReg(t, reg, nil)
 
 	out := app.CaptureRun(&ScriptedKeys{Keys: nil})
 
-	if strings.Contains(out, "AKIAIOSFODNN7EXAMPLE") {
+	if strings.Contains(out, testfixtures.AKIAExample) {
 		t.Fatalf("raw credential-shaped id/family rendered; frames:\n%s", out)
 	}
 	if !strings.Contains(out, "AKIAI****") {
@@ -677,7 +678,7 @@ func TestModelsMasksSecretShapedFields(t *testing.T) {
 // render masked in the message line, matching the sibling screens. The save
 // failure also leaves the on-disk file byte-identical.
 func TestModelsVerbErrorTailMasked(t *testing.T) {
-	const planted = "AKIAIOSFODNN7EXAMPLE"
+	const planted = testfixtures.AKIAExample
 	newFailingApp := func(t *testing.T) (*App, string) {
 		t.Helper()
 		tmp := t.TempDir()
@@ -1021,7 +1022,7 @@ func TestModelsSelectionMoveKeepsWindow(t *testing.T) {
 // rewrites the on-disk id.
 func TestModelsDecoratedRegistrySlotMasked(t *testing.T) {
 	plants := []struct{ name, id string }{
-		{"drive decorated id", `C:\wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY`},
+		{"drive decorated id", `C:\` + testfixtures.AWSSecretExample},
 		{"look-alike decorated id", "\u2025/ab3def7gh9jk1mnpqr5t"},
 	}
 	for _, tc := range plants {

@@ -3,6 +3,8 @@ package providers
 import (
 	"strings"
 	"testing"
+
+	"agypro/internal/testfixtures"
 )
 
 // S-4/F2: the redactor must mask generic credential shapes too, not only the
@@ -18,8 +20,8 @@ func TestRedactorGenericCredentialShapes(t *testing.T) {
 	}{
 		{
 			name: "aws access key id",
-			in:   "client = boto3.client('s3'); key id AKIAIOSFODNN7EXAMPLE and more",
-			leak: "AKIAIOSFODNN7EXAMPLE",
+			in:   "client = boto3.client('s3'); key id " + testfixtures.AKIAExample + " and more",
+			leak: testfixtures.AKIAExample,
 			keep: "key id",
 		},
 		{
@@ -36,14 +38,14 @@ func TestRedactorGenericCredentialShapes(t *testing.T) {
 		},
 		{
 			name: "bearer token",
-			in:   "curl -H 'Authorization: Bearer ghp_0123456789abcdef0123' ",
-			leak: "ghp_0123456789abcdef0123",
+			in:   "curl -H 'Authorization: Bearer " + testfixtures.GHPNumeric + "' ",
+			leak: testfixtures.GHPNumeric,
 			keep: "Bearer",
 		},
 		{
 			name: "sk- long token",
-			in:   "paste: sk-proj-0123456789abcdef0123456789 done",
-			leak: "sk-proj-0123456789abcdef0123456789",
+			in:   "paste: " + testfixtures.SKProjLong + " done",
+			leak: testfixtures.SKProjLong,
 			keep: "paste:",
 		},
 		{
@@ -54,8 +56,8 @@ func TestRedactorGenericCredentialShapes(t *testing.T) {
 		},
 		{
 			name: "google api key",
-			in:   "export GEMINI_API_KEY=AIzaSyDELmE1f2g3h4i5j6k7l8m9n0o1p2q3r4s",
-			leak: "AIzaSyDELmE1f2g3h4i5j6k7l8m9n0o1p2q3r4s",
+			in:   "export GEMINI_API_KEY=" + testfixtures.AIzaGeminiLong,
+			leak: testfixtures.AIzaGeminiLong,
 			keep: "GEMINI_API_KEY=",
 		},
 	}
@@ -80,11 +82,11 @@ func TestRedactorGenericCredentialShapes(t *testing.T) {
 // text that happens to start with those four letters.
 func TestRedactorGoogleKeyShapeIsExact(t *testing.T) {
 	redact := NewRedactor()
-	const short = "AIzaSyDELmE1f2g3h4i5j6k7l8m9n0o1p2q3r4" // 34 chars after AIza
+	const short = testfixtures.AIzaGeminiShort // 34 chars after AIza
 	if got := redact("note: " + short); got != "note: "+short {
 		t.Errorf("a 38-char AIza string must survive untouched, got %q", got)
 	}
-	const exact = "AIzaSyDELmE1f2g3h4i5j6k7l8m9n0o1p2q3r4s" // 35 chars after AIza
+	const exact = testfixtures.AIzaGeminiLong // 35 chars after AIza
 	got := redact("note: " + exact)
 	if strings.Contains(got, exact) {
 		t.Errorf("a 39-char Google key survived redaction: %q", got)

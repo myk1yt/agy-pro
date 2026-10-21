@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"agypro/internal/providers"
+	"agypro/internal/testfixtures"
 )
 
 // Plants for the reconcile-sink pins (S1/S4/C2/C7). Each is key-shaped and each
@@ -20,11 +21,11 @@ const (
 	s4EnvPlant = "sk-planted-fanout-env-key-0123456789abcdef"
 	// s4URLPlant rides the baseURL slot without a scheme, so it is not
 	// location-shaped and stays a value rather than a location.
-	s4URLPlant = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	s4URLPlant = testfixtures.AWSSecretExample
 	// s4ModelPlant rides a nested models[].id / failover hop slot: hyphen- and
 	// slash-decorated, so the contiguous-run rule cannot see it and only the
 	// decorated class masks it.
-	s4ModelPlant = "1-wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	s4ModelPlant = "1-" + testfixtures.AWSSecretExample
 	// s4FamilyPlant rides the explicit model family. Its LOWERCASED fold (what
 	// FamilyName() returns) carries no uppercase letter, so the decorated
 	// display class cannot see the fold and the folded echo rides raw; the
@@ -74,7 +75,7 @@ func readOutFile(t *testing.T, dir, pattern string) string {
 // seeds the redactor with the task plus its per-token forms, so the secret is
 // masked wherever the sentence echoes it.
 func TestReconcileTaskSinkMasksEmbeddedSecret(t *testing.T) {
-	awsPlant := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	awsPlant := testfixtures.AWSSecretExample
 	task := "audit the config and rotate the key " + awsPlant + " before friday"
 
 	outDir := t.TempDir()
@@ -309,7 +310,7 @@ func TestReconcileBenignTaskSurvivesMarshal(t *testing.T) {
 // which masks the credential shapes it knows (here a Google API key, the shape
 // agy itself hands to whatever endpoint it talks to).
 func TestFormatSeatReportNilRedactorMasksCredentialShapes(t *testing.T) {
-	const planted = "AIzaSyDELmE1f2g3h4i5j6k7l8m9n0o1p2q3r4s"
+	const planted = testfixtures.AIzaGeminiLong
 	target := providers.Target{
 		Provider: providers.Provider{Name: "prov"},
 		Model:    providers.Model{ID: "mod"},
@@ -352,7 +353,7 @@ func TestFormatSeatReportNilRedactorMasksCredentialShapes(t *testing.T) {
 // fix8SlotPlant is a synthetic underscore-head credential-shaped name: the
 // class MaskOperand renders RAW and MaskSlot masks to first-5 + "****".
 const (
-	fix8SlotPlant = "sk_live_0123456789abcdef"
+	fix8SlotPlant = testfixtures.SKLive
 	fix8SlotMask  = "sk_li****"
 )
 

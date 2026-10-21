@@ -51,12 +51,12 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 		return errors.New("provider name cannot be empty")
 	}
 	// FIX-7B: the registry-slot authority classifies the NAME before the
-	// charset does. The charset accepts the underscore key family
-	// ("sk_live_0123456789abcdef"), MaskOperand is the identity on it, and the
+	// charset does. The charset accepts the underscore key family (the
+	// testfixtures.SKLive fixture), MaskOperand is the identity on it, and the
 	// wizard persists the name through its own upsert (not registry_ops.go),
-	// from where it reaches the derived env name
-	// ("SK_LIVE_0123456789ABCDEF_API_KEY") and every listing, doctor, and
-	// report sink. A name that carries credential material is refused here,
+	// from where it reaches the derived env name (that fixture case-folded to
+	// upper snake case with an "_API_KEY" suffix) and every listing, doctor,
+	// and report sink. A name that carries credential material is refused here,
 	// fail closed, before the URL prompt, before the probe, and before any
 	// write; the sentence names the field and never the value.
 	if err := wizardNameRefused(provName); err != nil {
@@ -117,12 +117,12 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 	// (the name guard above now refuses that class at the prompt, so this path is
 	// the hand-edited-registry case), and defaultEnvFor only case-folds the name
 	// and swaps separators for "_", so the derived name embeds the pasted key
-	// verbatim ("AKIAIOSFODNN7EXAMPLE" -> "AKIAIOSFODNN7EXAMPLE_API_KEY"). The
-	// registry-slot mask decides the class, not MaskOperand alone: MaskOperand is
-	// the identity on the underscore family ("sk_live_0123456789abcdef"), which
-	// is exactly the class this mission closes. Echo sites withhold that derived
-	// name instead of leaking it. A name the user typed as an env variable still
-	// renders through MaskOperand.
+	// verbatim (testfixtures.AKIAExample -> that value with an "_API_KEY"
+	// suffix). The registry-slot mask decides the class, not MaskOperand alone:
+	// MaskOperand is the identity on the underscore family
+	// (testfixtures.SKLive), which is exactly the class this mission closes.
+	// Echo sites withhold that derived name instead of leaking it. A name the
+	// user typed as an env variable still renders through MaskOperand.
 	withholdDerivedEnv := wizardWithholdsDerivedEnv(provName)
 	envEcho := func(env string) string {
 		if withholdDerivedEnv && env == defaultEnv {
@@ -543,7 +543,7 @@ func wizardSecretRefusal(field string) error {
 
 // wizardNameRefused is the wizard door's provider-NAME guard. The wizard's name
 // prompt ran the charset check only, and that charset accepts the underscore
-// credential family ("sk_live_0123456789abcdef", "tok_a1b2c3d4e5f6g7h8i9j0"):
+// credential family (testfixtures.SKLive and testfixtures.TokSample):
 // MaskOperand is the identity on it, so the raw name was persisted through the
 // wizard's own upsert and echoed at the listing, doctor, and report sinks while
 // its derived env name leaked the class as upper snake case.
@@ -575,7 +575,7 @@ func wizardProvLabel(name string) string {
 // or from the endpoint's discovered model list).
 //
 // The eight ID sinks used MaskOperand, which is the identity on the
-// underscore-head class ("sk_live_0123456789abcdef": no shared prefix, and the
+// underscore-head class (testfixtures.SKLive: no shared prefix, and the
 // "_" breaks the opaque-run test), so a hand-edited or discovered
 // credential-shaped ID rendered raw in the duplicate notice, the live-probe
 // line, the saved/discarded notices, the summary row, and the two ready-to-use
@@ -590,8 +590,8 @@ func wizardModelLabel(id string) string {
 // wizardWithholdsDerivedEnv reports whether the env name the wizard derives
 // from the provider name must be withheld from the transcript. defaultEnvFor
 // only case-folds and separator-swaps the name, so a credential-shaped name
-// embeds itself verbatim in the derived variable
-// ("sk_live_0123456789abcdef" -> "SK_LIVE_0123456789ABCDEF_API_KEY").
+// embeds itself verbatim in the derived variable (testfixtures.SKLive -> that
+// value case-folded to upper snake case with an "_API_KEY" suffix).
 // MaskOperand is the identity on that class; the registry-slot mask is not, so
 // the derived-name leak is decided by the same authority as the door guard.
 func wizardWithholdsDerivedEnv(name string) bool {
@@ -627,7 +627,7 @@ func wizardBaseURLRefused(raw string) error {
 // refusal aborts the setup with nothing written and the value unechoed.
 //
 // FIX-8e: the guard used to be SecretShaped alone, so a key-shaped model ID of
-// the underscore class ("tok_a1b2c3d4e5f6g7h8i9j0" and the rest of it) passed
+// the underscore class (testfixtures.TokSample and the rest of it) passed
 // the Model ID, family, tags, and tools prompts and persisted raw into
 // models[].id while the TUI model form, the CLI model verbs, and add-json all
 // refused it. The authority is the union of the three shared arms, so the
@@ -908,7 +908,8 @@ func maskProbeTranscript(sentence, baseURL string) string {
 // URL yields no seeds and its transcript stays byte-identical.
 //
 // FIX-8f: the HOST slot was the last one missing, so a key pasted as the host
-// ("https://sk_live_0123456789abcdef/v1") printed raw inside the wrapped
+// (a URL whose host is the planted underscore-head fixture, testfixtures.SKLive)
+// printed raw inside the wrapped
 // *url.Error sentence. The host labels are seeded through the shared host rule
 // (baseURLHostLabelCarriesCredential), and they are appended without the
 // MaskSlot gate: the class the host rule exists for (the underscore head) is

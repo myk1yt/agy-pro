@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"agypro/internal/providers"
+	"agypro/internal/testfixtures"
 )
 
 // q6Catalog is the live-verified plain `agy models` output (E4/Q6 fixture,
@@ -273,7 +274,7 @@ func TestLoadCarriesCasePreservedFamily(t *testing.T) {
 	// A separator-carrying mixed-case family: the contiguous-run rule cannot
 	// see it (the ":" breaks the run), so only the case-preserved decorated
 	// class catches it. This is the exact C2 leak shape.
-	keyFamily := "Native:wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	keyFamily := "Native:" + testfixtures.AWSSecretExample
 	reg := &providers.Registry{Providers: []providers.Provider{{
 		Name: "acme", Models: []providers.Model{
 			{ID: "m1", Family: "Gemini"},
@@ -317,8 +318,8 @@ func TestLoadCarriesCasePreservedFamily(t *testing.T) {
 // the same row stays readable (the pinned format test above keeps its
 // fixtures).
 func TestRenderNumberedMasksKeyShapedDisplayFields(t *testing.T) {
-	keyGroup := "AKIAIOSFODNN7EXAMPLE"
-	keyDisplay := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	keyGroup := testfixtures.AKIAExample
+	keyDisplay := testfixtures.AWSSecretExample
 	reg := &providers.Registry{Providers: []providers.Provider{{
 		Name:   keyGroup,
 		Models: []providers.Model{{ID: "gemini-2.5-flash"}},
@@ -351,7 +352,7 @@ func TestRenderNumberedMasksKeyShapedDisplayFields(t *testing.T) {
 // RenderNumbered masks it; the column widths are computed from the MASKED
 // strings so every rendered cell stays aligned with its column.
 func TestRenderNumbered_MasksCapabilityColumnAndAlignsMaskedWidths(t *testing.T) {
-	keyEffort := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	keyEffort := testfixtures.AWSSecretExample
 	reg := &providers.Registry{Providers: []providers.Provider{{
 		Name: "google",
 		Models: []providers.Model{

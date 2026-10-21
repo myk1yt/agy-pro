@@ -516,9 +516,10 @@ func reasoningEffortAllowedList() string {
 // location-shaped value).
 //
 // The underscore-head class is why this door moved off SecretShaped alone
-// (FIX-7E): SecretShaped is false for "sk_live_0123456789abcdef" while every
-// display sink renders that same value as "sk_li****", so the verb accepted a
-// value its own consent transcript masked as a key and persisted it raw. The
+// (FIX-7E): SecretShaped is false for the planted underscore-head fixture
+// (testfixtures.SKLive) while every display sink renders that same value as
+// "sk_li****", so the verb accepted a value its own consent transcript masked
+// as a key and persisted it raw. The
 // union also refuses a single-class 16+ rune id and a location-shaped id (a
 // path or a URL), which is the verdict the TUI model form has pinned since
 // FIX-7A and is a held product decision (whether a model ID may legally be a

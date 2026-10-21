@@ -111,7 +111,7 @@ const (
 // of all three shared arms: SecretShaped OR MaskOperand changed OR MaskSlot
 // changed. SecretShaped alone left this screen with two disagreeing answers for
 // one value (FIX-7): it is false for the underscore-head class
-// ("sk_live_0123456789abcdef"), while the grid row and the M4 diff already
+// (testfixtures.SKLive), while the grid row and the M4 diff already
 // render that value through providers.MaskSlot ("sk_li****"), so the form
 // accepted a value its own frames masked as a key and the M4 y persisted it RAW
 // into models[].id. With the union the two answers cannot disagree: the

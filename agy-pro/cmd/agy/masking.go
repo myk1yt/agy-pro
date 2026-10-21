@@ -16,7 +16,7 @@ import (
 // MaskOperand cannot mask those alone: it classifies the WHOLE string, and a
 // full sentence never looks secret-shaped, so only the generic credential
 // patterns apply and an AWS-secret-shaped operand (contiguous base64 with "/")
-// survives (live PoC: `--prompt-file wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY`
+// survives (live PoC: `--prompt-file wJalr...EXAMPLEKEY`
 // echoed all 40 runes). Following the ProbeEndpoint probe-key pattern, the
 // redactor is seeded with the RAW operand so the planted secret is masked
 // wherever it appears in the sentence, while operands the classifier keeps
@@ -56,7 +56,7 @@ var unquotedJWTRe = regexp.MustCompile(`[A-Za-z0-9][A-Za-z0-9_-]*(?:\.[A-Za-z0-9
 // maskUnquotedEcho masks credential-shaped runs in the UNQUOTED spans of a
 // stdlib flag echo line (E1). The flag package prints an undefined flag name
 // and a bad-syntax argument bare — `flag provided but not defined:
-// -wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY` echoed all 40 runes (live PoC),
+// -wJalr...EXAMPLEKEY` echoed all 40 runes (live PoC),
 // and `bad flag syntax: ----wJalr...` does the same — so the quoted-segment
 // redactor cannot see them and the generic patterns only cover sk-/AKIA
 // shapes. Each 16+ rune base64 run renders through the canonical classifier

@@ -13,6 +13,7 @@ import (
 
 	"agypro/internal/mode"
 	"agypro/internal/providers"
+	"agypro/internal/testfixtures"
 )
 
 // assertNoLeak fails when haystack contains any substring of secret longer
@@ -122,7 +123,7 @@ func TestShimInInstalledBin(t *testing.T) {
 // TestView_MasksKeyShapedEnvName (B4, view.go:198/200): a key-shaped "env
 // name" (e.g. an AWS access key ID persisted before the guard) renders masked.
 func TestView_MasksKeyShapedEnvName(t *testing.T) {
-	akia := "AKIAABCDEFGHIJKLMNOP"
+	akia := testfixtures.AKIAAlphabet
 	secret := "sk-XYZZYQUUX-89abcdef01234567"
 	f := newFakeDeps()
 	f.reg = &providers.Registry{Providers: []providers.Provider{
@@ -155,7 +156,7 @@ func TestView_MasksKeyShapedEnvName(t *testing.T) {
 // Every doctor branch must render both names through providers.MaskOperand
 // (first 5 + ****), never raw, while conventional names stay readable.
 func TestPrintKeyAuditLine_MasksKeyShapedEnv(t *testing.T) {
-	akia := "AKIAIOSFODNN7EXAMPLE"
+	akia := testfixtures.AKIAExample
 	cases := []providers.KeyAudit{
 		{Provider: "p1", Env: akia, Resolved: false},
 		{Provider: "p2", Env: akia, Resolved: true, MaskedHint: "wJalr****", Probe: providers.KeyProbeResult{Status: providers.ProbeValid}},
@@ -202,7 +203,7 @@ func TestPrintKeyAuditLine_MasksKeyShapedEnv(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestParseProviderSpecJSON_AKIAAndNameCharset(t *testing.T) {
-	akia := "AKIAABCDEFGHIJKLMNOP"
+	akia := testfixtures.AKIAAlphabet
 	_, err := ParseProviderSpecJSON([]byte(`{"name":"x","baseURL":"https://x.example/v1","apiKeyEnv":"` + akia + `","models":[]}`))
 	if err == nil {
 		t.Fatal("AKIA-style apiKeyEnv accepted by add-json parser")
@@ -347,11 +348,11 @@ func TestTUIRunPrompt_NonDangerStillSucceedsImmediately(t *testing.T) {
 // the opaque-run test, so providers.SecretShaped alone is false for all five
 // while the registry-slot display authority masks them. Synthetic values only.
 var addJSONUnderscoreNameProbes = []string{
-	"sk_live_0123456789abcdef",
-	"tok_a1b2c3d4e5f6g7h8i9j0",
-	"pk_live_0123456789abcdef",
-	"key_0123456789abcdef",
-	"AKIA_0123456789ABCDEF",
+	testfixtures.SKLive,
+	testfixtures.TokSample,
+	testfixtures.PKLive,
+	testfixtures.KeyHex,
+	testfixtures.AKIAUnderscore,
 }
 
 // TestParseProviderSpecJSON_RefusesCredentialName pins the FIX-7 CLI twin gate:
@@ -470,7 +471,7 @@ func TestParseProviderSpecJSON_BenignNameBytesUnchanged(t *testing.T) {
 // probePlantName is the underscore-head key class in a provider NAME slot.
 // The value is synthetic; no live credential is involved.
 const (
-	probePlantName   = "sk_live_0123456789abcdef"
+	probePlantName   = testfixtures.SKLive
 	probePlantMasked = "sk_li****"
 	probePlantTail   = "0123456789abcdef"
 )
@@ -619,8 +620,8 @@ func TestResolveProviderEditTarget_NameOperandSlotMasked(t *testing.T) {
 		// so the resolver refuses with the ambiguous class and echoes the
 		// query operand.
 		reg := &providers.Registry{Providers: []providers.Provider{
-			{Name: "Sk_Live_0123456789abcdef", BaseURL: "https://a.example/v1"},
-			{Name: "sk_live_0123456789ABCDEF", BaseURL: "https://b.example/v1"},
+			{Name: testfixtures.SKLiveMixed, BaseURL: "https://a.example/v1"},
+			{Name: testfixtures.SKLiveUpper, BaseURL: "https://b.example/v1"},
 		}}
 		_, err := ResolveProviderEditTarget(reg, probePlantName)
 		if !errors.Is(err, ErrProviderEditAmbiguous) {
@@ -676,7 +677,7 @@ func TestResolveProviderEditTarget_NameOperandSlotMasked(t *testing.T) {
 // auditNamePlant is the underscore-head key class in the doctor line's provider
 // NAME slot. Synthetic value only.
 const (
-	auditNamePlant  = "sk_live_0123456789abcdef"
+	auditNamePlant  = testfixtures.SKLive
 	auditNameMasked = "sk_li****"
 	auditNameTail   = "0123456789abcdef"
 )

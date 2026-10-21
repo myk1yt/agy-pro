@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"agypro/internal/providers"
+	"agypro/internal/testfixtures"
 )
 
 // --- fixtures ---------------------------------------------------------------
@@ -483,7 +484,7 @@ func keysOf(m map[string]json.RawMessage) []string {
 
 func TestCatalogDropReasonsMaskRegistrySlots(t *testing.T) {
 	const (
-		plant     = "sk_live_0123456789abcdef"
+		plant     = testfixtures.SKLive
 		plantMask = "sk_li****"
 	)
 	collect := func() (*strings.Builder, CatalogOptions) {

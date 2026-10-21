@@ -20,6 +20,7 @@ import (
 	"agypro/internal/openaiup"
 	"agypro/internal/paths"
 	"agypro/internal/providers"
+	"agypro/internal/testfixtures"
 )
 
 func streamURL(srv *Server, model string) string {
@@ -1677,7 +1678,7 @@ func TestCallUpstream_OutboundBodyUnderCapStillRuns(t *testing.T) {
 
 func TestGenerate_EmptyUpstreamCauseMasksRegistryProviderName(t *testing.T) {
 	const (
-		plant     = "sk_live_0123456789abcdef"
+		plant     = testfixtures.SKLive
 		plantMask = "sk_li****"
 	)
 

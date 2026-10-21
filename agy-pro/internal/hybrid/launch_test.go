@@ -18,6 +18,7 @@ import (
 	"agypro/internal/mesh"
 	"agypro/internal/paths"
 	"agypro/internal/providers"
+	"agypro/internal/testfixtures"
 	"agypro/internal/wirecheck"
 )
 
@@ -124,8 +125,8 @@ func TestLaunchP1_ChildEnvConstruction(t *testing.T) {
 	// clears them) so the "absent from the child" assertion is non-vacuous: it
 	// now proves CleanChildEnv SCRUBS an inherited GEMINI_API_KEY/GOOGLE_API_KEY,
 	// not merely that the var was never present.
-	t.Setenv("GEMINI_API_KEY", "AIzaPLANTEDambientGEMINI0000000000000000")
-	t.Setenv("GOOGLE_API_KEY", "AIzaPLANTEDambientGOOGLE000000000000000")
+	t.Setenv("GEMINI_API_KEY", testfixtures.AIzaPlantedGemini)
+	t.Setenv("GOOGLE_API_KEY", testfixtures.AIzaPlantedGoogle)
 
 	envFile := filepath.Join(t.TempDir(), "child.env")
 	self, err := os.Executable()
@@ -984,7 +985,7 @@ func TestLaunchP1_NativeFallbackExitCodeIsTheChilds(t *testing.T) {
 
 func TestPrintDroppedPinNoticeMasksRegistrySlot(t *testing.T) {
 	const (
-		plant     = "sk_live_0123456789abcdef"
+		plant     = testfixtures.SKLive
 		plantMask = "sk_li****"
 	)
 	line := func(v string) string {

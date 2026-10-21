@@ -15,6 +15,7 @@ import (
 	"agypro/internal/inventory"
 	"agypro/internal/paths"
 	"agypro/internal/providers"
+	"agypro/internal/testfixtures"
 	"agypro/internal/tui"
 )
 
@@ -909,9 +910,9 @@ func stubDoctorExit(t *testing.T) *int {
 func TestPrintConfiguredProvidersMasksKeyShapedMissingEnv(t *testing.T) {
 	const benignEnv = "E8_BENIGN_MISSING_ENV"
 	cases := []struct{ plant, mask string }{
-		{"sk-ant-api03-PLANT0123456789abcdef", "sk-an****"},
-		{"AKIAIOSFODNN7EXAMPLE", "AKIAI****"},
-		{"wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY", "wJalr****"},
+		{testfixtures.AnthropicPlanted, "sk-an****"},
+		{testfixtures.AKIAExample, "AKIAI****"},
+		{testfixtures.AWSSecretNoSlash, "wJalr****"},
 	}
 	reg := &providers.Registry{Providers: []providers.Provider{
 		{Name: "benign", BaseURL: "https://benign.example/v1", APIKeyEnv: benignEnv},
@@ -984,7 +985,7 @@ func TestPrintConfiguredProvidersAndModelsMasksKeyShapedEffort(t *testing.T) {
 func TestRunDoctorFixKeysMasksFailureTailAndNote(t *testing.T) {
 	t.Setenv(paths.EnvAgyProHome, filepath.Join(t.TempDir(), "home"))
 	writeTestRegistry(t)
-	const plantEnv = "sk-ant-api03-PLANT0123456789abcdef"
+	const plantEnv = testfixtures.AnthropicPlanted
 
 	oldResolve, oldRepair := resolveRepairTargets, repairedWindowsKeyNames
 	t.Cleanup(func() { resolveRepairTargets, repairedWindowsKeyNames = oldResolve, oldRepair })
@@ -1039,7 +1040,7 @@ func TestRunDoctorRollbackMasksPlantedBackupPath(t *testing.T) {
 	}
 
 	t.Run("bare base64 plant (live repro shape)", func(t *testing.T) {
-		const plant = "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"
+		const plant = testfixtures.AWSSecretNoSlash
 		exit := stubDoctorExit(t)
 		var out, errOut string
 		errOut = captureStderr(t, func() {
@@ -1060,7 +1061,7 @@ func TestRunDoctorRollbackMasksPlantedBackupPath(t *testing.T) {
 	})
 
 	t.Run("directory target with sk- plant", func(t *testing.T) {
-		dir := filepath.Join(t.TempDir(), "sk-ant-api03-PLANT0123456789abcdef")
+		dir := filepath.Join(t.TempDir(), testfixtures.AnthropicPlanted)
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -1072,7 +1073,7 @@ func TestRunDoctorRollbackMasksPlantedBackupPath(t *testing.T) {
 		if *exit != 1 {
 			t.Fatalf("exit = %d; want 1", *exit)
 		}
-		if strings.Contains(out, "sk-ant-api03-PLANT0123456789abcdef") || strings.Contains(errOut, "sk-ant-api03-PLANT0123456789abcdef") {
+		if strings.Contains(out, testfixtures.AnthropicPlanted) || strings.Contains(errOut, testfixtures.AnthropicPlanted) {
 			t.Errorf("rollback output leaks the planted dir raw:\nstdout=%s\nstderr=%s", out, errOut)
 		}
 		if !strings.Contains(out, "Backup file:") || !strings.Contains(out, "[REDACTED]") {
@@ -1081,7 +1082,7 @@ func TestRunDoctorRollbackMasksPlantedBackupPath(t *testing.T) {
 	})
 
 	t.Run("directory target with AKIA plant", func(t *testing.T) {
-		dir := filepath.Join(t.TempDir(), "AKIAIOSFODNN7EXAMPLE")
+		dir := filepath.Join(t.TempDir(), testfixtures.AKIAExample)
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -1093,7 +1094,7 @@ func TestRunDoctorRollbackMasksPlantedBackupPath(t *testing.T) {
 		if *exit != 1 {
 			t.Fatalf("exit = %d; want 1", *exit)
 		}
-		if strings.Contains(out, "AKIAIOSFODNN7EXAMPLE") || strings.Contains(errOut, "AKIAIOSFODNN7EXAMPLE") {
+		if strings.Contains(out, testfixtures.AKIAExample) || strings.Contains(errOut, testfixtures.AKIAExample) {
 			t.Errorf("rollback output leaks the planted dir raw:\nstdout=%s\nstderr=%s", out, errOut)
 		}
 		if !strings.Contains(out, "Backup file:") || !strings.Contains(out, "[REDACTED]") {
@@ -1129,7 +1130,7 @@ func TestRunDoctorRollbackMasksPlantedBackupPath(t *testing.T) {
 // must render masked, and the branch must RETURN instead of falling through to
 // printRepairReport(nil) under the doctorExit test seam.
 func TestRunDoctorFixKeysNilReportMasksAndReturns(t *testing.T) {
-	const plant = "sk-ant-api03-PLANT0123456789abcdef"
+	const plant = testfixtures.AnthropicPlanted
 	t.Setenv(paths.EnvAgyProHome, filepath.Join(t.TempDir(), "home"))
 	writeTestRegistry(t)
 
@@ -1170,7 +1171,7 @@ func TestRunDoctorFixKeysMasksResolveErrorTokens(t *testing.T) {
 	oldExit := doctorExit
 	t.Cleanup(func() { doctorExit = oldExit })
 	doctorExit = func(int) {}
-	plant := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	plant := testfixtures.AWSSecretExample
 	resolveRepairTargets = func(r *providers.Registry, arg string) ([]string, error) {
 		return nil, fmt.Errorf("cannot resolve %q", "native:"+plant)
 	}
@@ -1190,7 +1191,7 @@ func TestRunDoctorRollbackMasksDecoratedPlant(t *testing.T) {
 	rollbackKeyNames = func(backupPath string, opts providers.RepairOptions) error {
 		return fmt.Errorf("open %s: The system cannot find the file specified.", backupPath)
 	}
-	plant := "native:wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	plant := "native:" + testfixtures.AWSSecretExample
 	exit := stubDoctorExit(t)
 	var out, errOut string
 	errOut = captureStderr(t, func() {
@@ -1224,8 +1225,8 @@ func TestRunDoctorRollbackSlotHardenedCompoundTarget(t *testing.T) {
 	rollbackKeyNames = func(backupPath string, opts providers.RepairOptions) error {
 		return fmt.Errorf("open %s: The system cannot find the file specified.", backupPath)
 	}
-	const bare = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-	const akia = "AKIAIOSFODNN7EXAMPLE"
+	const bare = testfixtures.AWSSecretExample
+	const akia = testfixtures.AKIAExample
 	target := "prefix " + akia + " " + bare
 	exit := stubDoctorExit(t)
 	var out, errOut string
@@ -1295,7 +1296,7 @@ func TestRunDoctorRollbackSlotCommaDecoratedTargets(t *testing.T) {
 		return fmt.Errorf("open %s: The system cannot find the file specified.", backupPath)
 	}
 	for _, tc := range []struct{ name, target, wantLine string }{
-		{"comma-decorated compound target", "./backups,wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "Backup file: ./backups,[REDACTED]"},
+		{"comma-decorated compound target", "./backups," + testfixtures.AWSSecretExample, "Backup file: ./backups,[REDACTED]"},
 		{"comma-decorated bare secret", "note,abcdefghijklmnopqrs", "Backup file: note,[REDACTED]"},
 		{"benign comma list", "read,search", "Backup file: read,search"},
 	} {

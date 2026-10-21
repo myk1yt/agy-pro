@@ -5,15 +5,21 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
 	"agypro/internal/openaiup"
 	"agypro/internal/providers"
 	"agypro/internal/settings"
+	"agypro/internal/testfixtures"
 )
 
 // CLI-twin tests for the model-level providers verbs (plan-v2 phase P7):
@@ -569,7 +575,7 @@ func TestRunSettingsCmd_ModelVerbs_SecretShapedSpecRejected(t *testing.T) {
 		// Round-6 F-01: a 16+ rune base64 credential carrying + / = (the AWS
 		// secret class) is refused too; the widened opaque-token alphabet
 		// admits those runes into the run.
-		{"opaque base64 run with slash in id", `{"id":"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"}`, "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
+		{"opaque base64 run with slash in id", `{"id":"` + testfixtures.AWSSecretExample + `"}`, testfixtures.AWSSecretExample},
 		{"opaque base64 run with plus and pad in family", `{"id":"m9","family":"Ab3dEf7Gh9jK1mNp+/Qr="}`, "Ab3dEf7Gh9jK1mNp+/Qr="},
 	}
 	for _, tc := range cases {
@@ -850,16 +856,16 @@ func TestRunSettingsCmd_ModelVerbs_CapabilityDiffLines(t *testing.T) {
 //   - F-C4: an ESC byte in the effort operand is stripped before the value
 //     reaches the consent transcript (the CLI printer has no painter).
 //
-// G-C4 replaces the plant this pin originally used. The old plant was
-// "./AKIAIOSFODNN7EXAMPLE", which the generic redactor (awsKeyIDRe) renders as
-// "./[REDACTED]" even under plain MaskOperand: every assertion below passed
-// against the unfixed renderer, so the pin proved nothing. The plant is now a
-// lowercase decorated opaque run with no credential prefix, no uppercase and
-// no AKIA shape, i.e. invisible to awsKeyIDRe, skRe and the prefix list. Only
-// the registry-slot masker (MaskRegistryValue -> MaskSecret of the
-// marker-stripped core) renders it masked, so the pin separates the two
-// maskers. Verified by reverting the masker in a scratch copy: the assertions
-// fail there.
+// G-C4 replaces the plant this pin originally used. The old plant was the
+// testfixtures.AKIAExample constant under "./", which the generic redactor
+// (awsKeyIDRe) renders as "./[REDACTED]" even under plain MaskOperand: every
+// assertion below passed against the unfixed renderer, so the pin proved
+// nothing. The plant is now a lowercase decorated opaque run with no
+// credential prefix, no uppercase and no AKIA shape, i.e. invisible to
+// awsKeyIDRe, skRe and the prefix list. Only the registry-slot masker
+// (MaskRegistryValue -> MaskSecret of the marker-stripped core) renders it
+// masked, so the pin separates the two maskers. Verified by reverting the
+// masker in a scratch copy: the assertions fail there.
 func TestRunSettingsCmd_ModelVerbs_CapabilityFixRound(t *testing.T) {
 	const decorated = "./ab3def7gh9jk1mnpqr5t"
 	const maskedDecorated = "ab3de****"
@@ -1191,7 +1197,7 @@ func TestRunSettingsCmd_ModelVerbs_StaleDiskFamilyMasked(t *testing.T) {
 // the fix the first case below passed ingest, persisted into providers.json,
 // and printed raw in the consent transcript (the two-security-seat PoC).
 func TestRunSettingsCmd_ModelVerbs_DecoratedSecretSpecRejected(t *testing.T) {
-	const awsShaped = "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"
+	const awsShaped = testfixtures.AWSSecretNoSlash
 	const lowerAwsShaped = "wjalrxutnfemik7mdengbpxrficyexamplekey"
 	const opaque = "ab3def7gh9jk1mnpqr5t"
 	path := installFileBackedSettingsCore(t, twoModelRegistry())
@@ -2023,11 +2029,11 @@ func TestRunSettingsCmd_ModelVerbs_LookAlikeSlotMasked(t *testing.T) {
 // renders as "sk_li****".
 func TestRunSettingsCmd_ModelVerbs_NameHeadSpecRejected(t *testing.T) {
 	probes := []string{
-		"sk_live_0123456789abcdef",
-		"tok_a1b2c3d4e5f6g7h8i9j0",
-		"pk_live_0123456789abcdef",
-		"key_0123456789abcdef",
-		"AKIA_0123456789ABCDEF",
+		testfixtures.SKLive,
+		testfixtures.TokSample,
+		testfixtures.PKLive,
+		testfixtures.KeyHex,
+		testfixtures.AKIAUnderscore,
 	}
 
 	// Every free-text field of the spec routes through the same predicate. A
@@ -2075,7 +2081,7 @@ func TestRunSettingsCmd_ModelVerbs_NameHeadSpecRejected(t *testing.T) {
 		before := diskBytes(t, path)
 		code, out, errw := runSettings(t,
 			[]string{"providers", "model-update", "acme", "acme-slow", "-", "--yes"},
-			`{"id":"acme-slow","family":"sk_live_0123456789abcdef"}`)
+			`{"id":"acme-slow","family":"`+testfixtures.SKLive+`"}`)
 		if code != 1 {
 			t.Fatalf("model-update exit = %d, want 1 (stderr=%s)", code, errw)
 		}
@@ -2085,7 +2091,7 @@ func TestRunSettingsCmd_ModelVerbs_NameHeadSpecRejected(t *testing.T) {
 		if strings.Contains(out, "Approve Registry Write") {
 			t.Errorf("a refused spec must not reach the consent presentation: %s", out)
 		}
-		if strings.Contains(errw, "sk_live_0123456789abcdef") {
+		if strings.Contains(errw, testfixtures.SKLive) {
 			t.Errorf("stderr echoes the value raw: %s", errw)
 		}
 		if !bytes.Equal(diskBytes(t, path), before) {
@@ -2159,11 +2165,11 @@ func TestRunSettingsCmd_ModelVerbs_NameDoorParityWithModelForm(t *testing.T) {
 		{"tts-1", false},
 		{"gpt-4o-audio-preview", false},
 		// The underscore-head key class (this unit's target).
-		{"sk_live_0123456789abcdef", true},
-		{"tok_a1b2c3d4e5f6g7h8i9j0", true},
-		{"pk_live_0123456789abcdef", true},
-		{"key_0123456789abcdef", true},
-		{"AKIA_0123456789ABCDEF", true},
+		{testfixtures.SKLive, true},
+		{testfixtures.TokSample, true},
+		{testfixtures.PKLive, true},
+		{testfixtures.KeyHex, true},
+		{testfixtures.AKIAUnderscore, true},
 		// 16+ rune single-class values.
 		{"abcdefghijklmnopqrstuvwxyz", true},
 		{"1234567890123456", true},
@@ -2173,16 +2179,16 @@ func TestRunSettingsCmd_ModelVerbs_NameDoorParityWithModelForm(t *testing.T) {
 		{"./models/gemini-pro", true},
 		{"https://example.com/v1", true},
 		// Pre-existing refusals: unchanged.
-		{"AKIAIOSFODNN7EXAMPLE", true},
+		{testfixtures.AKIAExample, true},
 		{"AbCdEfGh0123456jKlMnoP", true},
-		{"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", true},
+		{testfixtures.AWSSecretExample, true},
 		{"Ab3dEf7Gh9jK1mNp+/Qr=", true},
 		{"sk-abc", true},
-		{"gsk_abcdefghijklm", true},
+		{testfixtures.GroqKeyShort, true},
 		{"dckr_pat-abcdef0123456789", true},
 		{"bearer abc", true},
-		{"eyJhbGciOiJIUzI1NiIsInR5cCI6kpXVCJ9", true},
-		{"ghp_abcdefghij0123456789", true},
+		{testfixtures.JWTFullBadSep, true},
+		{testfixtures.GHPAlphabet, true},
 	}
 
 	// Extra realistic shapes the CLI-side corpus carries (Ollama tags, quant
@@ -2238,14 +2244,115 @@ func TestRunSettingsCmd_ModelVerbs_NameDoorParityWithModelForm(t *testing.T) {
 		t.Fatalf("full corpus verdicts = %d accept / %d refuse; want 42 / 21", accepted, refused)
 	}
 
-	// One corpus: every shared row must still appear in the TUI pin's source.
+	// One corpus: every shared row must still be exercised by the TUI pin. The
+	// pin carries its fixture rows as references to the planted-fixture
+	// contract, so this guard compares VALUES, not source spellings: a row
+	// counts as present when the pin either spells the value out or names a
+	// contract constant that holds it. A reference the contract cannot resolve,
+	// or a constant with an empty value, fails here instead of passing
+	// vacuously, so the drift guard still fails when a row is genuinely gone.
 	src, err := os.ReadFile(filepath.Join("..", "..", "internal", "tui", "screen_model_form_test.go"))
 	if err != nil {
 		t.Fatalf("read the TUI model-form pin source: %v", err)
 	}
+	contract, err := os.ReadFile(filepath.Join("..", "..", "internal", "testfixtures", "planted.go"))
+	if err != nil {
+		t.Fatalf("read the planted-fixture contract source: %v", err)
+	}
+	planted, err := plantedStringConstants(contract)
+	if err != nil {
+		t.Fatalf("parse the planted-fixture contract: %v", err)
+	}
+	pinned := make(map[string]bool, len(planted))
+	for _, ref := range plantedRef.FindAllStringSubmatch(string(src), -1) {
+		value, ok := planted[ref[1]]
+		if !ok {
+			t.Fatalf("the TUI model-form pin references testfixtures.%s, which the contract does not define; the two corpora have diverged", ref[1])
+		}
+		if value == "" {
+			t.Fatalf("the TUI model-form pin references testfixtures.%s, whose value is empty; a containment check would pass vacuously", ref[1])
+		}
+		pinned[value] = true
+	}
 	for _, r := range shared {
-		if !strings.Contains(string(src), r.id) {
-			t.Errorf("shared corpus row %q is gone from the TUI model-form pin; the two corpora have diverged", r.id)
+		if r.id == "" {
+			t.Errorf("shared corpus row has an empty id; a containment check would pass vacuously")
+			continue
+		}
+		if pinned[r.id] || strings.Contains(string(src), r.id) {
+			continue
+		}
+		t.Errorf("shared corpus row %q is gone from the TUI model-form pin; the two corpora have diverged", r.id)
+	}
+}
+
+// plantedRef matches a reference to a constant of the planted-fixture contract.
+var plantedRef = regexp.MustCompile(`testfixtures\.([A-Za-z_][A-Za-z0-9_]*)`)
+
+// plantedStringConstants returns the contract's string constants by name. Only
+// literal concatenations are accepted, which is how the contract builds every
+// value, so this resolver cannot be fooled by a computed expression.
+func plantedStringConstants(src []byte) (map[string]string, error) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "planted.go", src, 0)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			value, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			if len(value.Values) != len(value.Names) {
+				continue
+			}
+			for i, name := range value.Names {
+				literal, ok := literalConcat(value.Values[i])
+				if !ok {
+					continue
+				}
+				out[name.Name] = literal
+			}
 		}
 	}
+	if len(out) == 0 {
+		return nil, errors.New("the planted-fixture contract defines no string constants")
+	}
+	return out, nil
+}
+
+// literalConcat folds an expression of string literals joined with + into its
+// value.
+func literalConcat(expr ast.Expr) (string, bool) {
+	switch e := expr.(type) {
+	case *ast.BasicLit:
+		if e.Kind != token.STRING {
+			return "", false
+		}
+		value, err := strconv.Unquote(e.Value)
+		if err != nil {
+			return "", false
+		}
+		return value, true
+	case *ast.BinaryExpr:
+		if e.Op != token.ADD {
+			return "", false
+		}
+		left, ok := literalConcat(e.X)
+		if !ok {
+			return "", false
+		}
+		right, ok := literalConcat(e.Y)
+		if !ok {
+			return "", false
+		}
+		return left + right, true
+	}
+	return "", false
 }

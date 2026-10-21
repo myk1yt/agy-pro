@@ -16,6 +16,7 @@ import (
 	"agypro/internal/providers"
 	"agypro/internal/settings"
 	"agypro/internal/swarm"
+	"agypro/internal/testfixtures"
 )
 
 // settingsTestCore is an in-memory Core harness: every seam is faked, so no
@@ -1343,8 +1344,8 @@ func TestSettingsApprovalSummaryUnchangedForSmallRollback(t *testing.T) {
 func TestSettingsApprovalBoundedRollbackKeepsMasking(t *testing.T) {
 	h := newSettingsTestCore(t)
 	const entries = 22
-	const shownSecret = "AKIAABCDEFGHIJKLMNOP"
-	const hiddenSecret = "AKIAZZZZZZZZZZZZZZZZ"
+	const shownSecret = testfixtures.AKIAAlphabet
+	const hiddenSecret = testfixtures.AKIAZRun
 	names := make([]string, 0, entries)
 	existing := make([]bool, 0, entries)
 	for i := 1; i <= entries; i++ {
@@ -1401,7 +1402,7 @@ func TestSettingsApprovalBoundedRollbackKeepsMasking(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 const (
-	settingsPlantName   = "sk_live_0123456789abcdef"
+	settingsPlantName   = testfixtures.SKLive
 	settingsPlantMasked = "sk_li****"
 	settingsPlantTail   = "0123456789abcdef"
 )
@@ -1658,11 +1659,11 @@ func TestSettingsScreenBenignProviderNamesByteIdentical(t *testing.T) {
 const (
 	// The contiguous base64 run class: the plant the preset list surface pins
 	// for this same authority (screen_presets_test.go, the row-note pin).
-	settingsPresetNamePlant = "AKIAIOSFODNN7EXAMPLE"
+	settingsPresetNamePlant = testfixtures.AKIAExample
 	settingsPresetNameMask  = "AKIAI****"
 	settingsPresetNameTail  = "IOSFODNN7EXAMPLE"
 	// The credential-head prefix class, planted in the numbers field.
-	settingsPresetNumsPlant = "ghp_a1b2c3d4e5f6g7h8i9j0k1l2"
+	settingsPresetNumsPlant = testfixtures.GHPLong
 	settingsPresetNumsMask  = "ghp_a****"
 	settingsPresetNumsTail  = "a1b2c3d4e5f6g7h8i9j0k1l2"
 )

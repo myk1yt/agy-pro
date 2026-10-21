@@ -84,8 +84,8 @@ func handleProCommand(args []string) {
 	default:
 		// D2: mask the ORIGINAL-CASE argument. The switch matches on the
 		// case-folded copy, but masking that copy never fires the
-		// uppercase-anchored AKIA/ASIA credential class
-		// (`agy pro AKIAIOSFODNN7EXAMPLE` used to echo case-folded).
+		// uppercase-anchored AKIA/ASIA credential class (a pasted key id,
+		// the testfixtures.AKIAExample fixture, used to echo case-folded).
 		fmt.Fprintf(os.Stderr, "[agy-pro] Unknown subcommand: %q\n\n", providers.MaskOperand(args[0]))
 		printProHelp()
 		os.Exit(1)

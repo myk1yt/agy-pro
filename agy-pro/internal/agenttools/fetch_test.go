@@ -30,11 +30,12 @@ import (
 	"time"
 
 	"agypro/internal/providers"
+	"agypro/internal/testfixtures"
 )
 
 // fetchDummySecret is the canonical AWS documentation example shape, never a
 // real credential (same dummy the scope-refusal pin uses).
-const fetchDummySecret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+const fetchDummySecret = testfixtures.AWSSecretExample
 
 // stubHost renders the loopback hostname of an httptest server (127.0.0.1).
 func stubHost(t *testing.T, srv *httptest.Server) string {
@@ -633,7 +634,7 @@ func TestToolRunnerReadURLContentSchemePasteMasking(t *testing.T) {
 	runner := NewRunner(root, false, false, logger)
 	runner.AllowHosts = []string{"host.example"}
 	if _, err := runner.Execute(14, "model-x", "prov-x", "read_url_content",
-		`{"url":"wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY://host.example/x"}`); err != nil {
+		`{"url":"`+testfixtures.AWSSecretNoSlash+`://host.example/x"}`); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	data, rerr := os.ReadFile(logPath)
@@ -641,7 +642,7 @@ func TestToolRunnerReadURLContentSchemePasteMasking(t *testing.T) {
 		t.Fatalf("read log: %v", rerr)
 	}
 	log := string(data)
-	if strings.Contains(log, "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY") {
+	if strings.Contains(log, testfixtures.AWSSecretNoSlash) {
 		t.Errorf("the scheme-positioned paste survives in the log:\n%s", log)
 	}
 	assertNoSecretRun(t, log)
@@ -660,14 +661,14 @@ func TestToolRunnerReadURLContentRelativeMarkerMasking(t *testing.T) {
 	runner := NewRunner(root, false, false, logger)
 	runner.AllowHosts = []string{stubHost(t, srv)}
 	if _, err := runner.Execute(15, "model-x", "prov-x", "read_url_content",
-		`{"url":"`+srv.URL+`/doc","note":"..\\wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"}`); err != nil {
+		`{"url":"`+srv.URL+`/doc","note":"..\\`+testfixtures.AWSSecretNoSlash+`"}`); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	data, rerr := os.ReadFile(logPath)
 	if rerr != nil {
 		t.Fatalf("read log: %v", rerr)
 	}
-	if strings.Contains(string(data), "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY") {
+	if strings.Contains(string(data), testfixtures.AWSSecretNoSlash) {
 		t.Errorf("the marked credential survives in the log:\n%s", data)
 	}
 	assertNoSecretRun(t, string(data))
@@ -855,14 +856,14 @@ func TestToolRunnerReadURLContentDecodedMarkerMasking(t *testing.T) {
 	runner := NewRunner(root, false, false, logger)
 	runner.AllowHosts = []string{stubHost(t, srv)}
 	if _, err := runner.Execute(20, "model-x", "prov-x", "read_url_content",
-		`{"url":"`+srv.URL+`/echo?m=..%2FwJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"}`); err != nil {
+		`{"url":"`+srv.URL+`/echo?m=..%2F`+testfixtures.AWSSecretNoSlash+`"}`); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	data, rerr := os.ReadFile(logPath)
 	if rerr != nil {
 		t.Fatalf("read log: %v", rerr)
 	}
-	if strings.Contains(string(data), "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY") {
+	if strings.Contains(string(data), testfixtures.AWSSecretNoSlash) {
 		t.Errorf("the decoded marker-shaped value survives in the log:\n%.200s", data)
 	}
 	assertNoSecretRun(t, string(data))
@@ -958,7 +959,7 @@ func TestToolRunnerReadURLContentTruncatedPrefixMasking(t *testing.T) {
 	if rerr != nil {
 		t.Fatalf("read log: %v", rerr)
 	}
-	if strings.Contains(string(data), "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMP") {
+	if strings.Contains(string(data), testfixtures.AWSSecretShort) {
 		t.Errorf("the 32-rune truncated prefix survives in the log:\n%.200s", data)
 	}
 	assertNoSecretRun(t, string(data))

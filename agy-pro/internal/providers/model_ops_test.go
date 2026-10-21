@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"unicode"
+
+	"agypro/internal/testfixtures"
 )
 
 // modelOpsFixture builds a two-provider registry used across the model-op
@@ -587,7 +589,7 @@ func TestModelOps_0600AtomicRoundTrip(t *testing.T) {
 
 func TestModelOpsEchoRegistrySlotsThroughSlotAuthority(t *testing.T) {
 	const (
-		plant     = "sk_live_0123456789abcdef"
+		plant     = testfixtures.SKLive
 		plantMask = "sk_li****"
 	)
 	fixture := func() *Registry {

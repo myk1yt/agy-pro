@@ -22,6 +22,7 @@ import (
 	"agypro/internal/mesh"
 	"agypro/internal/paths"
 	"agypro/internal/providers"
+	"agypro/internal/testfixtures"
 	"agypro/internal/wirecheck"
 )
 
@@ -1051,8 +1052,8 @@ func TestLaunchP2_ChildEnvConstruction(t *testing.T) {
 	t.Setenv("CHARM_API_KEY", "sk-planted-charm-secret-value")
 	// Planted AFTER the sandbox clears them, so the "absent from the child"
 	// assertions prove CleanChildEnv SCRUBS them rather than never seeing them.
-	t.Setenv("GEMINI_API_KEY", "AIzaPLANTEDambientGEMINI0000000000000000")
-	t.Setenv("GOOGLE_API_KEY", "AIzaPLANTEDambientGOOGLE000000000000000")
+	t.Setenv("GEMINI_API_KEY", testfixtures.AIzaPlantedGemini)
+	t.Setenv("GOOGLE_API_KEY", testfixtures.AIzaPlantedGoogle)
 
 	self, err := os.Executable()
 	if err != nil {
@@ -1095,7 +1096,7 @@ func TestLaunchP2_ChildEnvConstruction(t *testing.T) {
 			t.Errorf("%s must not reach the child (got %q)", k, v)
 		}
 	}
-	if childEnvMap["GEMINI_API_KEY"] == "AIzaPLANTEDambientGEMINI0000000000000000" {
+	if childEnvMap["GEMINI_API_KEY"] == testfixtures.AIzaPlantedGemini {
 		t.Error("the planted ambient GEMINI_API_KEY must be scrubbed, not inherited")
 	}
 	// FIX-8d: no planted secret value reaches ANY file, sweeping the two REAL P2
@@ -2626,7 +2627,7 @@ func TestP2ChildArgs_WhitespaceModelValueIsValueless(t *testing.T) {
 
 func TestP2DropReasonsMaskRegistrySlots(t *testing.T) {
 	const (
-		plant     = "sk_live_0123456789abcdef"
+		plant     = testfixtures.SKLive
 		plantMask = "sk_li****"
 	)
 	collect := func() (*strings.Builder, func(string, ...any)) {

@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"agypro/internal/testfixtures"
 )
 
 // assertNoLeak fails when haystack contains any substring of secret longer
@@ -184,16 +186,16 @@ func TestWizardTranscript_MasksKeyEcho(t *testing.T) {
 // the door the C5 pin used to watch from the transcript side: the name is
 // refused at the prompt, before the base-URL prompt and before any write, so the
 // derived env name that embedded it verbatim
-// ("AKIAIOSFODNN7EXAMPLE" -> "AKIAIOSFODNN7EXAMPLE_API_KEY") is never computed
+// (the planted AWS key id -> that same id plus "_API_KEY") is never computed
 // for this run at all. The refusal names the field and never the value.
 func TestWizardTranscript_KeyShapedNameRefusedAtPrompt(t *testing.T) {
 	tmpDir := t.TempDir()
 	provPath := filepath.Join(tmpDir, "providers.json")
 	t.Setenv(EnvProviders, provPath)
-	t.Setenv("AKIAIOSFODNN7EXAMPLE_API_KEY", "")
+	t.Setenv(testfixtures.AKIAExample+"_API_KEY", "")
 
-	pasted := "AKIAIOSFODNN7EXAMPLE"
-	derived := "AKIAIOSFODNN7EXAMPLE_API_KEY"
+	pasted := testfixtures.AKIAExample
+	derived := testfixtures.AKIAExample + "_API_KEY"
 	keyValue := "sk-REALKEY-0011223344556677"
 	input := strings.Join([]string{
 		pasted,
@@ -231,18 +233,18 @@ func TestWizardTranscript_KeyShapedNameRefusedAtPrompt(t *testing.T) {
 // registry (or a future ingest path): the wizard's name label must render
 // through the registry-slot mask, and the derived env name must be withheld
 // whenever that same mask changes the name. MaskOperand alone is the identity on
-// the underscore family ("sk_live_0123456789abcdef"), which is why the rule now
+// the underscore family (an underscore-head key shape), which is why the rule now
 // reads MaskSlot.
 func TestWizardNameLabelWithholdsDerivedEnv(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		withhold bool
 	}{
-		{"AKIAIOSFODNN7EXAMPLE", true},
-		{"sk_live_0123456789abcdef", true},
-		{"tok_a1b2c3d4e5f6g7h8i9j0", true},
-		{"pk_live_4f9a2b7c1d3e5f6a", true},
-		{"key_0123456789abcdef", true},
+		{testfixtures.AKIAExample, true},
+		{testfixtures.SKLive, true},
+		{testfixtures.TokSample, true},
+		{testfixtures.PKLiveHex, true},
+		{testfixtures.KeyHex, true},
 		{"acme", false},
 		{"nw", false},
 		{"my-provider", false},

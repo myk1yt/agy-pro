@@ -5,10 +5,11 @@ import (
 	"testing"
 
 	"agypro/internal/inventory"
+	"agypro/internal/testfixtures"
 )
 
 func TestFormatCommandMasksKeyShapedArgs(t *testing.T) {
-	args := []string{"--task", "review", "--seats", "nw/wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"}
+	args := []string{"--task", "review", "--seats", "nw/" + testfixtures.AWSSecretExample}
 	got := FormatCommand(args)
 	if strings.Contains(got, "wJalrXUtnFEMI") {
 		t.Errorf("FormatCommand leaked a key-shaped arg: %q", got)

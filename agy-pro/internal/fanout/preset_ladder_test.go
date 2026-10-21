@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"agypro/internal/providers"
+	"agypro/internal/testfixtures"
 )
 
 // ladderEnv isolates the whole resolution environment: a private AGY_PRO_HOME
@@ -602,7 +603,7 @@ func TestRunLevelPresetSelection(t *testing.T) {
 // the operandLooksSecret contiguous-run shape that no flag seed used to cover.
 func TestLadderPresetOperandMaskedEverywhere(t *testing.T) {
 	home, stderr := ladderEnv(t)
-	const planted = "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"
+	const planted = testfixtures.AWSSecretNoSlash
 	const maskedHead = "wJalr****"
 
 	// buildRunConfig level: the not-found error masks the flag-selected name.
@@ -670,7 +671,7 @@ func TestLadderPresetOperandMaskedEverywhere(t *testing.T) {
 // the package's own AWS-secret fixture wearing a URL userinfo costume.
 func TestLadderPresetUserinfoOperandMasked(t *testing.T) {
 	home, stderr := ladderEnv(t)
-	const planted = "https://wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY@gateway.example/v1"
+	const planted = "https://" + testfixtures.AWSSecretExample + "@gateway.example/v1"
 	const maskedHead = "wJalr****"
 
 	// buildRunConfig level: the not-found error masks the flag-selected name.

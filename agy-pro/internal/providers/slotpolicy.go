@@ -185,8 +185,9 @@ func stripSlotInvisibles(v string) string {
 // predicate instead would have moved the fold's verdicts for the path, query,
 // fragment, and userinfo arms (there a Zs member currently splits a word at its
 // "/" rewrite), which this unit's boundary forbids. A space separator inside
-// Hostname splits a credential run exactly as a zero-width space did:
-// "https://sk_live_0123456789ab<U+00A0>cdef/v1" was an identity under every arm.
+// Hostname splits a credential run exactly as a zero-width space did: a URL
+// whose host is the planted underscore-head fixture (testfixtures.SKLive) with
+// a NO-BREAK SPACE inserted mid-run was an identity under every arm.
 func isSlotHostLabelInvisibleRune(r rune) bool {
 	return isSlotInvisibleRune(r) || unicode.Is(unicode.Zs, r) ||
 		unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r)
@@ -583,11 +584,11 @@ func SecretShaped(v string) bool {
 //     catches the decorated-secret and JWT display classes;
 //   - MaskSlot is the registry-slot display authority, whose segment arm reads
 //     a value the other two classify whole. That arm is the only one that
-//     refuses the underscore-head class: "sk_live_0123456789abcdef",
-//     "tok_a1b2c3d4e5f6g7h8i9j0", "pk_live_...", "key_...", and "AKIA_..."
-//     carry no head in slotSecretPrefixes and no uninterrupted run (the "_"
-//     breaks it), so the first two arms are the identity on all five while the
-//     16+ alphanumeric segment behind the separator masks.
+//     refuses the underscore-head class: the five planted fixtures
+//     (testfixtures.SKLive, TokSample, PKLive, KeyHex, AKIAUnderscore) carry no
+//     head in slotSecretPrefixes and no uninterrupted run (the "_" breaks it),
+//     so the first two arms are the identity on all five while the 16+
+//     alphanumeric segment behind the separator masks.
 //
 // The union is exactly the pre-fix name-arm verdict set plus those five probes,
 // which the slotpolicy suite pins as a live before/after table, so a legal
@@ -621,9 +622,10 @@ func NameCarriesCredential(v string) bool {
 //     opaque run behind the scheme, an AWS key id, a JWT-shaped spelling)
 //     exactly where it was;
 //   - the HOST labels, through baseURLHostCarriesCredential. This is the slot
-//     the phase-4 review swarm found unclassified at both doors:
-//     "https://sk_live_0123456789abcdef/v1" passes the whole-value arms (its
-//     "_" breaks every run) and resolved as a DNS name, leaking the key to the
+//     the phase-4 review swarm found unclassified at both doors: a URL whose
+//     host is the planted underscore-head fixture (testfixtures.SKLive) passes
+//     the whole-value arms (its "_" breaks every run) and resolved as a DNS
+//     name, leaking the key to the
 //     resolver. The rule is targeted (see that function) so a long gateway
 //     host label stays accepted;
 //   - the userinfo username AND password. A benign userinfo operand stays
@@ -656,8 +658,9 @@ func NameCarriesCredential(v string) bool {
 //
 // The query slot is read PAIR BY PAIR from the RAW query string, not through
 // url.Query(): Query() silently drops every pair whose percent-decoding fails,
-// so "?api_key=sk_live_0123456789abcdef%2" was invisible to every arm and was
-// accepted at all three doors. Each raw pair is decoded when its own escape
+// so "?api_key=...%2" (the planted underscore-head fixture plus a truncated
+// escape) was invisible to every arm and was accepted at all three doors. Each
+// raw pair is decoded when its own escape
 // sequence is legal (a well-formed pair classifies exactly as before) and
 // classified in its RAW form when it is not (a malformed pair is still seen).
 //
@@ -739,8 +742,9 @@ func BaseURLCarriesCredential(raw string) bool {
 
 // baseURLQueryCarriesCredential classifies a RAW query string pair by pair. It
 // exists because url.URL.Query() unwraps the decode error and drops every pair
-// it cannot decode: a credential in a malformed pair
-// ("?api_key=sk_live_0123456789abcdef%2") reached no arm at all, so the value
+// it cannot decode: a credential in a malformed pair ("?api_key=...%2" in
+// shape, the planted underscore-head fixture plus a truncated escape) reached
+// no arm at all, so the value
 // was accepted at all three doors and persisted verbatim. Splitting on "&" and
 // then on the first "=" is the split ParseQuery performs, and decoding each side
 // independently keeps every well-formed verdict byte-identical: a side that
@@ -749,8 +753,9 @@ func BaseURLCarriesCredential(raw string) bool {
 // "?<key>=1" puts the credential in the key slot.
 //
 // One tightening rides along: ParseQuery also drops any pair carrying a bare
-// ";" (RFC 3986 removed it as a separator), so "?a=sk_live_0123456789abcdef;x=1"
-// was invisible too. It is classified now, and a credential-shaped value there
+// ";" (RFC 3986 removed it as a separator), so a pair carrying the planted
+// underscore-head fixture before a bare ";" ("?a=...;x=1" in shape) was
+// invisible too. It is classified now, and a credential-shaped value there
 // is refused.
 func baseURLQueryCarriesCredential(rawQuery string) bool {
 	if rawQuery == "" {
@@ -783,7 +788,7 @@ func baseURLQueryCarriesCredential(rawQuery string) bool {
 // long gateway name), so the two documented access-key-id heads are named here
 // and required to be followed by a run at the same floor. Naming them keeps
 // "asia.example.com" (a region-shaped host) accepted while
-// "ASIAIOSFODNN7EXAMPLE" is refused.
+// "ASIA...EXAMPLE" is refused.
 var slotHostKeyIDHeads = []string{"akia", "asia"}
 
 // baseURLHostCarriesCredential reports whether a URL host carries credential
@@ -811,11 +816,11 @@ func baseURLHostCarriesCredential(host string) bool {
 //     access-key-id head followed by a run at the floor;
 //   - a DECORATED label: the label is not one uninterrupted base64-alphabet
 //     run and the display authority masks it (the decorated-secret class
-//     "1-ASIAIOSFODNN7EXAMPLE", a hyphen-carrying AWS secret, a redactor
+//     "1-ASIA...EXAMPLE", a hyphen-carrying AWS secret, a redactor
 //     pattern head);
 //   - a credential RUN BEHIND A SHORT HEAD: a 16+ mixed-class run behind one or
-//     more short alphabetic tokens ("sk_live_0123456789abcdef",
-//     "tok_a1b2c3d4e5f6g7h8i9j0", "key_0123456789abcdef"), the underscore-head
+//     more short alphabetic tokens (the planted fixtures testfixtures.SKLive,
+//     TokSample, and KeyHex), the underscore-head
 //     class that has no shared prefix and no uninterrupted run.
 //
 // A bare opaque run is deliberately NOT refused by this function: it is the
@@ -830,7 +835,8 @@ func baseURLHostCarriesCredential(host string) bool {
 // The label is read in its VISIBLE form: the host-label class is stripped
 // before anything is tested. Every other slot already receives a strip (MaskSlot
 // first stage), which is why the host was the one slot an invisible rune could
-// blind: "https://sk_live_0123456789ab<U+200B>cdef/v1" parses, keeps the rune in
+// blind: a URL whose host is the planted underscore-head fixture with a ZERO
+// WIDTH SPACE inserted mid-run parses, keeps the rune in
 // Hostname, passes every whole-value arm, and the run test then fails on the
 // split run. The strip is the fold's four classes (Cc, Cf, Mn, Me) PLUS the three
 // separator-space classes (Zs, Zl, Zp: see stripHostLabelInvisibles), so a

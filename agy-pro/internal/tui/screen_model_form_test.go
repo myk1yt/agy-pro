@@ -14,6 +14,7 @@ import (
 	"agypro/internal/openaiup"
 	"agypro/internal/providers"
 	"agypro/internal/settings"
+	"agypro/internal/testfixtures"
 )
 
 // newModelFormTestApp seeds the shared two-model fixture (modelsFixtureReg
@@ -547,18 +548,18 @@ func TestLooksSecretValueModelIDShape(t *testing.T) {
 		}
 	}
 	reject := []string{
-		"AKIAIOSFODNN7EXAMPLE",                     // 20-rune AWS access-key id shape
-		"AbCdEfGh0123456jKlMnoP",                   // 22-rune opaque mixed token
-		"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", // 40-rune AWS secret, "/" runes (round-6 F-01)
-		"Ab3dEf7Gh9jK1mNp+/Qr=",                    // 21-rune base64 token, "+/=" runes (round-6 F-01)
-		"sk-abc",                                   // known prefix, any length
-		"gsk_abcdefghijklm",                        // 17-rune prefix token
-		"dckr_pat-abcdef0123456789",                // docker pat head
-		"bearer abc",                               // bearer head
-		"eyJhbGciOiJIUzI1NiIsInR5cCI6kpXVCJ9",      // JWT head
-		"ghp_abcdefghij0123456789",                 // GitHub token head
-		"abcdefghijklmnopqrstuvwxyz",               // 26 runes, single-class word: slot authority masks it (FIX-7)
-		"1234567890123456",                         // 16 runes, digits only: slot authority masks it (FIX-7)
+		testfixtures.AKIAExample,      // 20-rune AWS access-key id shape
+		"AbCdEfGh0123456jKlMnoP",      // 22-rune opaque mixed token
+		testfixtures.AWSSecretExample, // 40-rune AWS secret, "/" runes (round-6 F-01)
+		"Ab3dEf7Gh9jK1mNp+/Qr=",       // 21-rune base64 token, "+/=" runes (round-6 F-01)
+		"sk-abc",                      // known prefix, any length
+		testfixtures.GroqKeyShort,     // 17-rune prefix token
+		"dckr_pat-abcdef0123456789",   // docker pat head
+		"bearer abc",                  // bearer head
+		testfixtures.JWTFullBadSep,    // JWT head
+		testfixtures.GHPAlphabet,      // GitHub token head
+		"abcdefghijklmnopqrstuvwxyz",  // 26 runes, single-class word: slot authority masks it (FIX-7)
+		"1234567890123456",            // 16 runes, digits only: slot authority masks it (FIX-7)
 	}
 	for _, v := range reject {
 		if !looksSecretValue(v) {
@@ -600,7 +601,7 @@ func TestModelFormSecretGuardOpaqueToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read providers.json: %v", err)
 	}
-	seed := "AKIAIOSFODNN7EXAMPLE"
+	seed := testfixtures.AKIAExample
 
 	keys := append(typeRunes(seed), KeyEnter)
 	out := app.CaptureRun(&ScriptedKeys{Keys: keys})
@@ -888,7 +889,7 @@ func TestModelFormEffortSecretGuard(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read providers.json: %v", err)
 	}
-	seed := "AKIAIOSFODNN7EXAMPLE"
+	seed := testfixtures.AKIAExample
 
 	// Half 1: type the value and stop. No validator has run, so the only thing
 	// that can raise the masked warning is the live check.
@@ -1043,7 +1044,7 @@ func TestModelFormValidEffortValuesParity(t *testing.T) {
 // shows the seeded field value like any text field, so the raw-absence
 // assertions run on the approval portion of the transcript only.
 func TestModelFormEffortPlantMasksRegistryValue(t *testing.T) {
-	plant := "./AKIAIOSFODNN7EXAMPLE"
+	plant := "./" + testfixtures.AKIAExample
 	reg := modelsFixtureReg()
 	reg.Providers[0].Models[0].Capabilities = providers.Capabilities{
 		SupportsTools:    true,
@@ -1080,7 +1081,7 @@ func TestModelFormEffortPlantMasksRegistryValue(t *testing.T) {
 	if !strings.Contains(approval, "reasoningEffort: "+want+" ->") {
 		t.Fatalf("approval missing the masked effort operand %q; approval:\n%s", want, approval)
 	}
-	for _, raw := range []string{plant, normEffort(plant), "AKIAIOSFODNN7EXAMPLE"} {
+	for _, raw := range []string{plant, normEffort(plant), testfixtures.AKIAExample} {
 		if strings.Contains(approval, raw) {
 			t.Fatalf("approval echoes the raw planted value %q; approval:\n%s", raw, approval)
 		}
@@ -1194,7 +1195,7 @@ func TestModelFormDiffSlotOperandsMasked(t *testing.T) {
 	// discriminates the shared policy from the bare authority.
 	const famCore = "ab3def7gh9jk1mnpqr5t"
 	famPlant := "\u2025/" + famCore
-	tagPlant := "./AKIAIOSFODNN7EXAMPLE"
+	tagPlant := "./" + testfixtures.AKIAExample
 	reg := modelsFixtureReg()
 	reg.Providers[0].Models[0].Family = famPlant
 	reg.Providers[0].Models[0].Tags = []string{tagPlant, "fast"}
@@ -1259,7 +1260,7 @@ func TestModelFormDiffSlotOperandsMasked(t *testing.T) {
 		stripDiffControls(famPlant),
 		famCore,
 		tagPlant,
-		"AKIAIOSFODNN7EXAMPLE",
+		testfixtures.AKIAExample,
 	} {
 		if strings.Contains(approval, raw) {
 			t.Fatalf("approval echoes the raw planted value %q; approval:\n%s", raw, approval)
@@ -1283,7 +1284,7 @@ func TestModelFormDiffSlotOperandsMasked(t *testing.T) {
 	// display sink through the registry (the load rule refuses Cc+Cf), but the
 	// same value can arrive spec- or form-borne, so the masker must keep
 	// stripping it.
-	cfPlant := "./\u202e" + "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	cfPlant := "./\u202e" + testfixtures.AWSSecretExample
 	cfMasked := maskSlotOperand(cfPlant)
 	if cfMasked == cfPlant {
 		t.Fatalf("the Cf-decorated plant is not masked (%q)", cfMasked)
@@ -1412,9 +1413,9 @@ func TestModelFormSupportsToolsDiffLine(t *testing.T) {
 // TestModelFormEffortPlantRawMask pins G-M4: the edit diff masks the RAW
 // operand, not the normalized one. Normalizing first lowercases the value and
 // defeats the case-sensitive secret classes, so a hand-planted
-// "1-ASIAIOSFODNN7EXAMPLE" rendered raw (lowercased) in the before column.
+// "1-ASIA...EXAMPLE" rendered raw (lowercased) in the before column.
 func TestModelFormEffortPlantRawMask(t *testing.T) {
-	plant := "1-ASIAIOSFODNN7EXAMPLE"
+	plant := "1-" + testfixtures.ASIADocExample
 	reg := modelsFixtureReg()
 	reg.Providers[0].Models[0].Capabilities = providers.Capabilities{
 		SupportsTools:    true,
@@ -1566,7 +1567,7 @@ func TestModelFormEditLoadErrorSurfacesError(t *testing.T) {
 // The marker-stripped core is classified too, the refusal keeps the existing
 // non-echoing message, and legitimate values keep passing.
 func TestModelFormDecoratedSecretRefused(t *testing.T) {
-	famPlant := "./wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	famPlant := "./" + testfixtures.AWSSecretExample
 	app, path := newModelFormTestApp(t, "add", "")
 	diskBefore, err := os.ReadFile(path)
 	if err != nil {
@@ -1599,7 +1600,7 @@ func TestModelFormDecoratedSecretRefused(t *testing.T) {
 		t.Fatalf("read providers.json: %v", err)
 	}
 	keys = append(typeRunes("acme-x"), KeyTab, KeyTab)
-	keys = append(keys, typeRunes("./AKIAIOSFODNN7EXAMPLE")...)
+	keys = append(keys, typeRunes("./"+testfixtures.AKIAExample)...)
 	keys = append(keys, KeyEnter)
 	out = app2.CaptureRun(&ScriptedKeys{Keys: keys})
 
@@ -1616,11 +1617,11 @@ func TestModelFormDecoratedSecretRefused(t *testing.T) {
 
 	// The guard in both directions, across the marker forms.
 	for _, decorated := range []string{
-		"./wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-		`.\wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY`,
-		"https://wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-		"./AKIAIOSFODNN7EXAMPLE",
-		"file:///./AKIAIOSFODNN7EXAMPLE",
+		"./" + testfixtures.AWSSecretExample,
+		`.\` + testfixtures.AWSSecretExample,
+		"https://" + testfixtures.AWSSecretExample,
+		"./" + testfixtures.AKIAExample,
+		"file:///./" + testfixtures.AKIAExample,
 	} {
 		if !looksSecretValue(decorated) {
 			t.Errorf("looksSecretValue(%q) = false, want true (decorated credential)", decorated)
@@ -1674,7 +1675,7 @@ func TestModelFormDecoratedSecretRefused(t *testing.T) {
 // frame that shows its stripped core. The move is pinned explicitly (locations
 // loop) so the verdict change is visible in this file, not implied.
 func TestLooksSecretValueFullMarkerSet(t *testing.T) {
-	const awsSecret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	const awsSecret = testfixtures.AWSSecretExample
 	const opaque = "ab3def7gh9jk1mnpqr5t" // 20 runes, lowercase, mixed classes
 	refused := []struct{ name, value string }{
 		{"bare drive backslash", `C:\` + awsSecret},
@@ -1683,12 +1684,12 @@ func TestLooksSecretValueFullMarkerSet(t *testing.T) {
 		{"relative then drive", `./C:\` + awsSecret},
 		{"stacked drive", `C:\C:\` + awsSecret},
 		{"leading separator then drive", `\C:\` + awsSecret},
-		{"bidi override", "\u202eAKIAIOSFODNN7EXAMPLE"},
+		{"bidi override", "\u202e" + testfixtures.AKIAExample},
 		{"bidi isolate with zero width space", "\u2067akia\u200bosfodnn7example\u2069"},
-		{"byte order mark", "\uFEFFAKIAIOSFODNN7EXAMPLE"},
+		{"byte order mark", "\uFEFF" + testfixtures.AKIAExample},
 		{"two dot leader", "\u2025/" + opaque},
 		{"horizontal ellipsis", "\u2026/" + opaque},
-		{"fullwidth solidus", "\uFF0F" + "AKIAIOSFODNN7EXAMPLE"},
+		{"fullwidth solidus", "\uFF0F" + testfixtures.AKIAExample},
 		{"fullwidth reverse solidus", "\uFF3C" + awsSecret},
 		{"fullwidth full stop then solidus", "\uFF0E\uFF0F" + awsSecret},
 		{"fraction slash", "\u2044" + opaque},
@@ -1741,7 +1742,7 @@ func TestLooksSecretValueFullMarkerSet(t *testing.T) {
 // of these entered the registry through the TUI door while the CLI twin refused
 // the same value.
 func TestModelFormDecoratedSecretMarkerClassesRefused(t *testing.T) {
-	const awsSecret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	const awsSecret = testfixtures.AWSSecretExample
 	plants := []struct{ name, value string }{
 		{"bare drive", `C:\` + awsSecret},
 		{"nested drive", `./C:\` + awsSecret},
@@ -1844,7 +1845,7 @@ func TestModelFormApprovalHeaderSlotMasked(t *testing.T) {
 	}
 
 	t.Run("drive decorated provider", func(t *testing.T) {
-		const plant = `C:\wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY`
+		const plant = `C:\` + testfixtures.AWSSecretExample
 		want := maskSlotOperand(plant)
 		if want == plant {
 			t.Fatalf("test premise broken: the provider plant is not masked (%q)", want)
@@ -2299,11 +2300,11 @@ func TestModelFormMessageRoles(t *testing.T) {
 // them. Synthetic values only; kept local so this file states its own premise
 // instead of borrowing the provider form's fixture.
 var nameAuthorityUnderscoreProbes = []string{
-	"sk_live_0123456789abcdef",
-	"tok_a1b2c3d4e5f6g7h8i9j0",
-	"pk_live_0123456789abcdef",
-	"key_0123456789abcdef",
-	"AKIA_0123456789ABCDEF",
+	testfixtures.SKLive,
+	testfixtures.TokSample,
+	testfixtures.PKLive,
+	testfixtures.KeyHex,
+	testfixtures.AKIAUnderscore,
 }
 
 // TestModelFormUnderscoreIDProbesRefused is the FIX-7 pin on the model-ID field:
@@ -2430,11 +2431,11 @@ func TestModelFormIDAuthorityAddsOnlyCredentialClass(t *testing.T) {
 		{"tts-1", false, false},
 		{"gpt-4o-audio-preview", false, false},
 		// FIX-7 target class: accepted before, refused now.
-		{"sk_live_0123456789abcdef", false, true},
-		{"tok_a1b2c3d4e5f6g7h8i9j0", false, true},
-		{"pk_live_0123456789abcdef", false, true},
-		{"key_0123456789abcdef", false, true},
-		{"AKIA_0123456789ABCDEF", false, true},
+		{testfixtures.SKLive, false, true},
+		{testfixtures.TokSample, false, true},
+		{testfixtures.PKLive, false, true},
+		{testfixtures.KeyHex, false, true},
+		{testfixtures.AKIAUnderscore, false, true},
 		// Single-class 16+ runes: accepted before, refused now (the slot
 		// authority masks a bare alpha word and a bare digit serial alike).
 		{"abcdefghijklmnopqrstuvwxyz", false, true},
@@ -2445,16 +2446,16 @@ func TestModelFormIDAuthorityAddsOnlyCredentialClass(t *testing.T) {
 		{"./models/gemini-pro", false, true},
 		{"https://example.com/v1", false, true},
 		// Pre-existing refusals: unchanged.
-		{"AKIAIOSFODNN7EXAMPLE", true, true},
+		{testfixtures.AKIAExample, true, true},
 		{"AbCdEfGh0123456jKlMnoP", true, true},
-		{"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", true, true},
+		{testfixtures.AWSSecretExample, true, true},
 		{"Ab3dEf7Gh9jK1mNp+/Qr=", true, true},
 		{"sk-abc", true, true},
-		{"gsk_abcdefghijklm", true, true},
+		{testfixtures.GroqKeyShort, true, true},
 		{"dckr_pat-abcdef0123456789", true, true},
 		{"bearer abc", true, true},
-		{"eyJhbGciOiJIUzI1NiIsInR5cCI6kpXVCJ9", true, true},
-		{"ghp_abcdefghij0123456789", true, true},
+		{testfixtures.JWTFullBadSep, true, true},
+		{testfixtures.GHPAlphabet, true, true},
 	}
 
 	moved := map[string]bool{}
@@ -2475,8 +2476,8 @@ func TestModelFormIDAuthorityAddsOnlyCredentialClass(t *testing.T) {
 	}
 
 	wantMoved := []string{
-		"sk_live_0123456789abcdef", "tok_a1b2c3d4e5f6g7h8i9j0", "pk_live_0123456789abcdef",
-		"key_0123456789abcdef", "AKIA_0123456789ABCDEF",
+		testfixtures.SKLive, testfixtures.TokSample, testfixtures.PKLive,
+		testfixtures.KeyHex, testfixtures.AKIAUnderscore,
 		"abcdefghijklmnopqrstuvwxyz", "1234567890123456",
 		`C:\models\gemini-pro`, "./models/gemini-pro", "https://example.com/v1",
 	}
@@ -2507,10 +2508,10 @@ func TestModelFormNameDoorParityWithAddJSONTwin(t *testing.T) {
 		"acme", "acme-fast", "acme_internal", "key_backup", "aws_prod", "gateway-eu",
 		"provider-01", "my-gateway.example", "openai-eu", "bedrock-us-east1",
 		// Credential-shaped names: refused by all three doors.
-		"sk_live_0123456789abcdef", "tok_a1b2c3d4e5f6g7h8i9j0", "pk_live_0123456789abcdef",
-		"key_0123456789abcdef", "AKIA_0123456789ABCDEF", "sk-proj-0123456789abcdef",
+		testfixtures.SKLive, testfixtures.TokSample, testfixtures.PKLive,
+		testfixtures.KeyHex, testfixtures.AKIAUnderscore, testfixtures.SKProj,
 		"openai2024backup", "npm_registry", "qwen2point5turbo", "eu-west1.fastproxy.example",
-		"provider0123456789", "AKIAIOSFODNN7EXAMPLE", "ghp_abcdefghij0123456789",
+		"provider0123456789", testfixtures.AKIAExample, testfixtures.GHPAlphabet,
 	}
 
 	accepted, refused := 0, 0
@@ -2603,11 +2604,11 @@ func TestModelFormTagsValidationMatchesStorage(t *testing.T) {
 		{"   ", nil},
 		// The credential side: one probe alone and one probe beside a benign
 		// tag both refuse, so trimming cannot turn into a bypass.
-		{"sk_live_0123456789abcdef", []string{"sk_live_0123456789abcdef"}},
-		{"beta, sk_live_0123456789abcdef", []string{"beta", "sk_live_0123456789abcdef"}},
-		{"beta,  tok_a1b2c3d4e5f6g7h8i9j0", []string{"beta", "tok_a1b2c3d4e5f6g7h8i9j0"}},
-		{"./AKIAIOSFODNN7EXAMPLE", []string{"./AKIAIOSFODNN7EXAMPLE"}},
-		{"beta, ./AKIAIOSFODNN7EXAMPLE", []string{"beta", "./AKIAIOSFODNN7EXAMPLE"}},
+		{testfixtures.SKLive, []string{testfixtures.SKLive}},
+		{"beta, " + testfixtures.SKLive, []string{"beta", testfixtures.SKLive}},
+		{"beta,  " + testfixtures.TokSample, []string{"beta", testfixtures.TokSample}},
+		{"./" + testfixtures.AKIAExample, []string{"./" + testfixtures.AKIAExample}},
+		{"beta, ./" + testfixtures.AKIAExample, []string{"beta", "./" + testfixtures.AKIAExample}},
 	}
 	for _, tc := range cases {
 		stored := splitTags(tc.value)
@@ -2656,7 +2657,7 @@ func TestModelFormTagsValidationMatchesStorage(t *testing.T) {
 			t.Errorf("live message for %q = %q; a benign tag list must not warn", benign, msg)
 		}
 	}
-	setTags("beta, sk_live_0123456789abcdef")
+	setTags("beta, " + testfixtures.SKLive)
 	if msg := scr.messageLine(); !strings.Contains(msg, "(value hidden)") {
 		t.Errorf("live message for a probe tag = %q; want the masked warning", msg)
 	}
@@ -2806,12 +2807,12 @@ func TestModelFormPaddedValuesAccepted(t *testing.T) {
 			t.Fatalf("validateFamily(%q) = %v; padding alone must not refuse a benign family", v, err)
 		}
 	}
-	for _, v := range []string{" ./AKIAIOSFODNN7EXAMPLE", "swift,./AKIAIOSFODNN7EXAMPLE"} {
+	for _, v := range []string{" ./" + testfixtures.AKIAExample, "swift,./" + testfixtures.AKIAExample} {
 		if err := scr.validateFamily(v); err == nil {
 			t.Fatalf("validateFamily(%q) accepted a decorated credential; trimming must not become a bypass", v)
 		}
 	}
-	for _, v := range []string{"sk_live_0123456789abcdef", " sk_live_0123456789abcdef "} {
+	for _, v := range []string{testfixtures.SKLive, " " + testfixtures.SKLive + " "} {
 		if err := scr.validateFamily(v); err == nil {
 			t.Fatalf("validateFamily(%q) accepted the underscore-head class", v)
 		}
@@ -2831,7 +2832,7 @@ func TestModelFormPaddedValuesAccepted(t *testing.T) {
 			t.Errorf("live message for family %q = %q; padding must not warn", v, msg)
 		}
 	}
-	setField(fFamily, " ./AKIAIOSFODNN7EXAMPLE")
+	setField(fFamily, " ./"+testfixtures.AKIAExample)
 	if msg := scr.messageLine(); !strings.Contains(msg, "(value hidden)") {
 		t.Errorf("live message for a padded decorated family = %q; want the masked warning", msg)
 	}
@@ -2841,7 +2842,7 @@ func TestModelFormPaddedValuesAccepted(t *testing.T) {
 			t.Errorf("live message for effort %q = %q; padding and case must not warn", v, msg)
 		}
 	}
-	setField(fEffort, " AKIAIOSFODNN7EXAMPLE")
+	setField(fEffort, " "+testfixtures.AKIAExample)
 	if msg := scr.messageLine(); !strings.Contains(msg, "(value hidden)") {
 		t.Errorf("live message for a padded credential effort = %q; want the masked warning", msg)
 	}

@@ -1,6 +1,7 @@
 package agenttools
 
 import (
+	"agypro/internal/testfixtures"
 	"strings"
 	"testing"
 )
@@ -79,7 +80,7 @@ func TestParseToolTokens_MasksKeyOperand(t *testing.T) {
 func TestParseToolTokens_MasksOriginalCaseOperand(t *testing.T) {
 	// AIza + exactly 35 chars of [0-9A-Za-z_-]: the Google key shape in
 	// credentialShapeRe, with a separator to defeat the contiguous-run pass.
-	const aiza = "AIzaSyA-b1c2d3e4f5g6h7i8j9k0l1m2n3o4p5q"
+	const aiza = testfixtures.AIzaAltBody
 	_, err := ParseToolTokens("read," + aiza)
 	if err == nil {
 		t.Fatal("AIza-shaped tool token accepted")

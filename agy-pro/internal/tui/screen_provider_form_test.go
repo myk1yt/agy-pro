@@ -12,6 +12,7 @@ import (
 	"agypro/internal/cellwidth"
 	"agypro/internal/providers"
 	"agypro/internal/settings"
+	"agypro/internal/testfixtures"
 )
 
 // providerFormFixtureReg is the registry the provider-form pins run against: one
@@ -664,7 +665,7 @@ func TestProviderFormSecretValueNeverRenders(t *testing.T) {
 // credential-shaped value already on disk: the prefilled grid row and every diff
 // line mask it, and an untouched env signs no diff line at all.
 func TestProviderFormEditMasksRegistryKeyValue(t *testing.T) {
-	const planted = "AKIAIOSFODNN7EXAMPLE"
+	const planted = testfixtures.AKIAExample
 	reg := providerFormFixtureReg()
 	reg.Providers[0].APIKeyEnv = planted
 	app, path := newProviderFormTestApp(t, reg, "edit", "acme")
@@ -1282,11 +1283,11 @@ const providerFormSecretRefusalText = "looks like secret/key material and cannot
 // providers.MaskOperand) returned them unchanged and the M4 "y" persisted them
 // RAW. Synthetic values only.
 var providerFormUnderscoreNameProbes = []string{
-	"sk_live_0123456789abcdef",
-	"tok_a1b2c3d4e5f6g7h8i9j0",
-	"pk_live_0123456789abcdef",
-	"key_0123456789abcdef",
-	"AKIA_0123456789ABCDEF",
+	testfixtures.SKLive,
+	testfixtures.TokSample,
+	testfixtures.PKLive,
+	testfixtures.KeyHex,
+	testfixtures.AKIAUnderscore,
 }
 
 // TestProviderFormUnderscoreNameProbesRefused is the FIX-K pin: each probe is
@@ -1367,11 +1368,11 @@ func TestProviderFormNameArmAddsOnlyUnderscoreProbes(t *testing.T) {
 		after  bool
 	}{
 		// FIX-K target class: accepted (and persisted raw) before the union.
-		{"sk_live_0123456789abcdef", false, true},
-		{"tok_a1b2c3d4e5f6g7h8i9j0", false, true},
-		{"pk_live_0123456789abcdef", false, true},
-		{"key_0123456789abcdef", false, true},
-		{"AKIA_0123456789ABCDEF", false, true},
+		{testfixtures.SKLive, false, true},
+		{testfixtures.TokSample, false, true},
+		{testfixtures.PKLive, false, true},
+		{testfixtures.KeyHex, false, true},
+		{testfixtures.AKIAUnderscore, false, true},
 		// Pre-existing refusals (16-rune run, prefix heads, JWT display arm):
 		// unchanged by the union.
 		{"openai2024backup", true, true},
@@ -1379,7 +1380,7 @@ func TestProviderFormNameArmAddsOnlyUnderscoreProbes(t *testing.T) {
 		{"qwen2point5turbo", true, true},
 		{"eu-west1.fastproxy.example", true, true},
 		{"provider0123456789", true, true},
-		{"sk-proj-0123456789abcdef", true, true},
+		{testfixtures.SKProj, true, true},
 		// Legal records: unchanged accept verdicts.
 		{"openai", false, false},
 		{"gemini", false, false},
@@ -1458,28 +1459,28 @@ var providerFormCredentialPathURLs = []struct {
 	token string // the credential-bearing part that must never be echoed
 }{
 	{
-		url:   "https://gw.example/v1/eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
-		token: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
+		url:   "https://gw.example/v1/" + testfixtures.JWTHeader + "." + testfixtures.JWTPayload + ".dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
+		token: testfixtures.JWTHeader + "." + testfixtures.JWTPayload + ".dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
 	},
 	{
 		url:   "https://gw.example/v1/0123456789abcdef",
 		token: "0123456789abcdef",
 	},
 	{
-		url:   "https://gw.example/v1/nvapi-0123456789abcdef",
-		token: "nvapi-0123456789abcdef",
+		url:   "https://gw.example/v1/" + testfixtures.NvidiaKey,
+		token: testfixtures.NvidiaKey,
 	},
 	{
 		// The FIX-K underscore class parked in a path rather than a name.
-		url:   "https://gw.example/v1/sk_live_0123456789abcdef",
-		token: "sk_live_0123456789abcdef",
+		url:   "https://gw.example/v1/" + testfixtures.SKLive,
+		token: testfixtures.SKLive,
 	},
 	{
 		// The same slot in its non-hierarchical spelling: the transport rule
 		// accepts a hostless "https:", and url.Parse reports the key as Opaque
 		// with an EMPTY Path, so the path loop alone would miss it.
-		url:   "https:sk_live_0123456789abcdef",
-		token: "sk_live_0123456789abcdef",
+		url:   "https:" + testfixtures.SKLive,
+		token: testfixtures.SKLive,
 	},
 }
 
@@ -1654,11 +1655,11 @@ var providerFormCredentialSlotURLs = []struct {
 	token  string
 	preFix bool
 }{
-	{"query value", "https://gw.example/v1?api_key=sk_live_0123456789abcdef", "sk_live_0123456789abcdef", false},
-	{"query key", "https://gw.example/v1?sk_live_0123456789abcdef=1", "sk_live_0123456789abcdef", false},
-	{"fragment", "https://host/v1#sk_live_0123456789abcdef", "sk_live_0123456789abcdef", false},
-	{"userinfo username", "https://sk_live_0123456789abcdef@host/v1", "sk_live_0123456789abcdef", true},
-	{"userinfo password", "https://user:sk_live_0123456789abcdef@host/v1", "sk_live_0123456789abcdef", true},
+	{"query value", "https://gw.example/v1?api_key=" + testfixtures.SKLive, testfixtures.SKLive, false},
+	{"query key", "https://gw.example/v1?" + testfixtures.SKLive + "=1", testfixtures.SKLive, false},
+	{"fragment", "https://host/v1#" + testfixtures.SKLive, testfixtures.SKLive, false},
+	{"userinfo username", "https://" + testfixtures.SKLive + "@host/v1", testfixtures.SKLive, true},
+	{"userinfo password", "https://user:" + testfixtures.SKLive + "@host/v1", testfixtures.SKLive, true},
 }
 
 // TestProviderFormBaseURLCredentialSlotsRefused is the FIX-7A pin for the three
@@ -1723,7 +1724,7 @@ func TestProviderFormBaseURLCredentialSlotsRefused(t *testing.T) {
 // URL, and the credential shapes around them must stay refused.
 const providerFormIdentifierHex32 = "0123456789abcdef0123456789abcdef"
 
-var providerFormCredentialPathJWT = "https://gw.example/v1/eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+var providerFormCredentialPathJWT = "https://gw.example/v1/" + testfixtures.JWTHeader + "." + testfixtures.JWTPayload + ".dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
 
 // TestProviderFormBaseURLIdentifierExemption pins the FIX-7A identifier rule: a
 // URL part whose whole shape is an identifier (all-lowercase hex at the
@@ -1754,9 +1755,9 @@ func TestProviderFormBaseURLIdentifierExemption(t *testing.T) {
 		{"16-rune mixed run in path", "https://gw.example/v1/0123456789abcdef", true},
 		{"24-rune mixed base64 run in path", "https://gw.example/v1/ab3def7gh9jk1mnpqr5txz", true},
 		{"uppercase 32-rune hex run in path", "https://gw.example/v1/0123456789ABCDEF0123456789ABCDEF", true},
-		{"nvapi head in path", "https://gw.example/v1/nvapi-0123456789abcdef", true},
-		{"underscore head in path", "https://gw.example/v1/sk_live_0123456789abcdef", true},
-		{"opaque spelling", "https:sk_live_0123456789abcdef", true},
+		{"nvapi head in path", "https://gw.example/v1/" + testfixtures.NvidiaKey, true},
+		{"underscore head in path", "https://gw.example/v1/" + testfixtures.SKLive, true},
+		{"opaque spelling", "https:" + testfixtures.SKLive, true},
 	}
 
 	app, _ := newProviderFormTestApp(t, providerFormFixtureReg(), "add", "")
@@ -1839,7 +1840,7 @@ func TestProviderFormNameArmIsTheSharedAuthority(t *testing.T) {
 // the add-mode name row masked it. Both the fixed line and the M4 approval
 // summary now route the on-disk name through the registry-slot authority.
 func TestProviderFormEditFixedNameLineMasked(t *testing.T) {
-	const planted = "sk_live_0123456789abcdef"
+	const planted = testfixtures.SKLive
 	if providers.MaskOperand(planted) != planted {
 		t.Fatalf("premise broken: the bare operand masker already masks the planted name")
 	}
@@ -1886,7 +1887,7 @@ func TestProviderFormEditFixedNameLineMasked(t *testing.T) {
 // key-shaped operand that resolves to no record is rendered through the
 // registry-slot authority in the not-found line, never raw.
 func TestProviderFormMissingTargetEchoMasked(t *testing.T) {
-	const planted = "sk_live_0123456789abcdef"
+	const planted = testfixtures.SKLive
 	app, _ := newProviderFormTestApp(t, providerFormFixtureReg(), "edit", planted)
 	out := app.CaptureRun(&ScriptedKeys{})
 	if !strings.Contains(out, providers.MaskSlot(planted)) {
@@ -1939,55 +1940,55 @@ var providerFormURLDoorCorpus = []struct {
 	{"compound host label", "https://aci-gw-2024-production.us-east-1.example.com/v1", false, ""},
 	{"single class long label", "https://verylonggatewaylabelname.example.com/v1", false, ""},
 	// Refuse side: the host slot (FIX-8f).
-	{"host underscore head", "https://sk_live_0123456789abcdef/v1", true, "sk_live_0123456789abcdef"},
-	{"host tok head", "https://tok_a1b2c3d4e5f6g7h8i9j0/v1", true, "tok_a1b2c3d4e5f6g7h8i9j0"},
-	{"host pk head", "https://pk_live_0123456789abcdef/v1", true, "pk_live_0123456789abcdef"},
-	{"host key head", "https://key_0123456789abcdef/v1", true, "key_0123456789abcdef"},
-	{"host ghp head", "https://ghp_a1b2c3d4e5f6g7h8i9j0.example.com/v1", true, "ghp_a1b2c3d4e5f6g7h8i9j0"},
-	{"host aws key id", "https://AKIAIOSFODNN7EXAMPLE/v1", true, "AKIAIOSFODNN7EXAMPLE"},
-	{"host jwt", "https://eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U/v1", true, "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"},
-	{"host decorated", "https://1-ASIAIOSFODNN7EXAMPLE.example.com/v1", true, "ASIAIOSFODNN7EXAMPLE"},
+	{"host underscore head", "https://" + testfixtures.SKLive + "/v1", true, testfixtures.SKLive},
+	{"host tok head", "https://" + testfixtures.TokSample + "/v1", true, testfixtures.TokSample},
+	{"host pk head", "https://" + testfixtures.PKLive + "/v1", true, testfixtures.PKLive},
+	{"host key head", "https://" + testfixtures.KeyHex + "/v1", true, testfixtures.KeyHex},
+	{"host ghp head", "https://" + testfixtures.GHPShort + ".example.com/v1", true, testfixtures.GHPShort},
+	{"host aws key id", "https://" + testfixtures.AKIAExample + "/v1", true, testfixtures.AKIAExample},
+	{"host jwt", "https://" + testfixtures.JWTHeader + "." + testfixtures.JWTPayload + ".dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U/v1", true, testfixtures.JWTHeader + "." + testfixtures.JWTPayload + ".dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"},
+	{"host decorated", "https://1-" + testfixtures.ASIADocExample + ".example.com/v1", true, testfixtures.ASIADocExample},
 	// The documented bare-run trade: the host label is one uninterrupted run, so
 	// the whole-value arms decide it (and refuse it). The row is here so the host
 	// rule can never turn it into an accepted value.
 	{"bare run host", "https://0123456789abcdef/v1", true, "0123456789abcdef"},
 	// Refuse side: userinfo, path, Opaque, query, fragment.
-	{"userinfo username", "https://sk_live_0123456789abcdef@host/v1", true, "sk_live_0123456789abcdef"},
-	{"userinfo password", "https://user:sk_live_0123456789abcdef@host/v1", true, "sk_live_0123456789abcdef"},
-	{"path underscore head", "https://host/v1/sk_live_0123456789abcdef", true, "sk_live_0123456789abcdef"},
+	{"userinfo username", "https://" + testfixtures.SKLive + "@host/v1", true, testfixtures.SKLive},
+	{"userinfo password", "https://user:" + testfixtures.SKLive + "@host/v1", true, testfixtures.SKLive},
+	{"path underscore head", "https://host/v1/" + testfixtures.SKLive, true, testfixtures.SKLive},
 	{"path 16 run", "https://host/v1/0123456789abcdef", true, "0123456789abcdef"},
-	{"path jwt", "https://host/v1/eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U", true, "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"},
-	{"opaque path", "https:sk_live_0123456789abcdef", true, "sk_live_0123456789abcdef"},
-	{"query value", "https://host/v1?api_key=sk_live_0123456789abcdef", true, "sk_live_0123456789abcdef"},
-	{"query key", "https://host/v1?sk_live_0123456789abcdef=1", true, "sk_live_0123456789abcdef"},
-	{"fragment", "https://host/v1#sk_live_0123456789abcdef", true, "sk_live_0123456789abcdef"},
+	{"path jwt", "https://host/v1/" + testfixtures.JWTHeader + "." + testfixtures.JWTPayload + ".dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U", true, testfixtures.JWTHeader + "." + testfixtures.JWTPayload + ".dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"},
+	{"opaque path", "https:" + testfixtures.SKLive, true, testfixtures.SKLive},
+	{"query value", "https://host/v1?api_key=" + testfixtures.SKLive, true, testfixtures.SKLive},
+	{"query key", "https://host/v1?" + testfixtures.SKLive + "=1", true, testfixtures.SKLive},
+	{"fragment", "https://host/v1#" + testfixtures.SKLive, true, testfixtures.SKLive},
 	{"path sk head", "https://gw.example/v1/sk-live-0123456789abcdefXYZ", true, "sk-live-0123456789abcdefXYZ"},
-	{"path nvapi head", "https://gw.example/v1/nvapi-0123456789abcdef", true, "nvapi-0123456789abcdef"},
+	{"path nvapi head", "https://gw.example/v1/" + testfixtures.NvidiaKey, true, testfixtures.NvidiaKey},
 	// FIX-8h H-1: the malformed query pair url.Query() drops. The decoded view
 	// never sees it, so all three doors accepted it before the raw-pair read.
-	{"query malformed value", "https://gw.example/v1?api_key=sk_live_0123456789abcdef%2", true, "sk_live_0123456789abcdef"},
-	{"query malformed key", "https://gw.example/v1?sk_live_0123456789abcdef=1%2", true, "sk_live_0123456789abcdef"},
-	{"query malformed second pair", "https://gw.example/v1?api-version=2024-02-01&api_key=sk_live_0123456789abcdef%2", true, "sk_live_0123456789abcdef"},
+	{"query malformed value", "https://gw.example/v1?api_key=" + testfixtures.SKLive + "%2", true, testfixtures.SKLive},
+	{"query malformed key", "https://gw.example/v1?" + testfixtures.SKLive + "=1%2", true, testfixtures.SKLive},
+	{"query malformed second pair", "https://gw.example/v1?api-version=2024-02-01&api_key=" + testfixtures.SKLive + "%2", true, testfixtures.SKLive},
 	// FIX-8h H-1 accept side: odd-but-legal escapes keep their verdict.
 	{"query odd escape pct25", "https://gw.example/v1?q=100%25", false, ""},
 	{"query odd escape bare pct", "https://gw.example/v1?q=100%", false, ""},
 	{"query odd escape comma", "https://gw.example/v1?filter=a%2Cb", false, ""},
 	{"query malformed benign", "https://gw.example/v1?api-version=2024-02-01%2", false, ""},
 	// FIX-8h H-3: an invisible rune inside the host label.
-	{"host zwsp", "https://sk_live_0123456789ab\u200bcdef/v1", true, "sk_live_0123456789abcdef"},
-	{"host zwj", "https://sk_live_0123456789ab\u200dcdef/v1", true, "sk_live_0123456789abcdef"},
-	{"host bidi override", "https://sk_live_0123456789ab\u202ecdef/v1", true, "sk_live_0123456789abcdef"},
-	{"host bom", "https://sk_live_0123456789ab\ufeffcdef/v1", true, "sk_live_0123456789abcdef"},
-	{"host combining mark", "https://sk_live_0123456789ab\u0301cdef/v1", true, "sk_live_0123456789abcdef"},
+	{"host zwsp", "https://" + testfixtures.SKLiveShort + "\u200bcdef/v1", true, testfixtures.SKLive},
+	{"host zwj", "https://" + testfixtures.SKLiveShort + "\u200dcdef/v1", true, testfixtures.SKLive},
+	{"host bidi override", "https://" + testfixtures.SKLiveShort + "\u202ecdef/v1", true, testfixtures.SKLive},
+	{"host bom", "https://" + testfixtures.SKLiveShort + "\ufeffcdef/v1", true, testfixtures.SKLive},
+	{"host combining mark", "https://" + testfixtures.SKLiveShort + "\u0301cdef/v1", true, testfixtures.SKLive},
 	{"host benign zwsp", "https://mycompany2024\u200bgateway.example.com/v1", false, ""},
 	// FIX-8h H-2: a value url.Parse cannot read. The authority fails closed, so
 	// the wizard and the add-json parser refuse where only the transport rule
 	// used to (and that rule echoed the operand).
-	{"unparseable path escape", "https://gw.example/v1/sk_live_0123456789abcdef%2", true, "sk_live_0123456789abcdef"},
+	{"unparseable path escape", "https://gw.example/v1/" + testfixtures.SKLive + "%2", true, testfixtures.SKLive},
 	{"unparseable path escape benign", "https://gw.example/%zz", true, ""},
-	{"unparseable port", "https://gw.example:sk_live_0123456789abcdef/v1", true, "sk_live_0123456789abcdef"},
-	{"unparseable fragment escape", "https://gw.example/v1#sk_live_0123456789abcdef%2", true, "sk_live_0123456789abcdef"},
-	{"unparseable userinfo escape", "https://sk_live_0123456789abcdef%2@gw.example/v1", true, "sk_live_0123456789abcdef"},
+	{"unparseable port", "https://gw.example:" + testfixtures.SKLive + "/v1", true, testfixtures.SKLive},
+	{"unparseable fragment escape", "https://gw.example/v1#" + testfixtures.SKLive + "%2", true, testfixtures.SKLive},
+	{"unparseable userinfo escape", "https://" + testfixtures.SKLive + "%2@gw.example/v1", true, testfixtures.SKLive},
 }
 
 // providerFormDoorSpec renders the add-json wire shape for one base URL.
@@ -2218,8 +2219,8 @@ func TestProviderFormBenignUserinfoAccepted(t *testing.T) {
 
 	// The credential-shaped userinfo spellings stay refused at every door.
 	for _, raw := range []string{
-		"https://sk_live_0123456789abcdef@gw.example/v1",
-		"https://user:sk_live_0123456789abcdef@gw.example/v1",
+		"https://" + testfixtures.SKLive + "@gw.example/v1",
+		"https://user:" + testfixtures.SKLive + "@gw.example/v1",
 	} {
 		if !providers.BaseURLCarriesCredential(raw) {
 			t.Fatalf("the shared authority accepts %q", raw)

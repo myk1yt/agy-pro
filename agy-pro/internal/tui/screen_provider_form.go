@@ -348,8 +348,8 @@ func (s *providerFormScreen) trimAPIKeyEnv() string { return strings.TrimSpace(s
 // out of masking by a location-shaped decoration. The name arm of
 // fieldCarriesCredential is that same authority (through the shared
 // providers.NameCarriesCredential), so the row a frame masks is exactly the row
-// the form refuses (FIX-K: under plain MaskOperand an underscore-head key such as
-// "sk_live_0123456789abcdef" rendered RAW while the form refused it). The base
+// the form refuses (FIX-K: under plain MaskOperand an underscore-head key such
+// as testfixtures.SKLive rendered RAW while the form refused it). The base
 // URL keeps the URL-layered maskBaseURL, which starts with MaskOperand and drops
 // URL userinfo; its ingest arm is the shared URL authority
 // (providers.BaseURLCarriesCredential), and the two stay separate on purpose:
@@ -459,7 +459,7 @@ func (s *providerFormScreen) Draw(a *App) []string {
 	if s.mode == providerFormModeEdit {
 		// FIX-7A: the on-disk name is rendered through the registry-slot
 		// authority, not the bare operand masker. A hand-planted key-shaped name
-		// ("sk_live_0123456789abcdef") is the identity under MaskOperand, so it
+		// (testfixtures.SKLive) is the identity under MaskOperand, so it
 		// rendered RAW in this read-only line while the add-mode name row masked
 		// it; MaskSlot is the one authority that reads that class.
 		line := "  " + missingOr(s.b, "providers.form.name_fixed", missingProviderFormNameFixed) + " : " + providers.MaskSlot(s.recordName())
@@ -552,8 +552,8 @@ func (s *providerFormScreen) secretMessage() string {
 //     operand masker (providers.MaskOperand), and the registry-slot authority
 //     the grid renders that row through (providers.MaskSlot), so "the frame
 //     masks it" and "the form refuses it" stay one rule. The slot authority is
-//     the arm that catches an underscore-head key: "sk_live_0123456789abcdef",
-//     "tok_a1b2c3d4e5f6g7h8i9j0", "pk_live_...", "key_...", "AKIA_..." carry no
+//     the arm that catches an underscore-head key: the five planted fixtures
+//     (testfixtures.SKLive, TokSample, PKLive, KeyHex, AKIAUnderscore) carry no
 //     head in slotSecretPrefixes and no uninterrupted run (the "_" breaks it),
 //     so the first two arms are the identity on all five while the 16+
 //     alphanumeric segment behind the separator masks. The union is deliberately
@@ -852,9 +852,9 @@ func (s *providerFormScreen) shownEnv(v string) string {
 //
 // The secrets guard runs ahead of the charset for the reason the model form
 // gives (validateEffort): the charset happens to admit every bare alnum key ID
-// ("AKIAIOSFODNN7EXAMPLE", "sk-live-0123..."), so a pasted value would otherwise
-// be refused as a naming problem when the real problem is that it is a key. The
-// refusal names the class and echoes nothing.
+// (testfixtures.AKIAExample, or an "sk-live-..." shaped value), so a pasted
+// value would otherwise be refused as a naming problem when the real problem is
+// that it is a key. The refusal names the class and echoes nothing.
 func (s *providerFormScreen) validateName(v string) error {
 	name := strings.TrimSpace(v)
 	if name == "" {

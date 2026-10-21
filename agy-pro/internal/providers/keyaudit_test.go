@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"agypro/internal/testfixtures"
 )
 
 // maskNamePlant is the credential-class plant for the fix7-D name-sink pins: an
@@ -12,7 +14,7 @@ import (
 // it (the "_" breaks its contiguous-run test and its head is not in the shared
 // prefix list); the registry-slot display authority MaskSlot masks it.
 const (
-	maskNamePlant = "sk_live_0123456789abcdef"
+	maskNamePlant = testfixtures.SKLive
 	maskNameMask  = "sk_li****"
 )
 

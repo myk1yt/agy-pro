@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"agypro/internal/providers"
+	"agypro/internal/testfixtures"
 )
 
 // FIX-8d / FIX-8g: the add-json parser is the ONE gate both add-json surfaces
@@ -33,8 +34,8 @@ func specJSONWithURL(rawURL string) []byte {
 // exact bytes.
 func TestParseProviderSpecJSON_RefusesCredentialBaseURL(t *testing.T) {
 	const (
-		underscore = "sk_live_0123456789abcdef"
-		tokHead    = "tok_a1b2c3d4e5f6g7h8i9j0"
+		underscore = testfixtures.SKLive
+		tokHead    = testfixtures.TokSample
 	)
 	for _, tc := range []struct {
 		name string
@@ -42,8 +43,8 @@ func TestParseProviderSpecJSON_RefusesCredentialBaseURL(t *testing.T) {
 	}{
 		{"host underscore head", "https://" + underscore + "/v1"},
 		{"host tok head", "https://" + tokHead + "/v1"},
-		{"host ghp head", "https://ghp_a1b2c3d4e5f6g7h8i9j0.example.com/v1"},
-		{"host aws key id", "https://AKIAIOSFODNN7EXAMPLE/v1"},
+		{"host ghp head", "https://" + testfixtures.GHPShort + ".example.com/v1"},
+		{"host aws key id", "https://" + testfixtures.AKIAExample + "/v1"},
 		{"path underscore head", "https://host/v1/" + underscore},
 		{"path 16 run", "https://host/v1/0123456789abcdef"},
 		{"query value", "https://host/v1?api_key=" + underscore},
@@ -74,7 +75,7 @@ func TestParseProviderSpecJSON_RefusesCredentialBaseURL(t *testing.T) {
 				t.Fatalf("ParseProviderSpecJSON(%q) err = %v; want ErrProviderSpecBaseURLCarriesCredential", tc.url, err)
 			}
 			if strings.Contains(err.Error(), underscore) || strings.Contains(err.Error(), tokHead) ||
-				strings.Contains(err.Error(), "0123456789abcdef") || strings.Contains(err.Error(), "AKIAIOSFODNN7EXAMPLE") {
+				strings.Contains(err.Error(), "0123456789abcdef") || strings.Contains(err.Error(), testfixtures.AKIAExample) {
 				t.Fatalf("the refusal echoes the refused value: %q", err)
 			}
 			got, readErr := os.ReadFile(path)
@@ -129,7 +130,7 @@ func TestParseProviderSpecJSON_BenignBaseURLsUnchanged(t *testing.T) {
 // same field set). Each row is refused with the named sentinel and the sentence
 // never names the value.
 func TestParseProviderSpecJSON_RefusesCredentialModels(t *testing.T) {
-	const probe = "tok_a1b2c3d4e5f6g7h8i9j0"
+	const probe = testfixtures.TokSample
 	cases := []struct {
 		name  string
 		model providers.Model

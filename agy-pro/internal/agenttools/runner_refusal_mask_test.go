@@ -11,6 +11,7 @@ package agenttools
 // refuseOutOfScope leaks the raw value and fails this pin.
 
 import (
+	"agypro/internal/testfixtures"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,7 +20,7 @@ import (
 
 // keyShapedScopeEntry is a fake key-shaped dummy (the canonical AWS
 // documentation example shape), never a real credential.
-const keyShapedScopeEntry = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+const keyShapedScopeEntry = testfixtures.AWSSecretExample
 
 func TestToolRunnerScopeRefusalMasksKeyShapedScopeEntry(t *testing.T) {
 	root := scopeRoot(t)

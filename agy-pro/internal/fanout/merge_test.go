@@ -35,6 +35,7 @@ import (
 
 	"agypro/internal/paths"
 	"agypro/internal/providers"
+	"agypro/internal/testfixtures"
 )
 
 // mergeRunResult is one partition-mode engine run driven by mergePartitionRun:
@@ -63,7 +64,7 @@ func mergePartitionRun(t *testing.T, units []Unit, sink io.Writer, respond func(
 		filepath.Join("src", "alpha", "ok.go"),
 		filepath.Join("src", "beta", "no.go"),
 		filepath.Join("src", "aba.go"),
-		filepath.Join("keys", "AKIAIOSFODNN7EXAMPLE.txt"),
+		filepath.Join("keys", testfixtures.AKIAExample+".txt"),
 		"loose.go",
 	} {
 		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, rel)), 0o700); err != nil {
@@ -701,7 +702,7 @@ func TestMergePartitionColonIDsMergeEndToEnd(t *testing.T) {
 // unit's id/title/seat (the shared SeedEligible rule), so a key-shaped field
 // renders [REDACTED] everywhere while benign ids stay readable.
 func TestMergePartitionMasksKeyShapedPlanFields(t *testing.T) {
-	const keyID = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	const keyID = testfixtures.AWSSecretExample
 	units := []Unit{
 		{ID: keyID, Title: "Alpha work", Scope: []string{"src/alpha"}, Deliverable: "d", Seat: "prov-a/model-a"},
 		{ID: "unit-beta", Title: "Beta work", Scope: []string{"src/beta"}, Deliverable: "d", Seat: "prov-b/model-b"},

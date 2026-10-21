@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"agypro/internal/testfixtures"
 )
 
 // S-4/F4: the environment allow-list is default-deny, so credential variables
@@ -164,14 +166,14 @@ func TestToolRunnerModelToolsRefusalMasksRegistryOperands(t *testing.T) {
 	}{
 		{
 			name:      "underscore-head model id and key-shaped tool name",
-			model:     "sk_live_0123456789abcdef",
+			model:     testfixtures.SKLive,
 			tool:      "Ab3dE5gH7jK9mN1pQ3sT",
 			wantModel: "sk_li****",
 			wantTool:  "Ab3dE****",
 		},
 		{
 			name:      "location-decorated model id",
-			model:     "./sk_live_0123456789abcdef",
+			model:     "./" + testfixtures.SKLive,
 			tool:      "Ab3dE5gH7jK9mN1pQ3sT",
 			wantModel: "sk_li****",
 			wantTool:  "Ab3dE****",

@@ -15,6 +15,7 @@ import (
 	"agypro/internal/cellwidth"
 	"agypro/internal/mode"
 	"agypro/internal/settings"
+	"agypro/internal/testfixtures"
 )
 
 // doctorAlphaEnv / doctorUnsetEnv are the env-var NAMES the doctor tests
@@ -412,7 +413,7 @@ func doctorLineContaining(t *testing.T, out, s string) string {
 // first-5 + **** and never raw in any frame.
 func TestDoctorProviderNameSinkUsesSlotAuthority(t *testing.T) {
 	const (
-		plant = "sk_live_0123456789abcdef"
+		plant = testfixtures.SKLive
 		mask  = "sk_li****"
 	)
 	// The required names plus the separator-bearing forms the pre-existing

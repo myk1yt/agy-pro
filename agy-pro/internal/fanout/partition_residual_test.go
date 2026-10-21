@@ -36,12 +36,13 @@ import (
 
 	"agypro/internal/paths"
 	"agypro/internal/providers"
+	"agypro/internal/testfixtures"
 )
 
 // keyShapedUnitID is a fake key-shaped dummy (the canonical AWS documentation
 // example shape): 40 base64-alphabet runes with the "/" real keys carry. It is
 // a stand-in for a misdirected key paste, never a real credential.
-const keyShapedUnitID = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+const keyShapedUnitID = testfixtures.AWSSecretExample
 
 // --- E1: the on-disk summary.json of a CONFLICT run masks the conflicts -----
 
@@ -91,8 +92,8 @@ func TestMergePartitionConflictSummaryMasksKeyShapedUnitID(t *testing.T) {
 
 // E1: a credential-shaped run inside the conflict path renders masked in the
 // on-disk summary.json too. The fixture workspace carries
-// keys/AKIAIOSFODNN7EXAMPLE.txt (an AWS-key-ID-shaped file NAME, the canonical
-// documentation example shape), claimed by two units.
+// keys/AKIAExample.txt (the contract's AWS-key-ID-shaped file NAME: the
+// canonical documentation example shape), claimed by two units.
 func TestMergePartitionConflictSummaryMasksSecretShapedPath(t *testing.T) {
 	units := []Unit{
 		{ID: "unit-a", Title: "A", Scope: []string{"keys"}, Deliverable: "d", Seat: "prov-a/model-a"},
@@ -106,7 +107,7 @@ func TestMergePartitionConflictSummaryMasksSecretShapedPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("summary.json not written on a failed run: %v", err)
 	}
-	if strings.Contains(string(raw), "AKIAIOSFODNN7EXAMPLE") {
+	if strings.Contains(string(raw), testfixtures.AKIAExample) {
 		t.Errorf("summary.json leaks the credential-shaped file name in the conflicts block:\n%s", raw)
 	}
 	s := readMergeSummaryJSON(t, run)
@@ -122,7 +123,7 @@ func TestMergePartitionConflictSummaryMasksSecretShapedPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconciliation.md not written: %v", err)
 	}
-	if strings.Contains(string(report), "AKIAIOSFODNN7EXAMPLE") {
+	if strings.Contains(string(report), testfixtures.AKIAExample) {
 		t.Errorf("reconciliation.md leaks the credential-shaped file name:\n%s", report)
 	}
 }

@@ -8,6 +8,7 @@ import (
 
 	"agypro/internal/fanout"
 	"agypro/internal/providers"
+	"agypro/internal/testfixtures"
 )
 
 // editorHome isolates the editor: AGY_PRO_HOME gets a fresh temp dir (the
@@ -766,7 +767,7 @@ func TestEditorCredentialShapedFieldRefused(t *testing.T) {
 	// Refusal: the credential-shaped task never reaches the file.
 	path := editorHome(t)
 	app, _ := newEditorApp("")
-	const planted = "AKIAIOSFODNN7EXAMPLE"
+	const planted = testfixtures.AKIAExample
 	keys := joinPresetKeys(
 		zoneAKeys("p1", planted, "", "", "", "", ""),
 		k1(KeyDown, KeyDown), // host zone -> zone B
@@ -815,9 +816,9 @@ func TestEditorCredentialShapedFreeTextSlotsRefused(t *testing.T) {
 	}{
 		{"models", "Ab3dEf7Gh9jK1mNpQr5t"},
 		{"seats", "sk-abcdefghijklmnop"},
-		{"out_dir", "ghp_abcdefghijklmnop"},
-		{"root", "xoxb-abcdefghijklmnop"},
-		{"search_endpoint", "gsk_abcdefghijklmnop"},
+		{"out_dir", testfixtures.GHPSixteen},
+		{"root", testfixtures.SlackBotPlain},
+		{"search_endpoint", testfixtures.GroqKeyMid},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

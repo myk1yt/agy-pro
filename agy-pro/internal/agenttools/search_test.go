@@ -32,18 +32,19 @@ import (
 	"unicode/utf8"
 
 	"agypro/internal/providers"
+	"agypro/internal/testfixtures"
 )
 
 // searchDummySecret is the canonical AWS documentation example shape, never
 // a real credential (the same dummy the fetch and scope pins use).
-const searchDummySecret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+const searchDummySecret = testfixtures.AWSSecretExample
 
 // searchDummySecretQuery is a SECOND key-shaped dummy (same documentation
 // example family, never a real credential). G3: the output-reflection pin
 // uses it for the QUERY while the env-var key VALUE carries
 // searchDummySecret, so deleting the key-value seed operand fails the pin
 // instead of hiding behind the query seed.
-const searchDummySecretQuery = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEQUERY"
+const searchDummySecretQuery = testfixtures.AWSSecretQuery
 
 // searchJSONBody is the generic backend shape the renderer must handle: a
 // top-level results array with title/url/snippet fields.
@@ -1218,7 +1219,7 @@ func TestToolRunnerSearchWebCompositeMasking(t *testing.T) {
 // SeedEligible location exemption. Whole-operand seeding masks the marked
 // form transitively; the stripped core is the defense-in-depth arm.
 func TestStripRelativeMarkerSeedsCore(t *testing.T) {
-	const run = "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"
+	const run = testfixtures.AWSSecretNoSlash
 	for _, marked := range []string{"./" + run, "../" + run, ".\\" + run, "..\\" + run} {
 		seeds := networkSeeds(appendNetworkCores([]string{marked}), nil)
 		found := false
@@ -1250,14 +1251,14 @@ func TestToolRunnerSearchWebRelativeMarkerMasking(t *testing.T) {
 	runner := NewRunner(root, false, false, logger)
 	runner.SearchSource = SearchSource{Endpoint: srv.URL + "/s?q={query}"}
 	if _, err := runner.Execute(2, "model-x", "prov-x", "search_web",
-		`{"query":"..\\wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"}`); err != nil {
+		`{"query":"..\\`+testfixtures.AWSSecretNoSlash+`"}`); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	data, rerr := os.ReadFile(logPath)
 	if rerr != nil {
 		t.Fatalf("read log: %v", rerr)
 	}
-	if strings.Contains(string(data), "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY") {
+	if strings.Contains(string(data), testfixtures.AWSSecretNoSlash) {
 		t.Errorf("the marked credential survives in the log:\n%s", data)
 	}
 	assertNoSecretRun(t, string(data))
@@ -1419,7 +1420,7 @@ func TestToolRunnerSearchWebEndpointDecodedParamMasking(t *testing.T) {
 // operand + the N2 truncation ladder): a scheme echo of the paste is masked
 // down to a sub-floor tail.
 func TestBuildNetworkSeedsCoversSchemeAndOpaquePaste(t *testing.T) {
-	const run = "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"
+	const run = testfixtures.AWSSecretNoSlash
 	for _, op := range []string{run + "://host.example/x", "http:" + run} {
 		seeds := buildNetworkSeeds(nil, []string{op}, "", nil)
 		echo := "unsupported scheme " + run
@@ -1467,7 +1468,7 @@ func TestNetworkSeedsSpellingComplete(t *testing.T) {
 // pin). Each input is chosen so the target element is produced by exactly
 // one arm.
 func TestNetworkArmIsolationPins(t *testing.T) {
-	const run = "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"
+	const run = testfixtures.AWSSecretNoSlash
 	cases := []struct {
 		name  string
 		texts []string
@@ -1519,7 +1520,7 @@ func TestSearchLogSeedsArmIsolation(t *testing.T) {
 // N4: the raw-URL-recovery wiring in BOTH collectors (H2) and the recovered
 // URL element: single-arm removal fails the pin.
 func TestRawURLRecoveryArmIsolation(t *testing.T) {
-	const want = "//host.example/?token=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	const want = "//host.example/?token=" + testfixtures.AWSSecretExample
 	malformed := `{"query":"see ` + want + `",`
 	if got := recoverRawURLCandidates(malformed); len(got) != 1 || got[0] != want {
 		t.Fatalf("recoverRawURLCandidates = %v; want [%q]", got, want)
@@ -1686,8 +1687,8 @@ func TestToolRunnerSearchWebCaseFoldedReflectionMasking(t *testing.T) {
 // M8 (unit): the raw-URL recovery arm, isolated from the whole-arguments
 // seed that dominates its end-to-end pins.
 func TestRecoverRawURLCandidates(t *testing.T) {
-	got := recoverRawURLCandidates(`{"query":"see //host.example/?token=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",`)
-	if len(got) != 1 || got[0] != "//host.example/?token=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" {
+	got := recoverRawURLCandidates(`{"query":"see //host.example/?token=` + testfixtures.AWSSecretExample + `",`)
+	if len(got) != 1 || got[0] != "//host.example/?token="+testfixtures.AWSSecretExample {
 		t.Errorf("recoverRawURLCandidates = %v; want the trimmed scheme-relative URL", got)
 	}
 	if got := recoverRawURLCandidates(`{"query":"nothing here"}`); len(got) != 0 {
@@ -1698,8 +1699,8 @@ func TestRecoverRawURLCandidates(t *testing.T) {
 // M8 (unit): the object-key arm of the text collector: a key-shaped key
 // seeds whole, the fixed schema keys ride the gated list only.
 func TestNetworkArgTextsObjectKeys(t *testing.T) {
-	whole, gated, _ := networkArgTexts(`{"query":"hello","token wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY":"x"}`)
-	if !containsString(whole, "token wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY") {
+	whole, gated, _ := networkArgTexts(`{"query":"hello","token ` + testfixtures.AWSSecretExample + `":"x"}`)
+	if !containsString(whole, "token "+testfixtures.AWSSecretExample) {
 		t.Errorf("the key-shaped key must seed whole: whole=%v", whole)
 	}
 	if containsString(whole, "query") {
@@ -1716,7 +1717,7 @@ func TestNetworkArgTextsObjectKeys(t *testing.T) {
 // end-to-end pins are dominated by the static query-pair spellings, so this
 // unit pin isolates the arm the mutation evidence removes (mutation (c)).
 func TestSearchLogSeedsSubstitutedEndpointEveryQueryShape(t *testing.T) {
-	const endpoint = "http://127.0.0.1:1/s?appid=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY&q={query}"
+	const endpoint = "http://127.0.0.1:1/s?appid=" + testfixtures.AWSSecretExample + "&q={query}"
 	cases := []struct {
 		name string
 		args string
@@ -1790,7 +1791,7 @@ func TestToolRunnerSearchWebKeyTransformReflectionMasking(t *testing.T) {
 // the stub echoes at the cap boundary; the truncated model-visible body is
 // redacted with the call's seed set exactly as the runner does.
 func TestTruncationLadderFetchCap(t *testing.T) {
-	const operand = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY0123456789ABCDEFGHIJKLMNOPQRST"
+	const operand = testfixtures.AWSSecretLong
 	if len(operand) < 70 {
 		t.Fatal("operand must cover the 64-rune survivor case")
 	}
@@ -1822,7 +1823,7 @@ func TestTruncationLadderFetchCap(t *testing.T) {
 // the operand is the query value the backend echoes inside a giant snippet
 // that the renderer cuts at every adversarial offset.
 func TestTruncationLadderRenderCap(t *testing.T) {
-	const operand = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY0123456789ABCDEFGHIJKLMNOPQRST"
+	const operand = testfixtures.AWSSecretLong
 	for _, survivor := range []int{16, 20, 28, 31, 48, 64} {
 		t.Run(fmt.Sprintf("survivor-%d", survivor), func(t *testing.T) {
 			filler := strings.Repeat("ab,", (maxSearchRenderBytes-3-survivor)/3+1)[:maxSearchRenderBytes-3-survivor]
@@ -1843,7 +1844,7 @@ func TestTruncationLadderRenderCap(t *testing.T) {
 // through the real runner+Logger; the operand is the query value echoed at
 // a 20-rune survivor offset.
 func TestToolRunnerSearchWebRenderCapLogEntry(t *testing.T) {
-	const operand = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY0123456789ABCDEFGHIJKLMNOPQRST"
+	const operand = testfixtures.AWSSecretLong
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		// The render prefix "1. " is 3 bytes; the filler leaves a 20-rune

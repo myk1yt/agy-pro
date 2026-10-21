@@ -108,11 +108,10 @@ func ValidateAPIKeyEnvName(env string) error {
 //     ("./backups" renders "backups") is not a mask, so a benign location
 //     operand keeps its bytes.
 //
-// Measured on the class: MaskOperand is the identity on
-// "sk_live_0123456789abcdef", "tok_a1b2c3d4e5f6g7h8i9j0", "pk_live_...",
-// "key_..." and "AKIA_...", while MaskSlot renders each first-5 + "****"
-// ("sk_li****"), so before FIX-8b every one of them printed raw from these
-// sentences.
+// Measured on the class: MaskOperand is the identity on the five planted
+// fixtures (testfixtures.SKLive, TokSample, PKLive, KeyHex, AKIAUnderscore),
+// while MaskSlot renders each first-5 + "****" ("sk_li****"), so before FIX-8b
+// every one of them printed raw from these sentences.
 func maskNameOperand(name string) string {
 	if out := MaskOperand(name); out != name {
 		return out
@@ -205,10 +204,10 @@ var ErrProviderNameCarriesCredential = errors.New("provider name gate: new provi
 // is the identity by construction and the pin records that reachability.
 //
 // The credential gate is FIX-7E: the charset alone admits the whole
-// underscore-head key family ("sk_live_0123456789abcdef",
-// "tok_a1b2c3d4e5f6g7h8i9j0"), and MaskOperand is the identity on it, so
-// `providers rename old sk_live_0123456789abcdef` persisted the key-shaped name
-// raw and every name sink rendered it raw. The gate runs BEFORE the charset
+// underscore-head key family (the planted fixtures testfixtures.SKLive and
+// testfixtures.TokSample), and MaskOperand is the identity on it, so a rename
+// whose old-name operand was that fixture persisted the key-shaped name raw and
+// every name sink rendered it raw. The gate runs BEFORE the charset
 // check, the order settings.ParseProviderSpecJSON and the TUI provider form's
 // validateName settled on: a pasted value is a key before it is a naming
 // problem, and the charset admits every bare alnum key id, so a charset-first

@@ -13,6 +13,7 @@ import (
 
 	"agypro/internal/agenttools"
 	"agypro/internal/providers"
+	"agypro/internal/testfixtures"
 )
 
 // O3: the worker's two error compositions name the seat target through
@@ -26,7 +27,7 @@ import (
 // sibling seatSpecLabel uses. The plants below are the two classes the census
 // named, plus the vendor underscore head.
 const (
-	workerSlotPlantVendor     = "sk_live_0123456789abcdef"
+	workerSlotPlantVendor     = testfixtures.SKLive
 	workerSlotPlantUnderscore = "_Ab3dE6gH9jK2mN5pQ8sT1vW4yZ7"
 	workerSlotPlantDecorated  = "AbCdEf0123+GhIjKl4567=MmNoPq"
 )

@@ -11,6 +11,7 @@ import (
 
 	"agypro/internal/fanout"
 	"agypro/internal/providers"
+	"agypro/internal/testfixtures"
 )
 
 // presetsFixture is the standard two-preset store every list test reads:
@@ -448,7 +449,7 @@ func TestPresetsDeclinedCorruptGateLeavesMemoryUntouched(t *testing.T) {
 func TestPresetsNoteMasksCredentialShapedTask(t *testing.T) {
 	t.Setenv(providers.EnvHome, t.TempDir())
 	st := &fanout.PresetFileStore{Path: filepath.Join(t.TempDir(), "fanout-presets.json")}
-	const planted = "AKIAIOSFODNN7EXAMPLE"
+	const planted = testfixtures.AKIAExample
 	if err := st.SavePresets(&fanout.PresetsFile{Presets: []fanout.Preset{
 		{Name: "alpha", Task: planted, Tools: "read,search"},
 		{Name: "beta", Task: "review"},

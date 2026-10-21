@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"agypro/internal/testfixtures"
 )
 
 // ---------------------------------------------------------------------------
@@ -67,7 +69,7 @@ func TestProbeEndpoint_RedactsBearerEcho(t *testing.T) {
 func TestValidateAPIKeyEnvName_AKIARejected(t *testing.T) {
 	// AWS access key ID: AKIA + 16 = 20 chars, env-name-shaped charset, no
 	// hyphen/dot, under the old 24-char length rule — the documented bypass.
-	akia := "AKIAABCDEFGHIJKLMNOP"
+	akia := testfixtures.AKIAAlphabet
 	if !envNameRe.MatchString(akia) {
 		t.Fatal("fixture no longer exercises the bypass class")
 	}
@@ -112,7 +114,7 @@ func TestValidateAPIKeyEnvName_LookupEnvAccepted(t *testing.T) {
 func TestValidateAPIKeyEnvName_KeyValuesRejected(t *testing.T) {
 	for _, secret := range []string{
 		"sk-verysecretkey-0123456789abcdef",
-		"ghp_0123456789abcdef0123",
+		testfixtures.GHPNumeric,
 		"a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5",
 	} {
 		err := ValidateAPIKeyEnvName(secret)
@@ -193,7 +195,7 @@ func TestMaskOperand_U8(t *testing.T) {
 	}
 	assertNoLeak(t, got, secret)
 
-	if got := MaskOperand("AKIAABCDEFGHIJKLMNOP"); got != "AKIAA****" {
+	if got := MaskOperand(testfixtures.AKIAAlphabet); got != "AKIAA****" {
 		t.Errorf("MaskOperand(AKIA...) = %q; want AKIAA****", got)
 	}
 	for _, benign := range []string{"nowrite", "acme", "my-provider", "native-seat-concurrency", "OPENAI_API_KEY", "https://api.openai.com/v1"} {
@@ -222,7 +224,7 @@ func TestRedactEchoLine_MasksQuotedSecrets(t *testing.T) {
 	assertNoLeak(t, got, sk)
 
 	// AWS-shaped plant (contiguous run, no known prefix) inside quotes.
-	aws := "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"
+	aws := testfixtures.AWSSecretNoSlash
 	line = `invalid value "` + aws + `" for flag -model`
 	got = RedactEchoLine(line)
 	want = `invalid value "wJalr****" for flag -model`
@@ -270,7 +272,7 @@ func TestRedactEchoLine_BenignLinesUnchanged(t *testing.T) {
 // readable, and no probe runs for an unresolved key.
 func TestAuditProviderKeys_UnresolvedDetailMasksKeyShapedEnv(t *testing.T) {
 	store := newMockEnvStore()
-	akia := "AKIAIOSFODNN7EXAMPLE"
+	akia := testfixtures.AKIAExample
 	reg := &Registry{Providers: []Provider{
 		{Name: "legacy", BaseURL: "https://legacy.example/v1", APIKeyEnv: akia},
 		{Name: "clean", BaseURL: "https://clean.example/v1", APIKeyEnv: "CLEAN_API_KEY"},
@@ -313,7 +315,7 @@ func TestAuditProviderKeys_UnresolvedDetailMasksKeyShapedEnv(t *testing.T) {
 // TestMaskOperand_C3_AWSSecretWithSlashMasked: a "/" alone must no longer read
 // as a path. The classic AWS documentation example secret carries two.
 func TestMaskOperand_C3_AWSSecretWithSlashMasked(t *testing.T) {
-	secret := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	secret := testfixtures.AWSSecretExample
 	got := MaskOperand(secret)
 	if got != "wJalr****" {
 		t.Errorf("MaskOperand(AWS secret with /) = %q; want %q", got, "wJalr****")
@@ -324,7 +326,7 @@ func TestMaskOperand_C3_AWSSecretWithSlashMasked(t *testing.T) {
 // TestMaskOperand_C3_AWSSecretWithoutSlashMasked: the no-separator shape was
 // already masked; the C3 narrowing must not regress it.
 func TestMaskOperand_C3_AWSSecretWithoutSlashMasked(t *testing.T) {
-	secret := "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"
+	secret := testfixtures.AWSSecretNoSlash
 	got := MaskOperand(secret)
 	if got != "wJalr****" {
 		t.Errorf("MaskOperand(AWS secret without /) = %q; want %q", got, "wJalr****")
@@ -337,9 +339,9 @@ func TestMaskOperand_C3_AWSSecretWithoutSlashMasked(t *testing.T) {
 func TestMaskOperand_C3_KnownShapesStillMasked(t *testing.T) {
 	for _, secret := range []string{
 		"sk-verysecretkey-0123456789abcdef",
-		"ghp_A16CharTokenHere1234567890abcd",
-		"AKIAIOSFODNN7EXAMPLE",
-		"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
+		testfixtures.GHPA16,
+		testfixtures.AKIAExample,
+		testfixtures.JWTFull + "." + testfixtures.JWTPayload + ".dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
 	} {
 		got := MaskOperand(secret)
 		if got != MaskSecret(secret) {
@@ -506,12 +508,12 @@ func TestSecretInterruptSentinel(t *testing.T) {
 // shapes, dotted config names, and every location-shaped operand.
 func TestSeedEligible_PinnedTable(t *testing.T) {
 	for _, op := range []string{
-		"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-		"native: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-		"1-ASIAIOSFODNN7EXAMPLE",
+		testfixtures.AWSSecretExample,
+		"native: " + testfixtures.AWSSecretExample,
+		"1-" + testfixtures.ASIADocExample,
 		"ABCDEFGHIJKLMNOPQRST",
 		"sk-verysecretkey-0123456789abcdef",
-		"AKIAIOSFODNN7EXAMPLE",
+		testfixtures.AKIAExample,
 	} {
 		if !SeedEligible(op) {
 			t.Errorf("SeedEligible(%.20q...) = false; want true", op)
@@ -538,7 +540,7 @@ func TestSeedEligible_PinnedTable(t *testing.T) {
 // short-segment dotted names stay readable (the r5 N1 over-mask class).
 func TestSeedEligible_JWTShape(t *testing.T) {
 	for _, op := range []string{
-		"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
+		testfixtures.JWTFull + "." + testfixtures.JWTPayload + ".dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
 		"abcdefghijklmnop.qrstuvwxyz0123.456789",
 	} {
 		if !SeedEligible(op) {
@@ -557,7 +559,7 @@ func TestSeedEligible_JWTShape(t *testing.T) {
 // classifier still renders a bare id as the first-5 readable mask (U8).
 func TestNewRedactor_AWSKeyIDTwinsMasked(t *testing.T) {
 	redact := NewRedactor()
-	for _, key := range []string{"AKIAIOSFODNN7EXAMPLE", "ASIAIOSFODNN7EXAMPLE"} {
+	for _, key := range []string{testfixtures.AKIAExample, testfixtures.ASIADocExample} {
 		got := redact("key " + key + " rejected")
 		if strings.Contains(got, key) {
 			t.Errorf("redactor leaks the AWS key id %q:\n%s", key, got)
@@ -566,7 +568,7 @@ func TestNewRedactor_AWSKeyIDTwinsMasked(t *testing.T) {
 			t.Errorf("redactor output missing the marker for %q:\n%s", key, got)
 		}
 	}
-	if got := MaskOperand("ASIAIOSFODNN7EXAMPLE"); got != "ASIAI****" {
+	if got := MaskOperand(testfixtures.ASIADocExample); got != "ASIAI****" {
 		t.Errorf("MaskOperand(ASIA id) = %q; want %q", got, "ASIAI****")
 	}
 }
@@ -575,7 +577,7 @@ func TestNewRedactor_AWSKeyIDTwinsMasked(t *testing.T) {
 // sentence is masked wherever the sentence echoes the operand, while the
 // sentence's own wording survives.
 func TestMaskSentence_MasksPlantedOperand(t *testing.T) {
-	secret := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	secret := testfixtures.AWSSecretExample
 	msg := "open " + secret + ": The system cannot find the file specified."
 	got := MaskSentence(msg, secret)
 	assertNoLeak(t, got, secret)
@@ -600,7 +602,7 @@ func TestMaskSentence_BenignSentenceUnchanged(t *testing.T) {
 // TestMaskSentence_SeedsTrimmedForm: a parser may echo the operand without
 // surrounding whitespace, so the trimmed twin of every seed is armed too.
 func TestMaskSentence_SeedsTrimmedForm(t *testing.T) {
-	secret := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	secret := testfixtures.AWSSecretExample
 	msg := "open " + secret + ": no such file"
 	got := MaskSentence(msg, "  "+secret+"  ")
 	assertNoLeak(t, got, secret)
@@ -613,7 +615,7 @@ func TestMaskSentence_SeedsTrimmedForm(t *testing.T) {
 // ("1-<aws>", "native:<aws>/x", "native: <aws>") seeds through the squash rule
 // so the composite sentence cannot echo the inner secret raw.
 func TestMaskSentence_DecoratedOperandMasked(t *testing.T) {
-	secret := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	secret := testfixtures.AWSSecretExample
 	for _, op := range []string{"1-" + secret, "native:" + secret + "/x", "native: " + secret} {
 		msg := fmt.Sprintf("invalid selection token %q", op)
 		got := MaskSentence(msg, op)
@@ -664,10 +666,10 @@ func TestSeedEligible_IdentifierSegmentedReadable(t *testing.T) {
 	}
 	// Opaque secrets (few separators) still seed.
 	seeds := []string{
-		"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-		"native:wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-		"native: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-		"1-ASIAIOSFODNN7EXAMPLE",
+		testfixtures.AWSSecretExample,
+		"native:" + testfixtures.AWSSecretExample,
+		"native: " + testfixtures.AWSSecretExample,
+		"1-" + testfixtures.ASIADocExample,
 	}
 	for _, s := range seeds {
 		if !SeedEligible(s) {
@@ -690,8 +692,8 @@ func TestIdentifierSegmented_ContentAware(t *testing.T) {
 		}
 	}
 	seeds := []string{
-		"native:wJalr+XU/tnF/EMI/K7M/DENG/bPxRfiCYEXAMPLEKEY",
-		"1-2-3-4-5-native:wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+		"native:" + testfixtures.AWSSecretPlusSeparator,
+		"1-2-3-4-5-native:" + testfixtures.AWSSecretExample,
 	}
 	for _, s := range seeds {
 		if !SeedEligible(s) {
@@ -713,7 +715,7 @@ func TestIdentifierSegmented_ContentAware(t *testing.T) {
 // a >=2-space or tab/newline-carrying operand SEEDS (pre-diff parity) but
 // never renders wholly masked (the display class rejects it).
 func TestSeedShaped_WideCore_DisplayNarrowing(t *testing.T) {
-	secret := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	secret := testfixtures.AWSSecretExample
 	wide := []string{
 		"here is the key " + secret,
 		"the key is " + secret + " and it failed",
@@ -758,7 +760,7 @@ func TestSeedShaped_WideCore_DisplayNarrowing(t *testing.T) {
 // wide seed class (>=2 interior spaces, embedded bare secret) seeds;
 // identifier-class model IDs and location-shaped operands never do.
 func TestSeedEligible_WideClass_PinnedTable(t *testing.T) {
-	secret := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	secret := testfixtures.AWSSecretExample
 	for _, op := range []string{
 		"here is the key " + secret,
 		"invalid selection token \"" + secret + "\" rejected by the parser",
@@ -804,7 +806,7 @@ func TestSeedEligible_WideClass_ShortWordSentenceStaysOut(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFlagSeedOperands_NewlineDecoratedValue(t *testing.T) {
-	secret := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	secret := testfixtures.AWSSecretExample
 	want := "native:" + secret
 	for _, v := range []string{
 		want + "\n",
@@ -841,7 +843,7 @@ func TestMaskFamilyName(t *testing.T) {
 	// Key-shaped explicit families render first-5+**** (mixed case AND
 	// all-lowercase forms).
 	keyShaped := []struct{ family, want string }{
-		{"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "wJalr****"},
+		{testfixtures.AWSSecretExample, "wJalr****"},
 		{"wjalrxutnfemi/k7mdeng/bpxrficyexamplekey", "wjalr****"},
 		{"sk-familyplant-0123456789abcdef", "sk-fa****"},
 	}
@@ -861,7 +863,7 @@ func TestMaskFamilyName(t *testing.T) {
 	for _, tc := range []struct{ family, want string }{
 		{"wJalr.XUtnFEMI-K7MDENG.bPxRfiCYEXAMPLEKEY\n", "wJalr****"},
 		{" wJalr.XUtnFEMI-K7MDENG.bPxRfiCYEXAMPLEKEY ", "wJalr****"},
-		{" wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n", "wJalr****"},
+		{" " + testfixtures.AWSSecretExample + "\n", "wJalr****"},
 	} {
 		got := MaskFamilyName(Model{ID: "m", Family: tc.family})
 		if got != tc.want {
@@ -895,14 +897,14 @@ func TestMaskFamilyName(t *testing.T) {
 		// rendering, but a secret-shaped tail behind the last mid-string
 		// "://" masks the family (batch M's leading-only strip dropped the
 		// old last-"://"-anywhere coverage, so this rode raw).
-		{"note https://wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "wJalr****"},
+		{"note https://" + testfixtures.AWSSecretExample, "wJalr****"},
 		// Batch-N addendum: the mirror head check — a secret-shaped segment
 		// BEFORE the first "://" with a benign tail masks the family.
-		{"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY://x", "wJalr****"},
+		{testfixtures.AWSSecretExample + "://x", "wJalr****"},
 		// Batch O (round-6 M-1): the segment behind the mid-string "://"
 		// carries its own marker; the stripped segment classifies secret and
 		// the family masks (render = MaskSecret of the raw segment).
-		{"note https://./wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "./wJa****"},
+		{"note https://./" + testfixtures.AWSSecretExample, "./wJa****"},
 	} {
 		got := MaskFamilyName(Model{ID: "m", Family: tc.family})
 		if got != tc.want {
@@ -1043,14 +1045,14 @@ func TestMaskRegistryValue(t *testing.T) {
 	// every sink at 04f1500. The render stays the batch-M core form:
 	// first-5+**** of the secret-shaped tail.
 	for _, v := range []string{
-		"note https://wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+		"note https://" + testfixtures.AWSSecretExample,
 		"note https://wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY",
 		// The remaining enumerated shapes of the round-5 P1 class, pinned as
 		// direct rows (batch O): a two-word sentence head, and a value that
 		// opens with the bare "://" separator (the head is empty, so the tail
 		// check owns it).
-		"x y://wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-		"://wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+		"x y://" + testfixtures.AWSSecretExample,
+		"://" + testfixtures.AWSSecretExample,
 	} {
 		if got := MaskRegistryValue(v); got != "wJalr****" {
 			t.Errorf("MaskRegistryValue(%q) = %q; want wJalr**** (non-leading scheme + secret tail)", v, got)
@@ -1064,17 +1066,17 @@ func TestMaskRegistryValue(t *testing.T) {
 	// runes, uppercase) fires. The render is therefore first-5 of the tail,
 	// "examp****" — the dotted host prefix, not the key, fills the mask
 	// window; no key rune beyond the window survives.
-	if got := MaskRegistryValue("see https://example.com/wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"); got != "examp****" {
+	if got := MaskRegistryValue("see https://example.com/" + testfixtures.AWSSecretExample); got != "examp****" {
 		t.Errorf("MaskRegistryValue(dotted tail) = %q; want examp**** (seedShaped path)", got)
 	}
-	assertNoLeak(t, MaskRegistryValue("see https://example.com/wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"), "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+	assertNoLeak(t, MaskRegistryValue("see https://example.com/"+testfixtures.AWSSecretExample), testfixtures.AWSSecretExample)
 	// The same rule covers a scheme that survives the leading strip (a
 	// doubled scheme leaves a mid-string "://" in the core) with a JWT
 	// behind it, and a marker-decorated sentence whose tail is the secret.
 	if got := MaskRegistryValue("https://host/https://abcDef.ghiJkl.mnopqr"); got != "abcDe****" {
 		t.Errorf("MaskRegistryValue(doubled scheme + JWT tail) = %q; want abcDe****", got)
 	}
-	if got := MaskRegistryValue("./note https://wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"); got != "wJalr****" {
+	if got := MaskRegistryValue("./note https://" + testfixtures.AWSSecretExample); got != "wJalr****" {
 		t.Errorf("MaskRegistryValue(marker-decorated sentence + secret tail) = %q; want wJalr****", got)
 	}
 	// Batch-N addendum: the MIRROR of the tail check — the segment BEFORE the
@@ -1086,8 +1088,8 @@ func TestMaskRegistryValue(t *testing.T) {
 	// tail rule: classify the head for the mask decision only, never render
 	// it; the render is first-5+**** of the head.
 	for _, v := range []string{
-		"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY://x",
-		"./wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY://x",
+		testfixtures.AWSSecretExample + "://x",
+		"./" + testfixtures.AWSSecretExample + "://x",
 	} {
 		if got := MaskRegistryValue(v); got != "wJalr****" {
 			t.Errorf("MaskRegistryValue(%q) = %q; want wJalr**** (secret-shaped head before \"://\")", v, got)
@@ -1098,8 +1100,8 @@ func TestMaskRegistryValue(t *testing.T) {
 	// user:password-decorated value and a sentence both mask through the tail
 	// check (regression guards for the other enumerated shapes).
 	for _, v := range []string{
-		"user:pass://wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-		"note https://wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+		"user:pass://" + testfixtures.AWSSecretExample,
+		"note https://" + testfixtures.AWSSecretExample,
 	} {
 		if got := MaskRegistryValue(v); got != "wJalr****" {
 			t.Errorf("MaskRegistryValue(%q) = %q; want wJalr**** (tail path)", v, got)
@@ -1118,9 +1120,9 @@ func TestMaskRegistryValue(t *testing.T) {
 	// through the raw contiguous-run arm before; the stripped arm makes the
 	// render identical on Linux, closing the platform split).
 	for _, tc := range []struct{ v, want string }{
-		{"note https://./wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "./wJa****"},
-		{"note https:///wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "/wJal****"},
-		{"https://x/https://C:\\wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "C:\\wJ****"},
+		{"note https://./" + testfixtures.AWSSecretExample, "./wJa****"},
+		{"note https:///" + testfixtures.AWSSecretExample, "/wJal****"},
+		{"https://x/https://C:\\" + testfixtures.AWSSecretExample, "C:\\wJ****"},
 	} {
 		if got := MaskRegistryValue(tc.v); got != tc.want {
 			t.Errorf("MaskRegistryValue(%q) = %q; want %q (marker-decorated \"://\" segment)", tc.v, got, tc.want)
@@ -1200,19 +1202,19 @@ func TestStripLocationMarkers(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMaskProviderForReport_KeyShapedMasked(t *testing.T) {
-	keyName := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	keyName := testfixtures.AWSSecretExample
 	p := Provider{
 		Name:      keyName,
 		BaseURL:   "https://legacy.example/v1",
-		APIKeyEnv: "AKIAIOSFODNN7EXAMPLE",
+		APIKeyEnv: testfixtures.AKIAExample,
 		Models: []Model{{
-			ID:     "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY",
+			ID:     testfixtures.AWSSecretNoSlash,
 			Family: "native:" + keyName,
 			Tags:   []string{"tools", "sk-tagplant-0123456789abcdef"},
 			Capabilities: Capabilities{
 				SupportsTools:   true,
 				ReasoningEffort: "high",
-				AllowedTools:    []string{"read_file", "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"},
+				AllowedTools:    []string{"read_file", testfixtures.AWSSecretNoSlash},
 			},
 		}},
 	}
@@ -1243,10 +1245,10 @@ func TestMaskProviderForReport_KeyShapedMasked(t *testing.T) {
 		t.Errorf("ReasoningEffort = %q; want unchanged", m.Capabilities.ReasoningEffort)
 	}
 	// The caller's registry value is not mutated.
-	if p.Name != keyName || p.APIKeyEnv != "AKIAIOSFODNN7EXAMPLE" {
+	if p.Name != keyName || p.APIKeyEnv != testfixtures.AKIAExample {
 		t.Errorf("MaskProviderForReport mutated the input provider: %+v", p)
 	}
-	if p.Models[0].ID != "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY" || p.Models[0].Tags[1] != "sk-tagplant-0123456789abcdef" {
+	if p.Models[0].ID != testfixtures.AWSSecretNoSlash || p.Models[0].Tags[1] != "sk-tagplant-0123456789abcdef" {
 		t.Errorf("MaskProviderForReport mutated the input model: %+v", p.Models[0])
 	}
 }
@@ -1313,7 +1315,7 @@ func TestMaskBaseURL(t *testing.T) {
 		{"benign multi-param query byte-identical", "https://example.com/v1?api-version=2&region=us-east-1", "https://example.com/v1?api-version=2&region=us-east-1"},
 		{"empty", "", ""},
 		{"userinfo dropped, host kept", "https://user:hunter2sekret@gw.example/v1", "https://gw.example/v1"},
-		{"aws-shaped userinfo cut at last at", "https://wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY@gateway.example/v1", "https://gateway.example/v1"},
+		{"aws-shaped userinfo cut at last at", "https://" + testfixtures.AWSSecretExample + "@gateway.example/v1", "https://gateway.example/v1"},
 		{"userinfo with query", "https://user:hunter2sekret@gw.example/v1?api-version=2", "https://gw.example/v1?api-version=2"},
 		{"query api key masked, endpoint kept", "https://example.com/v1?api_key=ABCDEFGHIJKLMNOPQRST", "https://example.com/v1?api_key=ABCDE%2A%2A%2A%2A"},
 		{"sk-shaped query value masked", "https://gw.example/v1?key=sk-abcdefghijklmnop1234", "https://gw.example/v1?key=[REDACTED]"},
@@ -1328,7 +1330,7 @@ func TestMaskBaseURL(t *testing.T) {
 	// The credential material never survives, in any case.
 	leaky := []string{
 		"https://user:hunter2sekret@gw.example/v1",
-		"https://wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY@gateway.example/v1",
+		"https://" + testfixtures.AWSSecretExample + "@gateway.example/v1",
 		"https://example.com/v1?api_key=ABCDEFGHIJKLMNOPQRST",
 		"https://gw.example/v1?key=sk-abcdefghijklmnop1234",
 		"https://example.com/v1#ABCDEFGHIJKLMNOPQRST",
@@ -1383,14 +1385,14 @@ func TestMaskModelForReport_LocationShapedEffortMasked(t *testing.T) {
 		// BOTH report paths too (the explicit family through MaskFamilyName,
 		// the reasoning effort through MaskRegistryValue). Before the fix the
 		// stripped sentence core serialized raw into the report copy.
-		{"note https://wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "wJalr****"},
+		{"note https://" + testfixtures.AWSSecretExample, "wJalr****"},
 		// Batch-N addendum: the head segment before the first "://" is
 		// classified the same way, so the "<key>://x" shape masks in both
 		// report paths too.
-		{"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY://x", "wJalr****"},
+		{testfixtures.AWSSecretExample + "://x", "wJalr****"},
 		// Batch O (round-6 M-1): the marker-decorated segment sub-shape masks
 		// in both report paths too (stripped-segment classification).
-		{"note https://./wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "./wJa****"},
+		{"note https://./" + testfixtures.AWSSecretExample, "./wJa****"},
 	} {
 		got := MaskModelForReport(Model{ID: "m", Family: tc.plant, Capabilities: Capabilities{SupportsThinking: true, ReasoningEffort: tc.plant}})
 		if got.Family != tc.want {
@@ -1449,7 +1451,7 @@ func TestDecoratedClass_BenignOverMaskTradeOffPinned(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // probeTestJWT is a synthetic JWT-shaped path credential (fixture only).
-const probeTestJWT = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+const probeTestJWT = testfixtures.JWTHeader + "." + testfixtures.JWTPayload + ".dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
 
 // closedLoopbackBaseURL returns the base URL of a server that has already been
 // closed, so a probe against it fails at connect time with no network
@@ -1573,7 +1575,7 @@ func TestInteractiveSetupWizard_ProbeFailureBenignTranscriptUnchanged(t *testing
 func TestProbeEndpoint_TranscriptMasksCredentialInEveryURLSlot(t *testing.T) {
 	base := closedLoopbackBaseURL(t)
 	authority := strings.TrimPrefix(base, "http://")
-	const secret = "sk_live_0123456789abcdef"
+	const secret = testfixtures.SKLive
 
 	for _, tc := range []struct {
 		name      string
@@ -1632,19 +1634,19 @@ func TestMaskProbeTranscript(t *testing.T) {
 	}{
 		{"jwt path", "https://gw.example/v1/" + probeTestJWT, probeTestJWT},
 		{"bare run path", "https://gw.example/v1/0123456789abcdef", "0123456789abcdef"},
-		{"head path", "https://gw.example/v1/nvapi-0123456789abcdef", "nvapi-0123456789abcdef"},
+		{"head path", "https://gw.example/v1/" + testfixtures.NvidiaKey, testfixtures.NvidiaKey},
 		// SeedEligible declines this shape (no known head, no contiguous run), so
 		// the seeded redactor pass is what masks it.
-		{"underscore path", "https://gw.example/v1/sk_live_0123456789abcdef", "sk_live_0123456789abcdef"},
+		{"underscore path", "https://gw.example/v1/" + testfixtures.SKLive, testfixtures.SKLive},
 		// Non-hierarchical spelling: the transport rule accepts a hostless
 		// "https:", and url.Parse reports the key as Opaque with an empty Path.
-		{"opaque path", "https:sk_live_0123456789abcdef", "sk_live_0123456789abcdef"},
+		{"opaque path", "https:" + testfixtures.SKLive, testfixtures.SKLive},
 		// FIX-7B: the seed builder covered Path/Opaque only, so these three slots
 		// printed raw inside the wrapped *url.Error.
-		{"query value", "https://gw.example/v1?api_key=sk_live_0123456789abcdef", "sk_live_0123456789abcdef"},
-		{"query key", "https://gw.example/v1?sk_live_0123456789abcdef=1", "sk_live_0123456789abcdef"},
-		{"fragment", "https://gw.example/v1#sk_live_0123456789abcdef", "sk_live_0123456789abcdef"},
-		{"userinfo username", "https://sk_live_0123456789abcdef@gw.example/v1", "sk_live_0123456789abcdef"},
+		{"query value", "https://gw.example/v1?api_key=" + testfixtures.SKLive, testfixtures.SKLive},
+		{"query key", "https://gw.example/v1?" + testfixtures.SKLive + "=1", testfixtures.SKLive},
+		{"fragment", "https://gw.example/v1#" + testfixtures.SKLive, testfixtures.SKLive},
+		{"userinfo username", "https://" + testfixtures.SKLive + "@gw.example/v1", testfixtures.SKLive},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sentence := `network error contacting gw.example: Post "` + tc.base + `/chat/completions": dial tcp: connect: connection refused`
@@ -1688,10 +1690,10 @@ func TestMaskProbeError(t *testing.T) {
 	// FIX-7B: the same chain must survive when the credential sits in a slot the
 	// extended seed builder now covers (a query value), so a query-credential
 	// probe failure is masked AND still classified as a timeout.
-	queryBase := "https://gw.example/v1?api_key=sk_live_0123456789abcdef"
+	queryBase := "https://gw.example/v1?api_key=" + testfixtures.SKLive
 	queryInner := &url.Error{Op: "Post", URL: queryBase + "/chat/completions", Err: context.DeadlineExceeded}
 	queryMasked := maskProbeError(queryInner, queryBase)
-	if queryMasked == nil || strings.Contains(queryMasked.Error(), "sk_live_0123456789abcdef") {
+	if queryMasked == nil || strings.Contains(queryMasked.Error(), testfixtures.SKLive) {
 		t.Fatalf("the query credential survived masking: %v", queryMasked)
 	}
 	if !strings.Contains(queryMasked.Error(), "[REDACTED]") {

@@ -616,7 +616,7 @@ const (
 	// decoratedSecretFloorRunes is the squash-length floor of the decorated
 	// secret class. It sits ABOVE 20, not at 20: a 20-rune mixed-case squash is
 	// the filename class ("MyReport2024FINAL.pdf"), which must stay readable,
-	// while the 21+ rune class ("1-ASIAIOSFODNN7EXAMPLE") seeds. The bare
+	// while the 21+ rune class ("1-ASIA...EXAMPLE") seeds. The bare
 	// 20-rune uppercase class ("ABCDEFGHIJKLMNOPQRST") seeds through the
 	// classifier's contiguous-run rule instead, so no coverage is lost.
 	decoratedSecretFloorRunes = 21

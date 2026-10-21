@@ -15,6 +15,7 @@ import (
 	"agypro/internal/providers"
 	"agypro/internal/settings"
 	"agypro/internal/swarm"
+	"agypro/internal/testfixtures"
 )
 
 // settingsTestCore wires runSettingsCmd against an isolated fake Core (no
@@ -148,7 +149,7 @@ func TestRunSettingsCmd_Set(t *testing.T) {
 // echoes the bare secret raw beside its own [REDACTED].
 func TestRunSettingsCmdAddJSONCompositeTailSeedsTokens(t *testing.T) {
 	installSettingsCore(t)
-	plant := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	plant := testfixtures.AWSSecretExample
 	operand := "./backups," + plant
 	code, _, errw := runSettings(t, []string{"providers", "add-json", operand}, "")
 	if code != 1 {
@@ -463,7 +464,7 @@ func TestRunSettingsCmd_RollbackKeysErrorMasked(t *testing.T) {
 
 	t.Run("bare base64 plant (live repro shape)", func(t *testing.T) {
 		failRollback()
-		const plant = "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"
+		const plant = testfixtures.AWSSecretNoSlash
 		code, _, errw := runSettings(t, []string{"doctor", "rollback-keys", plant}, "")
 		if code != 1 {
 			t.Fatalf("exit = %d; want 1 (stderr=%s)", code, errw)
@@ -478,7 +479,7 @@ func TestRunSettingsCmd_RollbackKeysErrorMasked(t *testing.T) {
 
 	t.Run("sk- plant directory", func(t *testing.T) {
 		failRollback()
-		dir := filepath.Join(t.TempDir(), "sk-ant-api03-PLANT0123456789abcdef")
+		dir := filepath.Join(t.TempDir(), testfixtures.AnthropicPlanted)
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -486,7 +487,7 @@ func TestRunSettingsCmd_RollbackKeysErrorMasked(t *testing.T) {
 		if code != 1 {
 			t.Fatalf("exit = %d; want 1", code)
 		}
-		if strings.Contains(errw, "sk-ant-api03-PLANT0123456789abcdef") {
+		if strings.Contains(errw, testfixtures.AnthropicPlanted) {
 			t.Errorf("settings rollback error leaks the planted dir raw:\n%s", errw)
 		}
 		if !strings.Contains(errw, "[REDACTED]") {
@@ -496,7 +497,7 @@ func TestRunSettingsCmd_RollbackKeysErrorMasked(t *testing.T) {
 
 	t.Run("AKIA plant directory", func(t *testing.T) {
 		failRollback()
-		dir := filepath.Join(t.TempDir(), "AKIAIOSFODNN7EXAMPLE")
+		dir := filepath.Join(t.TempDir(), testfixtures.AKIAExample)
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -504,7 +505,7 @@ func TestRunSettingsCmd_RollbackKeysErrorMasked(t *testing.T) {
 		if code != 1 {
 			t.Fatalf("exit = %d; want 1", code)
 		}
-		if strings.Contains(errw, "AKIAIOSFODNN7EXAMPLE") {
+		if strings.Contains(errw, testfixtures.AKIAExample) {
 			t.Errorf("settings rollback error leaks the planted dir raw:\n%s", errw)
 		}
 		if !strings.Contains(errw, "[REDACTED]") {
@@ -553,7 +554,7 @@ func TestRunSettingsCmd_RollbackKeysCompositeTailSeedsTokens(t *testing.T) {
 		t.Cleanup(func() { newSettingsCore = prev })
 	}
 
-	awsPlant := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	awsPlant := testfixtures.AWSSecretExample
 	for _, tc := range []struct{ name, operand string }{
 		{"comma-decorated compound plant", "./backups," + awsPlant},
 		{"semicolon-decorated compound plant", "./backups;" + awsPlant},
@@ -600,7 +601,7 @@ func TestRunSettingsCmd_RollbackKeysCompositeTailSeedsTokens(t *testing.T) {
 // targets readable.
 func TestRunSettingsCmd_FixKeysErrorMasked(t *testing.T) {
 	const (
-		awsPlant = "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"
+		awsPlant = testfixtures.AWSSecretNoSlash
 		// I3: the decorated class now renders through the canonical first-5
 		// mask (the U8 rule) instead of the seeded whole-string [REDACTED].
 		redact = "nativ****"
@@ -642,11 +643,11 @@ func TestRunSettingsCmd_ProviderRenameKeyDoor(t *testing.T) {
 	before := diskBytes(t, path)
 
 	probes := []string{
-		"sk_live_0123456789abcdef",
-		"tok_a1b2c3d4e5f6g7h8i9j0",
-		"pk_live_0123456789abcdef",
-		"key_0123456789abcdef",
-		"AKIA_0123456789ABCDEF",
+		testfixtures.SKLive,
+		testfixtures.TokSample,
+		testfixtures.PKLive,
+		testfixtures.KeyHex,
+		testfixtures.AKIAUnderscore,
 	}
 	for _, probe := range probes {
 		code, out, errw := runSettings(t, []string{"providers", "rename", "acme", probe}, "")

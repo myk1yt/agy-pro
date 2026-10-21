@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"agypro/internal/providers"
+	"agypro/internal/testfixtures"
 )
 
 // buildInventory makes a fixed test inventory: 3 native + 5 provider entries
@@ -352,11 +353,11 @@ func TestParseSelectionPresetLexerDisjointness(t *testing.T) {
 func TestParseSelectionMasksKeyShapedTokens(t *testing.T) {
 	inv := buildInventory(t)
 	cases := []struct{ plant, mask string }{
-		{"sk-ant-api03-PLANT0123456789abcdef", "sk-an****"},
-		{"AKIAIOSFODNN7EXAMPLE", "AKIAI****"},
-		{"wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY", "wJalr****"}, // opaque base64 run
-		{"pAKIAIOSFODNN7EXAMPLE", "pAKIA****"},                  // p-prefixed plant hits the preset branch
-		{"1-AKIAIOSFODNN7EXAMPLE", "1-AKI****"},                 // AKIA inside a range-shaped token
+		{testfixtures.AnthropicPlanted, "sk-an****"},
+		{testfixtures.AKIAExample, "AKIAI****"},
+		{testfixtures.AWSSecretNoSlash, "wJalr****"},   // opaque base64 run
+		{"p" + testfixtures.AKIAExample, "pAKIA****"},  // p-prefixed plant hits the preset branch
+		{"1-" + testfixtures.AKIAExample, "1-AKI****"}, // AKIA inside a range-shaped token
 	}
 	for _, tc := range cases {
 		_, err := ParseSelection(tc.plant, inv)
@@ -377,7 +378,7 @@ func TestParseSelectionMasksKeyShapedTokens(t *testing.T) {
 		}
 	}
 	// Nil-inventory branch echoes the input too; a plant must be masked there.
-	_, err := ParseSelection("sk-ant-api03-PLANT0123456789abcdef", nil)
+	_, err := ParseSelection(testfixtures.AnthropicPlanted, nil)
 	if err == nil || !strings.Contains(err.Error(), "sk-an****") || strings.Contains(err.Error(), "PLANT0123456789abcdef") {
 		t.Errorf("nil-inventory branch must mask a key-shaped token, got %v", err)
 	}

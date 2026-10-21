@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"agypro/internal/paths"
+	"agypro/internal/testfixtures"
 	"agypro/internal/tui"
 )
 
@@ -190,11 +191,11 @@ func TestRunSetupUnknownArgMasksCredential(t *testing.T) {
 	var stderr string
 	captureStdout(t, func() {
 		stderr = captureStderr(t, func() {
-			runSetup([]string{"AKIAIOSFODNN7EXAMPLE"})
+			runSetup([]string{testfixtures.AKIAExample})
 		})
 	})
 
-	if strings.Contains(stderr, "AKIAIOSFODNN7EXAMPLE") {
+	if strings.Contains(stderr, testfixtures.AKIAExample) {
 		t.Errorf("credential-shaped operand echoed raw:\n%s", stderr)
 	}
 	if !strings.Contains(stderr, "Unknown setup argument") {

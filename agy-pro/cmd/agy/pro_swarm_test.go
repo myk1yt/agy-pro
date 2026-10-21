@@ -13,6 +13,7 @@ import (
 	"agypro/internal/inventory"
 	"agypro/internal/providers"
 	"agypro/internal/swarm"
+	"agypro/internal/testfixtures"
 )
 
 // --- fixtures & seams -------------------------------------------------------
@@ -500,7 +501,7 @@ func TestResolveFlagSeatsMasksDecoratedTokenInMultiTokenLine(t *testing.T) {
 	t.Setenv("AGY_PRO_HOME", t.TempDir())
 	defer withStubSwarmInventory(t, swarmFixtureInventory(t), nil)()
 
-	plant := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	plant := testfixtures.AWSSecretExample
 	var outBuf, errBuf strings.Builder
 	_, code := resolveFlagSeats("1,native:"+plant, &outBuf, &errBuf)
 	if code != 2 {
@@ -522,7 +523,7 @@ func TestResolveFlagSeatsMasksDecoratedTokenInMultiTokenLine(t *testing.T) {
 // batch-I narrow seed rule the operand did not seed and the composite echoed
 // the secret raw.
 func TestRunSwarmCmdPromptFileErrorMasksMultiWordOperand(t *testing.T) {
-	plant := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	plant := testfixtures.AWSSecretExample
 	for _, tc := range []struct {
 		name string
 		path string
@@ -585,8 +586,8 @@ func TestRunSwarmCmdPromptFileErrorBenignMultiWordPathReadable(t *testing.T) {
 func TestRunSwarmCmdPromptFileSlotHardenedCompoundOperand(t *testing.T) {
 	t.Setenv("AGY_PRO_HOME", t.TempDir())
 	defer withStubSwarmInventory(t, swarmFixtureInventory(t), nil)()
-	const bare = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-	const akia = "AKIAIOSFODNN7EXAMPLE"
+	const bare = testfixtures.AWSSecretExample
+	const akia = testfixtures.AKIAExample
 	operand := "prefix " + akia + " " + bare
 	var outBuf, errBuf strings.Builder
 	code := runSwarmCmd([]string{"--template", "code-review", "--seats", "p1", "--prompt-file", operand},
@@ -609,8 +610,8 @@ func TestRunSwarmCmdPromptFileSlotHardenedCompoundOperand(t *testing.T) {
 // hardening (proved by the temporary-revert run in the batch-K report).
 func TestRunSwarmCmdPromptFileSlotRenderingPins(t *testing.T) {
 	for _, tc := range []struct{ name, path, wantSlot string }{
-		{"single-token bare plant", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "wJalr****"},
-		{"single-token decorated plant", "native:wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "nativ****"},
+		{"single-token bare plant", testfixtures.AWSSecretExample, "wJalr****"},
+		{"single-token decorated plant", "native:" + testfixtures.AWSSecretExample, "nativ****"},
 		{"one-space operand", "a b", "a b"},
 		{"location-shaped path", "./registry-keys.json", "./registry-keys.json"},
 		{"benign multi-word path", "my prompts missing.md", "my prompts missing.md"},
@@ -646,7 +647,7 @@ func TestRunSwarmCmdPromptFileSlotRenderingPins(t *testing.T) {
 // asserting the slot rendering exactly like the rendering-pin table above.
 func TestRunSwarmCmdPromptFileSlotCommaDecoratedOperands(t *testing.T) {
 	for _, tc := range []struct{ name, path, wantSlot string }{
-		{"comma-decorated compound plant", "./backups,wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "./backups,[REDACTED]"},
+		{"comma-decorated compound plant", "./backups," + testfixtures.AWSSecretExample, "./backups,[REDACTED]"},
 		{"comma-decorated bare secret", "note,abcdefghijklmnopqrs", "note,[REDACTED]"},
 		{"benign comma list", "read,search", "read,search"},
 	} {
@@ -680,7 +681,7 @@ func TestRunSwarmCmdPromptFileSlotCommaDecoratedOperands(t *testing.T) {
 // The pins assert the FULL output line (slot + tail). Without the fix the raw
 // plant reaches stderr through the sentence and the equality pins fail.
 func TestRunSwarmCmdPromptFileCompositeTailSeedsTokens(t *testing.T) {
-	awsPlant := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	awsPlant := testfixtures.AWSSecretExample
 
 	for _, tc := range []struct{ name, path, plant, wantSlot string }{
 		{"comma-decorated compound plant", "./backups," + awsPlant, awsPlant, "./backups,[REDACTED]"},

@@ -5,6 +5,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"agypro/internal/testfixtures"
 )
 
 func TestUpsertProvider_AddAndReplace(t *testing.T) {
@@ -143,11 +145,11 @@ func TestRenameProvider_CredentialGate(t *testing.T) {
 		}}
 	}
 	probes := []string{
-		"sk_live_0123456789abcdef",
-		"tok_a1b2c3d4e5f6g7h8i9j0",
-		"pk_live_0123456789abcdef",
-		"key_0123456789abcdef",
-		"AKIA_0123456789ABCDEF",
+		testfixtures.SKLive,
+		testfixtures.TokSample,
+		testfixtures.PKLive,
+		testfixtures.KeyHex,
+		testfixtures.AKIAUnderscore,
 	}
 	for _, probe := range probes {
 		// The premise: the charset alone admits every probe, so the new gate is
@@ -193,7 +195,7 @@ func TestRenameProvider_CredentialGate(t *testing.T) {
 // and whose "_" breaks the opaque-run test, so providers.SecretShaped is false
 // and MaskOperand is the identity on all of them while MaskSlot masks the 16+
 // rune segment behind the separator. Synthetic values only.
-var underscoreNamePlant = "sk_live_0123456789abcdef"
+var underscoreNamePlant = testfixtures.SKLive
 
 const (
 	underscoreNameMasked = "sk_li****"
@@ -392,11 +394,11 @@ func TestRegistryOps_NameOperandsSlotMasked(t *testing.T) {
 	// than the one pinned string.
 	t.Run("underscore class masks at every site", func(t *testing.T) {
 		for _, probe := range []string{
-			"sk_live_0123456789abcdef",
-			"tok_a1b2c3d4e5f6g7h8i9j0",
-			"pk_live_0123456789abcdef",
-			"key_0123456789abcdef",
-			"AKIA_0123456789ABCDEF",
+			testfixtures.SKLive,
+			testfixtures.TokSample,
+			testfixtures.PKLive,
+			testfixtures.KeyHex,
+			testfixtures.AKIAUnderscore,
 		} {
 			masked := MaskSlot(probe)
 			if masked == probe {
@@ -428,8 +430,8 @@ func TestMaskNameOperandComposition(t *testing.T) {
 	t.Run("rule 1: a MaskOperand rewrite is kept", func(t *testing.T) {
 		for _, v := range []string{
 			"sk-verysecretkey-0123456789abcdef",
-			"AKIAIOSFODNN7EXAMPLE",
-			"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+			testfixtures.AKIAExample,
+			testfixtures.AWSSecretExample,
 		} {
 			if got, want := maskNameOperand(v), MaskOperand(v); got != want {
 				t.Errorf("maskNameOperand(%q) = %q; want the MaskOperand rendering %q", v, got, want)
@@ -447,7 +449,7 @@ func TestMaskNameOperandComposition(t *testing.T) {
 		// either already catches it (then the sentence keeps its bytes and the
 		// pins that measure those bytes stay put) or this masker masks it whole,
 		// and the pair never leaves a planted token readable.
-		const awsPlant = "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"
+		const awsPlant = testfixtures.AWSSecretNoSlash
 		doorCatches := func(v string) bool {
 			quoted := `"` + v + `"`
 			return MaskSentence(quoted, FlagSeedOperands(v)...) != quoted
@@ -515,11 +517,11 @@ func TestMaskNameOperandComposition(t *testing.T) {
 		}
 		// The underscore class IS masked, and the accepted form is a mask.
 		for _, probe := range []string{
-			"sk_live_0123456789abcdef",
-			"tok_a1b2c3d4e5f6g7h8i9j0",
-			"pk_live_0123456789abcdef",
-			"key_0123456789abcdef",
-			"AKIA_0123456789ABCDEF",
+			testfixtures.SKLive,
+			testfixtures.TokSample,
+			testfixtures.PKLive,
+			testfixtures.KeyHex,
+			testfixtures.AKIAUnderscore,
 		} {
 			got := maskNameOperand(probe)
 			if got == probe {

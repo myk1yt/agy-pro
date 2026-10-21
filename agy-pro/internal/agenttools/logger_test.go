@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"agypro/internal/testfixtures"
 )
 
 // FIX-13: a nil redactor used to leave the audit log unredacted. The log is a
@@ -93,7 +95,7 @@ func TestLogKeepsBenignModelProviderToolReadable(t *testing.T) {
 }
 
 func TestNewLoggerNilRedactorMasksCredentialShapes(t *testing.T) {
-	const planted = "AIzaSyDELmE1f2g3h4i5j6k7l8m9n0o1p2q3r4s"
+	const planted = testfixtures.AIzaGeminiLong
 	path := filepath.Join(t.TempDir(), "audit.jsonl")
 
 	logger, err := NewLogger(path, nil)
@@ -161,9 +163,9 @@ func TestNewLoggerExplicitRedactorAndDisabledPath(t *testing.T) {
 
 func TestLogMasksUnderscoreHeadRegistrySlots(t *testing.T) {
 	const (
-		providerPlant = "sk_live_0123456789abcdef"
+		providerPlant = testfixtures.SKLive
 		providerMask  = "sk_li****"
-		modelPlant    = "tok_a1b2c3d4e5f6g7h8i9j0"
+		modelPlant    = testfixtures.TokSample
 		modelMask     = "tok_a****"
 	)
 	path := filepath.Join(t.TempDir(), "audit.jsonl")

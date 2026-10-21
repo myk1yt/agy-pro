@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"agypro/internal/testfixtures"
 )
 
 func TestValidate(t *testing.T) {
@@ -184,13 +186,13 @@ func TestInferFamily(t *testing.T) {
 
 func TestRedactor(t *testing.T) {
 	redact := NewRedactor("super_secret_token_123")
-	input := "Bearer super_secret_token_123 in sk-proj-123456789012345678"
+	input := "Bearer super_secret_token_123 in " + testfixtures.SKProjNumeric
 	out := redact(input)
 
 	if strings.Contains(out, "super_secret_token_123") {
 		t.Errorf("failed to redact secret: %s", out)
 	}
-	if strings.Contains(out, "sk-proj-123456789012345678") {
+	if strings.Contains(out, testfixtures.SKProjNumeric) {
 		t.Errorf("failed to redact sk- key: %s", out)
 	}
 }
@@ -356,7 +358,7 @@ func TestIsLikelyAPIKey(t *testing.T) {
 		"sk-dummy-mock-token-1234567890abcdef",
 		"sk-proj-mock-key-1234567890",
 		"gsk_mock_secret_key_12345678",
-		"nvapi-mock-token-abc-xyz-12345",
+		testfixtures.NvidiaMock,
 		"a1b2c3d4-e5f6-7890-abcd-ef1234567890",
 		"this-is-a-long-token-with-hyphens-and-lowercase",
 	}
@@ -642,7 +644,7 @@ func TestInteractiveSetupWizard_RefusesKeyShapedFamily(t *testing.T) {
 	}))
 	defer server.Close()
 
-	keyFamily := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	keyFamily := testfixtures.AWSSecretExample
 	// Unknown provider (no presets): name, URL, key, then the custom row. The
 	// family is the planted value, so the wizard refuses before the probe and
 	// before the save.
@@ -1603,7 +1605,7 @@ func TestCapabilitySummary(t *testing.T) {
 		// K1: a key-shaped reasoningEffort (nothing on the add-json /
 		// hand-edit write path validates the field) renders masked at the
 		// composition; the API path keeps the raw field.
-		{Capabilities{SupportsThinking: true, ReasoningEffort: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"}, "thinking(wJalr****)"},
+		{Capabilities{SupportsThinking: true, ReasoningEffort: testfixtures.AWSSecretExample}, "thinking(wJalr****)"},
 		// L1/F-1: a URL-shaped key effort masks at the composition (a scheme
 		// is location-shaped on every platform), so the composed summary never
 		// itself becomes location-shaped and rides raw downstream.
@@ -1621,13 +1623,13 @@ func TestCapabilitySummary(t *testing.T) {
 		// rendering (the benign sentence containing a URL stays intact), but
 		// the tail behind the last mid-string "://" is classified for the
 		// mask decision, so the composed summary masks instead of riding raw.
-		{Capabilities{SupportsThinking: true, ReasoningEffort: "note https://wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"}, "thinking(wJalr****)"},
+		{Capabilities{SupportsThinking: true, ReasoningEffort: "note https://" + testfixtures.AWSSecretExample}, "thinking(wJalr****)"},
 		// Batch-N addendum: the mirror head check — a secret-shaped segment
 		// before the first "://" with a benign tail masks at the composition.
-		{Capabilities{SupportsThinking: true, ReasoningEffort: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY://x"}, "thinking(wJalr****)"},
+		{Capabilities{SupportsThinking: true, ReasoningEffort: testfixtures.AWSSecretExample + "://x"}, "thinking(wJalr****)"},
 		// Batch O (round-6 M-1): the marker-decorated segment sub-shape masks
 		// at the composition (stripped-segment classification).
-		{Capabilities{SupportsThinking: true, ReasoningEffort: "note https://./wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"}, "thinking(./wJa****)"},
+		{Capabilities{SupportsThinking: true, ReasoningEffort: "note https://./" + testfixtures.AWSSecretExample}, "thinking(./wJa****)"},
 		// Batch-N LOW: a secret-shaped scheme-only value masks at the
 		// composition; a benign one ("https://") renders unchanged.
 		{Capabilities{SupportsThinking: true, ReasoningEffort: "abcdefghijklmnop://"}, "thinking(abcde****)"},
@@ -1652,7 +1654,7 @@ func TestCapabilitySummary(t *testing.T) {
 // NormalizeReasoningEffort) reads Capabilities.ReasoningEffort directly and
 // never sees the composed text.
 func TestCapabilitySummary_MasksKeyShapedReasoningEffort(t *testing.T) {
-	key := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	key := testfixtures.AWSSecretExample
 	caps := Capabilities{SupportsTools: true, SupportsVision: true, SupportsThinking: true, ReasoningEffort: key}
 	want := "tools, vision, thinking(wJalr****)"
 	if got := caps.Summary(); got != want {
@@ -2122,19 +2124,19 @@ func TestInteractiveSetupWizard_NameGuard(t *testing.T) {
 		// Credential shapes: the charset accepts them (letters, digits,
 		// underscore, dot, hyphen) and MaskOperand is the identity on the
 		// underscore family, so only the slot authority refuses them.
-		{name: "sk_live_0123456789abcdef", refuse: true},
-		{name: "sk_live_0123456789abcdef0123456789abcdef", refuse: true},
-		{name: "tok_a1b2c3d4e5f6g7h8i9j0", refuse: true},
-		{name: "pk_live_4f9a2b7c1d3e5f6a", refuse: true},
-		{name: "key_0123456789abcdef", refuse: true},
-		{name: "AKIA_0123456789ABCDEF", refuse: true},
-		{name: "AKIAIOSFODNN7EXAMPLE", refuse: true},
-		{name: "sk-proj-0123456789abcdef", refuse: true},
-		{name: "gsk_0123456789abcdefghij", refuse: true},
-		{name: "nvapi-0123456789abcdef", refuse: true},
-		{name: "ghp_0123456789abcdefghij0123456789abcdef", refuse: true},
-		{name: "xoxb-0123456789-abcdefghij", refuse: true},
-		{name: "eyJhbGciOiJIUzI1NiJ9", refuse: true},
+		{name: testfixtures.SKLive, refuse: true},
+		{name: testfixtures.SKLiveLong, refuse: true},
+		{name: testfixtures.TokSample, refuse: true},
+		{name: testfixtures.PKLiveHex, refuse: true},
+		{name: testfixtures.KeyHex, refuse: true},
+		{name: testfixtures.AKIAUnderscore, refuse: true},
+		{name: testfixtures.AKIAExample, refuse: true},
+		{name: testfixtures.SKProj, refuse: true},
+		{name: testfixtures.GroqKeyLong, refuse: true},
+		{name: testfixtures.NvidiaKey, refuse: true},
+		{name: testfixtures.GHPNumericLong, refuse: true},
+		{name: testfixtures.SlackBotDashed, refuse: true},
+		{name: testfixtures.JWTHeader, refuse: true},
 		{name: "0123456789abcdef", refuse: true},
 		{name: "0123456789abcdef0123456789abcdef", refuse: true},
 		{name: "a1b2c3d4e5f6g7h8i9j0k1l2", refuse: true},
@@ -2174,7 +2176,7 @@ func TestInteractiveSetupWizard_NameGuard(t *testing.T) {
 // hostDoorProbeJWT is the synthetic JWT this file pastes into the HOST slot
 // (fixture only: the standard eyJ header, so the target machine's classifiers
 // read it as the JWT class).
-const hostDoorProbeJWT = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+const hostDoorProbeJWT = testfixtures.JWTHeader + "." + testfixtures.JWTPayload + ".dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
 
 // TestInteractiveSetupWizard_BaseURLGuard drives the REAL base-URL prompt with
 // 39 URLs (16 legal gateway shapes, 23 credential-bearing ones) and pins the
@@ -2190,11 +2192,11 @@ func TestInteractiveSetupWizard_BaseURLGuard(t *testing.T) {
 	base := closedLoopbackBaseURL(t)
 	authority := strings.TrimPrefix(base, "http://")
 	const (
-		underscore = "sk_live_0123456789abcdef"
-		tokHead    = "tok_a1b2c3d4e5f6g7h8i9j0"
-		pkHead     = "pk_live_4f9a2b7c1d3e5f6a"
-		keyHead    = "key_0123456789abcdef"
-		akiaHead   = "AKIA_0123456789ABCDEF"
+		underscore = testfixtures.SKLive
+		tokHead    = testfixtures.TokSample
+		pkHead     = testfixtures.PKLiveHex
+		keyHead    = testfixtures.KeyHex
+		akiaHead   = testfixtures.AKIAUnderscore
 	)
 	for _, tc := range []struct {
 		name    string
@@ -2242,10 +2244,10 @@ func TestInteractiveSetupWizard_BaseURLGuard(t *testing.T) {
 		// prompt before the key prompt, so no request is composed at all.
 		{name: "host underscore head", url: "https://" + underscore + "/v1", refuse: true, secrets: []string{underscore}},
 		{name: "host tok head", url: "https://" + tokHead + "/v1", refuse: true, secrets: []string{tokHead}},
-		{name: "host ghp head", url: "https://ghp_a1b2c3d4e5f6g7h8i9j0.example.com/v1", refuse: true, secrets: []string{"ghp_a1b2c3d4e5f6g7h8i9j0"}},
-		{name: "host aws key id", url: "https://AKIAIOSFODNN7EXAMPLE/v1", refuse: true, secrets: []string{"AKIAIOSFODNN7EXAMPLE"}},
+		{name: "host ghp head", url: "https://" + testfixtures.GHPShort + ".example.com/v1", refuse: true, secrets: []string{testfixtures.GHPShort}},
+		{name: "host aws key id", url: "https://" + testfixtures.AKIAExample + "/v1", refuse: true, secrets: []string{testfixtures.AKIAExample}},
 		{name: "host jwt", url: "https://" + hostDoorProbeJWT + "/v1", refuse: true, secrets: []string{hostDoorProbeJWT}},
-		{name: "host decorated", url: "https://1-ASIAIOSFODNN7EXAMPLE.example.com/v1", refuse: true, secrets: []string{"ASIAIOSFODNN7EXAMPLE"}},
+		{name: "host decorated", url: "https://1-" + testfixtures.ASIADocExample + ".example.com/v1", refuse: true, secrets: []string{testfixtures.ASIADocExample}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("ACMEGUARD_API_KEY", "")
@@ -2289,7 +2291,7 @@ func TestInteractiveSetupWizard_BaseURLGuard(t *testing.T) {
 // now passes the same guard as the step-2 prompt; the accepted default keeps its
 // masked display and raw return (the FIX-J pins).
 func TestInteractiveSetupWizard_EditPromptRefusesTypedCredentialURL(t *testing.T) {
-	const secret = "sk_live_0123456789abcdef"
+	const secret = testfixtures.SKLive
 	provPath := filepath.Join(t.TempDir(), "providers.json")
 	t.Setenv(EnvProviders, provPath)
 
@@ -2340,11 +2342,11 @@ func TestInteractiveSetupWizard_EditPromptRefusesTypedCredentialURL(t *testing.T
 // an endpoint-discovered id cannot slip in either.
 func TestInteractiveSetupWizard_RefusesUnderscoreModelFields(t *testing.T) {
 	probes := []struct{ name, value string }{
-		{"sk underscore head", "sk_live_0123456789abcdef"},
-		{"tok underscore head", "tok_a1b2c3d4e5f6g7h8i9j0"},
-		{"pk underscore head", "pk_live_4f9a2b7c1d3e5f6a"},
-		{"key underscore head", "key_0123456789abcdef"},
-		{"AKIA underscore head", "AKIA_0123456789ABCDEF"},
+		{"sk underscore head", testfixtures.SKLive},
+		{"tok underscore head", testfixtures.TokSample},
+		{"pk underscore head", testfixtures.PKLiveHex},
+		{"key underscore head", testfixtures.KeyHex},
+		{"AKIA underscore head", testfixtures.AKIAUnderscore},
 	}
 	for _, probe := range probes {
 		// Premise: the pre-fix classifier (SecretShaped alone) is the identity on
@@ -2392,7 +2394,7 @@ func TestInteractiveSetupWizard_RefusesUnderscoreModelFields(t *testing.T) {
 
 	// The pre-write sweep (the path a preset row or a discovered id takes) reads
 	// the same authority on every free-text field the wizard collects.
-	const probe = "tok_a1b2c3d4e5f6g7h8i9j0"
+	const probe = testfixtures.TokSample
 	for _, field := range []struct {
 		name  string
 		model Model
@@ -2456,7 +2458,7 @@ func TestWizardModelFieldsAcceptRealisticIDs(t *testing.T) {
 // rule, and a benign gateway host still yields no seed at all, so its
 // transcript stays byte-identical.
 func TestMaskProbeTranscriptMasksCredentialHost(t *testing.T) {
-	const secret = "sk_live_0123456789abcdef"
+	const secret = testfixtures.SKLive
 	for _, tc := range []struct {
 		name string
 		base string
@@ -2508,7 +2510,7 @@ func TestMaskProbeTranscriptMasksCredentialHost(t *testing.T) {
 
 func TestValidateEchoesRegistrySlotsThroughSlotAuthority(t *testing.T) {
 	const (
-		plant     = "sk_live_0123456789abcdef"
+		plant     = testfixtures.SKLive
 		plantMask = "sk_li****"
 	)
 
@@ -2580,7 +2582,7 @@ func TestValidateEchoesRegistrySlotsThroughSlotAuthority(t *testing.T) {
 // A model ID is a registry name (providers.json models[].id) and the wizard
 // carries it in its own state (typed prompt, preset catalog, endpoint
 // discovery). Eight ID sinks rendered through MaskOperand, whose underscore-head
-// class ("sk_live_0123456789abcdef") is the identity, so a hand-edited or
+// class (the planted underscore-head key shape) is the identity, so a hand-edited or
 // discovered credential-shaped ID printed raw. All of them now route through
 // wizardModelLabel (MaskSlot), the same registry-slot authority wizardProvLabel
 // uses, plus the two preset-list renders (the row and the synthesized
@@ -2610,11 +2612,11 @@ var wizardModelIDBenignCorpus = []string{
 // ****, and every benign ID is byte-identical.
 func TestWizardModelLabelMasksRegistryBorneID(t *testing.T) {
 	for _, probe := range []string{
-		"sk_live_0123456789abcdef",
-		"tok_a1b2c3d4e5f6g7h8i9j0",
-		"pk_live_0123456789abcdef",
-		"key_0123456789abcdef",
-		"AKIA_0123456789ABCDEF",
+		testfixtures.SKLive,
+		testfixtures.TokSample,
+		testfixtures.PKLive,
+		testfixtures.KeyHex,
+		testfixtures.AKIAUnderscore,
 	} {
 		// Premise: the pre-fix renderer (MaskOperand) is the identity on the
 		// underscore class, so each probe exercises exactly the authority switch.
@@ -2713,7 +2715,7 @@ func wizardDiscoveryScript(baseURL string, lines ...string) string {
 // is masked, the transcript carries no raw value, and the pre-write sweep still
 // refuses the record so nothing is written.
 func TestInteractiveSetupWizard_TranscriptMasksSavedCredentialModelID(t *testing.T) {
-	const plant = "sk_live_0123456789abcdef"
+	const plant = testfixtures.SKLive
 	masked := MaskSlot(plant)
 	if masked == plant {
 		t.Fatalf("premise: MaskSlot is the identity on %q", plant)
@@ -2762,7 +2764,7 @@ func TestInteractiveSetupWizard_TranscriptMasksSavedCredentialModelID(t *testing
 // is saved, the run reaches the summary, and the summary renders the benign ID
 // byte-identically while no raw plant appears anywhere.
 func TestInteractiveSetupWizard_TranscriptMasksDiscardedCredentialModelID(t *testing.T) {
-	const plant = "sk_live_0123456789abcdef"
+	const plant = testfixtures.SKLive
 	masked := MaskSlot(plant)
 	if masked == plant {
 		t.Fatalf("premise: MaskSlot is the identity on %q", plant)

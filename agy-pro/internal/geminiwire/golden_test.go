@@ -16,6 +16,7 @@ import (
 
 	"agypro/internal/openaiup"
 	"agypro/internal/providers"
+	"agypro/internal/testfixtures"
 )
 
 // Golden fixtures for the Gemini-wire contract (spec §11.1, gate G1). Every GF
@@ -671,10 +672,10 @@ func TestGoldenFixtures_SweepCatchesPlantedSecrets(t *testing.T) {
 	}{
 		"opaque-hex.json": {"9f2c7a1b4e5d6f70819a2b3c4d5e6f70", false, "opaque hex run"},
 		"sk-shaped.json":  {"sk-plantedupstreamsecret0123456789", false, "sk-"},
-		"goog-key.json":   {"AIzaPlantedGoogleKeyShape0123456789", false, "AIza"},
+		"goog-key.json":   {testfixtures.AIzaPlantedShape, false, "AIza"},
 		"sentinel.sse":    {"data: [DONE]\n\n", false, "[DONE]"},
-		"aws-key.json":    {"AKIAPLANTEDKEYSHAPE0000", false, "AKIA"},
-		"github-pat.json": {"ghp_plantedtokenshape0123456789abcd", false, "ghp_"},
+		"aws-key.json":    {testfixtures.AKIAPlanted, false, "AKIA"},
+		"github-pat.json": {testfixtures.GHPPlanted, false, "ghp_"},
 		// An inbound provider stream legitimately carries the sentinel, so the
 		// ban must not fire there; the key shapes still must.
 		"inbound.sse": {"data: [DONE]\n\n", true, ""},
