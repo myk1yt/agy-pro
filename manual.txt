@@ -192,6 +192,31 @@ OpenRouter, DeepSeek, Groq, Mistral 등 외부 최신 모델을 클릭과 엔터
   도구를 쓰는 턴은 오래 걸릴 수 있으므로 일회성 실행에는 `agy --print-timeout 300s`를
   붙이길 권장합니다(도구 루프 자체 상한은 240초).
 
+[팬아웃 프리셋 (실행 설정 저장)]
+  팬아웃 프리셋은 이름 붙은 실행 설정 묶음입니다. 좌석 출처, 도구, 시간 제한,
+  출력 폴더 등의 실행값을 `~/.agy-pro/fanout-presets.json`에 묶어 저장하고,
+  프롬프트는 저장하지 않으며 좌석 선택 그 자체가 아닙니다.
+      agy pro fanout --preset <이름>     # 이름으로 프리셋 적용
+      AGY_PRO_FANOUT_PRESET=<이름>       # 플래그가 없을 때 환경 변수로 적용
+  값 결정 사다리(위가 강함): 명령줄 플래그 > 이름으로 고른 프리셋(--preset 또는
+  AGY_PRO_FANOUT_PRESET) > 저장소 기본 프리셋(default_preset 키) > providers.json
+  defaults 블록 > 엔진 기본값.
+  - 저장소 기본 프리셋이 명시 플래그와 충돌하면(기본 프리셋의 models와 --seats,
+    seats와 --models, 쓰기 도구와 --units) 충돌하는 값 하나만 버리고 stderr 경고
+    한 줄 후 실행을 계속합니다. 이름으로 직접 고른 프리셋이 충돌하면 여전히
+    오류(종료 코드 2)입니다. 편집기는 models+seats 동시 고정을 저장하지 않습니다.
+  - agy pro swarm은 --preset 없이 일곱 플래그(--task --seats --root --timeout
+    --tools --prompt --json)만 넘기므로, 스웜 아래에서는 기본 프리셋이 작동하고
+    위 충돌 보호가 적용됩니다. 빌더의 p1~p3는 좌석 선택 바로가기(팬아웃
+    프리셋과 다름)이고, 저장한 스웜 좌석 프리셋은 허브의 설정 화면에서 관리합니다.
+  - k3 풀 정책: 패밀리가 k3이거나 ID에 k3 토큰이 정확히 들어 있는 모델은
+    자동 배정에서 제외됩니다. 규칙은 설정 파일이 아니라 바이너리 안 판정
+    함수(internal/providers/k3.go)에 있어 UI에서 끌 수 없습니다. 명시
+    --models/--seats 선택은 agy pro fanout에서 경고 없이 그대로 실행되고,
+    경고가 나오는 쪽은 agy pro swarm입니다. 스웜에서 명시 좌석이 k3 모델을
+    가리키면 "explicit pick honored" 경고 한 줄을 출력한 뒤 그 선택을 그대로
+    실행합니다.
+
 
 --------------------------------------------------------------------------------
 5. 번호로 고르는 스웜 빌더 · 통합 모델 목록 · 설정 패널
@@ -233,8 +258,8 @@ OpenRouter, DeepSeek, Groq, Mistral 등 외부 최신 모델을 클릭과 엔터
       agy pro settings             # 전체 화면 설정 패널 (TUI). 사용자 터미널에서 직접 실행
       agy pro settings --panel p4  # 특정 패널로 바로 열기
       agy pro settings show [--json] | set <키> <값> | providers ... | mode ... | doctor ...
-  - 패널: [1] Launch & Profile, [2] Models & Providers, [3] Bridge Tools & Budgets,
-    [4] Swarm & Fanout, [5] Diagnostics & Keys, [6] Install & Update, [7] Environment Variables.
+  - 패널: Launch & Profile, Models & Providers, Bridge Tools & Budgets, Swarm & Fanout,
+    Diagnostics & Keys, Install & Update, Environment Variables.
   - `agy pro settings set`으로 바꿀 수 있는 키는 default-profile, bridge-tools,
     native-seat-concurrency(1~8)입니다. 브릿지 도구 예산(8턴/240초/60초/도구당 30초/턴당 16회)은
     컴파일 상수라 읽기 전용으로 표시됩니다.
@@ -471,6 +496,34 @@ simultaneously to heterogeneous models, then cross-verifying the results
   Tool turns can run longer than the default print timeout, so add
   `agy --print-timeout 300s` to live one-shot runs (the loop ceiling is 240s).
 
+[Fanout Presets (Saved Run Configurations)]
+  A fanout preset is a named run configuration. It bundles run values (seat
+  source, tools, timeout, output directory) into one row of
+  ~/.agy-pro/fanout-presets.json. It does NOT store a prompt, and it is not a
+  seat selection in itself.
+      agy pro fanout --preset <name>     # apply a preset by name
+      AGY_PRO_FANOUT_PRESET=<name>       # apply via environment when the flag is absent
+  Value resolution ladder (strongest first): command-line flag > preset named
+  by --preset or AGY_PRO_FANOUT_PRESET > store default preset (the default_preset
+  key) > providers.json defaults block > engine default.
+  - When the store default preset conflicts with an explicit flag (default
+    models vs --seats, seats vs --models, write tools vs --units), only the
+    conflicting value is dropped with one stderr warning and the run proceeds.
+    A preset named explicitly that conflicts still errors (exit code 2). The
+    editor refuses to save a preset pinning both models and seats.
+  - agy pro swarm passes only its seven flags (--task --seats --root --timeout
+    --tools --prompt --json) and never --preset, so under a swarm the default
+    preset applies and the conflict guard above protects the run. The builder's
+    p1..p3 are seat-selection shortcuts (not fanout presets), and saved swarm
+    seat presets are managed from the hub's Settings screen.
+  - k3 pool policy: models whose family is k3 or whose id carries the exact
+    token k3 are excluded from automatic seating. The rule lives in an
+    in-binary predicate (internal/providers/k3.go), not a settings file.
+    Explicit --models/--seats picks are honored as-is on agy pro fanout, with
+    no warning. The warning belongs to the agy pro swarm route: an explicit
+    seat spec naming a k3 model prints one "explicit pick honored" warning
+    line, then the pick runs unchanged.
+
 
 --------------------------------------------------------------------------------
 5. Numbered Swarm Builder, Combined Model List & Settings Panel
@@ -512,8 +565,8 @@ simultaneously to heterogeneous models, then cross-verifying the results
       agy pro settings             # full-screen settings panel (TUI); run it in your own terminal
       agy pro settings --panel p4  # deep-link one panel
       agy pro settings show [--json] | set <key> <value> | providers ... | mode ... | doctor ...
-  - Panels: [1] Launch & Profile, [2] Models & Providers, [3] Bridge Tools & Budgets,
-    [4] Swarm & Fanout, [5] Diagnostics & Keys, [6] Install & Update, [7] Environment Variables.
+  - Panels: Launch & Profile, Models & Providers, Bridge Tools & Budgets, Swarm & Fanout,
+    Diagnostics & Keys, Install & Update, Environment Variables.
   - Keys accepted by `agy pro settings set`: default-profile, bridge-tools,
     native-seat-concurrency (1..8). The bridge tool budgets (8 turns / 240s wall / 60s turn /
     30s per tool / 16 calls per turn) are compile-time constants shown read-only.
