@@ -362,3 +362,8 @@
 
 - **Approval.** The user approved the six-commit proposal in FINAL-REPORT-KO.md section 6 AND push, at the session pause point: "1,2번 승인할게". Scope: the six atomic commits for the P1-P3 landing (53 tracked files + 5 new untracked Go files) and one push of the resulting commits to the existing remote (main). Nothing else was approved: P4/P5 stays gated on D1/D2/D4/D5/D6/F3; the GitHub repository rename stays withheld; the masking class stays CLOSED.
 - **Execution notes.** Explicit staging per group; the five new files (internal/settings/marker.go, run_test.go, internal/fanout/tasks_test.go, internal/swarm/state_test.go, internal/fanout/preset_default_key_guard_test.go) staged by name because a modified-only commit would not compile. Report folders (docs/261018_0002_session_agy-pro-tui/, docs/261022_0001_session_agy-pro-session6/) and the 16 MB untracked agy-pro/agy.exe never staged. Full gate re-run on the committed tree before push.
+
+## 2026-10-22 - SESSION6 push executed (user-approved)
+
+- **Pushed** `9258c5f..481c476` to origin main (myk1yt/agy-tools): the four P0 trio commits plus the six SESSION6 landing commits (f78c3ec, 89272e8, 2968199, 7708ec6, ddfbcb6, 481c476). Gate on the committed tree before push: build OK, vet x3 OK, cross-builds x2 OK, `go test ./... -count=1 -p 1` 23 packages ok / 0 FAIL, provider-pattern gate 0. Local main == origin/main after the push. Protected home files byte-unchanged (providers.json 37635d43..., state.json f6b23e77...).
+- **Not done (still gated):** GitHub repository rename (D6), P4/P5 work pending D1/D2/D4/D5/D6/F3, and the F04/Cf-bidi/P1-7 sub-decisions listed in the final report.
