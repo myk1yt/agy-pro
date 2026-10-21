@@ -422,7 +422,10 @@ type fanoutFlags struct {
 //     normalized (lowercase, port-stripped, deduped) into RunConfig.
 //     AllowHosts; a non-empty list is what exposes read_url_content to the
 //     provider seats. It is a run-level switch, so partition mode accepts
-//     it for every provider seat; it never touches native seats.
+//     it for every provider seat; it never touches native seats. Explicit
+//     flag entries are also validated (D14, agenttools.ValidateAllowHosts):
+//     a scheme prefix, wildcard, or path can never match the exact
+//     allow-list and is a usage error (exit 2), never a silently dead entry.
 //   - --search-endpoint / --search-key-env (B4-2b) bind the search_web
 //     source into RunConfig.SearchSource (trimmed; the key is referenced by
 //     env-var NAME only, the value is never read here). A non-empty endpoint
@@ -444,6 +447,12 @@ type fanoutFlags struct {
 //     providers.json defaults block supplies a value that differs from the
 //     engine default, one notice line per field on f.errw names the field,
 //     the stored value and the engine default.
+//   - an explicit --seats / --models / --units flag DROPS a conflicting knob
+//     of the store's default_preset preset with one notice line (F1 guard,
+//     dropConflictingDefaultPresetKnobs), because a caller subsystem that
+//     omits a flag by design (the pinned swarm argument vector, partition
+//     mode) must never be vetoed by machine configuration it never named. An
+//     explicitly selected preset keeps the honest hard error.
 //
 // A returned error is a usage error: Run() prints it and exits 2.
 func buildRunConfig(f fanoutFlags, promptText string) (RunConfig, error) {
@@ -520,8 +529,7 @@ func buildRunConfig(f fanoutFlags, promptText string) (RunConfig, error) {
 	// seat. normalizedTools is the canonical closed-set join, so the substring
 	// test cannot misfire.
 	if len(units) > 0 {
-		lt := strings.ToLower(normalizedTools)
-		if strings.Contains(lt, "write") || strings.Contains(lt, "exec") {
+		if toolsGrantsWrite(normalizedTools) {
 			return RunConfig{}, errors.New("--units (partition mode) is read-only by default and cannot be combined with --tools write/exec; a unit opts into write per plan (\"write\": true), there is no CLI-wide write switch")
 		}
 	}
@@ -545,6 +553,18 @@ func buildRunConfig(f fanoutFlags, promptText string) (RunConfig, error) {
 	timeoutSec := g.timeout
 	if len(units) > 0 && !lad.timeoutSet {
 		timeoutSec = 0
+	}
+
+	// D14 (P3-5): explicit --allow-host entries are validated, not just
+	// normalized. Matching is exact on the normalized URL hostname, so a
+	// scheme prefix, wildcard, or path can never match and would sit in the
+	// list silently refusing every read_url_content call; refuse at
+	// collection time (usage error, exit 2) instead. Only the flag rung is
+	// checked: the editor save path validates its own rows, and SavePresets
+	// stays permissive for round-tripping hand-edited files. The offending
+	// value is never echoed (F5 masking family).
+	if src["allow_hosts"] == "flag" && !agenttools.ValidateAllowHosts(g.allowHosts) {
+		return RunConfig{}, errors.New("--allow-host entries must be bare hostnames or IPs (no scheme, wildcard, or path)")
 	}
 
 	return RunConfig{
@@ -611,9 +631,15 @@ func resolveLadder(f fanoutFlags) (ladderResult, error) {
 		w = io.Discard
 	}
 
-	preset, err := loadActivePreset(f, w)
+	preset, fromDefaultKey, err := loadActivePreset(f, w)
 	if err != nil {
 		return ladderResult{}, err
+	}
+	if fromDefaultKey {
+		// F1 guard (P3-1): the store's default_preset key is machine
+		// configuration the caller never named, so it must not veto a flag the
+		// caller did pass. See dropConflictingDefaultPresetKnobs.
+		preset = dropConflictingDefaultPresetKnobs(f, preset, w)
 	}
 
 	// Rung 4: the providers.json defaults block, READ-ONLY here (D4: every
@@ -821,25 +847,29 @@ func resolveLadder(f fanoutFlags) (ladderResult, error) {
 
 // loadActivePreset resolves the preset for this run (P8 rung 3) and loads it.
 // Selection order: --preset flag > EnvFanoutPreset env > the store's
-// default_preset key. An explicitly selected name (--preset or env) that does
-// not exist is an honest usage error, never a silent fallback to another
-// preset; a dangling default_preset key only warns on w and runs preset-less.
-// An unavailable presets home or a missing file yields no preset (the store's
+// default_preset key. The second return value reports the LAST rung: true
+// means the run picked the preset up from the store's default_preset key
+// without the caller naming it, which is what arms the F1 drop guard in
+// resolveLadder (an explicitly named preset keeps the honest hard error). An
+// explicitly selected name (--preset or env) that does not exist is an honest
+// usage error, never a silent fallback to another preset; a dangling
+// default_preset key only warns on w and runs preset-less. An unavailable
+// presets home or a missing file yields no preset (the store's
 // create-on-demand contract); a corrupt file is the store's one-line-warning
 // fallback.
-func loadActivePreset(f fanoutFlags, w io.Writer) (*Preset, error) {
+func loadActivePreset(f fanoutFlags, w io.Writer) (*Preset, bool, error) {
 	name := strings.TrimSpace(f.preset)
 	if name == "" {
 		name = strings.TrimSpace(os.Getenv(EnvFanoutPreset))
 	}
 	st, err := NewPresetFileStore()
 	if err != nil {
-		return nil, nil
+		return nil, false, nil
 	}
 	st.WarnOut = w
 	pf, err := st.LoadPresets()
 	if err != nil {
-		return nil, fmt.Errorf("cannot load fanout presets: %w", err)
+		return nil, false, fmt.Errorf("cannot load fanout presets: %w", err)
 	}
 	fromDefaultKey := false
 	if name == "" {
@@ -847,10 +877,10 @@ func loadActivePreset(f fanoutFlags, w io.Writer) (*Preset, error) {
 		fromDefaultKey = name != ""
 	}
 	if name == "" {
-		return nil, nil
+		return nil, false, nil
 	}
 	if p, ok := pf.FindPreset(name); ok {
-		return p, nil
+		return p, fromDefaultKey, nil
 	}
 	if fromDefaultKey {
 		// F5/round-6 M1: the name is file-sourced (a hand-edited
@@ -863,9 +893,108 @@ func loadActivePreset(f fanoutFlags, w io.Writer) (*Preset, error) {
 		// segment arm) are what classify a decorated plant that the pre-policy
 		// MaskRegistryValue rendered unchanged.
 		fmt.Fprintf(w, "fanout: warning: default preset %q not found in fanout-presets.json; running without a preset\n", providers.MaskSlot(name))
-		return nil, nil
+		return nil, false, nil
 	}
-	return nil, fmt.Errorf("preset %q not found in fanout-presets.json", providers.MaskSlot(name))
+	return nil, false, fmt.Errorf("preset %q not found in fanout-presets.json", providers.MaskSlot(name))
+}
+
+// defaultPresetConflict is one store-default preset knob the F1 guard drops
+// because an explicitly passed flag on this run owns the conflicting field.
+type defaultPresetConflict struct {
+	knob   string // "models" | "seats" | "tools"
+	value  string // the preset's raw value (masked before it is echoed)
+	reason string // the explicit flag it collides with, and the rule
+}
+
+// dropConflictingDefaultPresetKnobs is the F1 guard (P3-1). The store's
+// default_preset key is machine configuration the caller never named, and two
+// caller subsystems omit flags BY DESIGN: the swarm builder's argument vector
+// is pinned at seven flag pairs (internal/swarm/build.go:46-54, pinned by
+// internal/swarm/swarm_test.go:21-54) and partition mode takes its seat source
+// from the plan file. A default preset pinning models would otherwise make
+// every `agy pro swarm` run (and every auto-routed `agy pro fanout --seats`
+// run) exit with "--seats and --models cannot be combined" at the
+// buildRunConfig gate this file owns; a seats/models pin breaks --units the
+// same way, and a tools pin granting write/exec breaks the partition
+// read-only gate.
+//
+// Only the STORE-DEFAULT route reaches here: an explicitly selected preset
+// (--preset / EnvFanoutPreset) is the user's named choice, so its conflict
+// stays the honest hard error. Only knobs that would actually be EFFECTIVE
+// are considered (an explicit flag for the same field already wins over the
+// preset), each dropped knob emits ONE notice line on w (stderr only, so the
+// --json summary on stdout and the dry-run vector stay untouched), and the
+// field falls through to the next rung of the ladder.
+func dropConflictingDefaultPresetKnobs(f fanoutFlags, preset *Preset, w io.Writer) *Preset {
+	if preset == nil || f.set == nil {
+		return preset
+	}
+	partition := strings.TrimSpace(f.units) != ""
+	modelsEffective := !f.set["models"] && preset.Models != ""
+	seatsEffective := !f.set["seats"] && preset.Seats != ""
+	toolsEffective := !f.set["tools"] && preset.Tools != ""
+
+	var conflicts []defaultPresetConflict
+	// The seat-source pair: the caller's own --seats (or --models) flag owns
+	// the run, so the preset's other half of the exclusive pair goes. An
+	// explicit --units flag owns the run outright, so both halves go.
+	switch {
+	case modelsEffective && f.set["seats"]:
+		conflicts = append(conflicts, defaultPresetConflict{"models", preset.Models,
+			"the explicit --seats flag (--seats and --models cannot be combined)"})
+	case modelsEffective && partition:
+		conflicts = append(conflicts, defaultPresetConflict{"models", preset.Models,
+			"--units (partition mode assigns one seat per unit)"})
+	}
+	switch {
+	case seatsEffective && f.set["models"]:
+		conflicts = append(conflicts, defaultPresetConflict{"seats", preset.Seats,
+			"the explicit --models flag (--seats and --models cannot be combined)"})
+	case seatsEffective && partition:
+		conflicts = append(conflicts, defaultPresetConflict{"seats", preset.Seats,
+			"--units (partition mode assigns one seat per unit)"})
+	}
+	// The read-only gate is value-shaped, not field-shaped: only a pin that
+	// actually grants write capability collides with it. A preset tools value
+	// that does not parse is left alone, so buildRunConfig still reports the
+	// parse error on the preset rung's masked path.
+	if partition && toolsEffective {
+		if norm, err := ParseToolTokens(preset.Tools); err == nil && toolsGrantsWrite(norm) {
+			conflicts = append(conflicts, defaultPresetConflict{"tools", preset.Tools,
+				"--units (partition mode is read-only; a unit opts into write per plan)"})
+		}
+	}
+	if len(conflicts) == 0 {
+		return preset
+	}
+
+	// F5: the preset name and every preset value are file-sourced (a
+	// hand-edited fanout-presets.json can plant credential shapes), so the
+	// name rides MaskSlot (registry-slot display authority) and the value
+	// rides MaskOperand.
+	dropped := *preset
+	for _, c := range conflicts {
+		fmt.Fprintf(w, "fanout: warning: default preset %q %s=%q conflicts with %s; dropping it\n",
+			providers.MaskSlot(preset.Name), c.knob, providers.MaskOperand(c.value), c.reason)
+		switch c.knob {
+		case "models":
+			dropped.Models = ""
+		case "seats":
+			dropped.Seats = ""
+		case "tools":
+			dropped.Tools = ""
+		}
+	}
+	return &dropped
+}
+
+// toolsGrantsWrite reports whether a normalized tool list grants a write
+// capability (write_file / replace_in_file / exec). The partition read-only
+// gate in buildRunConfig and the default-preset drop guard share this ONE
+// predicate so the two cannot drift.
+func toolsGrantsWrite(normalized string) bool {
+	lt := strings.ToLower(normalized)
+	return strings.Contains(lt, "write") || strings.Contains(lt, "exec")
 }
 
 // resolveMaxNative applies the native-seat concurrency precedence of contract

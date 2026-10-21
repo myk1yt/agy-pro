@@ -219,6 +219,73 @@ func NormalizeAllowHosts(entries []string) []string {
 	return out
 }
 
+// ValidateAllowHost reports whether one raw allow-list entry is usable as
+// typed: a bare hostname ("example.com"), an IP ("127.0.0.1", "::1", with
+// or without IPv6 brackets) or host:port ("example.com:8443"). It refuses
+// scheme prefixes ("https://example.com"), wildcards ("*.example.com"),
+// path segments ("example.com/path"), any whitespace, anything with no
+// hostname left after normalization, and any character outside the
+// hostname/IP alphabet (so "example.com:badport" or "ex_ample.com" are
+// refused too). Matching is exact after normalization (hostInAllowList), so
+// an entry this predicate refuses can never match a real URL hostname: it
+// would sit in the list and silently refuse every read_url_content call.
+// Validation is the input-surface honesty gate (D14); it never panics and
+// does not change matching, which stays fail-closed regardless.
+func ValidateAllowHost(entry string) bool {
+	raw := strings.TrimSpace(entry)
+	if raw == "" {
+		return false
+	}
+	if strings.ContainsAny(raw, "*\\/") || strings.Contains(raw, "://") {
+		return false
+	}
+	// Colon handling on the RAW entry, before normalization: SplitHostPort
+	// accepts a non-numeric port ("example.com:badport", "https:example.com"
+	// both split fine), and a colon that is neither an IP literal nor a
+	// numeric port is scheme-shaped and refused.
+	core := strings.Trim(raw, "[]")
+	if strings.Contains(core, ":") && net.ParseIP(core) == nil {
+		_, port, err := net.SplitHostPort(raw)
+		if err != nil || port == "" {
+			return false
+		}
+		for _, r := range port {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+	}
+	h := normalizeAllowHost(entry)
+	if h == "" {
+		return false
+	}
+	ip := net.ParseIP(h)
+	for _, r := range h {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '.', r == '-':
+		case r == ':' && ip != nil:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// ValidateAllowHosts reports whether every non-empty raw entry validates
+// (see ValidateAllowHost). Empty entries are skipped, matching
+// NormalizeAllowHosts, which drops them.
+func ValidateAllowHosts(entries []string) bool {
+	for _, e := range entries {
+		if strings.TrimSpace(e) == "" {
+			continue
+		}
+		if !ValidateAllowHost(e) {
+			return false
+		}
+	}
+	return true
+}
+
 // fetchContentTypeAllowed is the text-only content-type rule: text/*, the
 // core structured-text types, the +json/+xml suffix families, and the small
 // html-ish allow-list. An empty mediatype is refused (an absent content type

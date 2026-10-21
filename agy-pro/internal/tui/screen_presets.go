@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -13,12 +14,24 @@ import (
 )
 
 // presetsListChrome is the non-list line count of the composed frame around
-// the preset list: the screen title, the separator under it, the status line,
-// the blank under the status line, the blank above the list hint, the hint,
-// the separator above the base footer, and the base footer itself. The models
-// screen's body carries no status line, which is why its chrome value is 6;
-// this body shape needs 8.
-const presetsListChrome = 8
+// the preset list when the explanation block renders (every console tall
+// enough to hold it): the screen title, the separator under it, the status
+// line, the blank under the status line, the four explanation lines naming
+// what a preset is and how it is consumed (survey 2.7/U4), the blank above
+// the list hint, the hint, the separator above the base footer, and the base
+// footer itself. The models screen's body carries no status line, which is
+// why its chrome value is 6; this body shape needs 12 with the block, 8
+// without. Draw drops the block on consoles too short to hold it (it is the
+// first body content a short console loses), so pins below the 80x24 budget
+// keep their historical chrome.
+const presetsListChrome = 12
+
+// presetsExplainLines is the line count of the explanation block Draw
+// renders above the preset list. It is part of presetsListChrome; when a
+// short console cannot afford it, Draw removes exactly this many lines from
+// the chrome so the status line, the notices, the list, the hint and the
+// base footer stay on the frame.
+const presetsExplainLines = 4
 
 // Row IDs of the fixed rows around the preset list, in display order.
 // Preset rows carry ID "preset\x00<name>" and always sort between the
@@ -60,6 +73,16 @@ const (
 	presetsCorruptTitle = "Corrupt Preset File"
 	// catalog-resolved, fallback kept: presets.corrupt.body
 	presetsCorruptBody = "{{path}} is corrupt and was ignored. Saving now overwrites it. Continue?"
+	// catalog-resolved, fallback kept: presets.explain.what
+	presetsExplainWhat = "A preset is a named run config (seat/tool/time budgets), not a prompt."
+	// catalog-resolved, fallback kept: presets.explain.run
+	presetsExplainRun = "Not a seat list. Run: agy pro fanout --preset <name> · env AGY_PRO_FANOUT_PRESET"
+	// catalog-resolved, fallback kept: presets.explain.file
+	presetsExplainFile = "File: {{path}}"
+	// catalog-resolved, fallback kept: presets.explain.default
+	presetsExplainDefault = "default_preset applies when no preset is named; conflicts drop with a warning."
+	// catalog-resolved, fallback kept: presets.summary.pinned
+	presetsSummaryPinned = "{{count}} of 14 fields pinned: see Edit"
 )
 
 // corruptPresetSink captures the store's one-line corrupt-file fallback
@@ -320,13 +343,15 @@ func (s *presetsScreen) adopt(pf *fanout.PresetsFile, loadErr string) {
 
 // buildRows composes the row inventory: the fixed built-in row, one row per
 // preset, then the five action rows. The preset note is the one-line flag
-// summary (task, n, timeout, tools); the default preset carries the badge.
+// summary (task, n, timeout, tools) or, when only hidden fields are pinned,
+// the pinned-count digest (survey defect D10); the default preset carries the
+// badge.
 func (s *presetsScreen) buildRows() []Row {
 	rows := make([]Row, 0, len(s.pf.Presets)+6)
-	rows = append(rows, Row{ID: presetsRowIDBuiltin, Label: builtinPresetRowLabel, Note: builtinDefaultsSummary()})
+	rows = append(rows, Row{ID: presetsRowIDBuiltin, Label: builtinPresetRowLabel, Note: builtinDefaultsSummary(s.b)})
 	for i := range s.pf.Presets {
 		p := &s.pf.Presets[i]
-		note := presetFlagSummary(p)
+		note := presetFlagSummary(s.b, p)
 		if p.Name == s.pf.DefaultPreset {
 			note = noteWithDefaultBadge(note, s.b.T("presets.default.badge"))
 		}
@@ -347,9 +372,14 @@ func (s *presetsScreen) buildRows() []Row {
 // configured knobs among task, n, timeout, tools. The free-text operands
 // (task, tools) render through MaskOperand like every other echoed operand:
 // a credential-shaped value pasted into the preset paints masked in the row
-// note; benign values (review, read,search) stay readable. A preset that
-// pins nothing renders the honest "(empty)" marker.
-func presetFlagSummary(p *fanout.Preset) string {
+// note; benign values (review, read,search) stay readable. The note shows only
+// those four knobs, so a preset pinning only hidden fields (seats, models,
+// allow_hosts, max_native, search_*, out_dir, root, json) used to render the
+// same "(empty)" as a truly empty preset (survey defect D10): when every
+// visible knob is unset the summary falls back to the pinned-count digest
+// ("N of 14 fields pinned: see Edit"), and only a preset with nothing pinned
+// at all renders the honest "(empty)".
+func presetFlagSummary(b *i18n.Bundle, p *fanout.Preset) string {
 	if p == nil {
 		return "(empty)"
 	}
@@ -366,10 +396,14 @@ func presetFlagSummary(p *fanout.Preset) string {
 	if p.Tools != "" {
 		parts = append(parts, "tools="+providers.MaskOperand(p.Tools))
 	}
-	if len(parts) == 0 {
-		return "(empty)"
+	if len(parts) > 0 {
+		return strings.Join(parts, " ")
 	}
-	return strings.Join(parts, " ")
+	if pinned := countPresetPinnedFields(p); pinned > 0 {
+		return fillHubSlots(missingOr(b, "presets.summary.pinned", presetsSummaryPinned),
+			map[string]string{"count": strconv.Itoa(pinned)})
+	}
+	return "(empty)"
 }
 
 // noteWithDefaultBadge appends the default badge to a non-empty note.
@@ -380,10 +414,61 @@ func noteWithDefaultBadge(note, badge string) string {
 	return note + " · " + badge
 }
 
+// countPresetPinnedFields counts the preset's 14 optional run knobs that carry
+// a value. Name is the identity, not a knob; json pins only when true (a false
+// does not survive the omitempty save). The count feeds the D10 digest, so it
+// must walk exactly the fields the editor can set.
+func countPresetPinnedFields(p *fanout.Preset) int {
+	n := 0
+	if p.Task != "" {
+		n++
+	}
+	if p.N > 0 {
+		n++
+	}
+	if p.TimeoutSeconds > 0 {
+		n++
+	}
+	if p.Tools != "" {
+		n++
+	}
+	if p.MaxTurns > 0 {
+		n++
+	}
+	if p.MaxNative > 0 {
+		n++
+	}
+	if len(p.AllowHosts) > 0 {
+		n++
+	}
+	if p.SearchEndpoint != "" {
+		n++
+	}
+	if p.SearchKeyEnv != "" {
+		n++
+	}
+	if p.OutDir != "" {
+		n++
+	}
+	if p.Root != "" {
+		n++
+	}
+	if p.Models != "" {
+		n++
+	}
+	if p.Seats != "" {
+		n++
+	}
+	if p.JSON {
+		n++
+	}
+	return n
+}
+
 // builtinDefaultsSummary renders the engine-default note for the fixed
 // built-in row.
-func builtinDefaultsSummary() string {
-	return presetFlagSummary(&fanout.Preset{
+func builtinDefaultsSummary(b *i18n.Bundle) string {
+	return presetFlagSummary(b, &fanout.Preset{
 		Task:           presetEngineDefaultTask,
 		N:              presetEngineDefaultN,
 		TimeoutSeconds: presetEngineDefaultTimeout,
@@ -490,13 +575,27 @@ func storeFile(st fanout.PresetStore) *fanout.PresetFileStore {
 // list; the selection moves to it. The in-memory list is only mutated inside
 // the corrupt gate callback, after the gate answered, so a declined gate
 // leaves memory untouched.
+//
+// A copy is a NEW record, and the only write path here is SavePresets, which
+// runs just the store-boundary rules (see fanout.ValidatePresetForSave): the
+// D9/D13/D14 save rules live in the validator alone. Without the gate below a
+// copy of a row that violates them (a hand-edited models+seats row, an
+// unknown task, a bad allow_hosts entry) would persist a preset the editor
+// would refuse to save, which is exactly the bypass s5 deviation 3 named.
+// The gate runs the same authority over the copy BEFORE anything is written
+// and renders the editor's own wording for the refusal (presetSaveRuleMessage),
+// so both writers name a rule identically.
 func (s *presetsScreen) duplicate(p fanout.Preset) {
 	a := s.app
 	name := uniquePresetCopyName(s.pf, p.Name)
+	cp := p
+	cp.Name = name
+	cp.AllowHosts = append([]string(nil), p.AllowHosts...)
+	if err := fanout.ValidatePresetForSave(cp); err != nil {
+		a.SetMessage(s.b.T("common.error") + ": " + presetSaveRuleMessage(s.b, err))
+		return
+	}
 	s.gateCorruptSave(func() {
-		cp := p
-		cp.Name = name
-		cp.AllowHosts = append([]string(nil), p.AllowHosts...)
 		s.pf.Presets = append(s.pf.Presets, cp)
 		if err := s.store.SavePresets(s.pf); err != nil {
 			s.pf.Presets = s.pf.Presets[:len(s.pf.Presets)-1]
@@ -508,6 +607,36 @@ func (s *presetsScreen) duplicate(p fanout.Preset) {
 		a.SetMessage(s.b.T("common.success") + ": " + fillHubSlots(missingOr(s.b, "presets.msg.duplicated", presetsMsgDuplicated),
 			map[string]string{"name": providers.MaskOperand(name)}))
 	})
+}
+
+// presetSaveRuleMessages is the preset list's copy of the editor's refusal
+// table (presetEditorScreen.saveRuleMessage): the rules and their sentinels
+// are fanout.ValidatePresetForSave's, and the wording reuses the editor's
+// presets.editor.validation.* keys and consts, so a rule is named the same
+// way whichever writer refused the save. The table is PRESENTATION only; a
+// refusal it does not know (a rule added to the validator later) falls back to
+// the validator's own masked text instead of vanishing.
+var presetSaveRuleMessages = []struct {
+	err      error
+	key      string
+	fallback string
+}{
+	{fanout.ErrPresetNameRequired, "presets.editor.validation.name", presetsEditorValidationName},
+	{fanout.ErrPresetSearchKeyEnv, "presets.editor.validation.key_env", presetsEditorValidationKeyEnv},
+	{fanout.ErrPresetSeatConflict, "presets.editor.validation.seat_conflict", presetsEditorValidationSeatConflict},
+	{fanout.ErrPresetUnknownTask, "presets.editor.validation.task", presetsEditorValidationTask},
+	{fanout.ErrPresetAllowHosts, "presets.editor.validation.host", presetsEditorValidationHost},
+}
+
+// presetSaveRuleMessage renders a fanout.ValidatePresetForSave refusal in the
+// editor's wording.
+func presetSaveRuleMessage(b *i18n.Bundle, err error) string {
+	for _, m := range presetSaveRuleMessages {
+		if errors.Is(err, m.err) {
+			return missingOr(b, m.key, m.fallback)
+		}
+	}
+	return providers.MaskOperand(err.Error())
 }
 
 // uniquePresetCopyName finds the first free "<base> copy" variant.
@@ -577,13 +706,17 @@ func (s *presetsScreen) setDefault(p fanout.Preset) {
 	})
 }
 
-// Draw renders the default-status line, the numbered rows, and the
-// two-handled footer hint. All cell math goes through cellwidth. The window is
-// sized against the real chrome of this frame: the fixed chrome rows plus
-// every one-off line the body renders above the list, so the body always fits
-// the frame and the overflow path (which shrinks the body from its tail) never
-// runs on a full-page list. The base footer, the only line naming Esc, Ctrl+L
-// and Ctrl+C, stays on the frame.
+// Draw renders the default-status line, the four explanation lines naming
+// what a preset is and how it is consumed (the U4 copy: run config, not a
+// prompt; the consumer command; the env var; the on-disk path; the
+// default_preset rule), the numbered rows, and the two-handled footer hint.
+// All cell math goes through cellwidth. The window is sized against the real
+// chrome of this frame: the fixed chrome rows plus every one-off line the
+// body renders above the list, so the body always fits the frame and the
+// overflow path (which shrinks the body from its tail) never runs on a
+// full-page list. The explanation lines are part of presetsListChrome, so a
+// full page still ends on the list hint and the base footer, the only line
+// naming Esc, Ctrl+L and Ctrl+C, stays on the frame.
 func (s *presetsScreen) Draw(a *App) []string {
 	s.app = a
 	s.reloadIfChanged()
@@ -598,7 +731,8 @@ func (s *presetsScreen) Draw(a *App) []string {
 	// notice is the one-off block above the list: the load error, the
 	// corrupt-file warning, and the empty state (a line plus the blank that
 	// keeps the list off it). Its length is what the window has to leave room
-	// for; the list hint and its blank are already part of presetsListChrome.
+	// for; the explanation lines and the list hint with its blank are already
+	// part of presetsListChrome.
 	var notice []string
 	if s.loadErr != "" {
 		notice = append(notice, cellwidth.Truncate(s.b.T("common.error")+": "+s.loadErr, a.Width()))
@@ -617,13 +751,46 @@ func (s *presetsScreen) Draw(a *App) []string {
 	if a.Message() != "" {
 		chrome += 2
 	}
+	explain := s.explainLines(a.Width())
+	// The explanation block is the first body content a short console loses:
+	// when the frame cannot hold the full chrome plus at least one list row,
+	// the prose gives way so the status line, the notices, the list, the
+	// hint and the base footer stay. At the 80x24 budget the block always
+	// renders and the page size stays 24-presetsListChrome.
+	if a.Height()-chrome < 1 {
+		explain = explain[:0]
+		chrome -= presetsExplainLines
+	}
 	s.list.SetPageSize(pageSizeFor(a.Height(), chrome))
-	lines := make([]string, 0, len(notice)+s.list.PageSize()+4)
+	lines := make([]string, 0, len(notice)+len(explain)+s.list.PageSize()+4)
 	lines = append(lines, cellwidth.Truncate(s.statusLine(), a.Width()), "")
+	lines = append(lines, explain...)
 	lines = append(lines, notice...)
 	lines = append(lines, s.list.Render(a.Width())...)
 	lines = append(lines, "", s.list.FooterHint())
 	return lines
+}
+
+// explainLines renders the four permanent lines that name the object on this
+// screen (survey 2.7): what a fanout preset is (a named run config of
+// seat/tool/time budgets, not a prompt, not a seat selection), how a run
+// consumes it (agy pro fanout --preset <name>, or the AGY_PRO_FANOUT_PRESET
+// env var), where it lives (the store's on-disk path, through MaskOperand
+// like every other echoed path), and the default_preset rule (the key
+// auto-applies to runs that name no preset; since P3-1 a conflicting knob is
+// dropped with a run-time warning instead of killing the run). Each line is
+// truncated to the frame width, so an AGY_PRO_HOME-long path can only ever
+// cut its own line, never the rule lines below it.
+func (s *presetsScreen) explainLines(w int) []string {
+	b := s.b
+	path := providers.MaskOperand(presetFilePath(storeFile(s.store)))
+	return []string{
+		cellwidth.Truncate(missingOr(b, "presets.explain.what", presetsExplainWhat), w),
+		cellwidth.Truncate(missingOr(b, "presets.explain.run", presetsExplainRun), w),
+		cellwidth.Truncate(fillHubSlots(missingOr(b, "presets.explain.file", presetsExplainFile),
+			map[string]string{"path": path}), w),
+		cellwidth.Truncate(missingOr(b, "presets.explain.default", presetsExplainDefault), w),
+	}
 }
 
 // HandleKey re-reads the store behind the signature check first, then

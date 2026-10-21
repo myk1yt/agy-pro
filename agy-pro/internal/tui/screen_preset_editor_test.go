@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -69,13 +70,15 @@ func joinPresetKeys(parts ...[]Key) []Key {
 // k1 wraps bare keys for joinPresetKeys.
 func k1(keys ...Key) []Key { return keys }
 
-// zoneAKeys walks the zone-A fields (name..max_native): one Enter per field,
-// each validating and advancing, landing the focus in the host zone.
+// zoneAKeys walks the zone-A fields (name..max_native): one Tab per field,
+// landing the focus in the host zone. Tab (not Enter) is the walker because
+// Enter on the task field opens the known-task picker (D13); collect()
+// validates every field at save time regardless of how the focus moved.
 func zoneAKeys(fields ...string) []Key {
 	var ks []Key
 	for _, f := range fields {
 		ks = append(ks, typePresetRunes(f)...)
-		ks = append(ks, KeyEnter)
+		ks = append(ks, KeyTab)
 	}
 	return ks
 }
@@ -197,8 +200,9 @@ func TestEditorAcceptsEnvVarName(t *testing.T) {
 }
 
 // TestResolvePresetSources pins the source-column rung mapping against the
-// buildRunConfig ladder: defaults block vs engine default, preset rung, and
-// the flag rung input.
+// buildRunConfig ladder: defaults block vs engine default, the role-qualified
+// preset rung (D11: default key / env-named / plain saved), and the flag rung
+// input.
 func TestResolvePresetSources(t *testing.T) {
 	def := providers.Defaults{N: 5, TimeoutSeconds: 120}
 
@@ -219,30 +223,99 @@ func TestResolvePresetSources(t *testing.T) {
 		}
 	}
 
-	withPreset := resolvePresetSources(presetLadderInputs{
-		set:    map[string]bool{},
-		preset: &fanout.Preset{Name: "p", Task: "security", N: 4, SearchKeyEnv: "MY_KEY"},
-		def:    def,
-	})
-	for field, want := range map[string]string{
-		"n":              "preset",
-		"task":           "preset",
-		"tools":          "engine", // preset pins nothing and the fixture block has no tools
-		"search_key_env": "preset",
-		"max_native":     "state",
-	} {
-		if withPreset[field] != want {
-			t.Fatalf("preset rung[%s] = %q, want %q (all: %v)", field, withPreset[field], want, withPreset)
+	// Every selection role rides the preset rung: the same on-disk row pins
+	// the same fields, and only the label qualifier changes. This is the D11
+	// fix pin: the bare "preset" rung (rendered "active preset") is gone.
+	fixture := &fanout.Preset{Name: "p", Task: "security", N: 4, SearchKeyEnv: "MY_KEY", Root: "/repo"}
+	for _, role := range []string{presetRowDefault, presetRowNamed, presetRowSaved} {
+		withPreset := resolvePresetSources(presetLadderInputs{
+			set:     map[string]bool{},
+			preset:  fixture,
+			def:     def,
+			rowRole: role,
+		})
+		wantRung := "preset_" + role
+		for field, want := range map[string]string{
+			"n":              wantRung,
+			"task":           wantRung,
+			"search_key_env": wantRung,
+			"root":           wantRung,
+			"tools":          "engine", // preset pins nothing and the fixture block has no tools
+			"max_native":     "state",
+		} {
+			if withPreset[field] != want {
+				t.Fatalf("role %s rung[%s] = %q, want %q (all: %v)", role, field, withPreset[field], want, withPreset)
+			}
 		}
 	}
 
-	flagged := resolvePresetSources(presetLadderInputs{
-		set:    map[string]bool{"n": true, "task": true},
-		preset: &fanout.Preset{Name: "p", N: 4, Task: "security"},
+	// An empty role falls back to the plain saved qualifier (defensive: the
+	// screen always passes an explicit role today).
+	defaulted := resolvePresetSources(presetLadderInputs{
+		set:    map[string]bool{},
+		preset: &fanout.Preset{Name: "p", Task: "security"},
 		def:    def,
+	})
+	if defaulted["task"] != "preset_saved" {
+		t.Fatalf("empty role should fall back to preset_saved, got %q", defaulted["task"])
+	}
+
+	flagged := resolvePresetSources(presetLadderInputs{
+		set:     map[string]bool{"n": true, "task": true},
+		preset:  &fanout.Preset{Name: "p", N: 4, Task: "security"},
+		def:     def,
+		rowRole: presetRowDefault,
 	})
 	if flagged["n"] != "flag" || flagged["task"] != "flag" {
 		t.Fatalf("flag rung not honored: %v", flagged)
+	}
+}
+
+// TestEditorSourceColumnRendersPresetRole pins the rendered D11 labels: the
+// same saved row reads "saved preset" by default, "named preset" when
+// AGY_PRO_FANOUT_PRESET names it, "default preset" when the store's
+// default_preset key names it, and env naming beats the default key. The lie
+// this replaces rendered "active preset" for every one of these states.
+func TestEditorSourceColumnRendersPresetRole(t *testing.T) {
+	path := editorHome(t)
+	seedEditorPresets(t, path, &fanout.PresetsFile{
+		DefaultPreset: "p1",
+		Presets: []fanout.Preset{
+			{Name: "p1", Task: "review", N: 4},
+			{Name: "p2", Task: "security", N: 4},
+		},
+	})
+
+	// Saved row, no selection of any kind: "saved preset", never "active preset".
+	app, _ := newEditorApp("p2")
+	out := app.CaptureRun(&ScriptedKeys{})
+	if !strings.Contains(out, "saved preset") {
+		t.Fatalf("plain saved row missing 'saved preset'; frames:\n%s", out)
+	}
+	if strings.Contains(out, "active preset") {
+		t.Fatalf("the lying 'active preset' label is back; frames:\n%s", out)
+	}
+
+	// Env-named row beats the default key: "named preset".
+	t.Setenv(fanout.EnvFanoutPreset, "p2")
+	app2, _ := newEditorApp("p2")
+	out2 := app2.CaptureRun(&ScriptedKeys{})
+	if !strings.Contains(out2, "named preset") {
+		t.Fatalf("env-named row missing 'named preset'; frames:\n%s", out2)
+	}
+	if strings.Contains(out2, "saved preset") || strings.Contains(out2, "default preset") {
+		t.Fatalf("env-named row carries a stale role label; frames:\n%s", out2)
+	}
+
+	// The default-key row with the env naming a DIFFERENT preset: "default preset".
+	t.Setenv(fanout.EnvFanoutPreset, "p2")
+	app3, _ := newEditorApp("p1")
+	out3 := app3.CaptureRun(&ScriptedKeys{})
+	if !strings.Contains(out3, "default preset") {
+		t.Fatalf("default-key row missing 'default preset'; frames:\n%s", out3)
+	}
+	if strings.Contains(out3, "named preset") {
+		t.Fatalf("default-key row mislabeled as env-named; frames:\n%s", out3)
 	}
 }
 
@@ -443,16 +516,26 @@ func TestEditorRenameDropsOldName(t *testing.T) {
 	}
 }
 
-// TestEditorBuiltinReadonly pins the built-in row view: engine defaults
-// render with the engine rung, edits are ignored, and save writes nothing.
+// TestEditorBuiltinReadonly pins the built-in row view: effective engine
+// defaults render with the built-in marker (D12: max_native shows the
+// state.json-resolved value, out_dir shows the reports/fanout/<ts> pattern
+// instead of a blank), edits are ignored, and save writes nothing.
 func TestEditorBuiltinReadonly(t *testing.T) {
 	path := editorHome(t)
-	app, _ := newEditorApp(builtinPresetSentinel)
+	app, scr := newEditorApp(builtinPresetSentinel)
 	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{RuneKey('x'), KeyCtrlS}})
-	for _, want := range []string{builtinPresetRowLabel, "review", "engine default"} {
+	for _, want := range []string{builtinPresetRowLabel, "review", "built-in",
+		"reports/fanout/<ts>", "2"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("builtin view missing %q; frames:\n%s", want, out)
 		}
+	}
+	// D12 pins: no field renders a blank where the engine supplies a value.
+	if scr.formA.Value(6) != "2" {
+		t.Fatalf("builtin max_native = %q, want the effective 2", scr.formA.Value(6))
+	}
+	if scr.formB.Value(2) != "reports/fanout/<ts>" {
+		t.Fatalf("builtin out_dir = %q, want the reports/fanout/<ts> pattern", scr.formB.Value(2))
 	}
 	if !strings.Contains(app.Message(), "Built-in defaults are read-only.") {
 		t.Fatalf("readonly message = %q", app.Message())
@@ -583,7 +666,69 @@ func TestEditorRenameOntoExistingReplacesWithoutDuplicate(t *testing.T) {
 	}
 }
 
-// TestEditorCorruptFileWarnsAndGatesFirstSave pins the security F5 fix on
+// TestEditorModelsSeatsConflictRefused pins defect D9 on the save path: a
+// preset pinning both models and seats (the combination the fanout ladder
+// hard-errors on at run time) is refused at save time with a message naming
+// both fields, nothing is written, the editor stays open, and the offending
+// rows keep their values so the user can clear one side. The single-pin
+// halves save normally.
+func TestEditorModelsSeatsConflictRefused(t *testing.T) {
+	keys := func(models, seats string) []Key {
+		return joinPresetKeys(
+			zoneAKeys("p1", "", "", "", "", "", ""),
+			k1(KeyDown, KeyDown), // host zone -> zone B
+			zoneBKeys("", "", "", "", models, seats),
+			k1(KeyCtrlS),
+		)
+	}
+
+	// Refusal: both pins set.
+	path := editorHome(t)
+	app, scr := newEditorApp("")
+	app.CaptureRun(&ScriptedKeys{Keys: keys("prov/m1", "native:gemini-x")})
+	if !strings.Contains(app.Message(), "models and seats cannot be combined") {
+		t.Fatalf("refusal message = %q; want the named seat-source conflict", app.Message())
+	}
+	if strings.Contains(app.Message(), "prov/m1") || strings.Contains(app.Message(), "gemini-x") {
+		t.Fatalf("the refusal echoed the user operands: %q", app.Message())
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("refused save wrote the preset file: %v", err)
+	}
+	if app.Depth() != 2 {
+		t.Fatalf("editor must stay open after a refused save; depth = %d", app.Depth())
+	}
+	if got := scr.formB.Value(4); got != "prov/m1" {
+		t.Fatalf("models row must keep its value for fixing; got %q", got)
+	}
+	if got := scr.formB.Value(5); got != "native:gemini-x" {
+		t.Fatalf("seats row must keep its value for fixing; got %q", got)
+	}
+
+	// Positive halves: either pin alone saves.
+	path = editorHome(t)
+	app2, _ := newEditorApp("")
+	app2.CaptureRun(&ScriptedKeys{Keys: keys("prov/m1", "")})
+	if !strings.Contains(app2.Message(), "Preset p1 saved.") {
+		t.Fatalf("models-only save message = %q", app2.Message())
+	}
+	pf := reloadEditorPresets(t, path)
+	if p, ok := pf.FindPreset("p1"); !ok || p.Models != "prov/m1" || p.Seats != "" {
+		t.Fatalf("models-only preset wrong on disk: %+v", pf.Presets)
+	}
+
+	path = editorHome(t)
+	app3, _ := newEditorApp("")
+	app3.CaptureRun(&ScriptedKeys{Keys: keys("", "native:gemini-x")})
+	if !strings.Contains(app3.Message(), "Preset p1 saved.") {
+		t.Fatalf("seats-only save message = %q", app3.Message())
+	}
+	pf = reloadEditorPresets(t, path)
+	if p, ok := pf.FindPreset("p1"); !ok || p.Models != "" || p.Seats != "native:gemini-x" {
+		t.Fatalf("seats-only preset wrong on disk: %+v", pf.Presets)
+	}
+}
+
 // this screen: the corrupt-file warning is user-visible (frame body and
 // message line, naming the on-disk path) and the first save is refused until
 // the user explicitly acknowledges overwriting the corrupt file.
@@ -678,7 +823,7 @@ func TestEditorValidationBlocksSave(t *testing.T) {
 	app, _ := newEditorApp("")
 	keys := joinPresetKeys(
 		typePresetRunes("p1"), k1(KeyEnter),
-		k1(KeyEnter), // task (empty)
+		k1(KeyTab), // task (empty); Enter here would open the task picker
 		typePresetRunes("lots"), k1(KeyTab),
 		k1(KeyTab, KeyTab, KeyTab), // timeout, tools, max_turns -> max_native is last
 		k1(KeyTab),                 // last zone-A field -> host zone
@@ -699,7 +844,7 @@ func TestEditorValidationBlocksSave(t *testing.T) {
 	app2, _ := newEditorApp("")
 	keys = joinPresetKeys(
 		typePresetRunes("p1"), k1(KeyEnter),
-		k1(KeyEnter), // task
+		k1(KeyTab),   // task; Enter would open the task picker
 		k1(KeyEnter), // n
 		k1(KeyEnter), // timeout
 		typePresetRunes("read,debug"), k1(KeyTab),
@@ -1046,5 +1191,398 @@ func TestEditorCorruptEpisodeKeepsHint80x24(t *testing.T) {
 	}
 	if lines[len(lines)-1] != baseFooter {
 		t.Fatalf("last frame line = %q, want the base footer", lines[len(lines)-1])
+	}
+}
+
+// TestEditorHostAddRefusedInvalidInput pins D14 (P3-5) commit-time refusal:
+// an entry the exact allow-list match can never satisfy (URL scheme,
+// wildcard, path, internal space, whitespace-only) refuses with a named
+// message, KEEPS the offending input on the Add row for editing, and adds
+// nothing. Enter on a truly empty Add row stays a quiet no-op.
+func TestEditorHostAddRefusedInvalidInput(t *testing.T) {
+	cases := []struct {
+		name       string
+		input      string
+		wantRefuse bool
+	}{
+		{"empty_enter", "", false},
+		{"url", "https://example.com", true},
+		{"wildcard", "*.example.com", true},
+		{"path", "example.com/path", true},
+		{"space", "ex ample.com", true},
+		{"blank", "   ", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			editorHome(t)
+			app, scr := newEditorApp("")
+			keys := joinPresetKeys(
+				zoneAKeys("p1", "", "", "", "", "", ""), // focus -> host zone (Add row)
+				typePresetRunes(tc.input), k1(KeyEnter),
+			)
+			app.CaptureRun(&ScriptedKeys{Keys: keys})
+			if tc.wantRefuse {
+				if !strings.Contains(app.Message(), "not a valid host") {
+					t.Fatalf("message = %q; want the invalid-host refusal", app.Message())
+				}
+				if tc.name != "blank" && strings.Contains(app.Message(), tc.input) {
+					t.Fatalf("the refusal echoed the rejected operand: %q", app.Message())
+				}
+				if scr.pending != tc.input {
+					t.Fatalf("pending = %q; want the offending input kept visible for editing", scr.pending)
+				}
+			} else {
+				if strings.Contains(app.Message(), "not a valid host") {
+					t.Fatalf("empty Enter must stay a quiet no-op; message = %q", app.Message())
+				}
+				if scr.pending != "" {
+					t.Fatalf("pending = %q; want empty", scr.pending)
+				}
+			}
+			if len(scr.hostVals) != 0 {
+				t.Fatalf("hostVals = %v; want empty (nothing added)", scr.hostVals)
+			}
+		})
+	}
+}
+
+// TestEditorHostAddDuplicateRefused pins the duplicate half of D14 (P3-5):
+// committing an entry that normalizes to one already listed refuses with a
+// named message and keeps the input, instead of clearing it silently.
+func TestEditorHostAddDuplicateRefused(t *testing.T) {
+	editorHome(t)
+	app, scr := newEditorApp("")
+	keys := joinPresetKeys(
+		zoneAKeys("p1", "", "", "", "", "", ""),
+		typePresetRunes("example.com"), k1(KeyEnter),
+		k1(KeyDown),                                  // commit landed on the host row; back to the Add row
+		typePresetRunes("EXAMPLE.com"), k1(KeyEnter), // same entry after normalization
+	)
+	app.CaptureRun(&ScriptedKeys{Keys: keys})
+	if !strings.Contains(app.Message(), "already in the list") {
+		t.Fatalf("message = %q; want the duplicate refusal", app.Message())
+	}
+	if len(scr.hostVals) != 1 || scr.hostVals[0] != "example.com" {
+		t.Fatalf("hostVals = %v; want [example.com]", scr.hostVals)
+	}
+	if scr.pending != "EXAMPLE.com" {
+		t.Fatalf("pending = %q; want the duplicate input kept visible", scr.pending)
+	}
+}
+
+// TestEditorRemoveHostNothingArmedRefused pins D15 (P3-5): pressing Remove
+// host with no host row armed names the missing arming step instead of
+// silently no-oping, and drops nothing.
+func TestEditorRemoveHostNothingArmedRefused(t *testing.T) {
+	t.Run("empty list", func(t *testing.T) {
+		editorHome(t)
+		app, scr := newEditorApp("")
+		keys := joinPresetKeys(
+			zoneAKeys("p1", "", "", "", "", "", ""),
+			k1(KeyDown, KeyEnter), // Remove row (rows: Add, Remove), nothing armed
+		)
+		app.CaptureRun(&ScriptedKeys{Keys: keys})
+		if !strings.Contains(app.Message(), "no host is armed") {
+			t.Fatalf("message = %q; want the nothing-armed refusal", app.Message())
+		}
+		if len(scr.hostVals) != 0 {
+			t.Fatalf("hostVals = %v; want empty", scr.hostVals)
+		}
+	})
+
+	t.Run("seeded host unarmed", func(t *testing.T) {
+		path := editorHome(t)
+		seedEditorPresets(t, path, &fanout.PresetsFile{Presets: []fanout.Preset{
+			{Name: "p1", AllowHosts: []string{"a.example.com"}},
+		}})
+		app, scr := newEditorApp("p1")
+		keys := joinPresetKeys(
+			zoneAKeys("", "", "", "", "", "", ""), // Enter-walk zone A into the host zone
+			k1(KeyDown, KeyDown, KeyEnter),        // rows: host, Add, Remove; nothing armed
+		)
+		app.CaptureRun(&ScriptedKeys{Keys: keys})
+		if !strings.Contains(app.Message(), "no host is armed") {
+			t.Fatalf("message = %q; want the nothing-armed refusal", app.Message())
+		}
+		if len(scr.hostVals) != 1 || scr.hostVals[0] != "a.example.com" {
+			t.Fatalf("hostVals = %v; want the seeded host untouched", scr.hostVals)
+		}
+	})
+}
+
+// TestEditorSeededInvalidHostRefusedAtSave pins the D14 (P3-5) save-time
+// guard: a host row seeded from a hand-edited file that the exact allow-list
+// match can never satisfy refuses the save like every other collect error
+// (P3-2 behavior): the editor stays open and the offending row stays visible.
+// (The seed is "*.example.com", not a URL shape: a seeded "https://..."
+// value trips the earlier credential-shaped guard, which refuses too, just
+// with the secret message.)
+func TestEditorSeededInvalidHostRefusedAtSave(t *testing.T) {
+	path := editorHome(t)
+	seedEditorPresets(t, path, &fanout.PresetsFile{Presets: []fanout.Preset{
+		{Name: "p1", Task: "review", AllowHosts: []string{"*.example.com"}},
+	}})
+	app, scr := newEditorApp("p1")
+	keys := joinPresetKeys(
+		zoneAKeys("", "", "", "", "", "", ""), // seeded fields stay; Enter-walk to the host zone
+		k1(KeyDown, KeyDown),                  // host zone -> zone B
+		zoneBKeys("", "", "", "", "", ""),
+		k1(KeyCtrlS),
+	)
+	app.CaptureRun(&ScriptedKeys{Keys: keys})
+	if !strings.Contains(app.Message(), "allow_hosts entries must be bare hostnames") {
+		t.Fatalf("message = %q; want the allow_hosts save refusal", app.Message())
+	}
+	if strings.Contains(app.Message(), "*.example.com") {
+		t.Fatalf("the refusal echoed the rejected operand: %q", app.Message())
+	}
+	if app.Depth() != 2 {
+		t.Fatalf("editor should stay open after the refusal; depth = %d", app.Depth())
+	}
+	if len(scr.hostVals) != 1 || scr.hostVals[0] != "*.example.com" {
+		t.Fatalf("hostVals = %v; want the offending row kept visible", scr.hostVals)
+	}
+}
+
+// TestEditorHostAddValidRoundTrip pins the acceptance half: a valid host
+// with stray case/space/port commits in the canonical normalized form and
+// saves unchanged (normalization as before; validation accepts it).
+func TestEditorHostAddValidRoundTrip(t *testing.T) {
+	path := editorHome(t)
+	app, _ := newEditorApp("")
+	keys := joinPresetKeys(
+		zoneAKeys("p1", "", "", "", "", "", ""),
+		typePresetRunes(" Example.COM:8443 "), k1(KeyEnter),
+		k1(KeyDown, KeyDown, KeyDown), // host row -> zone B
+		zoneBKeys("", "", "", "", "", ""),
+		k1(KeyCtrlS),
+	)
+	app.CaptureRun(&ScriptedKeys{Keys: keys})
+	if !strings.Contains(app.Message(), "Preset p1 saved.") {
+		t.Fatalf("save message = %q; want saved", app.Message())
+	}
+	pf := reloadEditorPresets(t, path)
+	if len(pf.Presets) != 1 || len(pf.Presets[0].AllowHosts) != 1 ||
+		pf.Presets[0].AllowHosts[0] != "example.com" {
+		t.Fatalf("on-disk hosts = %+v; want [example.com]", pf.Presets)
+	}
+}
+
+// TestEditorTaskPickerListsEngineTaskNames pins the picker half of the D13
+// fix: Enter on the task field opens the shared choice overlay, its rows are
+// EXACTLY fanout.TaskNames() (derived here from tasks.go, never a copied
+// list), picking a row writes the canonical name into the field, and the
+// preset saves with it. Tab still advances past the task field untouched.
+func TestEditorTaskPickerListsEngineTaskNames(t *testing.T) {
+	path := editorHome(t)
+	app, scr := newEditorApp("")
+	// Type the name, Enter advances to the task field, Enter opens the picker.
+	app.CaptureRun(&ScriptedKeys{Keys: joinPresetKeys(
+		typePresetRunes("p1"), k1(KeyEnter, KeyEnter))})
+	ch, ok := app.Modal().(*Choice)
+	if !ok {
+		t.Fatalf("modal = %T, want the task picker choice overlay", app.Modal())
+	}
+	want := fanout.TaskNames()
+	if ch.list.Len() != len(want) {
+		t.Fatalf("picker rows = %d, want %d (len fanout.TaskNames())", ch.list.Len(), len(want))
+	}
+	for i, name := range want {
+		if got := ch.list.Row(i).Label; got != name {
+			t.Fatalf("picker row %d = %q, want %q", i, got, name)
+		}
+	}
+	if title := ch.Title(); title != presetsEditorFieldTask {
+		t.Fatalf("picker title = %q, want the reused task field label %q", title, presetsEditorFieldTask)
+	}
+
+	// Pick the third row by digit (1-based stepList activation), walk the
+	// remaining fields, save, and pin the picked name on disk.
+	app.CaptureRun(&ScriptedKeys{Keys: joinPresetKeys(
+		k1(Digit(3)),
+		k1(KeyTab, KeyTab, KeyTab, KeyTab, KeyTab, KeyTab), // task -> last zone-A field -> host zone
+		k1(KeyDown, KeyDown), // -> zone B
+		zoneBKeys("", "", "", "", "", ""),
+		k1(KeyCtrlS),
+	)})
+	if got := scr.formA.Value(1); got != want[2] {
+		t.Fatalf("task field = %q, want the picked row %q", got, want[2])
+	}
+	if !strings.Contains(app.Message(), "Preset p1 saved.") {
+		t.Fatalf("save message = %q; want saved", app.Message())
+	}
+	pf := reloadEditorPresets(t, path)
+	if p, ok := pf.FindPreset("p1"); !ok || p.Task != want[2] {
+		t.Fatalf("picked task not persisted: %+v", pf.Presets)
+	}
+}
+
+// TestEditorTaskPickerEscKeepsTypedValue pins the picker cancel arm: Esc
+// closes the overlay without touching the task field, the cancel message
+// renders, and the dirty guard re-arms (the typed value must survive the
+// round trip through the modal).
+func TestEditorTaskPickerEscKeepsTypedValue(t *testing.T) {
+	editorHome(t)
+	app, scr := newEditorApp("")
+	app.CaptureRun(&ScriptedKeys{Keys: joinPresetKeys(
+		typePresetRunes("p1"), k1(KeyEnter),
+		typePresetRunes("security"), k1(KeyEnter), // open the picker over "security"
+	)})
+	if _, ok := app.Modal().(*Choice); !ok {
+		t.Fatalf("modal = %T, want the task picker open over a typed value", app.Modal())
+	}
+	app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyEsc}})
+	if got := scr.formA.Value(1); got != "security" {
+		t.Fatalf("task field = %q, want the typed value kept after Esc", got)
+	}
+	if !strings.Contains(app.Message(), "Cancelled") {
+		t.Fatalf("cancel message = %q", app.Message())
+	}
+	if app.Modal() == nil {
+		t.Fatal("the dirty guard must re-arm after the picker closes")
+	}
+}
+
+// TestEditorTaskTypoRefusedAtSave pins the refusal half of the D13 fix with
+// the P3-2 shape: a typo'd task name is refused at save with a named message
+// (known names only, operand never echoed), nothing is written, the editor
+// stays open, and the offending value stays visible in the task field. The
+// same field corrected through the picker saves, a typo seeded from a
+// hand-edited file refuses the same way without rewriting the file, and a
+// case-insensitive spelling of a known name saves verbatim.
+func TestEditorTaskTypoRefusedAtSave(t *testing.T) {
+	fillKeys := func(task string) []Key {
+		return joinPresetKeys(
+			zoneAKeys("p1", task, "", "", "", "", ""),
+			k1(KeyDown, KeyDown),
+			zoneBKeys("", "", "", "", "", ""),
+			k1(KeyCtrlS),
+		)
+	}
+
+	// Refusal: "secuirty" must not silently become review on disk.
+	path := editorHome(t)
+	app, scr := newEditorApp("")
+	app.CaptureRun(&ScriptedKeys{Keys: fillKeys("secuirty")})
+	if !strings.Contains(app.Message(), "known task names") {
+		t.Fatalf("refusal message = %q; want the known-task refusal", app.Message())
+	}
+	if strings.Contains(app.Message(), "secuirty") {
+		t.Fatalf("the refusal echoed the rejected operand: %q", app.Message())
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("refused save wrote the preset file: %v", err)
+	}
+	if app.Depth() != 2 {
+		t.Fatalf("editor must stay open after a refused save; depth = %d", app.Depth())
+	}
+	if got := scr.formA.Value(1); got != "secuirty" {
+		t.Fatalf("task field must keep the offending value for fixing; got %q", got)
+	}
+
+	// Correction through the picker: focus back to the task field, open the
+	// picker, pick row 1 (review), save.
+	scr.zone = editorZoneA
+	scr.formA.SetCursor(presetZoneAFieldTask)
+	app.CaptureRun(&ScriptedKeys{Keys: joinPresetKeys(
+		k1(KeyEnter), // open the picker
+		k1(Digit(1)),
+		k1(KeyCtrlS),
+	)})
+	if !strings.Contains(app.Message(), "Preset p1 saved.") {
+		t.Fatalf("corrected save message = %q", app.Message())
+	}
+	pf := reloadEditorPresets(t, path)
+	if p, ok := pf.FindPreset("p1"); !ok || p.Task != "review" {
+		t.Fatalf("corrected task not persisted: %+v", pf.Presets)
+	}
+
+	// Seeded typo (hand-edited file): the save refuses and the file is not
+	// rewritten, so the row survives for correction.
+	path = editorHome(t)
+	seedEditorPresets(t, path, &fanout.PresetsFile{Presets: []fanout.Preset{
+		{Name: "p1", Task: "secuirty", N: 4},
+	}})
+	app2, _ := newEditorApp("p1")
+	app2.CaptureRun(&ScriptedKeys{Keys: []Key{KeyCtrlS}})
+	if !strings.Contains(app2.Message(), "known task names") {
+		t.Fatalf("seeded-typo refusal message = %q", app2.Message())
+	}
+	pf = reloadEditorPresets(t, path)
+	if p, ok := pf.FindPreset("p1"); !ok || p.Task != "secuirty" || p.N != 4 {
+		t.Fatalf("refused save must not rewrite the seeded row: %+v", pf.Presets)
+	}
+
+	// Case-insensitive spelling of a known name saves verbatim (the engine
+	// normalizes case at resolve time, so the preset round-trips as typed).
+	path = editorHome(t)
+	app3, _ := newEditorApp("")
+	app3.CaptureRun(&ScriptedKeys{Keys: fillKeys("Security")})
+	if !strings.Contains(app3.Message(), "Preset p1 saved.") {
+		t.Fatalf("case-insensitive save message = %q", app3.Message())
+	}
+	pf = reloadEditorPresets(t, path)
+	if p, ok := pf.FindPreset("p1"); !ok || p.Task != "Security" {
+		t.Fatalf("case-insensitive task not persisted verbatim: %+v", pf.Presets)
+	}
+}
+
+// TestEditorSaveRuleMessagesCoverEveryValidatorRefusal pins FIX-CODE-C3: the
+// editor's save gate IS fanout.ValidatePresetForSave, and this screen owns only
+// the WORDING of a rule the validator decided. Every sentinel the validator can
+// return maps to the editor's own named message, asserted here through a
+// fragment that exists in the editor's catalog text only (never in the
+// validator's engine text), so a rule can no longer be added to the shared
+// validator and reach the user as raw engine prose, and an inline copy of a rule
+// cannot come back without this table going stale.
+func TestEditorSaveRuleMessagesCoverEveryValidatorRefusal(t *testing.T) {
+	editorHome(t)
+	_, scr := newEditorApp("")
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"name", fanout.ErrPresetNameRequired, "Preset name must not be empty."},
+		// Wrapped exactly the way ValidatePresetForSave returns it (the
+		// provider's reason appended): errors.Is must still find the rule.
+		{"key_env", fmt.Errorf("%w: apiKeyEnv is empty", fanout.ErrPresetSearchKeyEnv),
+			"search_key_env must be an environment variable NAME, not a key value."},
+		{"seat_conflict", fanout.ErrPresetSeatConflict, "Clear one of them."},
+		{"unknown_task", fanout.ErrPresetUnknownTask, "silently run the review prompt"},
+		{"allow_hosts", fanout.ErrPresetAllowHosts, "Remove the invalid host row"},
+	}
+	for _, tc := range cases {
+		got := scr.saveRuleMessage(tc.err)
+		if !strings.Contains(got, tc.want) {
+			t.Errorf("%s: editor message %q must carry %q (the editor's own wording)", tc.name, got, tc.want)
+		}
+	}
+	// The name rule is the cleanest leak check: the engine text and the editor
+	// text differ, so a fall-through to err.Error() is visible.
+	if got := scr.saveRuleMessage(fanout.ErrPresetNameRequired); strings.Contains(got, "name is required") {
+		t.Errorf("the name refusal leaked the validator's engine text: %q", got)
+	}
+}
+
+// TestEditorNamelessSaveRefused pins the name rule as the shared validator's
+// too: Ctrl+S on an empty form reaches fanout.ValidatePresetForSave (collect()
+// carries no name check of its own any more), the refusal arrives as the
+// editor's named message, nothing is written, and the editor stays open.
+func TestEditorNamelessSaveRefused(t *testing.T) {
+	path := editorHome(t)
+	if err := fanout.ValidatePresetForSave(fanout.Preset{}); err == nil {
+		t.Fatal("the shared save validator must refuse a nameless preset")
+	}
+	app, _ := newEditorApp("")
+	app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyCtrlS}})
+	if !strings.Contains(app.Message(), "Preset name must not be empty.") {
+		t.Fatalf("nameless save message = %q; want the editor's name refusal", app.Message())
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("nameless save wrote the preset file: %v", err)
+	}
+	if app.Depth() != 2 {
+		t.Fatalf("editor must stay open after a refused save; depth = %d", app.Depth())
 	}
 }

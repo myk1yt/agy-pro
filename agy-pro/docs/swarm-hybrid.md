@@ -198,6 +198,37 @@ stdin); an empty prompt falls back to the template scaffold.
 Templates: `code-review` (`--task review`, `read,search`), `security-audit` (`--task security`, `read,search`
 plus adversarial framing), `custom`. Default timeout 300s (the fanout CLI default).
 
+### 2.2 Presets: builder presets, saved seat selections, and the fanout default
+
+Three different "preset" ideas meet in this command; they are not the same thing:
+
+- **The builder's `p1`..`p3` are seat-selection shortcuts**, resolved against the
+  live combined inventory at build time. They are stored nowhere and they are not
+  fanout presets.
+- **Saved swarm presets are user-saved numbered seat selections**, managed in
+  Hub > Settings.
+- **Fanout presets** (the run configurations of [`fanout.md`](fanout.md) §2.4)
+  are named budget sets in `~/.agy-pro/fanout-presets.json`: seat source, tools,
+  timeout, output directory. Not a prompt, not a seat selection of its own. The
+  builder never names one: it hands fanout exactly its seven explicit flags
+  (`--task`, `--seats`, `--root`, `--timeout`, `--tools`, `--prompt`, `--json`;
+  `--prompt-file` replaces `--prompt` on the file path), so under a swarm run
+  the fanout ladder supplies only the knobs no flag covers. A store DEFAULT
+  preset whose `models` / `seats` / write-granting `tools` pins conflict with
+  the builder's explicit `--seats` (or the partition read-only gate) is dropped
+  with one stderr warning per knob and the run proceeds; an explicitly named
+  `--preset` keeps the hard error ([`fanout.md`](fanout.md) §2.4.2, finding F1).
+
+**"Pool policy" defined.** The phrase names the auto-seating exclusion rule for
+k3-family models: a model whose family is `k3` (case-insensitive) or whose id
+carries the exact token `k3` (`kimi-k3`, `k3-agent-swarm`) is never picked
+automatically and its number is rejected in the builder; ids that merely contain
+the letters (`k3000`, `glm-k3x`) stay eligible. The rule lives in the binary as
+a predicate (`internal/providers/k3.go`, `providers.IsK3Family` /
+`providers.HasK3Token`); it is not a settings file entry and cannot be toggled
+from the UI. Automatic seating only: an explicit `--seats` token naming a k3
+model is honored with a warning.
+
 ---
 
 ## 3. One combined model list
@@ -256,8 +287,8 @@ agy pro settings                 # full-screen, keybinding-driven TUI
 agy pro settings --panel p4      # deep-link one panel
 ```
 
-Panels: `[1] Launch & Profile`, `[2] Models & Providers`, `[3] Bridge Tools & Budgets`, `[4] Swarm & Fanout`,
-`[5] Diagnostics & Keys`, `[6] Install & Update`, `[7] Environment Variables`.
+Panels: `Launch & Profile`, `Models & Providers`, `Bridge Tools & Budgets`, `Swarm & Fanout`,
+`Diagnostics & Keys`, `Install & Update`, `Environment Variables`.
 
 Keys: `↑/↓` move, `PgUp`/`PgDn` (or `Shift+↑/↓`) page, `←/→` switch section, `Tab` confirm/switch,
 `Enter`/digits select, `y`/`n` confirm destructive operations, `Esc` back, `Ctrl+L` redraw, `Ctrl+C` exit.

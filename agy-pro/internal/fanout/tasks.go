@@ -7,12 +7,46 @@ import (
 
 // TaskPreset defines system instructions and goals for a fanout task.
 type TaskPreset struct {
-	Name        string
-	Description string
+	Name         string
+	Description  string
 	SystemPrompt string
 }
 
+// taskPresetNames is the closed set of compiled task names in picker display
+// order: review first because it is the engine fallback an unknown name (and
+// an empty preset field) resolves to. It is the single source the TUI task
+// picker and the editor's save-time known-name check read; the
+// TaskNamesMatchesGetTaskPresetSlots test is the drift guard pinning this
+// slice against the GetTaskPreset switch below.
+var taskPresetNames = []string{"review", "security", "plan-audit", "research", "ideas", "custom"}
+
+// TaskNames returns the closed set of compiled task preset names, in picker
+// display order. The slice is a copy: callers may sort or filter freely.
+func TaskNames() []string {
+	return append([]string(nil), taskPresetNames...)
+}
+
+// IsKnownTask reports whether name, after GetTaskPreset's normalization
+// (trim + lowercase), is one of the compiled task names. An empty name is
+// NOT known: in a preset it means "unset, resolve the engine default".
+func IsKnownTask(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	for _, k := range taskPresetNames {
+		if k == n {
+			return true
+		}
+	}
+	return false
+}
+
 // GetTaskPreset returns the preset for a given task name.
+// Unknown names deliberately fall back to the review preset: the fallback
+// stays a run-time resolution rule for every non-editor writer (the --task
+// CLI flag, hand-edited preset files), and the prompt store's taskSlotName
+// mirrors it so an unknown name's override slot is the review slot. The
+// silent-fallback defect (D13) is fixed at the preset-editor save path,
+// which refuses unknown names before they persist; the engine does not
+// hard-error a run that resolved a typo to review before this fix existed.
 func GetTaskPreset(name string) TaskPreset {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "security":

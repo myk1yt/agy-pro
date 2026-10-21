@@ -7,7 +7,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"agypro/internal/agenttools"
 	"agypro/internal/providers"
 )
 
@@ -148,18 +150,86 @@ func (s *PresetFileStore) SavePresets(f *PresetsFile) error {
 	return providers.WriteFileAtomic(path, data, 0o600)
 }
 
+// The sentinel refusals ValidatePresetForSave returns. The validator owns
+// WHICH rules a user-driven save must pass; a presentation layer (the TUI
+// preset editor) matches them with errors.Is and renders its own localized
+// message, so the rule set has exactly one home and the wording has two
+// registers. Every message names the rule or the fields only and never echoes
+// an operand (F5 masking family).
+var (
+	// ErrPresetNameRequired: a preset row needs a name to be addressable by
+	// --preset / AGY_PRO_FANOUT_PRESET / default_preset.
+	ErrPresetNameRequired = errors.New("name is required")
+	// ErrPresetSearchKeyEnv: search_key_env stores an environment-variable
+	// NAME only; a key VALUE is refused (B4, providers.ValidateAPIKeyEnvName).
+	ErrPresetSearchKeyEnv = errors.New("search_key_env must be an environment variable NAME, not a key value")
+	// ErrPresetSeatConflict (D9): models and seats pin the same seat source, so
+	// a preset carrying both could never run.
+	ErrPresetSeatConflict = errors.New("models and seats cannot be combined: both pin the seat source, so this preset could never run")
+	// ErrPresetUnknownTask (D13): the engine resolves an unknown task name to
+	// the review prompt silently (tasks.go GetTaskPreset fallback), so a typo
+	// would persist a preset that runs a different task than its name says.
+	ErrPresetUnknownTask = errors.New("task must be one of the known task names (review, security, plan-audit, research, ideas, custom), or empty for the engine default")
+	// ErrPresetAllowHosts (D14): an allow_hosts entry the exact allow-list match
+	// can never satisfy (scheme prefix, wildcard, path) refuses the save.
+	ErrPresetAllowHosts = errors.New("allow_hosts entries must be bare hostnames or IPs (no scheme, wildcard, or path)")
+)
+
 // validatePreset vets one preset at the store boundary. The search_key_env
 // guard is the same providers.ValidateAPIKeyEnvName every other entry path
 // shares (B4): env-var NAME only, a key VALUE is rejected, and the error
 // text never echoes the operand.
 func validatePreset(p Preset) error {
 	if p.Name == "" {
-		return errors.New("name is required")
+		return ErrPresetNameRequired
 	}
 	if p.SearchKeyEnv != "" {
 		if err := providers.ValidateAPIKeyEnvName(p.SearchKeyEnv); err != nil {
-			return fmt.Errorf("search_key_env: %w", err)
+			return fmt.Errorf("%w: %s", ErrPresetSearchKeyEnv, err)
 		}
+	}
+	return nil
+}
+
+// ValidatePresetForSave is the SINGLE save-time validation authority for a
+// user-driven preset writer. Its two production callers are the TUI preset
+// editor (presetEditorScreen.collect, internal/tui/screen_preset_editor.go) and
+// the Presets list's Duplicate verb (presetsScreen.duplicate,
+// internal/tui/screen_presets.go), which routes a copy through this gate before
+// writing it because a copy is a NEW record. Each renders a refusal through its
+// own localized message and never restates a rule of its own; a future writer
+// (`agy pro fanout --setup` configures PROVIDERS and writes no fanout preset)
+// must route its save here too.
+//
+// The rule set, in evaluation order:
+//   - the store-boundary rules from validatePreset (ErrPresetNameRequired,
+//     ErrPresetSearchKeyEnv),
+//   - ErrPresetSeatConflict (D9): a preset carrying both seats and models can
+//     never run (buildRunConfig hard-errors with "--seats and --models cannot
+//     be combined"),
+//   - ErrPresetUnknownTask (D13): an unknown task name would silently run the
+//     review prompt instead of the task the preset is named for,
+//   - ErrPresetAllowHosts (D14): every allow_hosts entry must be a bare
+//     hostname the exact allow-list match can satisfy
+//     (agenttools.ValidateAllowHosts).
+//
+// SavePresets deliberately does NOT apply the D9/D13/D14 rules; it runs only
+// the store-boundary ones. LoadPresets never validates, the P3-1 ladder guard
+// keeps an already-on-disk conflicting preset from breaking a run, and the
+// store must stay able to round-trip any loadable state (the P3-1 guard tests
+// seed exactly this shape through SavePresets).
+func ValidatePresetForSave(p Preset) error {
+	if err := validatePreset(p); err != nil {
+		return err
+	}
+	if strings.TrimSpace(p.Models) != "" && strings.TrimSpace(p.Seats) != "" {
+		return ErrPresetSeatConflict
+	}
+	if strings.TrimSpace(p.Task) != "" && !IsKnownTask(p.Task) {
+		return ErrPresetUnknownTask
+	}
+	if !agenttools.ValidateAllowHosts(p.AllowHosts) {
+		return ErrPresetAllowHosts
 	}
 	return nil
 }

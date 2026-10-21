@@ -349,3 +349,44 @@ func TestRunAllowHostFlagBindsRunConfig(t *testing.T) {
 		t.Errorf("AllowHosts without the flag = %v; want empty", got[1].AllowHosts)
 	}
 }
+
+// D14 (P3-5): an explicit --allow-host entry that can never match the exact
+// allow-list (scheme prefix, wildcard, path) is a usage error (exit 2) at
+// collection time, never a silently dead list entry; the offending value is
+// never echoed (it is not in Run's flag-seed list) and the engine never
+// runs. Valid entries still bind (TestRunAllowHostFlagBindsRunConfig).
+func TestRunAllowHostFlagRefusesInvalid(t *testing.T) {
+	t.Setenv(paths.EnvAgyProHome, t.TempDir())
+
+	var calls int
+	old := executeEngine
+	executeEngine = func(ctx context.Context, cfg RunConfig) (*SummaryReport, error) {
+		calls++
+		return &SummaryReport{Task: cfg.Task, NRequested: cfg.N}, nil
+	}
+	t.Cleanup(func() { executeEngine = old })
+
+	for _, bad := range []string{"https://example.com", "*.example.com", "example.com/path"} {
+		var out, errw strings.Builder
+		code := Run([]string{"--prompt", "p", "--json", "--allow-host", bad}, nil, &out, &errw)
+		if code != 2 {
+			t.Fatalf("Run(--allow-host %q) exit = %d, want 2; stderr = %s", bad, code, errw.String())
+		}
+		if !strings.Contains(errw.String(), "--allow-host") {
+			t.Fatalf("stderr = %q; want it to name --allow-host", errw.String())
+		}
+		if strings.Contains(errw.String(), bad) {
+			t.Fatalf("stderr echoed the rejected operand: %q", errw.String())
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("engine called %d times; want 0 (refused before execution)", calls)
+	}
+
+	// A valid companion entry does not smuggle the bad one through: the bad
+	// entry still refuses the whole run.
+	var out2, errw2 strings.Builder
+	if code := Run([]string{"--prompt", "p", "--json", "--allow-host", "ok.example", "--allow-host", "https://bad.example"}, nil, &out2, &errw2); code != 2 {
+		t.Fatalf("mixed Run exit = %d, want 2; stderr = %s", code, errw2.String())
+	}
+}

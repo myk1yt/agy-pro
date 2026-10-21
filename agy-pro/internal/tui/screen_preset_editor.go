@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"errors"
+	"os"
 	"strconv"
 	"strings"
 
@@ -20,6 +22,11 @@ const (
 	editorZoneHosts
 	editorZoneB
 )
+
+// presetZoneAFieldTask is the zone-A index of the task field (name=0,
+// task=1). Enter on it opens the known-task picker instead of advancing,
+// mirroring the model form's picker fields; Tab/Down still advance from it.
+const presetZoneAFieldTask = 1
 
 // Row IDs of the allow_hosts sub-list. Host rows carry ID "host\x00<host>"
 // and always sort before the two action rows.
@@ -55,7 +62,34 @@ const (
 	presetEngineDefaultTools    = "read,search"
 	presetEngineDefaultMaxTurns = 10
 	presetEngineDefaultRoot     = "."
+	// presetEngineDefaultOutDir is the engine's per-run output directory
+	// pattern (engine.go stamps reports/fanout/<ts> at run start); the
+	// placeholder is rendered verbatim because the timestamp only exists
+	// once a run starts.
+	presetEngineDefaultOutDir = "reports/fanout/<ts>"
 )
+
+// Row roles for the preset rung of the source column (D11): the label must
+// name HOW the edited row is selected, not imply it is in effect. The
+// precedence mirrors loadActivePreset (cli.go): an env-named row beats the
+// store's default_preset key; a row that is neither is just a saved row.
+// The editor cannot see a past --preset flag, so "named" covers the env
+// spelling (AGY_PRO_FANOUT_PRESET) only.
+const (
+	presetRowDefault = "default" // the store's default_preset key names this row
+	presetRowNamed   = "named"   // AGY_PRO_FANOUT_PRESET names this row
+	presetRowSaved   = "saved"   // the row exists on disk, neither of the above
+)
+
+// builtinEffectiveMaxNative is the value the engine resolves for max_native
+// with no flag and no preset (resolveMaxNative: state.json rung, else the
+// contract default 2). The built-in view must show THIS, not a blank cell.
+func builtinEffectiveMaxNative() int {
+	if st, err := mode.LoadState(); err == nil {
+		return st.EffectiveNativeSeatConcurrency()
+	}
+	return mode.DefaultNativeSeatConcurrency
+}
 
 // English fallbacks for catalog keys this screen resolves through missingOr;
 // en.json now carries every key below (catalog-resolved).
@@ -95,7 +129,9 @@ const (
 	// catalog-resolved, fallback kept: presets.editor.hosts.remove
 	presetsEditorHostsRemove = "Remove host"
 	// catalog-resolved, fallback kept: presets.editor.hint
-	presetsEditorHint = "Tab next section · Enter next field · Ctrl+S save · Esc or Right close"
+	// (P3-6 picker tie: Enter on the task field opens the known-names picker,
+	// so the hint names it; at 78 cells the line fits the 80-column budget.)
+	presetsEditorHint = "Tab next section · Enter next field (task: picker) · Ctrl+S save · Right close"
 	// catalog-resolved, fallback kept: presets.editor.hint_builtin
 	presetsEditorHintBuiltin = "Read-only view of the engine defaults. Esc or Right closes."
 	// catalog-resolved, fallback kept: presets.editor.readonly
@@ -122,10 +158,30 @@ const (
 	presetsEditorValidationKeyEnv = "search_key_env must be an environment variable NAME, not a key value."
 	// MISSING-KEY: presets.editor.validation.secret
 	presetsEditorValidationSecret = "{{field}} looks like secret or key material and cannot be saved (value hidden). Preset fields store names and paths, never keys."
+	// MISSING-KEY: presets.editor.validation.seat_conflict
+	presetsEditorValidationSeatConflict = "models and seats cannot be combined: both pin the seat source, so this preset could never run. Clear one of them."
+	// MISSING-KEY: presets.editor.validation.host
+	presetsEditorValidationHost = "allow_hosts entries must be bare hostnames or IPs (no scheme, wildcard, or path). Remove the invalid host row and save again."
+	// MISSING-KEY: presets.editor.validation.task
+	presetsEditorValidationTask = "task must be one of the known task names (review, security, plan-audit, research, ideas, custom), or empty for the engine default. Unknown names silently run the review prompt, so they are refused here."
+	// MISSING-KEY: presets.editor.hosts.invalid
+	presetsEditorHostsInvalid = "not a valid host: enter a bare hostname or IP (no scheme, wildcard, or path). The entry was kept for editing; nothing was added."
+	// MISSING-KEY: presets.editor.hosts.duplicate
+	presetsEditorHostsDuplicate = "that host is already in the list. Duplicates are not added."
+	// MISSING-KEY: presets.editor.hosts.none_armed
+	presetsEditorHostsNoneArmed = "no host is armed for removal: press Enter on a host row first, then press Remove host."
 	// catalog-resolved, fallback kept: presets.editor.source.state
 	presetsEditorSourceState = "state.json"
 	// catalog-resolved, fallback kept: presets.editor.source.none
 	presetsEditorSourceNone = "(none)"
+	// MISSING-KEY: presets.editor.source.preset_default
+	presetsEditorSourcePresetDefault = "default preset"
+	// MISSING-KEY: presets.editor.source.preset_named
+	presetsEditorSourcePresetNamed = "named preset"
+	// MISSING-KEY: presets.editor.source.preset_saved
+	presetsEditorSourcePresetSaved = "saved preset"
+	// MISSING-KEY: presets.editor.source.builtin
+	presetsEditorSourceBuiltin = "built-in"
 )
 
 // presetEditorScreen is S8: the fanout preset editor (architect-report
@@ -145,26 +201,27 @@ const (
 // explicit close gesture; a clean Esc never arms the guard and pops
 // through the plain App precedence.
 type presetEditorScreen struct {
-	name       string // original preset name ("" = new)
-	builtin    bool   // read-only view of the engine defaults
-	store      *fanout.PresetFileStore
-	preset     *fanout.Preset // on-disk preset being edited (nil for new)
-	notFound   string
-	def        providers.Defaults
-	valA       []string // seeded zone-A values (name..max_native)
-	valB       []string // seeded zone-B values (search_endpoint..json)
-	formA      *Form    // name, task, n, timeout_seconds, tools, max_turns, max_native
-	formB      *Form    // search_endpoint, search_key_env, out_dir, root, models, seats, json
-	hosts      *stepList
-	hostVals   []string
-	hostsSel   int
-	pending    string // add-host inline input
-	hostsDirty bool
-	zone       int
-	b          *i18n.Bundle
-	lang       string
-	app        *App
-	guard      *presetEditorGuard
+	name        string // original preset name ("" = new)
+	builtin     bool   // read-only view of the engine defaults
+	store       *fanout.PresetFileStore
+	preset      *fanout.Preset // on-disk preset being edited (nil for new)
+	defaultName string         // the store's default_preset key at load time ("" = none)
+	notFound    string
+	def         providers.Defaults
+	valA        []string // seeded zone-A values (name..max_native)
+	valB        []string // seeded zone-B values (search_endpoint..json)
+	formA       *Form    // name, task, n, timeout_seconds, tools, max_turns, max_native
+	formB       *Form    // search_endpoint, search_key_env, out_dir, root, models, seats, json
+	hosts       *stepList
+	hostVals    []string
+	hostsSel    int
+	pending     string // add-host inline input
+	hostsDirty  bool
+	zone        int
+	b           *i18n.Bundle
+	lang        string
+	app         *App
+	guard       *presetEditorGuard
 	corruptLatch
 }
 
@@ -198,6 +255,7 @@ func NewPresetEditorScreen(name string) Screen {
 		}
 		e.corruptLatch.reconcile(e.corruptLatch.corruptEvents > before, loadErr)
 		if err == nil && pf != nil {
+			e.defaultName = pf.DefaultPreset
 			if e.builtin {
 				// The built-in view seeds the engine defaults; no store row.
 			} else if e.name != "" {
@@ -221,8 +279,9 @@ func NewPresetEditorScreen(name string) Screen {
 	if e.builtin {
 		e.valA = []string{builtinPresetRowLabel, presetEngineDefaultTask,
 			strconv.Itoa(presetEngineDefaultN), strconv.Itoa(presetEngineDefaultTimeout),
-			presetEngineDefaultTools, strconv.Itoa(presetEngineDefaultMaxTurns), ""}
-		e.valB = []string{"", "", "", presetEngineDefaultRoot, "", "", "false"}
+			presetEngineDefaultTools, strconv.Itoa(presetEngineDefaultMaxTurns),
+			strconv.Itoa(builtinEffectiveMaxNative())}
+		e.valB = []string{"", "", presetEngineDefaultOutDir, presetEngineDefaultRoot, "", "", "false"}
 	} else if e.preset != nil {
 		p := e.preset
 		e.valA = []string{p.Name, p.Task, intText(p.N), intText(p.TimeoutSeconds),
@@ -427,29 +486,52 @@ func (e *presetEditorScreen) hostPick(idx int) {
 	}
 }
 
-// commitPendingHost normalizes and appends the inline input. The engine
-// re-normalizes at build time; storing the canonical shape keeps the file
-// deterministic. Duplicate and empty entries are dropped.
+// commitPendingHost validates, normalizes and appends the inline input.
+// D14 (P3-5): an entry the allow-list can never match (scheme prefix,
+// wildcard, path, whitespace, empty) is refused with a named message and the
+// pending input is KEPT on the Add row so the offending value stays visible
+// for editing; duplicates are refused the same way (the row already shows the
+// value). The engine re-normalizes at build time; storing the canonical
+// shape keeps the file deterministic.
 func (e *presetEditorScreen) commitPendingHost() {
+	if e.pending == "" {
+		// Nothing typed: Enter on the empty Add row stays a quiet no-op.
+		return
+	}
+	if !agenttools.ValidateAllowHost(e.pending) {
+		if e.app != nil {
+			e.app.SetMessage(missingOr(e.b, "presets.editor.hosts.invalid", presetsEditorHostsInvalid))
+		}
+		e.syncHostRows()
+		return
+	}
 	norm := agenttools.NormalizeAllowHosts([]string{e.pending})
-	e.pending = ""
 	if len(norm) == 0 {
 		return
 	}
 	for _, h := range e.hostVals {
 		if h == norm[0] {
+			if e.app != nil {
+				e.app.SetMessage(missingOr(e.b, "presets.editor.hosts.duplicate", presetsEditorHostsDuplicate))
+			}
 			e.syncHostRows()
 			return
 		}
 	}
+	e.pending = ""
 	e.hostVals = append(e.hostVals, norm[0])
 	e.hostsDirty = true
 	e.syncHostRows()
 }
 
-// removeSelectedHost drops the armed host, if any.
+// removeSelectedHost drops the armed host, if any. D15 (P3-5): with nothing
+// armed the press used to no-op silently; it now names the missing arming
+// step so the user knows a host row must be selected first.
 func (e *presetEditorScreen) removeSelectedHost() {
 	if e.hostsSel < 0 || e.hostsSel >= len(e.hostVals) {
+		if e.app != nil {
+			e.app.SetMessage(missingOr(e.b, "presets.editor.hosts.none_armed", presetsEditorHostsNoneArmed))
+		}
 		return
 	}
 	e.hostVals = append(e.hostVals[:e.hostsSel], e.hostVals[e.hostsSel+1:]...)
@@ -519,14 +601,67 @@ func (e *presetEditorScreen) dispatch(k Key) {
 	}
 }
 
-// handleZoneA forwards to the zone-A form. Tab, Down, or Enter on the last
-// field (max_native) moves the focus into the host sub-list.
+// handleZoneA forwards to the zone-A form. Enter on the task field opens
+// the known-task picker (D13); Enter on the last field (max_native) moves
+// the focus into the host sub-list. Tab/Down advance from every field,
+// including the task field.
 func (e *presetEditorScreen) handleZoneA(k Key) {
 	before := e.formA.Cursor()
+	if k == KeyEnter && before == presetZoneAFieldTask {
+		e.openTaskPicker()
+		return
+	}
 	e.formA.HandleKey(k)
 	if (k == KeyTab || k == KeyDown || k == KeyEnter) && before == e.formA.Len()-1 {
 		e.zone = editorZoneHosts
 	}
+}
+
+// openTaskPicker opens the shared M2 single-choice overlay over the closed
+// set of compiled task names (fanout.TaskNames, derived from tasks.go, never
+// a copy maintained here). Enter (or a digit) writes the chosen name back
+// into the task field and keeps the field in input mode: the picker is an
+// input convenience, never a replacement for the field, so free typing stays
+// possible and a typed value survives an Esc cancel. The title reuses the
+// field's own catalog label, so no new user-visible key is introduced; the
+// row labels are the engine's canonical names, locale-neutral by
+// construction. D13 (P3-6): the picker is the typo prevention; the save-time
+// refusal in collect() is the backstop for typed or seeded values.
+func (e *presetEditorScreen) openTaskPicker() {
+	a := e.app
+	if a == nil {
+		return
+	}
+	names := fanout.TaskNames()
+	ch := NewChoice(
+		missingOr(e.b, "presets.editor.field.task", presetsEditorFieldTask),
+		append([]string(nil), names...),
+		func(idx int, _ string) {
+			if idx < 0 {
+				a.SetMessage(missingOr(e.b, "presets.msg.cancelled", presetsMsgCancelled))
+				e.rearmGuard(a)
+				return
+			}
+			e.setZoneAValue(presetZoneAFieldTask, names[idx])
+			e.rearmGuard(a)
+		})
+	a.ShowModal(ch)
+}
+
+// setZoneAValue writes one zone-A field's value in place. The Form keeps its
+// fields unexported and has no writer, so the write goes through the
+// same-package fields directly (the model form instead rebuilds through
+// NewForm, but its dirty() is value-based; the preset editor's dirty() is
+// latch-based, so a rebuild would silently drop the discard gate). The latch
+// is set by hand, the carets are re-clamped, and a write that changes
+// nothing leaves the latch alone.
+func (e *presetEditorScreen) setZoneAValue(i int, v string) {
+	if e.formA.Value(i) == v {
+		return
+	}
+	e.formA.fields[i].Value = v
+	e.formA.dirty = true
+	e.formA.clampCarets()
 }
 
 // handleZoneHosts routes keys inside the allow_hosts sub-list. On the Add
@@ -662,15 +797,19 @@ func (e *presetEditorScreen) askDiscard() {
 		}))
 }
 
-// collect gathers and validates the grid into a Preset record. Every error
-// text names the field only; user operands (in particular a misdirected key
-// paste) are never echoed.
+// collect gathers and validates the grid into a Preset record. Parsing and the
+// per-field form-shape checks live here; the SAVE RULES do not. They are
+// fanout.ValidatePresetForSave's (the single save-time authority, see
+// preset_store.go: name + search_key_env at the store boundary, D9
+// seat-source conflict, D13 unknown task, D14 allow_hosts shape), and this
+// screen only renders its refusal in the editor's own localized register
+// (saveRuleMessage). Nothing here may restate a rule: that is what kept the
+// two copies from drifting apart before.
+// Every error text names the field only; user operands (in particular a
+// misdirected key paste) are never echoed.
 func (e *presetEditorScreen) collect() (fanout.Preset, error) {
 	var p fanout.Preset
 	p.Name = strings.TrimSpace(e.formA.Value(0))
-	if p.Name == "" {
-		return p, strError(missingOr(e.b, "presets.editor.validation.name", presetsEditorValidationName))
-	}
 	p.Task = strings.TrimSpace(e.formA.Value(1))
 	var err error
 	if p.N, err = parsePresetInt(e.formA.Value(2)); err != nil {
@@ -691,11 +830,6 @@ func (e *presetEditorScreen) collect() (fanout.Preset, error) {
 	}
 	p.SearchEndpoint = strings.TrimSpace(e.formB.Value(0))
 	p.SearchKeyEnv = strings.TrimSpace(e.formB.Value(1))
-	if p.SearchKeyEnv != "" {
-		if err := providers.ValidateAPIKeyEnvName(p.SearchKeyEnv); err != nil {
-			return p, strError(missingOr(e.b, "presets.editor.validation.key_env", presetsEditorValidationKeyEnv))
-		}
-	}
 	p.OutDir = strings.TrimSpace(e.formB.Value(2))
 	p.Root = strings.TrimSpace(e.formB.Value(3))
 	p.Models = strings.TrimSpace(e.formB.Value(4))
@@ -707,6 +841,10 @@ func (e *presetEditorScreen) collect() (fanout.Preset, error) {
 	default:
 		return p, strError(missingOr(e.b, "presets.editor.validation.json", presetsEditorValidationJSON))
 	}
+	// The host rows are part of the record the save rules vet, so they are
+	// bound before validation; the refusal leaves hostVals untouched, so the
+	// offending rows stay visible for removal.
+	p.AllowHosts = append([]string(nil), e.hostVals...)
 	// Save-time credential guard on the free-text slots (round-6 fix): the
 	// shared classifier from the model form (secretValuePrefixes +
 	// credentialTokenShaped, screen_model_form.go) refuses a credential-shaped
@@ -714,8 +852,10 @@ func (e *presetEditorScreen) collect() (fanout.Preset, error) {
 	// fanout-presets.json only after an explicit override nowhere exists; the
 	// refusal names the field label and never echoes the value. Legitimate
 	// values (tasks, hostnames, seat/model lists, paths) carry separators or
-	// fail the token shape and save normally. tools is a closed whitelist and
-	// search_key_env has its own env-NAME rule, so neither is rechecked here.
+	// fail the token shape and save normally. tools is a closed whitelist, so
+	// it is not rechecked here; the credential shape is a display-layer
+	// concern (it is what the field labels render), so it stays in this
+	// screen rather than moving into the store validator.
 	for _, f := range []struct {
 		label string
 		val   string
@@ -734,15 +874,43 @@ func (e *presetEditorScreen) collect() (fanout.Preset, error) {
 				map[string]string{"field": f.label}))
 		}
 	}
-	for _, h := range e.hostVals {
+	for _, h := range p.AllowHosts {
 		if looksSecretValue(h) {
 			return p, strError(fillHubSlots(
 				missingOr(e.b, "presets.editor.validation.secret", presetsEditorValidationSecret),
 				map[string]string{"field": presetsEditorFieldAllowHosts}))
 		}
 	}
-	p.AllowHosts = append([]string(nil), e.hostVals...)
+	// Save rules: ONE authority, fanout.ValidatePresetForSave. A refusal is
+	// rendered as the editor's named message for that rule (locale key + const
+	// fallback), save() puts it on the status line and returns, so the editor
+	// stays open with the offending value still in the form.
+	if err := fanout.ValidatePresetForSave(p); err != nil {
+		return p, strError(e.saveRuleMessage(err))
+	}
 	return p, nil
+}
+
+// saveRuleMessage maps a fanout.ValidatePresetForSave refusal onto the
+// editor's own message for that rule. This table is PRESENTATION only: it
+// decides the wording (and the locale key) for a rule the shared validator
+// already decided, so the rule set lives in exactly one place. A refusal the
+// table does not know (a rule added to the validator later) still reaches the
+// user as the validator's own text, masked, instead of vanishing.
+func (e *presetEditorScreen) saveRuleMessage(err error) string {
+	switch {
+	case errors.Is(err, fanout.ErrPresetNameRequired):
+		return missingOr(e.b, "presets.editor.validation.name", presetsEditorValidationName)
+	case errors.Is(err, fanout.ErrPresetSearchKeyEnv):
+		return missingOr(e.b, "presets.editor.validation.key_env", presetsEditorValidationKeyEnv)
+	case errors.Is(err, fanout.ErrPresetSeatConflict):
+		return missingOr(e.b, "presets.editor.validation.seat_conflict", presetsEditorValidationSeatConflict)
+	case errors.Is(err, fanout.ErrPresetUnknownTask):
+		return missingOr(e.b, "presets.editor.validation.task", presetsEditorValidationTask)
+	case errors.Is(err, fanout.ErrPresetAllowHosts):
+		return missingOr(e.b, "presets.editor.validation.host", presetsEditorValidationHost)
+	}
+	return providers.MaskOperand(err.Error())
 }
 
 // numberErr composes the number-validation message for one field.
@@ -861,6 +1029,7 @@ func (e *presetEditorScreen) writePreset(a *App, pf *fanout.PresetsFile, p fanou
 	cp.AllowHosts = append([]string(nil), p.AllowHosts...)
 	e.preset = &cp
 	e.name = p.Name
+	e.defaultName = pf.DefaultPreset // rename may have stranded the old default key
 	e.formA.MarkClean()
 	e.formB.MarkClean()
 	e.hostsDirty = false
@@ -871,13 +1040,16 @@ func (e *presetEditorScreen) writePreset(a *App, pf *fanout.PresetsFile, p fanou
 // sources returns the rung label per field for the source column. It is
 // computed from the ON-DISK ladder (the saved preset, the providers.json
 // defaults block, and an empty flag set), mirroring buildRunConfig's
-// resolveLadder; unsaved form edits do not move the column. The built-in
-// view is all engine defaults.
+// resolveLadder; unsaved form edits do not move the column. The preset rung
+// carries the edited row's selection role (D11) so the column names HOW the
+// row is picked up, never implying it is in effect. The built-in view labels
+// every engine-supplied row "built-in" and keeps the max_native state.json
+// rung, which genuinely supplies that value.
 func (e *presetEditorScreen) sources() map[string]string {
 	if e.builtin {
 		all := map[string]string{}
 		for _, k := range presetSourceKeys {
-			all[k] = "engine"
+			all[k] = "builtin"
 		}
 		all["max_native"] = "state"
 		for _, k := range []string{"allow_hosts", "search_endpoint", "search_key_env"} {
@@ -885,10 +1057,19 @@ func (e *presetEditorScreen) sources() map[string]string {
 		}
 		return all
 	}
+	role := presetRowSaved
+	if e.preset != nil {
+		if envName := strings.TrimSpace(os.Getenv(fanout.EnvFanoutPreset)); envName != "" && envName == e.preset.Name {
+			role = presetRowNamed // explicit selection beats the default key
+		} else if e.defaultName != "" && e.defaultName == e.preset.Name {
+			role = presetRowDefault
+		}
+	}
 	return resolvePresetSources(presetLadderInputs{
-		set:    map[string]bool{},
-		preset: e.preset,
-		def:    e.def,
+		set:     map[string]bool{},
+		preset:  e.preset,
+		def:     e.def,
+		rowRole: role,
 	})
 }
 
@@ -898,12 +1079,18 @@ func (e *presetEditorScreen) sourceLabel(rung string) string {
 	switch rung {
 	case "flag":
 		return b.T("presets.editor.source.cli")
-	case "preset":
-		return b.T("presets.editor.source.preset")
+	case "preset_default":
+		return missingOr(b, "presets.editor.source.preset_default", presetsEditorSourcePresetDefault)
+	case "preset_named":
+		return missingOr(b, "presets.editor.source.preset_named", presetsEditorSourcePresetNamed)
+	case "preset_saved":
+		return missingOr(b, "presets.editor.source.preset_saved", presetsEditorSourcePresetSaved)
 	case "defaults":
 		return b.T("presets.editor.source.registry")
 	case "state":
 		return missingOr(b, "presets.editor.source.state", presetsEditorSourceState)
+	case "builtin":
+		return missingOr(b, "presets.editor.source.builtin", presetsEditorSourceBuiltin)
 	case "engine":
 		return b.T("presets.editor.source.engine")
 	default:
@@ -959,9 +1146,9 @@ func (e *presetEditorScreen) Draw(a *App) []string {
 	if msg := e.formB.Message(); msg != "" {
 		lines = append(lines, cellwidth.Truncate(msg, w))
 	}
-	hint := presetsEditorHint
+	hint := missingOr(e.b, "presets.editor.hint", presetsEditorHint)
 	if e.builtin {
-		hint = presetsEditorHintBuiltin
+		hint = missingOr(e.b, "presets.editor.hint_builtin", presetsEditorHintBuiltin)
 	}
 	if a.Modal() != e.guard {
 		// The host window is the only block that shrinks, and stepList never
@@ -1059,30 +1246,42 @@ func (e *presetEditorScreen) hostPageSize(a *App) int {
 
 // presetLadderInputs carries the resolution-ladder inputs the source column
 // mirrors: the explicitly-set CLI flags (empty in the TUI context), the
-// active preset, and the providers.json defaults block (read-only).
+// edited preset, and the providers.json defaults block (read-only). rowRole
+// names HOW the edited row is selected (default key / env / plain save) and
+// rides the preset rung into the label (D11); it is ignored when preset is
+// nil, which emits no preset rung at all.
 type presetLadderInputs struct {
-	set    map[string]bool
-	preset *fanout.Preset
-	def    providers.Defaults
+	set     map[string]bool
+	preset  *fanout.Preset
+	def     providers.Defaults
+	rowRole string
 }
 
 // resolvePresetSources maps every pre-configurable field onto the rung that
 // currently supplies its effective value, mirroring resolveLadder in
 // internal/fanout/cli.go (flag > preset > providers.json defaults > engine,
 // with the max_native state.json rung and the unsourced host/search knobs).
-// Per-field env rungs do not exist (D6 reserves env spellings to the preset
-// selector), so the env label in the catalog is never emitted here.
+// The preset rung is emitted role-qualified (preset_default / preset_named /
+// preset_saved) so the column can distinguish the store's default_preset key,
+// an env-named selection, and a plain saved row. Per-field env rungs do not
+// exist (D6 reserves env spellings to the preset selector), so the env label
+// in the catalog is never emitted here.
 func resolvePresetSources(in presetLadderInputs) map[string]string {
 	src := map[string]string{}
 	p := in.preset
 	has := func(k string) bool { return in.set[k] }
+	role := in.rowRole
+	if role == "" {
+		role = presetRowSaved
+	}
+	pr := "preset_" + role
 
 	// task
 	switch {
 	case has("task"):
 		src["task"] = "flag"
 	case p != nil && p.Task != "":
-		src["task"] = "preset"
+		src["task"] = pr
 	default:
 		src["task"] = "engine"
 	}
@@ -1091,7 +1290,7 @@ func resolvePresetSources(in presetLadderInputs) map[string]string {
 	case has("n"):
 		src["n"] = "flag"
 	case p != nil && p.N > 0:
-		src["n"] = "preset"
+		src["n"] = pr
 	case in.def.N > 0:
 		src["n"] = "defaults"
 	default:
@@ -1102,7 +1301,7 @@ func resolvePresetSources(in presetLadderInputs) map[string]string {
 	case has("timeout"):
 		src["timeout_seconds"] = "flag"
 	case p != nil && p.TimeoutSeconds > 0:
-		src["timeout_seconds"] = "preset"
+		src["timeout_seconds"] = pr
 	case in.def.TimeoutSeconds > 0:
 		src["timeout_seconds"] = "defaults"
 	default:
@@ -1113,7 +1312,7 @@ func resolvePresetSources(in presetLadderInputs) map[string]string {
 	case has("tools"):
 		src["tools"] = "flag"
 	case p != nil && p.Tools != "":
-		src["tools"] = "preset"
+		src["tools"] = pr
 	case in.def.Tools != "":
 		src["tools"] = "defaults"
 	default:
@@ -1124,7 +1323,7 @@ func resolvePresetSources(in presetLadderInputs) map[string]string {
 	case has("max-turns"):
 		src["max_turns"] = "flag"
 	case p != nil && p.MaxTurns > 0:
-		src["max_turns"] = "preset"
+		src["max_turns"] = pr
 	case in.def.MaxTurns > 0:
 		src["max_turns"] = "defaults"
 	default:
@@ -1136,7 +1335,7 @@ func resolvePresetSources(in presetLadderInputs) map[string]string {
 	case has("max-native"):
 		src["max_native"] = "flag"
 	case p != nil && p.MaxNative > 0:
-		src["max_native"] = "preset"
+		src["max_native"] = pr
 	default:
 		src["max_native"] = "state"
 	}
@@ -1144,24 +1343,24 @@ func resolvePresetSources(in presetLadderInputs) map[string]string {
 	if has("allow-host") {
 		src["allow_hosts"] = "flag"
 	} else if p != nil && len(p.AllowHosts) > 0 {
-		src["allow_hosts"] = "preset"
+		src["allow_hosts"] = pr
 	}
 	if has("search-endpoint") {
 		src["search_endpoint"] = "flag"
 	} else if p != nil && p.SearchEndpoint != "" {
-		src["search_endpoint"] = "preset"
+		src["search_endpoint"] = pr
 	}
 	if has("search-key-env") {
 		src["search_key_env"] = "flag"
 	} else if p != nil && p.SearchKeyEnv != "" {
-		src["search_key_env"] = "preset"
+		src["search_key_env"] = pr
 	}
 	// root / out_dir
 	switch {
 	case has("root"):
 		src["root"] = "flag"
 	case p != nil && p.Root != "":
-		src["root"] = "preset"
+		src["root"] = pr
 	default:
 		src["root"] = "engine"
 	}
@@ -1169,7 +1368,7 @@ func resolvePresetSources(in presetLadderInputs) map[string]string {
 	case has("out"):
 		src["out_dir"] = "flag"
 	case p != nil && p.OutDir != "":
-		src["out_dir"] = "preset"
+		src["out_dir"] = pr
 	default:
 		src["out_dir"] = "engine"
 	}
@@ -1178,7 +1377,7 @@ func resolvePresetSources(in presetLadderInputs) map[string]string {
 	case has("models"):
 		src["models"] = "flag"
 	case p != nil && p.Models != "":
-		src["models"] = "preset"
+		src["models"] = pr
 	default:
 		src["models"] = "engine"
 	}
@@ -1186,7 +1385,7 @@ func resolvePresetSources(in presetLadderInputs) map[string]string {
 	case has("seats"):
 		src["seats"] = "flag"
 	case p != nil && p.Seats != "":
-		src["seats"] = "preset"
+		src["seats"] = pr
 	default:
 		src["seats"] = "engine"
 	}
@@ -1195,7 +1394,7 @@ func resolvePresetSources(in presetLadderInputs) map[string]string {
 	case has("json"):
 		src["json"] = "flag"
 	case p != nil && p.JSON:
-		src["json"] = "preset"
+		src["json"] = pr
 	default:
 		src["json"] = "engine"
 	}
@@ -1215,9 +1414,9 @@ type presetEditorGuard struct {
 func (g *presetEditorGuard) Title() string { return "" }
 
 func (g *presetEditorGuard) Body(w int) []string {
-	hint := presetsEditorHint
+	hint := missingOr(g.e.b, "presets.editor.hint", presetsEditorHint)
 	if g.e.builtin {
-		hint = presetsEditorHintBuiltin
+		hint = missingOr(g.e.b, "presets.editor.hint_builtin", presetsEditorHintBuiltin)
 	}
 	return []string{hint}
 }

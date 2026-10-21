@@ -152,6 +152,65 @@ A configured timeout from the preset or defaults rung counts as explicit: it is
 honored exactly and a partition run does NOT auto-scale it. Only the
 engine-default rung leaves the timeout open to the `--units` scaling of §8.3.
 
+#### 2.4.1 What a preset is (and is not)
+
+A fanout preset is a named **run configuration**: a row in
+`~/.agy-pro/fanout-presets.json` that pins run knobs (the seat source via
+`models` or `seats`, `n`, `tools`, `timeout`, `max_turns`, `root`, `out_dir`,
+and friends) under one name. It is NOT a prompt (the prompt always comes from
+`--prompt` / `--prompt-file`, or the task scaffold when a builder supplies it)
+and it is NOT a seat selection of its own (seats pinned in a preset use the same
+`--models` / `--seats` grammar as the flags). Its role is to carry the
+seat/tool/time budgets of a multi-seat run so a repeated invocation needs no
+long flag line.
+
+A preset is used in three ways:
+
+- by name per run: `agy pro fanout --preset <name>`,
+- by environment: `AGY_PRO_FANOUT_PRESET=<name>` when the flag is absent,
+- by store default: the `default_preset` key in `fanout-presets.json` names the
+  row applied when neither the flag nor the env var names one.
+
+Named-preset selection order inside the preset rung: the `--preset` flag, then
+the `AGY_PRO_FANOUT_PRESET` env var, then the `default_preset` key. A name that
+does not exist is a usage error (exit 2) on the flag/env routes; a dangling
+`default_preset` key only warns and runs preset-less.
+
+#### 2.4.2 The default-preset conflict guard (finding F1)
+
+`agy pro swarm` and the workspace auto-route reach fanout with explicit flags
+(the swarm builder passes exactly `--task --seats --root --timeout --tools
+--prompt --json`) and no `--preset`, so the store default is the preset rung
+that actually fires under them. A default preset whose pins contradict those
+explicit flags used to kill the whole run at a downstream gate (exit 2). The
+ladder now drops the conflicting knob instead: a `models` pin facing an explicit
+`--seats` or a `--units` run, a `seats` pin facing an explicit `--models` or
+`--units`, and a `tools` pin granting write/exec facing `--units` (partition
+mode is read-only) are each dropped with ONE warning line on stderr naming the
+knob, its value, and the reason; the run proceeds on the caller's explicit
+configuration. Two boundaries stay strict: an explicitly NAMED preset
+(`--preset` / `AGY_PRO_FANOUT_PRESET`) still hard-errors on the same conflict,
+by design (you asked for that preset by name), and a user-driven SAVE passes
+`fanout.ValidatePresetForSave`, the save-time gate (the preset editor behind the
+hub's Presets row calls it on every save:
+`internal/tui/screen_preset_editor.go`, `collect()`). That gate refuses a preset
+pinning both `models` and `seats`, a preset naming an unknown `task`, and a
+preset carrying an `allow_hosts` entry no exact host match can satisfy; the
+editor shows its own named message for the refused rule, keeps the offending
+value in the form, and writes nothing. The store beneath it (`SavePresets`) keeps
+only the file-boundary rules (a name, `search_key_env` as an env-var NAME):
+`LoadPresets` never validates and a conflicting row already on disk still
+round-trips, since the ladder guard above is what keeps such a row from breaking
+a run (§2.2 of [`swarm-hybrid.md`](swarm-hybrid.md)). Deleting a row and setting
+`default_preset` write through the store directly: those paths move or rename a
+row that already exists rather than authoring new values. Copying a row under a
+new name (`Duplicate` on the Presets list) DOES author a new record, so it
+passes the same `fanout.ValidatePresetForSave` gate before the write (the gate's
+two production callers are the editor's `collect()` and the list's
+`duplicate()`): an invalid copy is refused with the editor's own named message
+and nothing is written, so a copy of a hand-edited row cannot smuggle in a rule
+the editor would have refused.
+
 ---
 
 ## 3. CLI Command Reference
@@ -203,6 +262,15 @@ To ensure unbiased evaluation, model families must not overlap within a run, and
    - Pinned by model id: no family rotation, no registry lookup, no API key needed.
    - Recorded in `state-fanout.json` with provider `native` and their inferred family, so later runs treat that family as used.
    - Auto-seating never picks k3-family models (pool policy); explicit `--models` / `--seats` picks are honored as-is.
+- **"Pool policy" defined.** The pool policy is the auto-seating exclusion rule for
+  k3-family models: family `k3` (case-insensitive) or a model id carrying the
+  exact token `k3` (`kimi-k3`, `k3-agent-swarm`) is unsatisfiable for automatic
+  seating, while ids that merely contain the letters (`k3000`, `glm-k3x`) stay
+  eligible. It is a compile-time predicate of the binary
+  (`internal/providers/k3.go`, `providers.IsK3Family` / `providers.HasK3Token`),
+  not a settings file: nothing in `providers.json` or the UI toggles it. It
+  governs automatic seating only; explicit `--models` / `--seats` picks are
+  honored as-is.
 
 ---
 

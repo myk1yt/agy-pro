@@ -3,6 +3,8 @@ package swarm
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -26,6 +28,12 @@ type Store interface {
 // FileStore is the default Store backed by swarm-state.json.
 type FileStore struct {
 	Path string // "" -> DefaultStatePath()
+	// WarnOut optionally receives the one-line corrupt-file fallback
+	// warning, matching the fanout preset store (internal/fanout/
+	// preset_store.go): a corrupt swarm-state.json used to drop every saved
+	// preset silently. NewFileStore defaults it to os.Stderr; embedders with
+	// a message line (the TUI app surface) can redirect it there.
+	WarnOut io.Writer
 }
 
 // DefaultStatePath returns ~/.agy-pro/swarm-state.json (AGY_PRO_HOME aware).
@@ -37,13 +45,16 @@ func DefaultStatePath() (string, error) {
 	return filepath.Join(home, "swarm-state.json"), nil
 }
 
-// NewFileStore returns a FileStore at the default state path.
+// NewFileStore returns a FileStore at the default state path. WarnOut
+// defaults to os.Stderr so the corrupt-file warning reaches the console on
+// every construction site (settings Core default, swarm builder, CLI)
+// without per-site wiring.
 func NewFileStore() (*FileStore, error) {
 	p, err := DefaultStatePath()
 	if err != nil {
 		return nil, err
 	}
-	return &FileStore{Path: p}, nil
+	return &FileStore{Path: p, WarnOut: os.Stderr}, nil
 }
 
 // swarmStateFile is the on-disk shape of swarm-state.json.
@@ -62,10 +73,12 @@ func (s *FileStore) path() string {
 	return p
 }
 
-// LoadPresets reads the saved presets. A missing or corrupt file falls back to
-// an empty list with no error (fanout LoadState precedent,
-// internal/fanout/state.go:45-62): the happy path must not dead-end on a bad
-// state file.
+// LoadPresets reads the saved presets. A missing file falls back to an
+// empty list with no error; a corrupt file falls back to an empty list with
+// ONE warning line on WarnOut (the fanout preset-store precedent,
+// internal/fanout/preset_store.go:102-121), never an error: the happy path
+// must not dead-end on a bad state file, but a corrupt file must not drop
+// every saved preset silently either.
 func (s *FileStore) LoadPresets() ([]SavedPreset, error) {
 	path := s.path()
 	if path == "" {
@@ -80,6 +93,15 @@ func (s *FileStore) LoadPresets() ([]SavedPreset, error) {
 	}
 	var st swarmStateFile
 	if err := json.Unmarshal(data, &st); err != nil {
+		// s != nil is load-bearing here, not defensive noise (code review
+		// C7). path() is nil-safe by construction (it falls back to
+		// DefaultStatePath), so a typed-nil *FileStore held in a swarm.Store
+		// interface reaches this line through the method call and would panic
+		// on s.WarnOut without the guard. TestNilFileStoreLoadsWithoutPanic
+		// pins the reachability.
+		if s != nil && s.WarnOut != nil {
+			fmt.Fprintf(s.WarnOut, "warning: %s is corrupt; ignoring it and starting with no saved presets\n", filepath.Base(path))
+		}
 		return nil, nil // corrupt-file fallback
 	}
 	return st.Presets, nil

@@ -9,7 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"agypro/internal/cellwidth"
 	"agypro/internal/fanout"
+	"agypro/internal/i18n"
 	"agypro/internal/providers"
 	"agypro/internal/testfixtures"
 )
@@ -90,6 +92,113 @@ func TestPresetsListRendersSummariesAndDefault(t *testing.T) {
 	}
 }
 
+// TestPresetsExplainLinesNameTheObject pins the U4 explanation half on the
+// list screen (survey 2.7): the frame names what a fanout preset is (a named
+// run config, not a prompt, not a seat selection), the consumer command
+// (agy pro fanout --preset <name>), the env var (AGY_PRO_FANOUT_PRESET), the
+// on-disk path (the store's own path truth), and the default_preset rule
+// including the P3-1 conflict-drop warning.
+func TestPresetsExplainLinesNameTheObject(t *testing.T) {
+	t.Setenv(providers.EnvHome, t.TempDir())
+	// The store lives in a temp dir; the File: line is asserted through the
+	// same cellwidth truncation Draw applies, so the assertion holds whatever
+	// the temp path length (a short path renders whole, a long one truncates
+	// its own tail and never the rule lines below it).
+	st := &fanout.PresetFileStore{Path: filepath.Join(t.TempDir(), "fanout-presets.json")}
+	if err := st.SavePresets(&fanout.PresetsFile{Presets: []fanout.Preset{{Name: "alpha", N: 2}}}); err != nil {
+		t.Fatalf("seed presets: %v", err)
+	}
+	out, _ := presetsKeys(t, st, nil)
+	for _, want := range []string{
+		"A preset is a named run config (seat/tool/time budgets), not a prompt.",
+		"Not a seat list. Run: agy pro fanout --preset <name>",
+		"AGY_PRO_FANOUT_PRESET",
+		cellwidth.Truncate("File: "+st.Path, 100),
+		"default_preset applies when no preset is named; conflicts drop with a warning.",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("list frame missing explanation line %q; frames:\n%s", want, out)
+		}
+	}
+}
+
+// TestPresetsExplainLinesDropOnShortConsole pins the frame-budget rule: the
+// explanation block is the first body content a short console loses. At 80x12
+// (below the 80x24 budget) the prose is gone, and the list hint and the base
+// footer still survive; at 80x24 the prose is present and the frame is still
+// exactly 24 lines with page size 24-presetsListChrome.
+func TestPresetsExplainLinesDropOnShortConsole(t *testing.T) {
+	st, _ := presetsFixture(t)
+
+	short, scr := presetsAppAt(st, 80, 12)
+	short.CaptureRun(&ScriptedKeys{})
+	shortBody := strings.Join(short.Frame().Lines, "\n")
+	if strings.Contains(shortBody, "named run config") {
+		t.Fatalf("explanation block must drop on a 12-row console; frames:\n%s", shortBody)
+	}
+	if !strings.Contains(shortBody, scr.list.FooterHint()) || !strings.Contains(shortBody, baseFooter) {
+		t.Fatalf("hint or base footer cut on a 12-row console; frames:\n%s", shortBody)
+	}
+
+	full, _ := presetsAppAt(presetsBulkStore(t, 13), 80, 24)
+	full.CaptureRun(&ScriptedKeys{})
+	fullBody := strings.Join(full.Frame().Lines, "\n")
+	if !strings.Contains(fullBody, "named run config") {
+		t.Fatalf("explanation block missing at 80x24; frames:\n%s", fullBody)
+	}
+	if n := len(full.Frame().Lines); n != 24 {
+		t.Fatalf("80x24 frame = %d lines, want 24; frames:\n%s", n, fullBody)
+	}
+}
+
+// TestPresetFlagSummaryHonestAboutHiddenPins pins defect D10: a preset that
+// pins only fields the one-line summary hides (seats, models, out_dir, json)
+// must not render the same "(empty)" as a truly empty preset; it renders the
+// pinned-count digest, while a name-only preset keeps the truthful "(empty)"
+// and visible fields still win.
+func TestPresetFlagSummaryHonestAboutHiddenPins(t *testing.T) {
+	b := i18n.Load("en")
+	cases := []struct {
+		name   string
+		preset fanout.Preset
+		want   string
+	}{
+		{"seats only", fanout.Preset{Name: "x", Seats: "native:gemini-x"}, "1 of 14 fields pinned: see Edit"},
+		{"models+out_dir+json", fanout.Preset{Name: "x", Models: "prov/m1", OutDir: "reports", JSON: true}, "3 of 14 fields pinned: see Edit"},
+		{"truly empty", fanout.Preset{Name: "x"}, "(empty)"},
+		{"nil preset", fanout.Preset{}, "(empty)"},
+		{"visible still win", fanout.Preset{Name: "x", Task: "review", MaxNative: 4}, "task=review"},
+		{"hidden plus visible", fanout.Preset{Name: "x", N: 2, Seats: "native:gemini-x"}, "n=2"},
+	}
+	for _, tc := range cases {
+		p := tc.preset
+		if got := presetFlagSummary(b, &p); got != tc.want {
+			t.Errorf("%s: summary = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestPresetsRowRendersHiddenFieldDigest pins the digest end to end on the
+// composed list frame: the hidden-only preset row shows the pinned count and
+// the truly empty row still shows "(empty)".
+func TestPresetsRowRendersHiddenFieldDigest(t *testing.T) {
+	t.Setenv(providers.EnvHome, t.TempDir())
+	st := &fanout.PresetFileStore{Path: filepath.Join(t.TempDir(), "fanout-presets.json")}
+	pf := &fanout.PresetsFile{Presets: []fanout.Preset{
+		{Name: "hidden", Seats: "native:gemini-x"},
+		{Name: "empty"},
+	}}
+	if err := st.SavePresets(pf); err != nil {
+		t.Fatalf("seed presets: %v", err)
+	}
+	out, _ := presetsKeys(t, st, nil)
+	for _, want := range []string{"hidden", "1 of 14 fields pinned: see Edit", "empty", "(empty)"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("list frame missing %q; frames:\n%s", want, out)
+		}
+	}
+}
+
 // TestPresetsDualNavigation pins requirement 2 on this list: a digit press
 // and arrows+Enter activate the same row (the openEditor spy sees the same
 // name from both paths).
@@ -158,6 +267,81 @@ func TestPresetsDuplicateWritesStore(t *testing.T) {
 	if !strings.Contains(out, "Duplicated as alpha copy.") {
 		t.Fatalf("duplicate message missing; frames:\n%s", out)
 	}
+}
+
+// TestPresetsDuplicateRunsSaveGate pins s5 deviation 3: Duplicate creates a
+// NEW record and writes it through SavePresets, which runs only the
+// store-boundary rules (fanout.ValidatePresetForSave is the single save-time
+// authority for the D9/D13/D14 rules). A copy of a row that violates them must
+// therefore be refused by the same authority before anything is written, and a
+// copy of a valid row must still round-trip to disk unchanged.
+func TestPresetsDuplicateRunsSaveGate(t *testing.T) {
+	t.Run("refuses a copy of an invalid row", func(t *testing.T) {
+		// SavePresets is deliberately permissive (the P3-1 default-key guard
+		// seeds exactly this shape), so the model+seats row below loads fine and
+		// only Duplicate would turn it into a second unrunnable record.
+		t.Setenv(providers.EnvHome, t.TempDir())
+		path := filepath.Join(t.TempDir(), "fanout-presets.json")
+		st := &fanout.PresetFileStore{Path: path}
+		seed := &fanout.PresetsFile{Presets: []fanout.Preset{
+			{Name: "conflict", Models: "prov/m1", Seats: "native:gemini-x"},
+		}}
+		if err := st.SavePresets(seed); err != nil {
+			t.Fatalf("seed conflicting preset: %v", err)
+		}
+		before, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read store before duplicate: %v", err)
+		}
+
+		// One preset row puts Duplicate at digit 5 (builtin, preset, new, edit,
+		// duplicate); KeyDown arms the conflicting row.
+		app, opened := newPresetsApp(st, nil)
+		out := app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyDown, Digit(5)}})
+		if len(*opened) != 0 {
+			t.Fatalf("duplicate opened the editor: %v", *opened)
+		}
+		after, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read store after duplicate: %v", err)
+		}
+		if !bytes.Equal(before, after) {
+			t.Fatalf("refused duplicate rewrote the store:\nbefore=%s\nafter=%s", before, after)
+		}
+		if pf := reloadPresets(t, st); len(pf.Presets) != 1 {
+			t.Fatalf("refused duplicate persisted a record: %+v", pf.Presets)
+		}
+		// The refusal names the rule in the editor's own wording, under the
+		// common.error label, so the two writers cannot describe the rule
+		// differently. app.Message() is the untruncated text; the frame line
+		// carries the same message cut to the console width.
+		if want := Bundle().T("common.error") + ": " + presetsEditorValidationSeatConflict; app.Message() != want {
+			t.Fatalf("refusal message = %q, want %q", app.Message(), want)
+		}
+		if !strings.Contains(out, "models and seats cannot be combined") {
+			t.Fatalf("refusal missing from the frame; frames:\n%s", out)
+		}
+		if strings.Contains(out, "Duplicated as") {
+			t.Fatalf("refused duplicate still reported success; frames:\n%s", out)
+		}
+	})
+
+	t.Run("valid copy round-trips", func(t *testing.T) {
+		st, _ := presetsFixture(t)
+		// Two preset rows put Duplicate at digit 6; KeyDown arms alpha.
+		out, _ := presetsKeys(t, st, []Key{KeyDown, Digit(6)})
+		pf := reloadPresets(t, st)
+		cp, ok := pf.FindPreset("alpha copy")
+		if !ok {
+			t.Fatalf("valid copy missing on disk: %+v", pf.Presets)
+		}
+		if cp.Task != "review" || cp.N != 4 || cp.TimeoutSeconds != 120 || cp.Tools != "read,search" {
+			t.Fatalf("copy lost fields: %+v", *cp)
+		}
+		if !strings.Contains(out, "Duplicated as alpha copy.") {
+			t.Fatalf("duplicate message missing; frames:\n%s", out)
+		}
+	})
 }
 
 // TestPresetsDeleteGateYes pins the delete flow: the y/n gate opens, y
@@ -561,8 +745,9 @@ func presetsAppAt(st fanout.PresetStore, w, h int) (*App, *presetsScreen) {
 // ends with the shared base footer (the only line naming Esc, Ctrl+L and
 // Ctrl+C) and still carries the list hint. The window reserves every non-list
 // line of the body shape (title, separator, status line, the blank under it,
-// the blank above the hint, the hint, the separator above the footer, the
-// footer), so a full page can no longer push the footer off the frame.
+// the four explanation lines, the blank above the hint, the hint, the
+// separator above the footer, the footer), so a full page can no longer push
+// the footer off the frame.
 func TestPresetsBaseFooterSurvivesFullPage(t *testing.T) {
 	st := presetsBulkStore(t, 13)
 	app, scr := presetsAppAt(st, 80, 24)

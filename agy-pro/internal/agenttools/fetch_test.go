@@ -1016,3 +1016,67 @@ func TestNetworkSeedWholeExemption(t *testing.T) {
 		t.Errorf("the 24-rune truncation prefix is not masked")
 	}
 }
+
+// D14 (P3-5): the input-surface validation gate. Bare hostnames, IPs and
+// host:port validate; scheme prefixes, wildcards, path segments, whitespace
+// and empty-after-normalize entries do not, because exact matching after
+// normalization can never match them and they would silently refuse every
+// read_url_content call.
+func TestValidateAllowHost(t *testing.T) {
+	valid := []string{
+		"example.com",
+		"EXAMPLE.COM",
+		" example.com ", // trimmed, as typed with stray spaces
+		"sub.a-b.example.com",
+		"localhost",
+		"127.0.0.1",
+		"example.com:8443", // port stripped at match time, valid as typed
+		"::1",
+		"[::1]",
+	}
+	for _, v := range valid {
+		if !ValidateAllowHost(v) {
+			t.Errorf("ValidateAllowHost(%q) = false, want true", v)
+		}
+	}
+	invalid := []string{
+		"",                     // empty
+		"   ",                  // empty after normalization
+		"https://example.com",  // scheme prefix
+		"http://example.com/x", // scheme prefix + path
+		"example.com/path",     // path segment
+		"example.com/",         // trailing slash is a path
+		`example.com\path`,     // backslash path separator
+		"*.example.com",        // wildcard
+		"exam*le.com",          // wildcard anywhere
+		"ex ample.com",         // internal space
+		"example.com:badport",  // colon that is not an IP
+		"ex_ample.com",         // outside the hostname alphabet
+		"https:example.com",    // scheme-ish colon, not an IP
+	}
+	for _, v := range invalid {
+		if ValidateAllowHost(v) {
+			t.Errorf("ValidateAllowHost(%q) = true, want false", v)
+		}
+	}
+}
+
+// D14 (P3-5): the list predicate skips empties (NormalizeAllowHosts drops
+// them, so they are not an error) and refuses on the first bad entry.
+func TestValidateAllowHosts(t *testing.T) {
+	if !ValidateAllowHosts(nil) {
+		t.Error("ValidateAllowHosts(nil) = false, want true")
+	}
+	if !ValidateAllowHosts([]string{"", "  ", "example.com", "127.0.0.1:9"}) {
+		t.Error("ValidateAllowHosts with only valid + empty entries = false, want true")
+	}
+	for _, entries := range [][]string{
+		{"example.com", "https://evil.example"},
+		{"*.example.com"},
+		{"ok.example", "bad path.example"},
+	} {
+		if ValidateAllowHosts(entries) {
+			t.Errorf("ValidateAllowHosts(%q) = true, want false", entries)
+		}
+	}
+}

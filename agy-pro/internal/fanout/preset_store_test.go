@@ -3,6 +3,7 @@ package fanout
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -33,10 +34,9 @@ func TestPresetStoreRoundTrip(t *testing.T) {
 				OutDir:         "reports/nightly",
 				Root:           "D:/ws",
 				Models:         "prov/m1,prov/m2",
-				Seats:          "native:gemini-x,prov/m1",
 				JSON:           true,
 			},
-			{Name: "minimal"},
+			{Name: "minimal", Seats: "native:gemini-x,prov/m1"},
 		},
 		DefaultPreset: "nightly",
 	}
@@ -243,5 +243,138 @@ func TestDefaultPresetsPathRespectsAgyProHome(t *testing.T) {
 	}
 	if want := filepath.Join(home, "fanout-presets.json"); p != want {
 		t.Errorf("DefaultPresetsPath = %q; want %q (AGY_PRO_HOME aware)", p, want)
+	}
+}
+
+// D9: the user-driven save entry point refuses a preset that pins both seat
+// sources (the combination buildRunConfig hard-errors on at run time), with a
+// message naming both fields; either pin alone is accepted.
+func TestValidatePresetForSaveRejectsModelsAndSeatsTogether(t *testing.T) {
+	both := Preset{Name: "a", Models: "prov/m1", Seats: "native:gemini-x"}
+	err := ValidatePresetForSave(both)
+	if err == nil {
+		t.Fatal("a preset pinning both models and seats must be refused at save time")
+	}
+	// The refusal carries the sentinel the TUI editor matches to render its own
+	// localized message (FIX-CODE-C3: one rule set, two registers).
+	if !errors.Is(err, ErrPresetSeatConflict) {
+		t.Errorf("refusal %v must wrap ErrPresetSeatConflict", err)
+	}
+	for _, field := range []string{"models", "seats", "cannot be combined"} {
+		if !strings.Contains(err.Error(), field) {
+			t.Errorf("refusal %q must name %q", err.Error(), field)
+		}
+	}
+	// Never echo the operands (the F5 masking family): the refusal names the
+	// fields only.
+	if strings.Contains(err.Error(), "prov/m1") || strings.Contains(err.Error(), "gemini-x") {
+		t.Errorf("refusal echoed the user operands: %q", err.Error())
+	}
+
+	if err := ValidatePresetForSave(Preset{Name: "a", Models: "prov/m1"}); err != nil {
+		t.Errorf("models-only preset must be accepted: %v", err)
+	}
+	if err := ValidatePresetForSave(Preset{Name: "a", Seats: "native:gemini-x"}); err != nil {
+		t.Errorf("seats-only preset must be accepted: %v", err)
+	}
+
+	// The entry point keeps every store-boundary rule too.
+	if err := ValidatePresetForSave(Preset{Models: "prov/m1"}); !errors.Is(err, ErrPresetNameRequired) {
+		t.Errorf("a nameless preset must still be refused with ErrPresetNameRequired; got %v", err)
+	}
+}
+
+// D13 (FIX-CODE-C3/LOW-4): the shared save entry point carries the unknown-task
+// rule the editor used to hold inline, so a user-driven writer cannot persist a
+// task name the engine would silently resolve to the review prompt. An empty
+// task stays legal (it means "engine default"), and the refusal never echoes
+// the typed name.
+func TestValidatePresetForSaveRefusesUnknownTask(t *testing.T) {
+	err := ValidatePresetForSave(Preset{Name: "a", Task: "secuirty"})
+	if !errors.Is(err, ErrPresetUnknownTask) {
+		t.Fatalf("unknown task must be refused with ErrPresetUnknownTask; got %v", err)
+	}
+	if strings.Contains(err.Error(), "secuirty") {
+		t.Errorf("refusal echoed the rejected operand: %q", err.Error())
+	}
+	for _, task := range []string{"", "review", "Security", " custom "} {
+		if err := ValidatePresetForSave(Preset{Name: "a", Task: task}); err != nil {
+			t.Errorf("task %q must be accepted: %v", task, err)
+		}
+	}
+}
+
+// D14 (FIX-CODE-C3/LOW-4): the shared save entry point carries the allow_hosts
+// shape rule, so a save can no longer persist a host entry the exact allow-list
+// match can never satisfy (scheme prefix, wildcard, path). Blank rows and
+// host:port entries stay legal (agenttools.ValidateAllowHosts is the same
+// predicate the run-time host list uses), and the refusal never echoes the
+// rejected entry.
+func TestValidatePresetForSaveRefusesInvalidAllowHosts(t *testing.T) {
+	err := ValidatePresetForSave(Preset{Name: "a", AllowHosts: []string{"*.example.com"}})
+	if !errors.Is(err, ErrPresetAllowHosts) {
+		t.Fatalf("a wildcard host must be refused with ErrPresetAllowHosts; got %v", err)
+	}
+	if strings.Contains(err.Error(), "*.example.com") {
+		t.Errorf("refusal echoed the rejected operand: %q", err.Error())
+	}
+	valid := [][]string{
+		nil,
+		{"example.com"},
+		{"", "docs.example.org", "127.0.0.1:8443"},
+	}
+	for _, hosts := range valid {
+		if err := ValidatePresetForSave(Preset{Name: "a", AllowHosts: hosts}); err != nil {
+			t.Errorf("allow_hosts %v must be accepted: %v", hosts, err)
+		}
+	}
+}
+
+// The store-boundary half of the same split: SavePresets runs ONLY the
+// store-boundary rules, so a loadable-but-unrunnable row (seat conflict,
+// unknown task, bad host) still round-trips. That permissiveness is what the
+// P3-1 ladder guard depends on (preset_default_key_guard_test.go seeds these
+// shapes through SavePresets), and ValidatePresetForSave is the one layer that
+// refuses them for user-driven writers.
+func TestPresetStoreSaveRoundTripsSelfConflictingPreset(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fanout-presets.json")
+	st := &PresetFileStore{Path: path}
+	rec := Preset{Name: "a", Models: "prov/m1", Seats: "native:gemini-x"}
+	want := &PresetsFile{Presets: []Preset{rec}}
+	if err := st.SavePresets(want); err != nil {
+		t.Fatalf("SavePresets must keep accepting loadable state: %v", err)
+	}
+	// Same record, user-driven entry point: refused (P3-1 vs D9 boundary).
+	if err := ValidatePresetForSave(rec); !errors.Is(err, ErrPresetSeatConflict) {
+		t.Errorf("ValidatePresetForSave must refuse the record SavePresets accepts; got %v", err)
+	}
+	got, err := st.LoadPresets()
+	if err != nil {
+		t.Fatalf("LoadPresets: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("round trip mismatch:\n got %+v\nwant %+v", got, want)
+	}
+
+	// The D13/D14 shapes follow the same division: the store round-trips them.
+	unrunnable := &PresetsFile{Presets: []Preset{
+		{Name: "typo", Task: "secuirty"},
+		{Name: "badhost", AllowHosts: []string{"https://example.com/x"}},
+	}}
+	if err := st.SavePresets(unrunnable); err != nil {
+		t.Fatalf("SavePresets must keep accepting loadable state (task/host rules): %v", err)
+	}
+	got, err = st.LoadPresets()
+	if err != nil {
+		t.Fatalf("LoadPresets: %v", err)
+	}
+	if !reflect.DeepEqual(got, unrunnable) {
+		t.Errorf("round trip mismatch (task/host rules):\n got %+v\nwant %+v", got, unrunnable)
+	}
+	if err := ValidatePresetForSave(unrunnable.Presets[0]); !errors.Is(err, ErrPresetUnknownTask) {
+		t.Errorf("the same unknown-task row must be refused for a user-driven save; got %v", err)
+	}
+	if err := ValidatePresetForSave(unrunnable.Presets[1]); !errors.Is(err, ErrPresetAllowHosts) {
+		t.Errorf("the same bad-host row must be refused for a user-driven save; got %v", err)
 	}
 }
