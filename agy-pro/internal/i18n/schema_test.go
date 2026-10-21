@@ -2,6 +2,7 @@ package i18n
 
 import (
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"sort"
 	"strings"
@@ -212,8 +213,7 @@ func TestEnCatalogCoversViewItems(t *testing.T) {
 		// sectionAppearance (p8, landed concurrently with the P10 unit)
 		"appearance.language": true, "appearance.launcher_menu": true,
 		// sectionProviders (p2)
-		"providers.list": true, "providers.add_interactive": true,
-		"providers.add_json": true, "providers.test": true,
+		"providers.add_interactive": true, "providers.add_json": true, "providers.test": true,
 		"providers.rename": true, "providers.delete": true,
 		"models.inventory": true, "providers.presets": true,
 		"providers.model_capabilities": true, "providers.key_policy": true,
@@ -246,7 +246,7 @@ func TestEnCatalogCoversViewItems(t *testing.T) {
 		"default_profile": true, "current_mode": true, "managed_items": true,
 		"last_backup": true, "config.show": true, "mode.switch": true,
 		"mode.restore": true, "mode.backups": true, "mode.status": true,
-		"env.AGY_LAUNCHER": true, "appearance.language": true, "providers.list": true,
+		"env.AGY_LAUNCHER": true, "appearance.language": true,
 		"providers.add_interactive": true, "providers.add_json": true,
 		"providers.test": true, "providers.rename": true, "providers.delete": true,
 		"models.inventory": true, "providers.presets": true,
@@ -276,6 +276,27 @@ func TestEnCatalogCoversViewItems(t *testing.T) {
 		if withNote[id] {
 			if _, ok := en["view."+id+".note"]; !ok {
 				t.Errorf("en.json missing view.%s.note (view.go carries a Note literal)", id)
+			}
+		}
+	}
+}
+
+// TestSectionTitlesCarryNoIndex (P1-6): the setup hub owns the numbered
+// navigation surface (its rows render [1]..[8] from one renderer). Section
+// titles named the same digits as a second, independent numbering scheme, so a
+// header read "[2] Models & Providers (2/8)" inside a hub row numbered [4]. The
+// pinned invariant is that no section title in any catalog starts with a
+// bracketed index; the symbol is a plain title string.
+func TestSectionTitlesCarryNoIndex(t *testing.T) {
+	for code, cat := range readAllCatalogs(t) {
+		for n := 1; n <= 8; n++ {
+			key := fmt.Sprintf("section.p%d.title", n)
+			val, ok := cat[key]
+			if !ok {
+				continue // key-set parity is TestKeySetsIdentical's job
+			}
+			if strings.HasPrefix(val, "[") {
+				t.Errorf("%s.json: %s = %q carries its own bracketed index; the hub is the only numbered surface", code, key, val)
 			}
 		}
 	}
