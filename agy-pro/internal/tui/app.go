@@ -109,6 +109,13 @@ func assembleSetupApp(cap Cap) *App {
 	// the silent downgrade plus the next save destroyed every saved preset
 	// with no visible warning (security review seat 4 MEDIUM 2).
 	_, _ = presetStore(app)
+	// The same first-frame treatment for swarm-state.json (security review
+	// F-3): its corrupt-file warning went to os.Stderr, which the full-screen
+	// frame cannot show, so the saved seat presets were overwritten from the
+	// Settings screen with nothing said. The Settings surface re-wires the
+	// warning into its own corrupt latch, so this startup read is only the
+	// earliest notice.
+	warnSwarmStore(app, shell.core)
 	return app
 }
 
@@ -229,6 +236,29 @@ func presetStore(a *App) (*fanout.PresetFileStore, error) {
 		a.SetMessage(strings.TrimSpace(warn.String()))
 	}
 	return store, nil
+}
+
+// warnSwarmStore surfaces the swarm preset store's corrupt-file warning on the
+// app's message line at startup (security review F-3), the same first-frame
+// treatment presetStore gives the fanout preset file. Without it the store's
+// default os.Stderr warning is invisible under the full-screen frame: the
+// operator sees an honest "no saved presets" state and the next save in the
+// Settings screen replaces the corrupt file. The sink is redirected into a
+// throwaway buffer here; the Settings surface re-wires it into its own corrupt
+// latch before every read, so no later warning is written into a dead buffer
+// that some other surface depends on. An existing message wins: the fanout
+// warning above names a file too, and the seat-preset warning is re-surfaced on
+// the Saved Seat Presets screen.
+func warnSwarmStore(a *App, core *settings.Core) {
+	store := core.SwarmStateStore()
+	if store == nil {
+		return
+	}
+	var warn bytes.Buffer
+	store.WarnOut = &warn
+	if _, err := store.LoadPresets(); err == nil && warn.Len() > 0 && a.Message() == "" {
+		a.SetMessage(strings.TrimSpace(warn.String()))
+	}
 }
 
 // storedCode returns the raw stored language code ("" on first run), which

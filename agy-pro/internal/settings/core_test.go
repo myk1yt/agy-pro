@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"testing"
 
@@ -252,7 +253,7 @@ func TestViewD2Coverage(t *testing.T) {
 		"mode.switch", "mode.restore", "mode.backups", "mode.status",
 		// §2.3 providers (rows 12-20, GAP rows 15-17 = F-PROV)
 		"providers.add_interactive", "providers.add_json", "providers.test",
-		"providers.rename", "providers.delete", "providers.list",
+		"providers.rename", "providers.delete",
 		"providers.model_capabilities", "providers.presets", "providers.key_policy",
 		"provider.key.google",
 		// §2.4 fanout/swarm (rows 21-30)
@@ -295,6 +296,12 @@ func TestViewD2Coverage(t *testing.T) {
 	for _, sec := range view.Sections {
 		if sec.ID == "" || sec.Title == "" {
 			t.Errorf("section missing id/title: %+v", sec)
+		}
+		// P1-6: the hub is the only numbered surface. The compiled title is
+		// the fallback the renderers paint when a catalog key is missing, so it
+		// must not carry a bracketed index either.
+		if strings.HasPrefix(sec.Title, "[") {
+			t.Errorf("section %s title %q carries a bracketed index; the hub is the only numbered surface", sec.ID, sec.Title)
 		}
 		for _, it := range sec.Items {
 			if it.ID == "" || it.Label == "" {
@@ -430,5 +437,32 @@ func TestNewCore_FillsDefaults(t *testing.T) {
 	}
 	if b.Len() == 0 {
 		t.Error("default-Core snapshot is empty")
+	}
+}
+
+// TestNewCoreSwarmStateStoreSeam pins the F-3 wiring seam: the default Core
+// builds the on-disk swarm store and hands it back so a front-end can redirect
+// the corrupt-file warning, while an injected store (the test fakes, an
+// embedder) reports nil instead of pretending to be a file the caller could
+// re-sink.
+func TestNewCoreSwarmStateStoreSeam(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("AGY_PRO_HOME", tmp)
+
+	def := NewCore(Deps{})
+	fs := def.SwarmStateStore()
+	if fs == nil {
+		t.Fatal("default Core must expose the file-backed swarm store")
+	}
+	want := tmp + string(os.PathSeparator) + "swarm-state.json"
+	if fs.Path != want {
+		t.Fatalf("store path = %q; want %q", fs.Path, want)
+	}
+	if fs.WarnOut == nil {
+		t.Fatal("default store must keep its os.Stderr warning sink until a front-end redirects it")
+	}
+
+	if injected := NewCore(Deps{SwarmStore: &fakeStore{}}); injected.SwarmStateStore() != nil {
+		t.Fatal("an injected non-file store must not report a *swarm.FileStore")
 	}
 }

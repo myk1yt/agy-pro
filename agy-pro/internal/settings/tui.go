@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"agypro/internal/i18n"
 	"agypro/internal/providers"
 	"agypro/internal/swarm"
 )
@@ -68,7 +69,12 @@ type pendingConfirm struct {
 	// operands are the prompted values the run's forwarded error may echo
 	// (the rollback backup dir, a provider name); they seed the frame mask.
 	operands []string
-	run      func() error
+	// notice is an optional extra line under the "Confirm ...? [y/n]" prompt:
+	// the reason the gate opened when the bare item label cannot say it (the
+	// corrupt swarm-state.json acknowledgment, which must name the file the
+	// save would overwrite).
+	notice string
+	run    func() error
 }
 
 type choiceState struct {
@@ -165,18 +171,24 @@ func (t *TUI) Frame() Snapshot {
 	}
 	if t.pending != nil {
 		right = append(right, "", fmt.Sprintf("  Confirm %s? [y/n]", t.pending.item.Label))
+		if t.pending.notice != "" {
+			right = append(right, "  "+t.pending.notice)
+		}
 	}
 	right = append(right, t.result...)
 	s.Right = strings.Join(right, "\n")
 
 	s.Message = t.message
-	s.Footer = "  ↑↓ move · PgUp/PgDn page · ←→ section · Tab switch · Enter/digits select · y/n confirm · Esc back · Ctrl+L redraw · Ctrl+C exit"
+	// P1-4: the read-only legend rides above the keybinding line, so the
+	// "● ro" dot every read-only row carries is explained on the first
+	// frame, before any press.
+	s.Footer = "  " + ReadOnlyLegend + "\n  ↑↓ move · PgUp/PgDn page · ←→ section · Tab switch · Enter/digits select · y/n confirm · Esc back · Ctrl+L redraw · Ctrl+C exit"
 	return s
 }
 
 func statusDot(it Item) string {
 	if it.ReadOnly {
-		return "● ro"
+		return "● " + ReadOnlyMarker
 	}
 	return "●"
 }
@@ -443,12 +455,32 @@ func (t *TUI) activate(it Item) {
 	case it.ID == "swarm.save_preset":
 		t.runPrompt("preset name", func(name string) error {
 			_, err := t.promptLine("numbers (e.g. 1,3,19,23)", func(nums string) error {
-				presets, err := t.core.SwarmPresets()
+				// P5-1/M-2 parity with the full-screen hub (tui.gateCorruptSwarmSave):
+				// a corrupt swarm-state.json is silently replaced here otherwise. The
+				// store's warning line is visible in line mode (it goes to stderr), but
+				// the OVERWRITE was never acknowledged, so the file's content could
+				// disappear without the operator agreeing to it. Probe the exact file
+				// this save replaces and refuse the write until the panel's own y/n
+				// gate is answered.
+				presets, corrupt, err := t.swarmPresetsProbe()
 				if err != nil {
 					return err
 				}
-				presets = append(presets, swarm.SavedPreset{Name: name, Numbers: nums})
-				return t.core.SwarmSavePresets(presets)
+				write := func() error {
+					return t.core.SwarmSavePresets(append(presets, swarm.SavedPreset{Name: name, Numbers: nums}))
+				}
+				if !corrupt {
+					return write()
+				}
+				t.pending = &pendingConfirm{
+					item:     it,
+					operands: providers.FlagSeedOperands(name, nums),
+					notice: i18n.Fill(swarmCorruptGateBody, map[string]string{
+						"path": providers.MaskOperand(t.swarmStoreDisplayPath()),
+					}),
+					run: write,
+				}
+				return nil
 			})
 			return err
 		})
@@ -520,6 +552,75 @@ func (t *TUI) promptLine(prompt string, fn func(string) error) (string, error) {
 // benign values stay readable (F6 / U8).
 func (t *TUI) setMaskedError(msg string, operands ...string) {
 	t.message = providers.MaskSentence(msg, operands...)
+}
+
+// swarmCorruptGateBody is the corrupt swarm-state.json acknowledgment
+// sentence, reused VERBATIM from the full-screen surfaces' gate
+// (presets.corrupt.body in all twelve catalogs, resolved by
+// tui.gateCorruptSwarmSave and the fanout preset screens). Package tui imports
+// this package, so the panel cannot call that helper and the sentence is copied
+// rather than invented: TestSwarmCorruptGateWordingMatchesCatalog pins it
+// byte-equal to the en catalog entry, so a wording change on one surface cannot
+// leave the other behind. The {{path}} slot names the file a save would
+// overwrite.
+const swarmCorruptGateBody = "{{path}} is corrupt and was ignored. Saving now overwrites it. Continue?"
+
+// swarmCorruptCounter counts the swarm store's corrupt-file fallback warnings
+// while mirroring each one to the sink the store carried before (os.Stderr by
+// default). The legacy panel runs in line mode, where that stderr line IS
+// readable, so the redirect adds the count the write gate needs instead of
+// hiding the line: this is the counting half of the fanout presets screen's
+// corruptPresetSink/corruptLatch wiring, re-wired here because those types live
+// in package tui.
+type swarmCorruptCounter struct {
+	n      int
+	mirror io.Writer
+}
+
+func (c *swarmCorruptCounter) Write(p []byte) (int, error) {
+	c.n++
+	if c.mirror != nil {
+		if _, err := c.mirror.Write(p); err != nil {
+			return 0, err
+		}
+	}
+	return len(p), nil
+}
+
+// swarmPresetsProbe reads the saved presets through the counting sink and
+// reports whether the file was corrupt on THIS read (the fanout screen's
+// count-delta rule). The read happens immediately before the write, so the
+// answer describes the exact file the save replaces, and a save that has just
+// written a healthy file needs no second acknowledgment. A store that is not
+// the file-backed one (embeddeds, test doubles) has no warning sink and reports
+// no corruption: there is no file to overwrite.
+func (t *TUI) swarmPresetsProbe() ([]swarm.SavedPreset, bool, error) {
+	fs := t.core.SwarmStateStore()
+	if fs == nil {
+		presets, err := t.core.SwarmPresets()
+		return presets, false, err
+	}
+	c, ok := fs.WarnOut.(*swarmCorruptCounter)
+	if !ok {
+		c = &swarmCorruptCounter{mirror: fs.WarnOut}
+		fs.WarnOut = c
+	}
+	before := c.n
+	presets, err := t.core.SwarmPresets()
+	return presets, c.n > before, err
+}
+
+// swarmStoreDisplayPath resolves the path of swarm-state.json the store reads
+// and writes (AGY_PRO_HOME aware), so the gate names the file a save would
+// overwrite. It mirrors the full-screen surface's swarmStatePath.
+func (t *TUI) swarmStoreDisplayPath() string {
+	if fs := t.core.SwarmStateStore(); fs != nil && fs.Path != "" {
+		return fs.Path
+	}
+	if p, err := swarm.DefaultStatePath(); err == nil && p != "" {
+		return p
+	}
+	return "swarm-state.json"
 }
 
 func (t *TUI) addJSON(path string) error {

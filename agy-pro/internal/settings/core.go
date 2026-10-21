@@ -490,6 +490,19 @@ func (c *Core) SwarmSavePresets(presets []swarm.SavedPreset) error {
 	return c.deps.SwarmStore.SavePresets(presets)
 }
 
+// SwarmStateStore returns the on-disk swarm store behind the Core, or nil when
+// the injected store is not the file-backed one (tests, embedders). It is the
+// seam a front-end with its own notice surface uses to redirect the store's
+// corrupt-file warning: NewCore's default store warns on os.Stderr, which the
+// full-screen TUI cannot show (security review F-3), and the warning has to be
+// counted by the caller's latch before the save that replaces the file. The
+// accessor exposes the store, not a second copy of it, so the redirect lands on
+// the instance the Core verbs actually read and write.
+func (c *Core) SwarmStateStore() *swarm.FileStore {
+	fs, _ := c.deps.SwarmStore.(*swarm.FileStore)
+	return fs
+}
+
 func (c *Core) loadRegistry() (*providers.Registry, error) {
 	reg, err := c.deps.LoadReg()
 	if err != nil {

@@ -128,13 +128,17 @@ func WriteSnapshot(out io.Writer, core *Core, asJSON bool) error {
 	fmt.Fprintln(out, "===========================================================")
 	fmt.Fprintln(out, "  agy-pro Settings Snapshot (show)")
 	fmt.Fprintln(out, "===========================================================")
+	// P1-4: the row flags are explained before the first section, so "[ro]"
+	// is a documented marker on the printed surface, not an undocumented
+	// suffix.
+	fmt.Fprintln(out, "  Flags: ["+ReadOnlyMarker+"] = read-only (display only; pressing the row changes nothing) · [danger] = writes ask y/n first")
 	for _, sec := range view.Sections {
 		fmt.Fprintf(out, "%s\n", sec.Title)
 		for i, it := range sec.Items {
 			num := fmt.Sprintf("%d", i+1)
 			flags := ""
 			if it.ReadOnly {
-				flags += " [ro]"
+				flags += " [" + ReadOnlyMarker + "]"
 			}
 			if it.Danger {
 				flags += " [danger]"

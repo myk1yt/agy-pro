@@ -20,8 +20,13 @@ type Row struct {
 // navigation (structural guarantee, key map requirement 2). Both input
 // languages are always live:
 //
-//   - digits 1..9 select AND activate the absolute Nth row (1-based; rows
-//     past 9 stay reachable through arrows + Enter, and the footer says so)
+//   - digits 1..9 select AND activate the absolute Nth row (1-based)
+//   - on lists with more than 9 rows, 0 arms a multi-digit compose: 0 then
+//     the row number reaches rows 10+ (Enter commits a pending prefix;
+//     any other key cancels). The footer carries the live prefix while the
+//     compose is armed, and Enter on a bare 0 with no digit typed yet has no
+//     number to commit, so it cancels the prefix and activates the cursor row
+//     instead of swallowing the key.
 //   - arrows move a visible cursor; Enter activates the cursor row
 //   - PgUp/PgDn page by pageSize rows; Home/End jump to first/last
 //
@@ -34,6 +39,8 @@ type stepList struct {
 	cursor   int
 	offset   int
 	pageSize int
+	compose  bool // 0 armed a multi-digit row number (lists past 9 only)
+	pending  int  // digits typed so far after the 0 (0 = none yet)
 }
 
 // newStepList builds a list; onPick is the activation callback shared by
@@ -47,6 +54,8 @@ func (l *stepList) SetRows(rows []Row) {
 	l.rows = rows
 	l.cursor = 0
 	l.offset = 0
+	l.compose = false
+	l.pending = 0
 }
 
 // Len reports the row count.
@@ -100,6 +109,31 @@ func (l *stepList) VisibleEnd() int {
 // whether the key belonged to the list; unmapped keys return false so a
 // screen can fall through.
 func (l *stepList) HandleKey(k Key) bool {
+	// A live compose swallows digits to extend the pending number and commits
+	// on Enter. Enter on a bare 0 (no digit typed yet) has no row number to
+	// commit, and swallowing it would cost the user a keystroke for an
+	// accidental 0, so it cancels the prefix and falls through to Enter's
+	// ordinary activate-the-cursor meaning. Any other key cancels the prefix
+	// and then acts normally.
+	if l.compose {
+		switch {
+		case k == KeyEnter && l.pending == 0:
+			l.cancelCompose()
+		case k == KeyEnter:
+			l.commitCompose()
+			l.ensureVisible()
+			return true
+		case k == Key("0"):
+			l.extendCompose(0)
+			return true
+		default:
+			if idx, ok := digitIndex(k); ok {
+				l.extendCompose(idx + 1)
+				return true
+			}
+			l.cancelCompose()
+		}
+	}
 	switch k {
 	case KeyUp:
 		if l.cursor > 0 {
@@ -127,6 +161,16 @@ func (l *stepList) HandleKey(k Key) bool {
 		if len(l.rows) > 0 {
 			l.pick(l.cursor)
 		}
+	case Key("0"):
+		// 0 is not a row selector; on lists past the single-digit range it
+		// arms the multi-digit compose instead. Shorter lists keep the
+		// fall-through so screens see the key as before.
+		if len(l.rows) > 9 {
+			l.compose = true
+			l.pending = 0
+			return true
+		}
+		return false
 	default:
 		idx, ok := digitIndex(k)
 		if !ok {
@@ -139,6 +183,45 @@ func (l *stepList) HandleKey(k Key) bool {
 	}
 	l.ensureVisible()
 	return true
+}
+
+// extendCompose folds one digit into the pending row number. A number past
+// the row count cancels the compose and is swallowed; a number no further
+// digit could still extend into a valid row commits immediately, through the
+// same cursor+pick pair every other activation uses.
+func (l *stepList) extendCompose(d int) {
+	n := l.pending*10 + d
+	if n > len(l.rows) {
+		l.cancelCompose()
+		return
+	}
+	if n*10 > len(l.rows) {
+		l.cancelCompose()
+		l.cursor = n - 1
+		l.pick(n - 1)
+		l.ensureVisible()
+		return
+	}
+	l.pending = n
+}
+
+// commitCompose activates the pending row number on Enter through the same
+// cursor+pick pair as a bare digit and as arrow+Enter, so the screen's own
+// activation handler (and any danger gate inside it) sees one identical
+// door, never a second write path.
+func (l *stepList) commitCompose() {
+	n := l.pending
+	l.cancelCompose()
+	if n >= 1 && n <= len(l.rows) {
+		l.cursor = n - 1
+		l.pick(n - 1)
+	}
+}
+
+// cancelCompose drops an armed prefix without activating anything.
+func (l *stepList) cancelCompose() {
+	l.compose = false
+	l.pending = 0
 }
 
 func (l *stepList) pick(idx int) {
@@ -197,10 +280,21 @@ func (l *stepList) Render(w int) []string {
 }
 
 // FooterHint is the list footer legend. Both input languages are named on
-// every list; the row-past-9 clause appears only when such rows exist.
+// every list; the rows-past-9 clause appears only when such rows exist and
+// names the 0-prefix compose that reaches them. While a compose is armed the
+// legend is replaced by the live prefix, so the pending row number is never
+// invisible (F-09): the footer carries the 0, every digit typed after it, and
+// the row Enter would activate. The hint uses the footer line that every list
+// already draws, so the compose costs no extra frame row.
 func (l *stepList) FooterHint() string {
+	if l.compose {
+		if l.pending == 0 {
+			return "composing 0·_ · digits extend · Enter activates the cursor row"
+		}
+		return fmt.Sprintf("composing 0·%d_ · Enter activates row %d · other keys cancel", l.pending, l.pending)
+	}
 	if len(l.rows) > 9 {
-		return "digits 1-9 select+activate · rows past 9: arrows + Enter"
+		return "digits 1-9 select+activate · rows past 9: 0 then digits · arrows + Enter"
 	}
 	return "digits 1-9 select+activate · arrows move · Enter activates"
 }

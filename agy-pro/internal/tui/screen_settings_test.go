@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -372,13 +374,17 @@ func TestLocalizeItemFallback(t *testing.T) {
 // section header, item rows with value and source in the note column, the
 // cursor detail block, and Left/Right section switching.
 func TestSettingsScreenRenderAndSectionSwitch(t *testing.T) {
+	// The section counter resolves through the catalog (settings.section.position),
+	// so the quoted English header needs the en bundle bound (the
+	// AddProviderGuidance precedent).
+	SetLanguage("en")
 	h := newSettingsTestCore(t)
 	app := newSettingsApp(h)
 
 	frame := app.Frame().String()
 	for _, want := range []string{
 		"Settings",
-		"[1] Launch & Profile  (1/8)",
+		"Launch & Profile · section 1 of 8",
 		"Default Launch Profile",
 		"prompt  (state)",
 		"value   : prompt",
@@ -391,7 +397,7 @@ func TestSettingsScreenRenderAndSectionSwitch(t *testing.T) {
 
 	app.Step(KeyRight)
 	frame = app.Frame().String()
-	if !strings.Contains(frame, "[2] Models & Providers  (2/8)") {
+	if !strings.Contains(frame, "Models & Providers · section 2 of 8") {
 		t.Errorf("Right did not switch to section 2\n%s", frame)
 	}
 	if !strings.Contains(frame, "Key status - alpha") {
@@ -399,13 +405,164 @@ func TestSettingsScreenRenderAndSectionSwitch(t *testing.T) {
 	}
 
 	// Danger + read-only markers ride through to the detail block: move the
-	// cursor onto providers.delete (row 6) without activating it.
-	for i := 0; i < 5; i++ {
+	// cursor onto providers.delete (row 5) without activating it.
+	for i := 0; i < 4; i++ {
 		app.Step(KeyDown)
 	}
 	frame = app.Frame().String()
 	if !strings.Contains(frame, "danger  : y/n confirmation required") {
 		t.Errorf("danger marker missing on providers.delete\n%s", frame)
+	}
+}
+
+// TestSettingsScreenHeaderIsNotNumbered (P1-6): the hub is the only numbered
+// NAVIGATION surface (in-section row badges are the shared list's own numbering,
+// not a second navigation scheme), so no section header may paint a bracketed
+// index, and the position is stated in words ("section n of m") rather than as a
+// "(n/8)" counter that read as a second numbered navigation space. The counter
+// itself resolves through the catalog (settings.section.position), so this test
+// binds en and the sibling TestSettingsScreenSectionCounterFollowsCatalog pins
+// the localized path. Walks all eight sections.
+func TestSettingsScreenHeaderIsNotNumbered(t *testing.T) {
+	SetLanguage("en")
+	h := newSettingsTestCore(t)
+	app := newSettingsApp(h)
+
+	view, err := h.core.View()
+	if err != nil {
+		t.Fatalf("view: %v", err)
+	}
+	total := len(view.Sections)
+	for i := 0; i < total; i++ {
+		if i > 0 {
+			app.Step(KeyRight)
+		}
+		frame := app.Frame().String()
+		header := ""
+		for _, line := range strings.Split(frame, "\n") {
+			if strings.Contains(line, "section ") {
+				header = line
+				break
+			}
+		}
+		if header == "" {
+			t.Fatalf("section %d: no header line in frame\n%s", i+1, frame)
+		}
+		if strings.Contains(header, "[") {
+			t.Errorf("section %d header carries a bracketed index: %q", i+1, header)
+		}
+		want := fmt.Sprintf("section %d of %d", i+1, total)
+		if !strings.Contains(header, want) {
+			t.Errorf("section %d header missing %q: %q", i+1, want, header)
+		}
+	}
+}
+
+// TestSettingsScreenSectionCounterFollowsCatalog (M-5): the section header
+// counter used to be a hardcoded Go format ("section n of m"), so the header was
+// half-translated on every non-English locale while the title beside it resolved
+// from the catalog. The counter now resolves settings.section.position, and this
+// test pins both halves: the en header still reads the pinned English shape
+// byte-for-byte, and a ko surface renders the ko sentence instead (no English
+// "section ... of ..." left over).
+func TestSettingsScreenSectionCounterFollowsCatalog(t *testing.T) {
+	SetLanguage("en")
+	defer SetLanguage("en")
+
+	h := newSettingsTestCore(t)
+	view, err := h.core.View()
+	if err != nil {
+		t.Fatalf("view: %v", err)
+	}
+	total := strconv.Itoa(len(view.Sections))
+
+	enFrame := newSettingsApp(h).Frame().String()
+	if !strings.Contains(enFrame, "· section 1 of "+total) {
+		t.Fatalf("en header lost the pinned English counter:\n%s", enFrame)
+	}
+
+	ko := SetLanguage("ko")
+	koTitle := ko.T("section.p1.title")
+	if koTitle == "section.p1.title" {
+		t.Fatal("precondition: ko catalog carries section.p1.title")
+	}
+	koApp := newSettingsApp(h)
+	koFrame := koApp.Frame().String()
+	want := i18n.Fill(ko.T("settings.section.position"), map[string]string{
+		"title": koTitle,
+		"n":     "1",
+		"m":     total,
+	})
+	if !strings.Contains(koFrame, want) {
+		t.Fatalf("ko header missing the catalog counter %q:\n%s", want, koFrame)
+	}
+	if strings.Contains(koFrame, "section 1 of "+total) {
+		t.Fatalf("ko header still carries the English counter:\n%s", koFrame)
+	}
+}
+
+// TestSettingsSectionPositionResolvesInAllLocales gates the const-block claim
+// on screen_settings.go for the section counter: the const names a catalog key,
+// so every one of the twelve locales must carry its own sentence (no
+// fall-through to the key ID, no leaning on the English fallback), every slot
+// the screen fills must survive in the translated template, and the const text
+// must stay byte-identical to the en value (that is what "fallback kept" means).
+func TestSettingsSectionPositionResolvesInAllLocales(t *testing.T) {
+	const key = "settings.section.position"
+	langs := i18n.Languages()
+	if len(langs) != 12 {
+		t.Fatalf("locale registry = %d codes, want 12", len(langs))
+	}
+	en := i18n.Load("en")
+	if got := en.T(key); got != settingsSectionPosition {
+		t.Fatalf("%s: en catalog = %q, want the const text %q", key, got, settingsSectionPosition)
+	}
+	for _, lm := range langs {
+		got := i18n.Load(lm.Code).T(key)
+		if got == key || got == "" {
+			t.Errorf("%s: %s did not resolve (got %q)", lm.Code, key, got)
+			continue
+		}
+		if lm.Code != "en" && got == settingsSectionPosition {
+			t.Errorf("%s: %s falls back to the English const instead of a translation", lm.Code, key)
+		}
+		for _, slot := range []string{"{{title}}", "{{n}}", "{{m}}"} {
+			if !strings.Contains(got, slot) {
+				t.Errorf("%s: %q is missing the %s slot", lm.Code, got, slot)
+			}
+		}
+	}
+}
+
+// TestSettingsScreenReadOnlyVisible (P1-4): read-only state renders before
+// any press — the row note carries the shared [ro] badge, the cursor detail
+// block names the flag, and one legend line explains the marker.
+func TestSettingsScreenReadOnlyVisible(t *testing.T) {
+	h := newSettingsTestCore(t)
+	app := newSettingsApp(h)
+
+	frame := app.Frame().String()
+	// managed_items is a read-only row of the opening section: its note must
+	// carry the badge without any press.
+	if !strings.Contains(frame, "Managed Items") || !strings.Contains(frame, "[ro]") {
+		t.Errorf("read-only badge missing from the row notes before any press\n%s", frame)
+	}
+	if !strings.Contains(frame, "ro = read-only (display only; pressing the row changes nothing)") {
+		t.Errorf("read-only legend line missing\n%s", frame)
+	}
+
+	// Cursor onto the read-only row (managed_items is row 3 of p1).
+	app.Step(KeyDown)
+	app.Step(KeyDown)
+	frame = app.Frame().String()
+	if !strings.Contains(frame, "ro      : read-only (display only)") {
+		t.Errorf("detail block missing the read-only flag line\n%s", frame)
+	}
+
+	// The press still resolves to the read-only message (unchanged path).
+	app.Step(KeyEnter)
+	if got := app.Message(); !strings.Contains(got, "read-only") {
+		t.Errorf("message after Enter on a read-only row = %q; want read-only", got)
 	}
 }
 
@@ -443,7 +600,7 @@ func TestSettingsScreenLauncherChoice(t *testing.T) {
 		app.Step(KeyRight)
 	}
 	frame := app.Frame().String()
-	if !strings.Contains(frame, "[8] Appearance  (8/8)") {
+	if !strings.Contains(frame, "Appearance · section 8 of 8") {
 		t.Fatalf("not on the Appearance section\n%s", frame)
 	}
 	app.Step(Digit(2)) // launcher_menu
@@ -528,83 +685,60 @@ func TestSettingsScreenModeRestoreGate(t *testing.T) {
 	}
 }
 
-// TestSettingsScreenProviderTestPrompt drives a free-text item through the
-// inline editor: typing a name and submitting runs Core.ProviderTest and
-// reports the verdict.
-func TestSettingsScreenProviderTestPrompt(t *testing.T) {
+// TestSettingsScreenProviderTestRoutes pins the replacement of the typed-name
+// test prompt (survey-1 debt item 18): activating providers.test pushes the
+// providers screen, where the row-picked Test verb lives. No inline editor
+// opens, no probe runs, and the route message names the verb to press.
+func TestSettingsScreenProviderTestRoutes(t *testing.T) {
 	h := newSettingsTestCore(t)
 	app := newSettingsApp(h)
 
 	app.Step(KeyRight) // p2
-	app.Step(Digit(4)) // providers.test
-	if app.Top().Mode() != ModeEdit {
-		t.Fatalf("prompt screen is not in edit mode")
+	app.Step(Digit(3)) // providers.test
+	if _, ok := app.Top().(*ProvidersScreen); !ok {
+		t.Fatalf("top screen is %T; want *ProvidersScreen", app.Top())
 	}
-	for _, k := range append(typeKeys("alpha"), KeyCtrlS) {
-		app.Step(k)
+	if app.Top().Mode() == ModeEdit {
+		t.Fatal("the typed-name prompt still opens for providers.test")
 	}
-	if len(h.tested) != 1 || h.tested[0] != "alpha" {
-		t.Fatalf("ProviderTest = %v; want [alpha]", h.tested)
+	if len(h.tested) != 0 {
+		t.Fatalf("ProviderTest ran from the settings row: %v", h.tested)
 	}
-	if got := app.Message(); !strings.Contains(got, "connection OK") {
-		t.Errorf("message = %q; want the OK verdict", got)
+	want := "Opens Hub > Providers. Rest the cursor on the provider row, then press Test."
+	if got := app.Message(); got != want {
+		t.Errorf("message = %q; want the route hint %q", got, want)
 	}
 }
 
-// TestSettingsScreenDeletePromptGate drives the provider delete flow: prompt
-// for the name, then the M4 approval modal with the exact mutation summary.
-// Until the approval answer providers.json must not change by a single byte;
-// y is the only path to Core.ProviderDelete.
-func TestSettingsScreenDeletePromptGate(t *testing.T) {
+// TestSettingsScreenDeleteRoutesToProviders pins the replacement of the
+// typed-name delete prompt: activating providers.delete pushes the providers
+// screen (the M4-gated Delete verb lives there). No prompt, no approval modal,
+// no registry write; the route message names the verb to press.
+func TestSettingsScreenDeleteRoutesToProviders(t *testing.T) {
 	h := newSettingsTestCore(t)
 	app := newSettingsApp(h)
 
 	before := regFileBytes(t)
 	app.Step(KeyRight)
-	app.Step(Digit(6)) // providers.delete
-	for _, k := range append(typeKeys("alpha"), KeyCtrlS) {
-		app.Step(k)
+	app.Step(Digit(5)) // providers.delete
+	if _, ok := app.Top().(*ProvidersScreen); !ok {
+		t.Fatalf("top screen is %T; want *ProvidersScreen", app.Top())
 	}
-	m := app.Modal()
-	if m == nil {
-		t.Fatal("delete approval modal did not open after the prompt")
+	if app.Top().Mode() == ModeEdit {
+		t.Fatal("the typed-name prompt still opens for providers.delete")
 	}
-	body := strings.Join(m.Body(110), "\n")
-	for _, want := range []string{
-		"Removes the registry entry for alpha only",
-		"Key values and files are untouched",
-		"Models before: 1, after: 0",
-		"providers.json will be written (0600, atomic)",
-		"- provider alpha (https://alpha.example.com, 1 model)",
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("approval body missing %q\n%s", want, body)
-		}
+	if app.Modal() != nil {
+		t.Fatal("a delete approval modal opened from the settings row")
 	}
 	if !bytes.Equal(regFileBytes(t), before) {
-		t.Fatal("providers.json changed before the approval answer")
-	}
-	app.Step(KeyNo)
-	if !bytes.Equal(regFileBytes(t), before) {
-		t.Fatal("providers.json changed on n")
+		t.Fatal("providers.json changed on a settings row that only routes")
 	}
 	if n := len(h.reg.Providers); n != 1 {
-		t.Fatalf("ProviderDelete ran on n: registry holds %d providers", n)
+		t.Fatalf("ProviderDelete ran from the settings row: registry holds %d providers", n)
 	}
-	if got := app.Message(); !strings.Contains(got, "Cancelled") {
-		t.Errorf("message = %q; want the cancelled note", got)
-	}
-
-	app.Step(Digit(6))
-	for _, k := range append(typeKeys("alpha"), KeyCtrlS) {
-		app.Step(k)
-	}
-	app.Step(KeyYes)
-	if n := len(h.reg.Providers); n != 0 {
-		t.Fatalf("registry holds %d providers after y; want 0", n)
-	}
-	if got := app.Message(); !strings.Contains(got, "deleted") {
-		t.Errorf("message = %q; want the deleted confirmation", got)
+	want := "Opens Hub > Providers. Rest the cursor on the provider row, then press Delete."
+	if got := app.Message(); got != want {
+		t.Errorf("message = %q; want the route hint %q", got, want)
 	}
 }
 
@@ -624,7 +758,7 @@ func TestSettingsScreenAddJSONPrompt(t *testing.T) {
 
 	before := regFileBytes(t)
 	app.Step(KeyRight)
-	app.Step(Digit(3)) // providers.add_json
+	app.Step(Digit(2)) // providers.add_json
 	for _, k := range append(typeKeys(path), KeyCtrlS) {
 		app.Step(k)
 	}
@@ -645,8 +779,9 @@ func TestSettingsScreenAddJSONPrompt(t *testing.T) {
 		t.Errorf("message = %q; want the cancelled note", got)
 	}
 
-	// y approves: the write lands and the reloaded frame shows the count.
-	app.Step(Digit(3))
+	// y approves: the write lands and the reloaded frame shows the new
+	// provider's key-status row.
+	app.Step(Digit(2))
 	for _, k := range append(typeKeys(path), KeyCtrlS) {
 		app.Step(k)
 	}
@@ -655,8 +790,8 @@ func TestSettingsScreenAddJSONPrompt(t *testing.T) {
 		t.Fatalf("ProviderAdd did not land in the registry: %+v", h.reg.Providers)
 	}
 	frame := app.Frame().String()
-	if !strings.Contains(frame, "2 registered") {
-		t.Errorf("reloaded frame does not show the added provider\n%s", frame)
+	if !strings.Contains(frame, "Key status - beta") {
+		t.Errorf("reloaded frame does not show the added provider's key-status row\n%s", frame)
 	}
 }
 
@@ -676,7 +811,7 @@ func TestSettingsScreenAddJSONReplaceApproval(t *testing.T) {
 
 	before := regFileBytes(t)
 	app.Step(KeyRight)
-	app.Step(Digit(3)) // providers.add_json
+	app.Step(Digit(2)) // providers.add_json
 	for _, k := range append(typeKeys(path), KeyCtrlS) {
 		app.Step(k)
 	}
@@ -708,7 +843,7 @@ func TestSettingsScreenAddJSONReplaceApproval(t *testing.T) {
 	}
 
 	// y approves the replace: the new model list stands.
-	app.Step(Digit(3))
+	app.Step(Digit(2))
 	for _, k := range append(typeKeys(path), KeyCtrlS) {
 		app.Step(k)
 	}
@@ -744,14 +879,15 @@ func TestSettingsScreenSavePresetChainedPrompts(t *testing.T) {
 	}
 
 	// swarm.presets is row 13 (index 12, past the digit range): digit 9
-	// lands on row 9, then arrows + Enter reach it.
+	// lands on row 9, then arrows + Enter reach it. The row opens the
+	// management screen (P3-7), which renders the same "name = numbers" rows.
 	app.Step(Digit(9))
 	for i := 0; i < 4; i++ {
 		app.Step(KeyDown)
 	}
 	app.Step(KeyEnter)
-	if _, ok := app.Top().(*settingsResultScreen); !ok {
-		t.Fatalf("preset listing did not push the result screen: %T", app.Top())
+	if _, ok := app.Top().(*settingsPresetsScreen); !ok {
+		t.Fatalf("preset listing did not push the management screen: %T", app.Top())
 	}
 	frame := app.Frame().String()
 	if !strings.Contains(frame, "p9 = 1,3") {
@@ -801,7 +937,7 @@ func TestSettingsScreenReadOnlyMessage(t *testing.T) {
 	app := newSettingsApp(h)
 
 	app.Step(KeyRight)
-	app.Step(Digit(7)) // models.inventory (read-only)
+	app.Step(Digit(6)) // models.inventory (read-only)
 	if app.Modal() != nil {
 		t.Fatal("read-only row opened a modal")
 	}
@@ -810,12 +946,13 @@ func TestSettingsScreenReadOnlyMessage(t *testing.T) {
 	}
 }
 
-// TestSettingsScreenAddProviderGuidance pins the reworded provider-add
-// guidance (audit gap G1). The old message pointed at `agy pro setup`, which on
-// a console host opens this very TUI, so following the row sent the user in a
-// circle. Moved pin: the row now names the in-TUI add path as the primary route
-// and keeps the classic wizard as the documented terminal alternative, and it
-// still never writes.
+// TestSettingsScreenAddProviderGuidance pins the routed provider-add row
+// (survey-1 debt item 3). The old row printed guidance that pointed at
+// `agy pro setup`, which on a console host opens this very TUI, so following
+// the row sent the user in a circle. The row now opens the providers screen
+// (the Add verb lives there, same routing family as providers.test/delete)
+// and the message names the in-TUI add path first, keeps the classic wizard
+// as the documented terminal alternative, and still never writes.
 func TestSettingsScreenAddProviderGuidance(t *testing.T) {
 	// The guidance is English chrome (decision 6B) and its catalog key
 	// resolves in all twelve locales, so bind en explicitly: the assertions
@@ -825,12 +962,21 @@ func TestSettingsScreenAddProviderGuidance(t *testing.T) {
 	app := newSettingsApp(h)
 
 	app.Step(KeyRight)
-	app.Step(Digit(2)) // providers.add_interactive
+	app.Step(Digit(1)) // providers.add_interactive
+	if _, ok := app.Top().(*ProvidersScreen); !ok {
+		t.Fatalf("top screen is %T; want *ProvidersScreen", app.Top())
+	}
+	if app.Top().Mode() == ModeEdit {
+		t.Fatal("the add row opened a prompt instead of routing")
+	}
 	got := app.Message()
 
-	const tuiPath = "Hub > Providers > Add provider"
+	const tuiPath = "Hub > Providers"
 	if !strings.Contains(got, tuiPath) {
-		t.Fatalf("message = %q; want the in-TUI add path %q named", got, tuiPath)
+		t.Fatalf("message = %q; want the in-TUI route %q named", got, tuiPath)
+	}
+	if !strings.Contains(got, "Add provider") {
+		t.Fatalf("message = %q; want the Add row named", got)
 	}
 	for _, want := range []string{
 		"Terminal alternative:",
@@ -866,13 +1012,13 @@ func TestSettingsScreenAddProviderGuidanceFitsFrame(t *testing.T) {
 	app := newSettingsAppSized(h, 80, 24)
 
 	app.Step(KeyRight)
-	app.Step(Digit(2)) // providers.add_interactive
+	app.Step(Digit(1)) // providers.add_interactive
 	full := app.Message()
 	if cells := cellwidth.String(full); cells <= app.Width() {
 		t.Fatalf("guidance = %d cells; want an over-wide line the composer clamps", cells)
 	}
 	clamped := cellwidth.Truncate(full, app.Width())
-	if !strings.Contains(clamped, "Hub > Providers > Add provider") {
+	if !strings.Contains(clamped, "Hub > Providers") {
 		t.Fatalf("clamped guidance = %q; the in-TUI clause must survive the cut", clamped)
 	}
 	frame := app.Frame()
@@ -894,7 +1040,7 @@ func TestSettingsScreenAddProviderGuidancePlainTier(t *testing.T) {
 	app := newSettingsAppSized(h, 80, 24)
 
 	app.Step(KeyRight)
-	app.Step(Digit(2)) // providers.add_interactive
+	app.Step(Digit(1)) // providers.add_interactive
 
 	var out bytes.Buffer
 	p := NewPainter(&out, plainTestCap())
@@ -904,7 +1050,7 @@ func TestSettingsScreenAddProviderGuidancePlainTier(t *testing.T) {
 	if strings.Contains(out.String(), "\x1b") {
 		t.Fatalf("plain-tier paint emitted escape bytes:\n%q", out.String())
 	}
-	if !strings.Contains(out.String(), "Hub > Providers > Add provider") {
+	if !strings.Contains(out.String(), "Hub > Providers") {
 		t.Fatalf("plain-tier paint lost the guidance line:\n%q", out.String())
 	}
 }
@@ -932,7 +1078,7 @@ func TestSettingsScreenRenameApprovalGate(t *testing.T) {
 
 	before := regFileBytes(t)
 	app.Step(KeyRight)
-	app.Step(Digit(5)) // providers.rename
+	app.Step(Digit(4)) // providers.rename
 	for _, k := range append(typeKeys("alpha"), KeyCtrlS) {
 		app.Step(k)
 	}
@@ -967,7 +1113,7 @@ func TestSettingsScreenRenameApprovalGate(t *testing.T) {
 	}
 
 	// y approves: the rename lands with the model list carried over.
-	app.Step(Digit(5))
+	app.Step(Digit(4))
 	for _, k := range append(typeKeys("alpha"), KeyCtrlS) {
 		app.Step(k)
 	}
@@ -1435,34 +1581,12 @@ func assertNoPlantedName(t *testing.T, haystack string) {
 }
 
 // TestSettingsScreenProviderNameOperandsSlotMasked pins every name sink of the
-// legacy settings screen: the credential-shaped name masks in the delete,
-// rename, add, test and fix-keys compositions, and no raw fragment survives.
+// legacy settings screen: the credential-shaped name masks in the rename, add,
+// and fix-keys compositions, and no raw fragment survives. (The delete and
+// test verdict sinks this test also drove lived behind the retired typed-name
+// prompts; both actions now route into the providers screen, whose own
+// masking pins live in screen_providers_test.go.)
 func TestSettingsScreenProviderNameOperandsSlotMasked(t *testing.T) {
-	t.Run("delete gate masks the removed name", func(t *testing.T) {
-		h := newSettingsTestCore(t)
-		seedProviderName(t, h, settingsPlantName, "https://plant.example.com", "AGY_PLANT_KEY")
-		app := newSettingsApp(h)
-		app.Step(KeyRight)
-		app.Step(Digit(6)) // providers.delete
-		for _, k := range append(typeKeys(settingsPlantName), KeyCtrlS) {
-			app.Step(k)
-		}
-		m := app.Modal()
-		if m == nil {
-			t.Fatal("delete approval modal did not open")
-		}
-		body := strings.Join(m.Body(110), "\n")
-		for _, want := range []string{
-			"Removes the registry entry for " + settingsPlantMasked + " only.",
-			"- provider " + settingsPlantMasked + " (https://plant.example.com, 1 model)",
-		} {
-			if !strings.Contains(body, want) {
-				t.Errorf("approval body missing %q\n%s", want, body)
-			}
-		}
-		assertNoPlantedName(t, body)
-	})
-
 	t.Run("rename gate masks both name operands", func(t *testing.T) {
 		h := newSettingsTestCore(t)
 		seedProviderName(t, h, settingsPlantName, "https://plant.example.com", "AGY_PLANT_KEY")
@@ -1470,7 +1594,7 @@ func TestSettingsScreenProviderNameOperandsSlotMasked(t *testing.T) {
 
 		// old operand: the planted record is the rename source.
 		app.Step(KeyRight)
-		app.Step(Digit(5)) // providers.rename
+		app.Step(Digit(4)) // providers.rename
 		for _, k := range append(typeKeys(settingsPlantName), KeyCtrlS) {
 			app.Step(k)
 		}
@@ -1494,7 +1618,7 @@ func TestSettingsScreenProviderNameOperandsSlotMasked(t *testing.T) {
 		app.Step(KeyNo)
 
 		// new operand: the planted name is the rename destination.
-		app.Step(Digit(5))
+		app.Step(Digit(4))
 		for _, k := range append(typeKeys("alpha"), KeyCtrlS) {
 			app.Step(k)
 		}
@@ -1558,41 +1682,6 @@ func TestSettingsScreenProviderNameOperandsSlotMasked(t *testing.T) {
 		assertNoPlantedName(t, body)
 	})
 
-	t.Run("provider test verdict masks the name", func(t *testing.T) {
-		h := newSettingsTestCore(t)
-		seedProviderName(t, h, settingsPlantName, "https://plant.example.com", "AGY_PLANT_KEY")
-		app := newSettingsApp(h)
-		app.Step(KeyRight)
-		app.Step(Digit(4)) // providers.test
-		for _, k := range append(typeKeys(settingsPlantName), KeyCtrlS) {
-			app.Step(k)
-		}
-		want := settingsPlantMasked + ": connection OK"
-		if got := app.Message(); got != want {
-			t.Errorf("test verdict drifted:\ngot:  %q\nwant: %q", got, want)
-		}
-		assertNoPlantedName(t, app.Message())
-	})
-
-	t.Run("provider test failure masks the name in the detail", func(t *testing.T) {
-		h := newSettingsTestCore(t)
-		seedProviderName(t, h, settingsPlantName, "https://plant.example.com", "AGY_PLANT_KEY")
-		invalid := providers.KeyProbeResult{Status: providers.ProbeInvalid, Detail: "dest plant.example: rejected by upstream"}
-		h.probe = &invalid
-		app := newSettingsApp(h)
-		app.Step(KeyRight)
-		app.Step(Digit(4)) // providers.test
-		for _, k := range append(typeKeys(settingsPlantName), KeyCtrlS) {
-			app.Step(k)
-		}
-		want := settingsPlantMasked + ": test failed. Details (English, redacted): " +
-			`provider "` + settingsPlantMasked + `": key probe status invalid (dest plant.example: rejected by upstream)`
-		if got := app.Message(); got != want {
-			t.Errorf("failure sentence drifted:\ngot:  %q\nwant: %q", got, want)
-		}
-		assertNoPlantedName(t, app.Message())
-	})
-
 	t.Run("fix-keys entry masks the provider name", func(t *testing.T) {
 		h := newSettingsTestCore(t)
 		seedProviderName(t, h, settingsPlantName, "https://plant.example.com", "AGY_PLANT_KEY")
@@ -1608,46 +1697,6 @@ func TestSettingsScreenProviderNameOperandsSlotMasked(t *testing.T) {
 		}
 		assertNoPlantedName(t, body)
 	})
-}
-
-// TestSettingsScreenBenignProviderNamesByteIdentical pins the identity half of
-// the fix7 contract: every corpus name renders exactly as the pre-fix screen
-// did, in both the sentence and the diff line.
-func TestSettingsScreenBenignProviderNamesByteIdentical(t *testing.T) {
-	corpus := []string{"openai", "gemini", "deepseek", "nw", "charm", "acme-corp", "alpha", "beta"}
-	h := newSettingsTestCore(t)
-	for _, name := range corpus {
-		if name == "alpha" {
-			continue // already seeded by the harness
-		}
-		seedProviderName(t, h, name, "https://"+name+".example.com", "AGY_CORPUS_KEY")
-	}
-	app := newSettingsApp(h)
-	app.Step(KeyRight) // p1 -> p2
-
-	for _, name := range corpus {
-		app.Step(Digit(6)) // providers.delete
-		for _, k := range append(typeKeys(name), KeyCtrlS) {
-			app.Step(k)
-		}
-		m := app.Modal()
-		if m == nil {
-			t.Fatalf("delete approval modal did not open for %q", name)
-		}
-		body := strings.Join(m.Body(110), "\n")
-		for _, want := range []string{
-			"Removes the registry entry for " + name + " only.",
-			"- provider " + name + " (https://" + name + ".example.com, 1 model)",
-		} {
-			if !strings.Contains(body, want) {
-				t.Errorf("benign name %q stopped rendering byte-identically; missing %q\n%s", name, want, body)
-			}
-		}
-		if strings.Contains(body, "****") {
-			t.Errorf("benign name %q was masked:\n%s", name, body)
-		}
-		app.Step(KeyNo)
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1692,10 +1741,11 @@ func openSettingsRow(t *testing.T, app *App, id string) {
 	t.Fatalf("row %q missing from the settings view", id)
 }
 
-// TestSettingsScreenPresetOperandsMasked pins presetLines (the
-// internal/tui/screen_settings.go listing composer): a credential-shaped preset
-// name and a credential-shaped numbers field render as first-5+**** in the
-// preset listing result screen, and no raw fragment of either survives.
+// TestSettingsScreenPresetOperandsMasked pins the management screen's row
+// composer (settingsPresetsScreen.rebuild, the presetLines successor): a
+// credential-shaped preset name and a credential-shaped numbers field render
+// as first-5+**** in the saved preset listing, and no raw fragment of
+// either survives.
 func TestSettingsScreenPresetOperandsMasked(t *testing.T) {
 	h := newSettingsTestCore(t)
 	h.presets = []swarm.SavedPreset{
@@ -1704,8 +1754,8 @@ func TestSettingsScreenPresetOperandsMasked(t *testing.T) {
 	}
 	app := newSettingsApp(h)
 	openSettingsRow(t, app, "swarm.presets")
-	if _, ok := app.Top().(*settingsResultScreen); !ok {
-		t.Fatalf("preset listing did not push the result screen: %T", app.Top())
+	if _, ok := app.Top().(*settingsPresetsScreen); !ok {
+		t.Fatalf("preset listing did not push the management screen: %T", app.Top())
 	}
 	frame := app.Frame().String()
 	for _, want := range []string{
@@ -1750,5 +1800,518 @@ func TestSettingsScreenBenignPresetOperandsByteIdentical(t *testing.T) {
 	}
 	if strings.Contains(frame, "****") {
 		t.Errorf("a benign preset name or numbers list was masked:\n%s", frame)
+	}
+}
+
+// TestSettingsScreenSavePresetNameValidation pins the D17 input hygiene the
+// append-only path lacked: an empty, grammar-colliding, or separator-carrying
+// name is refused by name and writes nothing; a case-insensitive duplicate
+// is refused and pointed at the management screen.
+func TestSettingsScreenSavePresetNameValidation(t *testing.T) {
+	h := newSettingsTestCore(t)
+	h.presets = []swarm.SavedPreset{{Name: "quick", Numbers: "1,3"}}
+	app := newSettingsApp(h)
+
+	refused := []struct{ name, why string }{
+		{"", "empty"},
+		{"p1", "compiled preset id"},
+		{"P2", "compiled preset id (case-insensitive)"},
+		{"42", "bare seat number"},
+		{"a,b", "selection separator"},
+		{"two words", "space"},
+	}
+	for _, tc := range refused {
+		openSettingsRow(t, app, "swarm.save_preset")
+		for _, k := range append(typeKeys(tc.name), KeyCtrlS) {
+			app.Step(k)
+		}
+		if got := app.Message(); !strings.Contains(got, "invalid preset name") {
+			t.Errorf("name %q (%s): message = %q; want the named refusal", tc.name, tc.why, got)
+		}
+		if len(h.presets) != 1 {
+			t.Fatalf("name %q (%s) wrote the store: %+v", tc.name, tc.why, h.presets)
+		}
+	}
+
+	// Case-insensitive duplicate: refused and routed to the management screen.
+	openSettingsRow(t, app, "swarm.save_preset")
+	for _, k := range append(typeKeys("QUICK"), KeyCtrlS) {
+		app.Step(k)
+	}
+	if got := app.Message(); !strings.Contains(got, "already exists") {
+		t.Errorf("duplicate message = %q; want the exists refusal", got)
+	}
+	if len(h.presets) != 1 || h.presets[0].Numbers != "1,3" {
+		t.Fatalf("duplicate write landed: %+v", h.presets)
+	}
+}
+
+// TestSettingsScreenSavePresetEmptyNumbersRefused pins the second half of
+// the D17 validation: a valid name with empty numbers writes nothing.
+func TestSettingsScreenSavePresetEmptyNumbersRefused(t *testing.T) {
+	h := newSettingsTestCore(t)
+	app := newSettingsApp(h)
+
+	openSettingsRow(t, app, "swarm.save_preset")
+	for _, k := range append(typeKeys("deep"), KeyCtrlS) {
+		app.Step(k)
+	}
+	for _, k := range append(typeKeys("   "), KeyCtrlS) {
+		app.Step(k)
+	}
+	if got := app.Message(); !strings.Contains(got, "numbers must not be empty") {
+		t.Errorf("message = %q; want the empty-numbers refusal", got)
+	}
+	if len(h.presets) != 0 {
+		t.Fatalf("empty numbers wrote the store: %+v", h.presets)
+	}
+}
+
+// TestSettingsScreenSavePresetValidAppends covers the happy path on top of
+// the validation: a valid name and numbers append through the store.
+func TestSettingsScreenSavePresetValidAppends(t *testing.T) {
+	h := newSettingsTestCore(t)
+	app := newSettingsApp(h)
+
+	openSettingsRow(t, app, "swarm.save_preset")
+	for _, k := range append(typeKeys("deep-review"), KeyCtrlS) {
+		app.Step(k)
+	}
+	for _, k := range append(typeKeys("2,5"), KeyCtrlS) {
+		app.Step(k)
+	}
+	if len(h.presets) != 1 || h.presets[0].Name != "deep-review" || h.presets[0].Numbers != "2,5" {
+		t.Fatalf("presets = %+v; want deep-review=2,5", h.presets)
+	}
+	if got := app.Message(); !strings.HasPrefix(got, "[SUCCESS]") {
+		t.Errorf("message = %q; want the success stamp", got)
+	}
+}
+
+// TestSettingsScreenPresetsEditRoundTrip drives the management screen's
+// Edit row (D17): arming a preset, changing its numbers, and submitting
+// persists through the store seam and re-renders the corrected row.
+func TestSettingsScreenPresetsEditRoundTrip(t *testing.T) {
+	h := newSettingsTestCore(t)
+	h.presets = []swarm.SavedPreset{
+		{Name: "deep", Numbers: "1,3"},
+		{Name: "swift", Numbers: "1"},
+	}
+	app := newSettingsApp(h)
+	openSettingsRow(t, app, "swarm.presets")
+	if _, ok := app.Top().(*settingsPresetsScreen); !ok {
+		t.Fatalf("top screen is %T; want *settingsPresetsScreen", app.Top())
+	}
+
+	app.Step(Digit(1)) // arm "deep"
+	app.Step(Digit(3)) // Edit preset row
+	if app.Top().Mode() != ModeEdit {
+		t.Fatalf("edit prompt did not open; top = %T", app.Top())
+	}
+	// The prompt seeds the current numbers ("1,3", caret at end): a real edit
+	// deletes the old value, then types the new one.
+	app.Step(KeyBackspace)
+	app.Step(KeyBackspace)
+	app.Step(KeyBackspace)
+	for _, k := range append(typeKeys("9,10"), KeyCtrlS) {
+		app.Step(k)
+	}
+	if len(h.presets) != 2 || h.presets[0].Name != "deep" || h.presets[0].Numbers != "9,10" {
+		t.Fatalf("edit did not persist: %+v", h.presets)
+	}
+	if h.presets[1].Numbers != "1" {
+		t.Fatalf("edit touched a sibling preset: %+v", h.presets)
+	}
+	if got := app.Message(); !strings.Contains(got, "[SUCCESS]") {
+		t.Errorf("message = %q; want the success stamp", got)
+	}
+	frame := app.Frame().String()
+	if !strings.Contains(frame, "deep = 9,10") {
+		t.Errorf("management screen did not re-render the edited row\n%s", frame)
+	}
+	if strings.Contains(frame, "deep = 1,3") {
+		t.Errorf("stale numbers still rendered after the edit\n%s", frame)
+	}
+}
+
+// TestSettingsScreenPresetsDeleteRoundTrip drives the Delete row (D17):
+// the y/n confirm gates the removal; n writes nothing, y persists the
+// shortened list.
+func TestSettingsScreenPresetsDeleteRoundTrip(t *testing.T) {
+	h := newSettingsTestCore(t)
+	h.presets = []swarm.SavedPreset{
+		{Name: "deep", Numbers: "1,3"},
+		{Name: "swift", Numbers: "1"},
+	}
+	app := newSettingsApp(h)
+	openSettingsRow(t, app, "swarm.presets")
+
+	app.Step(Digit(2)) // arm "swift"
+	app.Step(Digit(4)) // Delete preset row
+	m := app.Modal()
+	if m == nil {
+		t.Fatal("delete confirm modal did not open")
+	}
+	if body := strings.Join(m.Body(110), "\n"); !strings.Contains(body, "Delete saved seat preset swift") {
+		t.Errorf("approval body missing the delete sentence\n%s", body)
+	}
+	app.Step(KeyNo)
+	if len(h.presets) != 2 {
+		t.Fatalf("n wrote the store: %+v", h.presets)
+	}
+	if got := app.Message(); !strings.Contains(got, "Cancelled") {
+		t.Errorf("message = %q; want the cancelled stamp", got)
+	}
+
+	app.Step(Digit(2)) // re-arm "swift" (the refusal above did not move the cursor)
+	app.Step(Digit(4))
+	app.Step(KeyYes)
+	if len(h.presets) != 1 || h.presets[0].Name != "deep" {
+		t.Fatalf("delete did not persist: %+v", h.presets)
+	}
+	frame := app.Frame().String()
+	if strings.Contains(frame, "swift = ") {
+		t.Errorf("deleted preset row still rendered\n%s", frame)
+	}
+}
+
+// TestSettingsScreenPresetsNoneArmedRefused pins the armed-row guard: Edit
+// and Delete with nothing armed name the arming step and write nothing.
+func TestSettingsScreenPresetsNoneArmedRefused(t *testing.T) {
+	h := newSettingsTestCore(t)
+	h.presets = []swarm.SavedPreset{{Name: "deep", Numbers: "1,3"}}
+	app := newSettingsApp(h)
+	openSettingsRow(t, app, "swarm.presets")
+
+	app.Step(Digit(2)) // Edit row, nothing armed
+	if got := app.Message(); !strings.Contains(got, "no preset selected") {
+		t.Errorf("edit unarmed message = %q", got)
+	}
+	app.Step(Digit(3)) // Delete row, nothing armed
+	if got := app.Message(); !strings.Contains(got, "no preset selected") {
+		t.Errorf("delete unarmed message = %q", got)
+	}
+	if len(h.presets) != 1 || h.presets[0].Numbers != "1,3" {
+		t.Fatalf("unarmed action wrote the store: %+v", h.presets)
+	}
+}
+
+// TestSettingsScreenPresetsEmptyStateAndRefusalNote covers the no-presets
+// state (the honest "(no saved presets...)" line, no action rows) and pins
+// the D2 refusal note: the management screen states that names are not
+// selectable yet and what works instead.
+func TestSettingsScreenPresetsEmptyStateAndRefusalNote(t *testing.T) {
+	h := newSettingsTestCore(t)
+	app := newSettingsApp(h)
+	openSettingsRow(t, app, "swarm.presets")
+
+	frame := app.Frame().String()
+	for _, want := range []string{
+		"not selectable by name yet",
+		"seat numbers, ranges, and p1/p2/p3 only",
+		"(no saved presets; p1/p2/p3 defaults always available)",
+	} {
+		if !strings.Contains(frame, want) {
+			t.Errorf("empty management screen missing %q\n%s", want, frame)
+		}
+	}
+	if strings.Contains(frame, "Edit preset") || strings.Contains(frame, "Delete preset") {
+		t.Errorf("empty state must not render action rows\n%s", frame)
+	}
+}
+
+// TestSettingsScreenPresetsDiskRoundTrip is the persistence proof behind the
+// management screen: the TUI mutations write through a real swarm FileStore
+// on disk (AGY_PRO_HOME temp dir), and a fresh load sees the edited and
+// deleted state - the store seam is not a memory-only mock here.
+func TestSettingsScreenPresetsDiskRoundTrip(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, "swarm-state.json")
+	fs := &swarm.FileStore{Path: path}
+	if err := fs.SavePresets([]swarm.SavedPreset{
+		{Name: "deep", Numbers: "1,3"},
+		{Name: "swift", Numbers: "1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	h := newSettingsTestCore(t)
+	h.core = settings.NewCore(settings.Deps{
+		LoadState:  func() (*mode.State, error) { return h.state, nil },
+		LoadReg:    func() (*providers.Registry, error) { return h.reg, nil },
+		SwarmStore: fs,
+	})
+	app := newSettingsApp(h)
+	openSettingsRow(t, app, "swarm.presets")
+
+	app.Step(Digit(1)) // arm "deep"
+	app.Step(Digit(3)) // Edit row
+	app.Step(KeyBackspace)
+	app.Step(KeyBackspace)
+	app.Step(KeyBackspace)
+	for _, k := range append(typeKeys("7,8"), KeyCtrlS) {
+		app.Step(k)
+	}
+	app.Step(Digit(2)) // arm "swift" (digits pick rows directly)
+	app.Step(Digit(4)) // Delete row
+	app.Step(KeyYes)
+
+	got, err := fs.LoadPresets()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Name != "deep" || got[0].Numbers != "7,8" {
+		t.Fatalf("on-disk presets = %+v; want deep=7,8 only", got)
+	}
+}
+
+// useSwarmFile rebuilds the harness Core over a real swarm.FileStore at path,
+// so the corrupt-file latch, the notice, and the on-disk write can be observed
+// together (the disk round-trip harness pattern).
+func (h *settingsTestCore) useSwarmFile(t *testing.T, path string) *swarm.FileStore {
+	t.Helper()
+	fs := &swarm.FileStore{Path: path}
+	h.core = settings.NewCore(settings.Deps{
+		LoadState:  func() (*mode.State, error) { return h.state, nil },
+		LoadReg:    func() (*providers.Registry, error) { return h.reg, nil },
+		SwarmStore: fs,
+	})
+	return fs
+}
+
+// TestSettingsScreenPresetsCorruptStoreWarnsOnOpen pins the F-3 warning half on
+// the management screen: a corrupt swarm-state.json must show its warning in
+// the frame and on the message line instead of vanishing into the store's
+// os.Stderr sink, and merely opening the screen must leave the file untouched.
+func TestSettingsScreenPresetsCorruptStoreWarnsOnOpen(t *testing.T) {
+	// The warning sentence resolves through the catalog, so bind en: the
+	// assertions below quote the English text (the AddProviderGuidance
+	// precedent).
+	SetLanguage("en")
+	h := newSettingsTestCore(t)
+	path := filepath.Join(t.TempDir(), "swarm-state.json")
+	const corrupt = "{not json"
+	if err := os.WriteFile(path, []byte(corrupt), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.useSwarmFile(t, path)
+	app := newSettingsApp(h)
+	openSettingsRow(t, app, "swarm.presets")
+
+	frame := app.Frame().String()
+	for _, want := range []string{"swarm-state.json is corrupt", "ignored and loaded empty"} {
+		if !strings.Contains(frame, want) {
+			t.Errorf("management frame missing %q\n%s", want, frame)
+		}
+	}
+	if msg := app.Message(); !strings.Contains(msg, "swarm-state.json is corrupt") {
+		t.Errorf("message line = %q; want the corrupt-file warning", msg)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != corrupt {
+		t.Fatalf("opening the management screen wrote the file: %q", got)
+	}
+}
+
+// TestSettingsScreenSavePresetCorruptStoreGatesFirstWrite pins the F-3 ack half
+// on the append row: the first save after a corrupt load must not replace the
+// unreadable file until the user acknowledges it, a declined gate writes
+// nothing, and an approved gate writes the file (one ack, one episode).
+func TestSettingsScreenSavePresetCorruptStoreGatesFirstWrite(t *testing.T) {
+	// The gate title and body resolve through the catalog, so bind en (the
+	// AddProviderGuidance precedent).
+	SetLanguage("en")
+	h := newSettingsTestCore(t)
+	path := filepath.Join(t.TempDir(), "swarm-state.json")
+	const corrupt = "{not json"
+	if err := os.WriteFile(path, []byte(corrupt), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fs := h.useSwarmFile(t, path)
+	app := newSettingsApp(h)
+
+	submitPreset := func(t *testing.T) {
+		t.Helper()
+		openSettingsRow(t, app, "swarm.save_preset")
+		for _, k := range append(typeKeys("deep-review"), KeyCtrlS) {
+			app.Step(k)
+		}
+		for _, k := range append(typeKeys("2,5"), KeyCtrlS) {
+			app.Step(k)
+		}
+	}
+
+	submitPreset(t)
+	m := app.Modal()
+	if m == nil {
+		t.Fatal("the corrupt-file gate did not open before the first save")
+	}
+	body := strings.Join(m.Body(110), "\n")
+	if !strings.Contains(body, "swarm-state.json") || !strings.Contains(body, "Saving now overwrites it") {
+		t.Errorf("gate body = %q; want the on-disk path and the overwrite sentence", body)
+	}
+	if got, _ := os.ReadFile(path); string(got) != corrupt {
+		t.Fatalf("the gate wrote the file before it was answered: %q", got)
+	}
+
+	app.Step(KeyNo)
+	if got, _ := os.ReadFile(path); string(got) != corrupt {
+		t.Fatalf("a declined gate wrote the file: %q", got)
+	}
+	if msg := app.Message(); !strings.Contains(msg, "Cancelled") {
+		t.Errorf("declined gate message = %q; want the cancelled stamp", msg)
+	}
+
+	submitPreset(t)
+	if app.Modal() == nil {
+		t.Fatal("the second attempt skipped the corrupt gate")
+	}
+	app.Step(KeyYes)
+	presets, err := fs.LoadPresets()
+	if err != nil {
+		t.Fatalf("the approved gate left the file unreadable: %v", err)
+	}
+	if len(presets) != 1 || presets[0].Name != "deep-review" || presets[0].Numbers != "2,5" {
+		t.Fatalf("on-disk presets = %+v; want deep-review=2,5", presets)
+	}
+	if msg := app.Message(); !strings.HasPrefix(msg, "[SUCCESS]") {
+		t.Errorf("message = %q; want the success stamp", msg)
+	}
+}
+
+// TestSettingsScreenPresetsEditRefusesWhenStoreTurnsCorrupt pins the F-3 and
+// F03 interaction on the management screen: when another session corrupts the
+// file between the listing and Edit, the edit refuses without writing, names
+// the target as vanished (not "already exists"), and the frame then carries the
+// corrupt-file notice.
+func TestSettingsScreenPresetsEditRefusesWhenStoreTurnsCorrupt(t *testing.T) {
+	// The notice line resolves through the catalog, so bind en (the
+	// AddProviderGuidance precedent).
+	SetLanguage("en")
+	h := newSettingsTestCore(t)
+	path := filepath.Join(t.TempDir(), "swarm-state.json")
+	fs := h.useSwarmFile(t, path)
+	if err := fs.SavePresets([]swarm.SavedPreset{
+		{Name: "deep", Numbers: "1,3"},
+		{Name: "swift", Numbers: "1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app := newSettingsApp(h)
+	openSettingsRow(t, app, "swarm.presets")
+	app.Step(Digit(1)) // arm "deep"
+
+	const corrupt = "{not json"
+	if err := os.WriteFile(path, []byte(corrupt), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	app.Step(Digit(3)) // Edit preset row
+	if app.Top().Mode() != ModeEdit {
+		t.Fatalf("edit prompt did not open; top = %T", app.Top())
+	}
+	for i := 0; i < 3; i++ {
+		app.Step(KeyBackspace)
+	}
+	for _, k := range append(typeKeys("9,10"), KeyCtrlS) {
+		app.Step(k)
+	}
+	if app.Modal() != nil {
+		t.Fatal("a gate opened over a write that must be refused before it")
+	}
+	msg := app.Message()
+	if !strings.Contains(msg, "no longer in the store") {
+		t.Errorf("message = %q; want the vanished-target refusal", msg)
+	}
+	if strings.Contains(msg, "already exists") {
+		t.Errorf("message = %q; the vanished path must not reuse the add-path refusal", msg)
+	}
+	if got, _ := os.ReadFile(path); string(got) != corrupt {
+		t.Fatalf("the refused edit wrote the file: %q", got)
+	}
+	if frame := app.Frame().String(); !strings.Contains(frame, "swarm-state.json is corrupt") {
+		t.Errorf("frame lost the corrupt-file notice after the reload\n%s", frame)
+	}
+}
+
+// TestSettingsScreenPresetsVanishedTargetNamesItself pins code review F03: the
+// Edit verb on an armed preset that another session removed reports the vanished
+// target, never the add path's "already exists" sentence, and writes nothing.
+func TestSettingsScreenPresetsVanishedTargetNamesItself(t *testing.T) {
+	h := newSettingsTestCore(t)
+	h.presets = []swarm.SavedPreset{
+		{Name: "deep", Numbers: "1,3"},
+		{Name: "swift", Numbers: "1"},
+	}
+	app := newSettingsApp(h)
+	openSettingsRow(t, app, "swarm.presets")
+	app.Step(Digit(1)) // arm "deep"
+
+	h.presets = []swarm.SavedPreset{{Name: "swift", Numbers: "1"}} // another session deleted it
+
+	app.Step(Digit(3)) // Edit preset row
+	for i := 0; i < 3; i++ {
+		app.Step(KeyBackspace)
+	}
+	for _, k := range append(typeKeys("9,10"), KeyCtrlS) {
+		app.Step(k)
+	}
+	msg := app.Message()
+	if !strings.Contains(msg, "no longer in the store") {
+		t.Errorf("message = %q; want the vanished-target refusal", msg)
+	}
+	if strings.Contains(msg, "already exists") {
+		t.Errorf("message = %q; the vanished path must not reuse the add-path refusal", msg)
+	}
+	if len(h.presets) != 1 || h.presets[0].Name != "swift" || h.presets[0].Numbers != "1" {
+		t.Fatalf("the refused edit wrote the store: %+v", h.presets)
+	}
+}
+
+// TestSettingsScreenPresetsArmingKeepsCursorOnRow pins code review C6: arming a
+// preset row rebuilds the list, and the cursor must stay on the row the user
+// armed (by row ID), not jump to the top.
+func TestSettingsScreenPresetsArmingKeepsCursorOnRow(t *testing.T) {
+	// The armed marker resolves through the catalog, so bind en (the
+	// AddProviderGuidance precedent).
+	SetLanguage("en")
+	h := newSettingsTestCore(t)
+	h.presets = []swarm.SavedPreset{
+		{Name: "deep", Numbers: "1,3"},
+		{Name: "swift", Numbers: "1"},
+		{Name: "wide", Numbers: "4,5"},
+	}
+	app := newSettingsApp(h)
+	openSettingsRow(t, app, "swarm.presets")
+	scr, ok := app.Top().(*settingsPresetsScreen)
+	if !ok {
+		t.Fatalf("top screen is %T; want *settingsPresetsScreen", app.Top())
+	}
+
+	app.Step(Digit(3)) // arm "wide" (row 3)
+	if scr.armed != 2 {
+		t.Fatalf("armed = %d; want 2", scr.armed)
+	}
+	if got := scr.list.Cursor(); got != 2 {
+		t.Fatalf("cursor = %d after arming row 3; want it to stay on 2", got)
+	}
+	if rows := scr.rows; len(rows) != 5 || rows[3].ID != "edit" || rows[4].ID != "delete" {
+		t.Fatalf("row inventory = %+v; want 3 presets then edit/delete", scr.rows)
+	}
+	if !strings.Contains(scr.rows[2].Label, "(armed)") {
+		t.Errorf("armed row label = %q; want the armed marker", scr.rows[2].Label)
+	}
+
+	app.Step(Digit(1)) // re-arm "deep" (row 1)
+	if got := scr.list.Cursor(); got != 0 {
+		t.Fatalf("cursor = %d after arming row 1; want 0", got)
+	}
+	// The action rows still dispatch from their positions.
+	app.Step(Digit(4)) // Edit row
+	if app.Top().Mode() != ModeEdit {
+		t.Fatalf("Edit row did not open the prompt; top = %T", app.Top())
 	}
 }

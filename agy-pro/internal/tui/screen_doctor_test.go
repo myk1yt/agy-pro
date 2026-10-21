@@ -371,7 +371,7 @@ func TestDoctorFixHintNamesTUIAndCLIPaths(t *testing.T) {
 
 	for _, want := range []string{
 		doctorFixTUIPath,
-		"Hub > Settings > [5] Diagnostics & Keys > Repair Key Names (--fix-keys)",
+		"Hub > Settings > Diagnostics & Keys > Repair Key Names (--fix-keys)",
 		doctorFixCLI,
 		doctorFixKeysCmd,
 		doctorRollbackCmd,

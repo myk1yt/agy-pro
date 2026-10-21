@@ -191,8 +191,11 @@ func TestSetupProvidersWiringOpensProviderForm(t *testing.T) {
 	if !strings.Contains(out, "provider-03") {
 		t.Fatalf("the list did not pick up the saved provider after the form popped:\n%s", out)
 	}
-	if !strings.Contains(out, "Edit: provider-03") {
-		t.Fatalf("the saved provider has no edit row:\n%s", out)
+	// The provider verbs are sticky-target rows (unit P1-1 inverted the layout),
+	// so the saved provider renders as an entity row and the fixed verb block
+	// follows it: 3 providers + Add + Test all + Test + Edit + Delete = 8 rows.
+	if !strings.Contains(out, "[ 8] Delete") {
+		t.Fatalf("the inverted action rows are missing after the save:\n%s", out)
 	}
 }
 
@@ -714,6 +717,9 @@ func writeProviderRegistry(t *testing.T, home string, n int) {
 // repro (C1-F6): ten providers fill the page at 80x24, End+Enter opens the M4
 // delete gate, and the composed frame must carry the gate title, every summary
 // line, and the legend. Before the fix the frame held no modal line at all.
+// Since unit P1-1 inverted the row layout the Delete row acts on the sticky
+// target, so the run first rests the cursor on provider 1 (KeyHome) and only
+// then jumps to the last row.
 func TestProvidersApprovalGateVisibleAt80x24(t *testing.T) {
 	home := appTestHome(t, "en")
 	writeProviderRegistry(t, home, 10)
@@ -726,7 +732,8 @@ func TestProvidersApprovalGateVisibleAt80x24(t *testing.T) {
 	if _, ok := app.Top().(*ProvidersScreen); !ok {
 		t.Fatalf("hub row 1 did not open the providers screen; top = %T", app.Top())
 	}
-	app.Step(KeyEnd)
+	app.Step(KeyHome) // rest the cursor on provider 1: the sticky target
+	app.Step(KeyEnd)  // jump to the last row: the Delete verb
 	app.Step(KeyEnter)
 	m := app.Modal()
 	if m == nil {
@@ -1163,5 +1170,24 @@ func TestComposeFrameCarriesCaretToPainter(t *testing.T) {
 	}
 	if got := strings.Count(out.String(), "\x1b[7m"); got != 1 {
 		t.Fatalf("caret SGR count = %d, want exactly 1:\n%q", got, out.String())
+	}
+}
+
+// TestRunSetupCorruptSwarmStoreWarnsOnMessageLine pins the F-3 startup wiring:
+// a corrupt swarm-state.json must surface its warning on the user-visible
+// message line of the first frame, the same first-frame treatment the fanout
+// preset file gets, instead of vanishing into the store's os.Stderr sink where
+// the full-screen frame cannot show it.
+func TestRunSetupCorruptSwarmStoreWarnsOnMessageLine(t *testing.T) {
+	home := appTestHome(t, "en")
+	if err := os.WriteFile(filepath.Join(home, "swarm-state.json"), []byte("{corrupt"), 0o600); err != nil {
+		t.Fatalf("write corrupt swarm state: %v", err)
+	}
+	var out, errb bytes.Buffer
+	if code := runSetup(strings.NewReader(""), &out, &errb, plainTestCap()); code != 0 {
+		t.Fatalf("runSetup exit = %d, want 0", code)
+	}
+	if !strings.Contains(out.String(), "swarm-state.json is corrupt") {
+		t.Fatalf("corrupt swarm-state warning missing from the message line:\n%s", out.String())
 	}
 }

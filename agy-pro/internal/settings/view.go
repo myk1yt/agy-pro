@@ -193,24 +193,22 @@ func (c *Core) sectionLaunch(st *mode.State) Section {
 			Note: "when set to 0 the fast launcher is bypassed (decide.go)",
 		},
 	}
-	return Section{ID: "p1", Title: "[1] Launch & Profile", Items: items}
+	return Section{ID: "p1", Title: "Launch & Profile", Items: items}
 }
 
 // P2 Models & Providers (research §2.3 rows 12-20; F-PROV GAP rows 15-17).
 func (c *Core) sectionProviders(reg *providers.Registry, regErr error) Section {
 	items := []Item{
-		{ID: "providers.list", Label: "List Providers", Value: fmt.Sprintf("%d registered", len(reg.Providers)), Source: "registry",
-			Note: "providers + model capabilities (`agy pro status`, `agy pro models`)"},
-		{ID: "providers.add_interactive", Label: "Add/Update Provider (interactive wizard)", Value: "agy pro setup", Source: "registry",
-			Note: "the ONLY secret-entry path: raw key input echo is masked first-5 + **** (§2.11)"},
+		{ID: "providers.add_interactive", Label: "Add/Update Provider (interactive wizard)", Value: "agy pro setup --wizard", Source: "registry",
+			Note: "the ONLY secret-entry path: raw key input echo is masked first-5 + **** (§2.11); setup TUI row opens Hub > Providers (Add), legacy panel: `agy pro settings providers add-interactive`"},
 		{ID: "providers.add_json", Label: "Add/Update Provider (non-interactive)", Value: "add-json <file|->", Source: "registry",
 			Note: "APIKeyEnv = environment-variable NAME only; a key VALUE is rejected (F-PROV)"},
 		{ID: "providers.test", Label: "Test Provider (live probe)", Value: "test <name>", Source: "registry",
-			Note: "probe via the AuditKeys path (5s, masked)"},
+			Note: "setup TUI: opens Hub > Providers, target picked on the provider row; legacy panel: typed name. Probe via the AuditKeys path (5s, masked)"},
 		{ID: "providers.rename", Label: "Rename Provider", Value: "rename <old> <new>", Source: "registry",
 			Note: "registry-entry rename only; key material untouched (F-PROV)"},
 		{ID: "providers.delete", Label: "Delete Provider", Value: "delete <name>", Source: "registry", Danger: true,
-			Note: "registry-entry removal ONLY - never touches env/registry key values, never deletes files (F-PROV)"},
+			Note: "setup TUI: opens Hub > Providers (M4-gated Delete verb); legacy panel: typed name. Registry-entry removal ONLY - never touches env/registry key values, never deletes files (F-PROV)"},
 		{ID: "models.inventory", Label: "Combined Model Inventory", Value: "(native + external)", Source: "registry", ReadOnly: true,
 			Note: "run `agy pro models --all` for the numbered combined view (contract §2.5)"},
 		{ID: "providers.presets", Label: "Provider Presets (catalog)", Value: presetCatalog(), Source: "constant", ReadOnly: true,
@@ -252,7 +250,7 @@ func (c *Core) sectionProviders(reg *providers.Registry, regErr error) Section {
 			Note: "resolved from process env then persistent stores; values never shown beyond the mask",
 		})
 	}
-	return Section{ID: "p2", Title: "[2] Models & Providers", Items: items}
+	return Section{ID: "p2", Title: "Models & Providers", Items: items}
 }
 
 // P3 Bridge Tools & Budgets (research §2.1 row 7, §2.5 budgets).
@@ -285,7 +283,7 @@ func (c *Core) sectionBridge(st *mode.State) Section {
 		{ID: "budget.fallback", Label: "Budget: Fallback on Exhaustion", Value: "fixed apology line (never textless)", Source: "constant", ReadOnly: true,
 			Note: "bridge_tools.go apology constant"},
 	}
-	return Section{ID: "p3", Title: "[3] Bridge Tools & Budgets", Items: items}
+	return Section{ID: "p3", Title: "Bridge Tools & Budgets", Items: items}
 }
 
 // P4 Swarm (research §2.4 rows 21-30; §2.3 concurrency; §U3 presets).
@@ -308,9 +306,9 @@ func (c *Core) sectionSwarm(st *mode.State) Section {
 		{ID: "fanout.task", Label: "Fanout Task (--task)", Value: "review", Default: "review", Source: "constant", ReadOnly: true,
 			Note: "review|security|plan-audit|research|ideas|custom"},
 		{ID: "fanout.flags", Label: "Fanout Other Flags", Value: "--root . / --out ./reports/fanout/<ts> / --models \"\" / --json / --setup", Source: "constant", ReadOnly: true,
-			Note: "CLI truths surfaced here so nothing is reachable only via flags (D2)"},
+			Note: "partial list, not full coverage: --units/--prompt/--prompt-file/--preset (plus --seats/--max-native/--allow-host/--search-endpoint/--search-key-env) also exist (fanout/cli.go; D2)"},
 		{ID: "fanout.registry_defaults", Label: "Registry Defaults Block", Value: "consumed (read-only)", Default: "n=3 timeout=120 maxTurns=10 tools=read,search", Source: "registry", ReadOnly: true,
-			Note: "D4: consumed as the rung below presets (CLI flag > preset via flag/AGY_PRO_FANOUT_PRESET/default key > providers.json defaults > engine default); read-only, written only via the M4 approval modal; drift from engine defaults is surfaced per run"},
+			Note: "D4: consumed as the rung below presets (CLI flag > preset via flag/AGY_PRO_FANOUT_PRESET/default key > providers.json defaults > engine default); read-only here, no TUI write path today (edit the providers.json defaults block or use the CLI); drift from engine defaults is surfaced per run"},
 		{ID: "fanout.consensus", Label: "Reconciliation Consensus", Value: ">= 2 models agreed = CONFIRMED", Source: "constant", ReadOnly: true,
 			Note: "fanout reconcile threshold"},
 		{ID: "fanout.failover", Label: "Failover Policy", Value: "3-step (same model/other provider → other family → degraded seat)", Source: "constant", ReadOnly: true,
@@ -323,19 +321,19 @@ func (c *Core) sectionSwarm(st *mode.State) Section {
 	presets := c.swarmPresetsValue()
 	items = append(items, Item{
 		ID: "swarm.presets", Label: "Saved Seat Presets (p1/p2/p3 + user)",
-		Value: presets, Source: "registry",
+		Value: presets, Source: "state",
 		Note: "numbered selection text (e.g. 1,3,19,23) stored in ~/.agy-pro/swarm-state.json; defaults p1/p2/p3 resolve against the live inventory",
 	})
 	items = append(items, Item{
 		ID: "swarm.save_preset", Label: "Save Seat Preset", Value: "save preset <name> <numbers>", Source: "registry",
 		Note: "stores a numbered seat selection via swarm.Store",
 	})
-	return Section{ID: "p4", Title: "[4] Swarm & Fanout", Items: items}
+	return Section{ID: "p4", Title: "Swarm & Fanout", Items: items}
 }
 
 // P5 Diagnostics & Keys (research §2.6 rows 31-34).
 func sectionDiagnostics() Section {
-	return Section{ID: "p5", Title: "[5] Diagnostics & Keys", Items: []Item{
+	return Section{ID: "p5", Title: "Diagnostics & Keys", Items: []Item{
 		{ID: "doctor.diagnose", Label: "Run Doctor", Value: "diagnose [--strict]", Source: "constant",
 			Note: "real agy binary, shim PATH location, state/dirs, provider-key probes (masked); --strict gates structural failures only"},
 		{ID: "doctor.fix_keys", Label: "Repair Key Names (--fix-keys)", Value: "fix-keys [targets]", Source: "constant", Danger: true,
@@ -374,13 +372,13 @@ func (c *Core) sectionMaintenance() Section {
 		{ID: "install.info", Label: "Install", Value: "install.cmd / scripts/install.ps1", Source: "constant", ReadOnly: true,
 			Note: "deploys to ~/.agy-pro/bin/agy.exe, prepends PATH, gates on doctor"},
 	}
-	return Section{ID: "p6", Title: "[6] Install & Update", Items: items}
+	return Section{ID: "p6", Title: "Install & Update", Items: items}
 }
 
 // sectionEnvDocs is the environment-variable docs panel (research §2.7).
 func sectionEnvDocs(st *mode.State) Section {
 	_ = st
-	return Section{ID: "p7", Title: "[7] Environment Variables", Items: []Item{
+	return Section{ID: "p7", Title: "Environment Variables", Items: []Item{
 		{ID: "env.AGY_PRO_HOME", Label: "AGY_PRO_HOME", Value: envOr("AGY_PRO_HOME", "(unset → ~/.agy-pro)"), Source: "env", ReadOnly: true,
 			Note: "overrides the agy-pro home directory (paths.go)"},
 		{ID: "env.AGY_PRO_PROVIDERS", Label: "AGY_PRO_PROVIDERS", Value: envOr("AGY_PRO_PROVIDERS", "(unset → ~/.agy-pro/providers.json)"), Source: "env", ReadOnly: true,
@@ -513,5 +511,5 @@ func sectionAppearance(st *mode.State) Section {
 		launcher.Source = "default (off)"
 	}
 	items = append(items, launcher)
-	return Section{ID: "p8", Title: "[8] Appearance", Items: items}
+	return Section{ID: "p8", Title: "Appearance", Items: items}
 }

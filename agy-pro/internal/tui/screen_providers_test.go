@@ -3,6 +3,7 @@ package tui
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -94,6 +95,22 @@ func newProvidersFormApp(core *settings.Core, mode, name *string, pushed *Screen
 	return app
 }
 
+// selectProviderKeys returns the keystrokes that leave the sticky selection on
+// provider index i without activating anything: the opening cursor sits on
+// provider 1, and any key that reaches the screen re-asserts the selection of
+// the row the cursor rests on, so a lone KeyUp selects provider 1 while one
+// KeyDown per index reaches a deeper provider.
+func selectProviderKeys(i int) []Key {
+	keys := make([]Key, 0, i+1)
+	for n := 0; n < i; n++ {
+		keys = append(keys, KeyDown)
+	}
+	if i == 0 {
+		keys = append(keys, KeyUp)
+	}
+	return keys
+}
+
 func TestProvidersRowsRenderWithCounts(t *testing.T) {
 	providersFixture(t, twoProviderRegistry())
 	t.Setenv("GEMINI_API_KEY", "g-test-key-value") // resolved; the VALUE must never render
@@ -113,14 +130,23 @@ func TestProvidersRowsRenderWithCounts(t *testing.T) {
 		"ANTHROPIC_API_KEY (unset)",
 		providersActionTestAll, // "Test all"
 		providersFormAdd,       // "Add provider"
-		"Test: gemini",
-		"Edit: gemini",
-		"Delete: anthropic",
+		// The inverted layout (user ask U2): providers 1..2, then Add, Test all,
+		// and the three sticky-target verbs, one row each. The verb rows carry no
+		// provider name, so the row set no longer grows with the registry.
+		"[ 5] Test",
+		"[ 6] Edit",
+		"[ 7] Delete",
 		"digits 1-9 select+activate",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("frame missing %q\n%s", want, out)
 		}
+	}
+	if strings.Contains(out, "Test: ") || strings.Contains(out, "Edit: ") || strings.Contains(out, "Delete: ") {
+		t.Fatalf("a per-provider verb row survived the inversion\n%s", out)
+	}
+	if strings.Contains(out, "● ") {
+		t.Fatalf("the opening frame marks a provider before the user selected one\n%s", out)
 	}
 	if strings.Contains(out, "g-test-key-value") {
 		t.Fatal("key VALUE leaked into the frame")
@@ -163,9 +189,10 @@ func TestProvidersTestActionRendersMaskedResult(t *testing.T) {
 
 	var opened []string
 	app := newProvidersApp(core, &opened)
-	// Row 5 is "Test: gemini" (1 gemini, 2 anthropic, 3 Add, 4 Test all,
-	// 5 Test: gemini).
-	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{Digit(5), KeyLeft}})
+	// Rows: 1 gemini, 2 anthropic, 3 Add, 4 Test all, 5 Test, 6 Edit, 7 Delete.
+	// The Test row acts on the sticky-selected provider, so the run rests the
+	// cursor on provider 1 before firing the verb.
+	out := app.CaptureRun(&ScriptedKeys{Keys: append(selectProviderKeys(0), Digit(5), KeyLeft)})
 
 	if !strings.Contains(out, "test failed") {
 		t.Fatalf("no failure verdict on the message line\n%s", out)
@@ -184,7 +211,7 @@ func TestProvidersTestActionRendersMaskedResult(t *testing.T) {
 	okCore := providersTestCore(providers.ProbeValid, "dest example.com: credential accepted")
 	var opened2 []string
 	app2 := newProvidersApp(okCore, &opened2)
-	out2 := app2.CaptureRun(&ScriptedKeys{Keys: []Key{Digit(5), KeyLeft}})
+	out2 := app2.CaptureRun(&ScriptedKeys{Keys: append(selectProviderKeys(0), Digit(5), KeyLeft)})
 	if !strings.Contains(out2, "gemini: connection OK") {
 		t.Fatalf("no success verdict on the message line\n%s", out2)
 	}
@@ -196,10 +223,11 @@ func TestProvidersDeleteApprovalAndConfirm(t *testing.T) {
 	var opened []string
 	app := newProvidersApp(core, &opened)
 
-	// Row 9 is "Delete: gemini" (2 providers + Add + Test all + 2 test +
-	// 2 edit = 8 rows before the delete block). y approves the write; KeyLeft
-	// forces one more frame so the post-delete list and message are captured.
-	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{Digit(9), KeyYes, KeyLeft}})
+	// Rows: 1 gemini, 2 anthropic, 3 Add, 4 Test all, 5 Test, 6 Edit, 7 Delete.
+	// The Delete row acts on the sticky-selected provider, so the run rests the
+	// cursor on provider 1 first. y approves the write; KeyLeft forces one more
+	// frame so the post-delete list and message are captured.
+	out := app.CaptureRun(&ScriptedKeys{Keys: append(selectProviderKeys(0), Digit(7), KeyYes, KeyLeft)})
 
 	for _, want := range []string{
 		"Delete Provider?",
@@ -246,7 +274,7 @@ func TestProvidersDeleteCancelWritesNothing(t *testing.T) {
 			var opened []string
 			app := newProvidersApp(core, &opened)
 
-			out := app.CaptureRun(&ScriptedKeys{Keys: []Key{Digit(9), tc.key, KeyLeft}})
+			out := app.CaptureRun(&ScriptedKeys{Keys: append(selectProviderKeys(0), Digit(7), tc.key, KeyLeft)})
 
 			if app.Message() != providersDeleteCanceled {
 				t.Fatalf("cancel message = %q", app.Message())
@@ -285,14 +313,14 @@ func TestProvidersDeleteApprovalMasksBaseURLUserinfo(t *testing.T) {
 
 	cases := []struct {
 		name     string
-		keys     []Key // delete rows: 2 provider rows + Add + Test all + 2 test + 2 edit -> rows 9 and 10
+		keys     []Key // selection, then Delete (row 7 of 7: 2 providers + Add + Test all + 3 verbs)
 		keep     string
 		mustHide []string
 	}{
-		{"short password", []Key{Digit(9)}, "gw.example", []string{"user:hunter2sekret", "hunter2sekret"}},
-		// The 10th row sits past the digit window, so it is reached with the
-		// arrows+Enter handle (End jumps to the last row).
-		{"aws-shaped userinfo", []Key{KeyEnd, KeyEnter}, "gateway.example", []string{awsKey}},
+		{"short password", append(selectProviderKeys(0), Digit(7)), "gw.example", []string{"user:hunter2sekret", "hunter2sekret"}},
+		// Provider 2 is one arrow away; the verb row is the same fixed Delete row,
+		// so the target is the marker, not the row position.
+		{"aws-shaped userinfo", append(selectProviderKeys(1), Digit(7)), "gateway.example", []string{awsKey}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -410,8 +438,8 @@ func TestMaskBaseURLLastResortUsesSlotMasker(t *testing.T) {
 // the old ":" row separator ("delete:x") can no longer load from disk; the
 // collision class is now closed at the registry boundary, which the last
 // sub-test pins. The routing sub-tests keep their coverage with
-// charset-legal names ("acme-corp", "x"): a delete/test row must still name
-// exactly its own provider.
+// charset-legal names ("acme-corp", "x"): a delete/test verb must still hit
+// exactly the sticky-selected provider, never the row position.
 func TestProvidersRowIDsSurviveSeparatorNames(t *testing.T) {
 	reg := &providers.Registry{Providers: []providers.Provider{
 		{Name: "acme-corp", BaseURL: "https://a.example/v1", Models: []providers.Model{{ID: "m-a"}}},
@@ -420,13 +448,13 @@ func TestProvidersRowIDsSurviveSeparatorNames(t *testing.T) {
 	providersFixture(t, reg)
 	core := providersTestCore(providers.ProbeValid, "ok")
 
-	// Row order: 1 provider acme-corp, 2 provider x, 3 Add, 4 Test all, 5 test
-	// acme-corp, 6 test x, 7 edit acme-corp, 8 edit x, 9 delete acme-corp,
-	// 10 delete x (past the digit window, so it is reached with End+Enter).
-	t.Run("delete row for x targets x", func(t *testing.T) {
+	// Row order: 1 provider acme-corp, 2 provider x, 3 Add, 4 Test all, 5 Test,
+	// 6 Edit, 7 Delete. The three verbs act on the sticky selection, so each
+	// sub-test selects its provider and then fires the same fixed row.
+	t.Run("delete verb for x targets x", func(t *testing.T) {
 		var opened []string
 		app := newProvidersApp(core, &opened)
-		out := app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyEnd, KeyEnter, KeyEsc, KeyLeft}})
+		out := app.CaptureRun(&ScriptedKeys{Keys: append(selectProviderKeys(1), Digit(7), KeyEsc, KeyLeft)})
 		if !strings.Contains(out, "Removes the registry entry for x only") {
 			t.Fatalf("delete approval named the wrong target\n%s", out)
 		}
@@ -434,23 +462,23 @@ func TestProvidersRowIDsSurviveSeparatorNames(t *testing.T) {
 			t.Fatalf("delete approval shadowed by the acme-corp provider\n%s", out)
 		}
 	})
-	t.Run("delete row for acme-corp targets acme-corp", func(t *testing.T) {
+	t.Run("delete verb for acme-corp targets acme-corp", func(t *testing.T) {
 		var opened []string
 		app := newProvidersApp(core, &opened)
-		out := app.CaptureRun(&ScriptedKeys{Keys: []Key{Digit(9), KeyEsc, KeyLeft}})
+		out := app.CaptureRun(&ScriptedKeys{Keys: append(selectProviderKeys(0), Digit(7), KeyEsc, KeyLeft)})
 		if !strings.Contains(out, "Removes the registry entry for acme-corp only") {
 			t.Fatalf("delete approval named the wrong target\n%s", out)
 		}
 	})
-	t.Run("test row for acme-corp probes acme-corp", func(t *testing.T) {
+	t.Run("test verb for acme-corp probes acme-corp", func(t *testing.T) {
 		var opened []string
 		app := newProvidersApp(core, &opened)
-		out := app.CaptureRun(&ScriptedKeys{Keys: []Key{Digit(5), KeyLeft}})
+		out := app.CaptureRun(&ScriptedKeys{Keys: append(selectProviderKeys(0), Digit(5), KeyLeft)})
 		if !strings.Contains(out, "acme-corp: connection OK") {
 			t.Fatalf("test verdict named the wrong provider\n%s", out)
 		}
 		if len(opened) != 0 {
-			t.Fatalf("test row opened models: %v", opened)
+			t.Fatalf("test verb opened models: %v", opened)
 		}
 	})
 	t.Run("separator name fails the load closed", func(t *testing.T) {
@@ -498,13 +526,14 @@ func TestProvidersRowIDsSurviveSeparatorNames(t *testing.T) {
 }
 
 // TestProvidersRowInventory pins the row order, IDs, and labels the screen
-// composes: the entity block first (one row per provider, so digit 1..N keep
-// opening each provider's models screen), then the registry-level verbs ("Add
-// provider", "Test all"), then the per-provider blocks grouped by verb (test,
-// edit, delete). IDs follow the NUL-terminated kind-prefix scheme, so the Add
-// row ("add\x00", empty operand) and every edit row ("edit\x00<name>") stay
-// collision-free against any provider name, exactly like the test and delete
-// rows.
+// composes after the inversion (user ask U2): the entity block first (one row
+// per provider, so digit 1..N keep opening each provider's models screen), then
+// the registry-level verbs ("Add provider", "Test all"), then the three fixed
+// sticky-target verbs Test, Edit, and Delete. IDs follow the NUL-terminated
+// kind-prefix scheme and every action row carries an EMPTY operand, so no
+// provider name can shadow a verb row and the row count no longer grows with
+// the registry. The sticky selection starts at -1, so no row carries the "●"
+// marker here (the marker pin lives in TestProvidersStickySelectionMarksTarget).
 func TestProvidersRowInventory(t *testing.T) {
 	cases := []struct {
 		name string
@@ -519,12 +548,9 @@ func TestProvidersRowInventory(t *testing.T) {
 				{ID: "provider\x00anthropic", Label: "anthropic"},
 				{ID: providersRowIDAdd, Label: providersFormAdd},
 				{ID: providersRowIDTestAll, Label: providersActionTestAll},
-				{ID: "test\x00gemini", Label: "Test: gemini"},
-				{ID: "test\x00anthropic", Label: "Test: anthropic"},
-				{ID: "edit\x00gemini", Label: "Edit: gemini"},
-				{ID: "edit\x00anthropic", Label: "Edit: anthropic"},
-				{ID: "delete\x00gemini", Label: "Delete: gemini"},
-				{ID: "delete\x00anthropic", Label: "Delete: anthropic"},
+				{ID: providersRowIDTest, Label: "Test"},
+				{ID: providersRowIDEdit, Label: "Edit"},
+				{ID: providersRowIDDelete, Label: "Delete"},
 			},
 		},
 		{
@@ -541,9 +567,9 @@ func TestProvidersRowInventory(t *testing.T) {
 				{ID: "provider\x00solo", Label: "solo"},
 				{ID: providersRowIDAdd, Label: providersFormAdd},
 				{ID: providersRowIDTestAll, Label: providersActionTestAll},
-				{ID: "test\x00solo", Label: "Test: solo"},
-				{ID: "edit\x00solo", Label: "Edit: solo"},
-				{ID: "delete\x00solo", Label: "Delete: solo"},
+				{ID: providersRowIDTest, Label: "Test"},
+				{ID: providersRowIDEdit, Label: "Edit"},
+				{ID: providersRowIDDelete, Label: "Delete"},
 			},
 		},
 	}
@@ -601,19 +627,20 @@ func TestProvidersAddRowOpensProviderForm(t *testing.T) {
 	}
 }
 
-// TestProvidersEditRowsOpenProviderForm pins the per-provider edit rows: each
-// one opens the provider form in "edit" mode naming EXACTLY its own provider,
+// TestProvidersEditActionOpensProviderForm pins the sticky-target Edit row: it
+// opens the provider form in "edit" mode naming EXACTLY the selected provider,
 // by the raw registry name (the form addresses the record by name, so a masked
-// operand would not resolve). With two providers the edit block is rows 7 and
-// 8, and the names are asserted one by one so a row cannot shadow its sibling.
-func TestProvidersEditRowsOpenProviderForm(t *testing.T) {
+// operand would not resolve). With two providers the Edit row is row 6 and each
+// selection is asserted, so the verb cannot silently hit provider[0] or the row
+// position instead of the marked target.
+func TestProvidersEditActionOpensProviderForm(t *testing.T) {
 	cases := []struct {
 		name string
-		key  Key
+		keys []Key
 		want string
 	}{
-		{"digit 7 edits gemini", Digit(7), "gemini"},
-		{"digit 8 edits anthropic", Digit(8), "anthropic"},
+		{"selecting gemini edits gemini", append(selectProviderKeys(0), Digit(6)), "gemini"},
+		{"selecting anthropic edits anthropic", append(selectProviderKeys(1), Digit(6)), "anthropic"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -623,17 +650,157 @@ func TestProvidersEditRowsOpenProviderForm(t *testing.T) {
 			var pushed Screen
 			app := newProvidersFormApp(core, &modeArg, &nameArg, &pushed)
 
-			app.Step(tc.key)
+			for _, k := range tc.keys {
+				app.Step(k)
+			}
 
 			if modeArg != "edit" || nameArg != tc.want {
-				t.Fatalf("edit row asked for mode %q name %q, want \"edit\" and %q", modeArg, nameArg, tc.want)
+				t.Fatalf("edit verb asked for mode %q name %q, want \"edit\" and %q", modeArg, nameArg, tc.want)
 			}
 			top := app.Top()
 			if _, ok := top.(*ProvidersScreen); ok {
-				t.Fatalf("the edit row left the providers list on top; depth %d", app.Depth())
+				t.Fatalf("the edit verb left the providers list on top; depth %d", app.Depth())
 			}
 			if pushed == nil || top == nil || top.Title() != pushed.Title() {
 				t.Fatalf("the pushed provider form is not the top screen; top = %T", top)
+			}
+		})
+	}
+}
+
+// TestProvidersStickySelectionMarksTarget pins the visible target of the
+// sticky-target verbs (user ask U2): the selection follows the cursor while it
+// rests on a provider row, the selected row carries the "●" marker while its
+// siblings do not, and the selection survives the move onto an action row, so
+// the object a verb will act on is never invisible (the models screen's
+// audit-F9 marker rule).
+func TestProvidersStickySelectionMarksTarget(t *testing.T) {
+	providersFixture(t, twoProviderRegistry())
+	core := providersTestCore(providers.ProbeValid, "dest example.com: credential accepted")
+	var opened []string
+	app := newProvidersApp(core, &opened)
+
+	lines := app.Frame().Lines
+	if frameLineMatches(lines, func(l string) bool { return strings.Contains(l, "● ") }) {
+		t.Fatalf("the opening frame marks a provider before any key:\n%s", strings.Join(lines, "\n"))
+	}
+
+	app.Step(KeyDown) // rest the cursor on provider 2
+	lines = app.Frame().Lines
+	if !frameLineMatches(lines, func(l string) bool { return strings.Contains(l, "● anthropic") }) {
+		t.Fatalf("provider 2 is not marked after the cursor moved onto it:\n%s", strings.Join(lines, "\n"))
+	}
+	if frameLineMatches(lines, func(l string) bool { return strings.Contains(l, "● gemini") }) {
+		t.Fatalf("provider 1 stayed marked after the selection moved:\n%s", strings.Join(lines, "\n"))
+	}
+
+	// The verb acts on the marked provider even though the cursor has left the
+	// provider block for the verb row.
+	app.Step(Digit(5))
+	if got := app.Message(); !strings.Contains(got, "anthropic") {
+		t.Fatalf("the test verdict = %q, want the marked provider anthropic", got)
+	}
+	lines = app.Frame().Lines
+	if !frameLineMatches(lines, func(l string) bool { return strings.Contains(l, "● anthropic") }) {
+		t.Fatalf("the marker vanished when the cursor moved to the verb row:\n%s", strings.Join(lines, "\n"))
+	}
+
+	// Walking the cursor back to provider 1 moves the marker back with it.
+	for i := 0; i < 4; i++ {
+		app.Step(KeyUp)
+	}
+	lines = app.Frame().Lines
+	if !frameLineMatches(lines, func(l string) bool { return strings.Contains(l, "● gemini") }) {
+		t.Fatalf("provider 1 is not marked after the cursor returned to it:\n%s", strings.Join(lines, "\n"))
+	}
+}
+
+// TestProvidersActionWithoutSelectionRefuses pins the refusal half of the
+// sticky-target contract (user ask U2): entering the screen leaves no provider
+// selected (the models screen's sel = -1 rule, user decision 2A), so firing Test,
+// Edit, or Delete before resting the cursor on a provider row refuses with the
+// named message instead of silently targeting provider[0]. The refusal is inert:
+// Delete opens no approval gate, Edit pushes no form, and Test never reaches
+// Core.ProviderTest, so no probe or registry write can happen on a guess. The
+// positive control re-fires the same verb row after marking a provider.
+func TestProvidersActionWithoutSelectionRefuses(t *testing.T) {
+	refusal := Bundle().T("providers.msg.select_provider")
+	if refusal != providersMsgSelectProvider {
+		t.Fatalf("precondition: the en catalog entry = %q, want the fallback const %q", refusal, providersMsgSelectProvider)
+	}
+	cases := []struct {
+		name string
+		row  Key
+	}{
+		{"Test", Digit(5)},
+		{"Edit", Digit(6)},
+		{"Delete", Digit(7)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			providersFixture(t, twoProviderRegistry())
+			probes := 0
+			core := settings.NewCore(settings.Deps{
+				AuditKeys: func(reg *providers.Registry, opts providers.AuditOptions) []providers.KeyAudit {
+					probes++
+					return []providers.KeyAudit{{
+						Provider: reg.Providers[0].Name,
+						Env:      reg.Providers[0].APIKeyEnv,
+						Probe:    providers.KeyProbeResult{Status: providers.ProbeValid},
+					}}
+				},
+			})
+			var forms, opened []string
+			app := NewApp(160, 30, DirLTR)
+			app.Push(NewProvidersScreen(core, func(name string, a *App) {
+				opened = append(opened, name)
+			}, func(modeName, providerName string, a *App) {
+				forms = append(forms, modeName+":"+providerName)
+			}))
+
+			app.Step(tc.row)
+
+			if got := app.Message(); got != refusal {
+				t.Fatalf("%s with no selection = %q, want the refusal %q", tc.name, got, refusal)
+			}
+			if app.Modal() != nil {
+				t.Fatalf("%s with no selection opened a modal", tc.name)
+			}
+			if len(forms) != 0 {
+				t.Fatalf("%s with no selection pushed the provider form: %v", tc.name, forms)
+			}
+			if probes != 0 {
+				t.Fatalf("%s with no selection reached the probe: %d call(s)", tc.name, probes)
+			}
+			if len(opened) != 0 {
+				t.Fatalf("%s with no selection opened models: %v", tc.name, opened)
+			}
+			if lines := app.Frame().Lines; !frameLineMatches(lines, func(l string) bool { return l == refusal }) {
+				t.Fatalf("the refusal line is not on the frame:\n%s", strings.Join(lines, "\n"))
+			}
+
+			// Positive control: the same verb row acts once a provider is marked.
+			// KeyHome is used instead of selectProviderKeys because the refusal
+			// left the cursor on the verb row, not on the provider block.
+			for _, k := range []Key{KeyHome, tc.row} {
+				app.Step(k)
+			}
+			switch tc.name {
+			case "Test":
+				if probes != 1 {
+					t.Fatalf("the marked target did not reach the probe: %d call(s)", probes)
+				}
+				if got := app.Message(); !strings.Contains(got, "gemini") {
+					t.Fatalf("the marked target's verdict = %q, want gemini", got)
+				}
+			case "Edit":
+				if len(forms) != 1 || forms[0] != "edit:gemini" {
+					t.Fatalf("the marked target asked the form for %v, want [edit:gemini]", forms)
+				}
+			case "Delete":
+				if app.Modal() == nil {
+					t.Fatal("the marked target did not open the approval gate")
+				}
 			}
 		})
 	}
@@ -764,7 +931,7 @@ func TestProvidersRowsRefreshAfterAFormWrite(t *testing.T) {
 
 	providersWrite(t, path, twoProviderRegistry())
 	out = app.Frame().String()
-	for _, want := range []string{"gemini", "anthropic", "Edit: gemini", "Edit: anthropic"} {
+	for _, want := range []string{"gemini", "anthropic", "[ 5] Test", "[ 6] Edit", "[ 7] Delete"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("the frame did not pick up the registry change (%q missing):\n%s", want, out)
 		}
@@ -790,16 +957,22 @@ func TestProvidersRowsRefreshAfterAFormWrite(t *testing.T) {
 }
 
 // manyProviderRegistry builds n single-model providers, so the composed row
-// set (n provider rows + Add + Test all + n test + n edit + n delete rows, so
-// 4n+2 rows) is long enough to page on an 80-wide frame.
+// set (n provider rows plus the five fixed action rows, so n+5 rows) is long
+// enough to page on an 80-wide frame. Names past the spelled list are numbered
+// ("p08", "p09", ...), so n can exceed seven after the row-set inversion made
+// the fixed block count constant (user ask U2).
 func manyProviderRegistry(n int) *providers.Registry {
 	names := []string{"alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf"}
 	reg := &providers.Registry{}
-	for i := 0; i < n && i < len(names); i++ {
+	for i := 0; i < n; i++ {
+		name := fmt.Sprintf("p%02d", i+1)
+		if i < len(names) {
+			name = names[i]
+		}
 		reg.Providers = append(reg.Providers, providers.Provider{
-			Name:    names[i],
-			BaseURL: "https://" + names[i] + ".example.com",
-			Models:  []providers.Model{{ID: names[i] + "-1"}},
+			Name:    name,
+			BaseURL: "https://" + name + ".example.com",
+			Models:  []providers.Model{{ID: name + "-1"}},
 		})
 	}
 	return reg
@@ -809,9 +982,11 @@ func manyProviderRegistry(n int) *providers.Registry {
 // original repro screen: the list window is derived from the frame height
 // through pageSizeFor, so a full-page list at 80x24 keeps the list hint and
 // the shared base footer instead of pushing them off the frame. The window's
-// last row stays reachable through End.
+// last row stays reachable through End. The fixture carries 20 providers, so
+// the row set (20 + 5 fixed rows = 25) still overflows the 18-row window after
+// the inversion made the fixed block constant.
 func TestProvidersWindowKeepsChromeAt80x24(t *testing.T) {
-	providersFixture(t, manyProviderRegistry(7))
+	providersFixture(t, manyProviderRegistry(20))
 	scr := NewProvidersScreen(providersTestCore(providers.ProbeSkipped, "no key"), func(string, *App) {}, func(string, string, *App) {}).(*ProvidersScreen)
 	app := NewApp(80, 24, DirLTR)
 	app.Push(scr)
@@ -825,8 +1000,8 @@ func TestProvidersWindowKeepsChromeAt80x24(t *testing.T) {
 	if scr.list.Len() <= scr.list.PageSize() {
 		t.Fatalf("fixture does not overflow the window: %d rows, page %d", scr.list.Len(), scr.list.PageSize())
 	}
-	if scr.list.Len() != 30 {
-		t.Fatalf("row inventory = %d rows, want 30 (7 providers + Add + Test all + 7 test + 7 edit + 7 delete)", scr.list.Len())
+	if scr.list.Len() != 25 {
+		t.Fatalf("row inventory = %d rows, want 25 (20 providers + Add + Test all + Test + Edit + Delete)", scr.list.Len())
 	}
 	if len(lines) != 24 {
 		t.Fatalf("frame = %d lines, want 24:\n%s", len(lines), strings.Join(lines, "\n"))
@@ -844,8 +1019,8 @@ func TestProvidersWindowKeepsChromeAt80x24(t *testing.T) {
 	// End pages the tail into the window; the chrome is unchanged.
 	app.Step(KeyEnd)
 	lines = app.Frame().Lines
-	if !frameLineMatches(lines, func(l string) bool { return strings.Contains(l, "[30]") }) {
-		t.Fatalf("the row set's last row [30] is unreachable:\n%s", strings.Join(lines, "\n"))
+	if !frameLineMatches(lines, func(l string) bool { return strings.Contains(l, "[25]") }) {
+		t.Fatalf("the row set's last row [25] is unreachable:\n%s", strings.Join(lines, "\n"))
 	}
 	if len(lines) != 24 || lines[len(lines)-1] != baseFooter {
 		t.Fatalf("paged frame = %d lines, last %q; want 24 and the base footer", len(lines), lines[len(lines)-1])
@@ -922,7 +1097,7 @@ func TestProvidersNoticeLinesClampToWidth(t *testing.T) {
 // base footer inside 24 lines, while the message-free frame stays byte-stable
 // at the phase-3 size (24 - 6 = 18 rows).
 func TestProvidersWindowReservesMessageChromeAt80x24(t *testing.T) {
-	providersFixture(t, manyProviderRegistry(7))
+	providersFixture(t, manyProviderRegistry(20))
 	scr := NewProvidersScreen(providersTestCore(providers.ProbeSkipped, "no key"), func(string, *App) {}, func(string, string, *App) {}).(*ProvidersScreen)
 	app := NewApp(80, 24, DirLTR)
 	app.Push(scr)
@@ -964,8 +1139,8 @@ func TestProvidersWindowReservesMessageChromeAt80x24(t *testing.T) {
 	// The tail stays reachable with the message live, and the chrome holds.
 	app.Step(KeyEnd)
 	lines = app.Frame().Lines
-	if !frameLineMatches(lines, func(l string) bool { return strings.Contains(l, "[30]") }) {
-		t.Fatalf("the row set's last row [30] is unreachable with a live message:\n%s", strings.Join(lines, "\n"))
+	if !frameLineMatches(lines, func(l string) bool { return strings.Contains(l, "[25]") }) {
+		t.Fatalf("the row set's last row [25] is unreachable with a live message:\n%s", strings.Join(lines, "\n"))
 	}
 	if len(lines) != 24 {
 		t.Fatalf("paged message frame = %d lines, want 24:\n%s", len(lines), strings.Join(lines, "\n"))
@@ -1092,10 +1267,13 @@ func TestProvidersDeleteReverifiesApprovedIdentity(t *testing.T) {
 			var opened []string
 			app := newProvidersApp(providersRecordingCore(&saves), &opened)
 
-			// Row 9 is "Delete: gemini": the modal opens over the s.reg snapshot.
-			app.Step(Digit(9))
+			// The Delete verb (row 7) opens the modal over the s.reg snapshot of
+			// the sticky-selected provider (provider 1 = gemini).
+			for _, k := range append(selectProviderKeys(0), Digit(7)) {
+				app.Step(k)
+			}
 			if app.Modal() == nil {
-				t.Fatal("precondition: the delete row must open the M4 approval modal")
+				t.Fatal("precondition: the delete verb must open the M4 approval modal")
 			}
 			tc.mutate(t, path)
 			before, err := os.ReadFile(path)
@@ -1128,8 +1306,8 @@ func TestProvidersDeleteReverifiesApprovedIdentity(t *testing.T) {
 			}
 			if tc.wantRowsDrop {
 				out := strings.Join(app.Frame().Lines, "\n")
-				if strings.Contains(out, "Delete: gemini") {
-					t.Fatalf("the refusal kept the stale delete row on the screen:\n%s", out)
+				if frameLineMatches(app.Frame().Lines, func(l string) bool { return strings.Contains(l, "] gemini") }) {
+					t.Fatalf("the refusal kept the stale provider row on the screen:\n%s", out)
 				}
 			}
 		})
@@ -1231,8 +1409,9 @@ func TestProvidersDeleteMessagesResolveThroughCatalog(t *testing.T) {
 				defer SetLanguage("en")
 				var opened []string
 				app := newProvidersApp(providersTestCore(providers.ProbeValid, "ok"), &opened)
-				app.Step(Digit(9)) // row 9 is "Delete: gemini"
-				app.Step(KeyYes)
+				for _, k := range append(selectProviderKeys(0), Digit(7), KeyYes) {
+					app.Step(k)
+				}
 
 				want := fillHubSlots(b.T("providers.delete.done"), nameSlots)
 				got := app.Message()
@@ -1257,8 +1436,9 @@ func TestProvidersDeleteMessagesResolveThroughCatalog(t *testing.T) {
 				defer SetLanguage("en")
 				var opened []string
 				app := newProvidersApp(providersTestCore(providers.ProbeValid, "ok"), &opened)
-				app.Step(Digit(9))
-				app.Step(KeyNo)
+				for _, k := range append(selectProviderKeys(0), Digit(7), KeyNo) {
+					app.Step(k)
+				}
 
 				want := missingOr(b, "providers.delete.canceled", providersDeleteCanceled)
 				got := app.Message()
@@ -1284,8 +1464,6 @@ func TestProvidersDeleteMessagesResolveThroughCatalog(t *testing.T) {
 // nothing) and no locale may lean on the en fallback, and every slot the screen
 // fills must survive in the localized template. The const text itself must stay
 // byte-identical to the en catalog value, which is what "fallback kept" means.
-// The block's documented exception is pinned too: providers.action.test_all has
-// no entry in any locale, so the "Test all" row stays English by design.
 func TestProvidersFallbackConstsResolveInAllLocales(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -1293,12 +1471,14 @@ func TestProvidersFallbackConstsResolveInAllLocales(t *testing.T) {
 		text  string
 		slots []string
 	}{
+		{"providersActionTestAll", "providers.action.test_all", providersActionTestAll, nil},
 		{"providersTestAllSummary", "providers.test.all_summary", providersTestAllSummary, []string{"{{ok}}", "{{total}}"}},
 		{"providersDeleteDone", "providers.delete.done", providersDeleteDone, []string{"{{name}}"}},
 		{"providersDeleteCanceled", "providers.delete.canceled", providersDeleteCanceled, nil},
 		{"providersFormAdd", "providers.form.add", providersFormAdd, nil},
 		{"providersFormEdit", "providers.form.edit", providersFormEdit, nil},
 		{"providersFormEmptyHint", "providers.form.empty_hint", providersFormEmptyHint, []string{"{{action}}"}},
+		{"providersMsgSelectProvider", "providers.msg.select_provider", providersMsgSelectProvider, nil},
 	}
 	langs := i18n.Languages()
 	if len(langs) != 12 {
@@ -1329,12 +1509,6 @@ func TestProvidersFallbackConstsResolveInAllLocales(t *testing.T) {
 					t.Fatalf("%s/%s: template %q lost the %s slot", c.name, lm.Code, got, slot)
 				}
 			}
-		}
-	}
-
-	for _, lm := range langs {
-		if got := i18n.Load(lm.Code).T("providers.action.test_all"); got != "providers.action.test_all" {
-			t.Fatalf("%s: providers.action.test_all resolves to %q, but the row prints the English const", lm.Code, got)
 		}
 	}
 }
@@ -1379,11 +1553,13 @@ func nameSinkRegistry() *providers.Registry {
 	return reg
 }
 
-// TestProvidersNameSinksUseSlotAuthority (fix7-D) pins every provider-NAME
-// sink on the providers screen against the slot authority: the entity row, the
-// test row, the edit row, the delete row, and the delete-refusal line (the
-// answer-path composer). Identity half: the benign corpus renders unchanged.
-// Credential half: the underscore-headed plant renders masked, never raw.
+// TestProvidersNameSinksUseSlotAuthority (fix7-D) pins every provider-NAME sink
+// on the providers screen against the slot authority: the entity row and the
+// delete-refusal line (the answer-path composer). Identity half: the benign
+// corpus renders unchanged. Credential half: the underscore-headed plant renders
+// masked, never raw. The inversion (user ask U2) removed the per-provider verb
+// rows, so the pin also asserts the other half: the three fixed verbs carry no
+// registry name at all, which is what keeps a name out of the frame there.
 func TestProvidersNameSinksUseSlotAuthority(t *testing.T) {
 	providersFixture(t, nameSinkRegistry())
 	core := providersTestCore(providers.ProbeSkipped, "no API key resolved; nothing to probe")
@@ -1409,18 +1585,6 @@ func TestProvidersNameSinksUseSlotAuthority(t *testing.T) {
 		if entity.Label != c.rendered {
 			t.Errorf("entity row label = %q; want %q", entity.Label, c.rendered)
 		}
-		for _, id := range []string{providersRowIDTest + c.name, providersRowIDEdit + c.name, providersRowIDDelete + c.name} {
-			r, ok := rows[id]
-			if !ok {
-				t.Fatalf("verb row %q missing", id)
-			}
-			if !strings.HasSuffix(r.Label, ": "+c.rendered) {
-				t.Errorf("verb row %q label = %q; want the %q name suffix", id, r.Label, c.rendered)
-			}
-			if c.name != c.rendered && strings.Contains(r.Label, c.name) {
-				t.Errorf("verb row %q label = %q renders the credential-shaped name raw", id, r.Label)
-			}
-		}
 		// deleteRefusal is the answer-path refusal composer: the name slot must
 		// carry the same rendering.
 		line := scr.deleteRefusal(c.name, providersDeleteReasonGone)
@@ -1431,14 +1595,30 @@ func TestProvidersNameSinksUseSlotAuthority(t *testing.T) {
 			t.Errorf("deleteRefusal rendered the plant raw: %q", line)
 		}
 	}
+
+	// The sticky-target verbs are name-free rows: their labels are exactly the
+	// catalog verb, so no registry name can reach the frame through them.
+	for id, want := range map[string]string{
+		providersRowIDTest:   scr.bundle.T("providers.action.test"),
+		providersRowIDEdit:   missingOr(scr.bundle, "providers.form.edit", providersFormEdit),
+		providersRowIDDelete: scr.bundle.T("providers.action.delete"),
+	} {
+		r, ok := rows[id]
+		if !ok {
+			t.Fatalf("verb row %q missing (%d rows)", id, len(rows))
+		}
+		if r.Label != want {
+			t.Errorf("verb row %q label = %q; want the bare verb %q", id, r.Label, want)
+		}
+	}
 }
 
 // TestProvidersNameMessageSinksUseSlotAuthority (fix7-D) pins the two sinks
 // that compose the name into a message or a modal body: the test-probe verdict
-// line and the delete approval summary. The plant is the first provider, so
-// row 5 is "Test: <plant>" (2 providers + Add + Test all) and row 9 is
-// "Delete: <plant>". The probe is made to succeed so no error detail (an
-// error-string sink, outside this unit's name scope) joins the frame.
+// line and the delete approval summary, both reached through the sticky-target
+// verbs. Rows: 1 <plant>, 2 gemini, 3 Add, 4 Test all, 5 Test, 6 Edit, 7 Delete.
+// The probe is made to succeed so no error detail (an error-string sink, outside
+// this unit's name scope) joins the frame.
 func TestProvidersNameMessageSinksUseSlotAuthority(t *testing.T) {
 	providersFixture(t, &providers.Registry{Providers: []providers.Provider{
 		{Name: nameSinkPlant, BaseURL: "https://gw.example/v1", Models: []providers.Model{{ID: "p-1"}}},
@@ -1450,19 +1630,121 @@ func TestProvidersNameMessageSinksUseSlotAuthority(t *testing.T) {
 	app := NewApp(160, 30, DirLTR)
 	app.Push(scr)
 
-	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{Digit(5), KeyLeft, Digit(9), KeyLeft}})
+	keys := append(selectProviderKeys(0), Digit(5), KeyLeft, Digit(7), KeyEsc, KeyLeft)
+	out := app.CaptureRun(&ScriptedKeys{Keys: keys})
 
 	if strings.Contains(out, nameSinkPlant) {
 		t.Fatalf("the plant rendered raw in a providers frame\n%s", out)
 	}
 	for _, want := range []string{
-		"Test: " + nameSinkMask,
+		// The sticky-selection marker on the entity row is the target display.
+		"● " + nameSinkMask,
 		nameSinkMask + ": connection OK",
 		"provider " + nameSinkMask + " (https://gw.example/v1, 1 model)",
-		"Delete: gemini",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("name sink missing %q\n%s", want, out)
 		}
 	}
+}
+
+// TestProvidersStickyTargetHeldByProviderName (W1): the sticky verb target is
+// held by provider NAME, not by a row index. An index survives a reload only by
+// luck: the registry is rewritten whole by this screen's own delete, by the form
+// above it, and by other sessions, so a re-clamped index can name a DIFFERENT
+// provider than the one the user marked. Two paths are pinned here.
+//
+//  1. delete-marked-provider-then-next-verb: after the marked provider is
+//     deleted the selection is gone, so the next verb must REFUSE (pre-fix it
+//     clamped onto the neighbouring provider and silently probed it).
+//  2. reordered registry: an external rewrite that moves the marked provider to
+//     another position must not hand the verb to the record that inherited its
+//     old index; the verb still acts on the marked NAME.
+func TestProvidersStickyTargetHeldByProviderName(t *testing.T) {
+	refusal := Bundle().T("providers.msg.select_provider")
+	if refusal != providersMsgSelectProvider {
+		t.Fatalf("precondition: the en catalog entry = %q, want the fallback const %q", refusal, providersMsgSelectProvider)
+	}
+
+	// probedName collects the provider each Core.ProviderTest actually probes
+	// (Core hands the audit a single-provider registry, so entry 0 is the one
+	// the verb targeted).
+	newProbeCore := func(probed *[]string) *settings.Core {
+		return settings.NewCore(settings.Deps{
+			AuditKeys: func(reg *providers.Registry, opts providers.AuditOptions) []providers.KeyAudit {
+				if len(reg.Providers) == 0 {
+					return nil
+				}
+				*probed = append(*probed, reg.Providers[0].Name)
+				return []providers.KeyAudit{{
+					Provider: reg.Providers[0].Name,
+					Env:      reg.Providers[0].APIKeyEnv,
+					Probe:    providers.KeyProbeResult{Status: providers.ProbeValid},
+				}}
+			},
+		})
+	}
+
+	t.Run("deleted target clears the selection", func(t *testing.T) {
+		path := providersFixture(t, twoProviderRegistry())
+		var probed, opened []string
+		app := newProvidersApp(newProbeCore(&probed), &opened)
+
+		// Rows: 1 gemini, 2 anthropic, 3 Add, 4 Test all, 5 Test, 6 Edit, 7 Delete.
+		app.Step(KeyDown) // rest the cursor on provider 2: the marked target is anthropic
+		app.Step(Digit(7))
+		if app.Modal() == nil {
+			t.Fatal("the delete verb did not open the approval gate on the marked provider")
+		}
+		app.Step(KeyYes)
+		if got := app.Message(); got != "Provider anthropic deleted." {
+			t.Fatalf("post-delete message = %q, want the anthropic delete stamp", got)
+		}
+
+		// anthropic is gone, so gemini moved from index 1 to index 0 and the
+		// verbs moved up one row with it (1 gemini, 2 Add, 3 Test all, 4 Test).
+		// Firing Test now must refuse: gemini is a provider the user never marked.
+		app.Step(Digit(4))
+		if got := app.Message(); got != refusal {
+			t.Fatalf("verb after the marked provider was deleted = %q, want the refusal %q", got, refusal)
+		}
+		if len(probed) != 0 {
+			t.Fatalf("the verb probed %v after its marked target was deleted; want no probe", probed)
+		}
+		if lines := app.Frame().Lines; frameLineMatches(lines, func(l string) bool { return strings.Contains(l, "● ") }) {
+			t.Fatalf("a provider row is still marked after the marked provider was deleted:\n%s", strings.Join(lines, "\n"))
+		}
+
+		reg, err := providers.LoadFrom(path)
+		if err != nil {
+			t.Fatalf("reload temp registry: %v", err)
+		}
+		if len(reg.Providers) != 1 || reg.Providers[0].Name != "gemini" {
+			t.Fatalf("registry after the approved delete = %+v, want gemini only", reg.Providers)
+		}
+	})
+
+	t.Run("reordered registry keeps the marked provider", func(t *testing.T) {
+		path := providersFixture(t, twoProviderRegistry())
+		var probed, opened []string
+		app := newProvidersApp(newProbeCore(&probed), &opened)
+
+		app.Step(KeyDown) // mark anthropic (index 1)
+		reversed := twoProviderRegistry()
+		reversed.Providers[0], reversed.Providers[1] = reversed.Providers[1], reversed.Providers[0]
+		providersWrite(t, path, reversed)
+		app.Frame() // the frame re-reads the registry (reloadIfChanged), as a live screen does
+
+		if lines := app.Frame().Lines; !frameLineMatches(lines, func(l string) bool { return strings.Contains(l, "● anthropic") }) {
+			t.Fatalf("the marker did not follow anthropic to its new position:\n%s", strings.Join(lines, "\n"))
+		}
+
+		app.Step(Digit(5))
+		if len(probed) != 1 || probed[0] != "anthropic" {
+			t.Fatalf("the verb probed %v, want [anthropic] (the marked name, not the index)", probed)
+		}
+		if got := app.Message(); !strings.Contains(got, "anthropic") {
+			t.Fatalf("the verdict = %q, want the marked provider anthropic", got)
+		}
+	})
 }

@@ -15,25 +15,17 @@ import (
 	"agypro/internal/settings"
 )
 
-// English fallbacks for catalog keys this screen resolves, plus one label that
-// has no catalog key at all. Every key named below carries an entry in all
-// twelve locale files, so a lookup never has to fall back to English or to the
-// key ID, and each const stays as the fallback for a catalog lacking the
-// translation. Every lookup passes the KEY named in the const's own comment,
-// never the const text itself: Bundle.T and Tf are literal-name lookups, so
-// handing one of them a fallback sentence reaches no catalog entry and prints
-// English in every locale. TestProvidersFallbackConstsResolveInAllLocales gates
-// both halves of that claim (entry present per locale, key never handed back).
-//
-// providersActionTestAll is the exception: the "Test all" row carries an
-// English literal and no catalog key. All twelve locale files carried
-// providers.action.test_all, but nothing in the module read it (Bundle.T is a
-// literal-name lookup, so no dynamic reader could reach it either), so the
-// phase-4 catalog wave removed the key and the row prints this const verbatim.
-// Localizing the row needs a re-added key plus a lookup at the row itself, so
-// it stays English in every locale until then.
+// English fallbacks for catalog keys this screen resolves. Every key named
+// below carries an entry in all twelve locale files, so a lookup never has to
+// fall back to English or to the key ID, and each const stays as the fallback
+// for a catalog lacking the translation. Every lookup passes the KEY named in
+// the const's own comment, never the const text itself: Bundle.T and Tf are
+// literal-name lookups, so handing one of them a fallback sentence reaches no
+// catalog entry and prints English in every locale.
+// TestProvidersFallbackConstsResolveInAllLocales gates both halves of that
+// claim (entry present per locale, key never handed back).
 const (
-	// English literal, no catalog key: the "Test all" row label
+	// catalog-resolved, fallback kept: providers.action.test_all
 	providersActionTestAll = "Test all"
 	// catalog-resolved, fallback kept: providers.test.all_summary
 	providersTestAllSummary = "{{ok}}/{{total}} providers OK"
@@ -47,6 +39,8 @@ const (
 	providersFormEdit = "Edit"
 	// catalog-resolved, fallback kept: providers.form.empty_hint
 	providersFormEmptyHint = `Use the "{{action}}" row below to register one.`
+	// catalog-resolved, fallback kept: providers.msg.select_provider
+	providersMsgSelectProvider = "Select a provider row first."
 )
 
 // providersListChrome is the non-list line count of the composed frame around
@@ -81,16 +75,17 @@ const (
 )
 
 // Row IDs for the action rows. Provider rows carry the NUL-prefixed
-// "provider\x00" scheme (same convention as the models screen), and the
+// "provider\x00" scheme (same convention as the models screen), and the fixed
 // action rows carry "add\x00", "test\x00", "edit\x00" or "delete\x00". A
 // NUL-terminated kind prefix makes collisions impossible for ANY provider
 // name: two row IDs are equal only when both the kind prefix and the name are
 // equal, so a hand-edited name such as "delete:x" or "test-all" can never
 // shadow another row. The load-time registry validation does not enforce the
-// name charset, so this screen must not depend on it. "add\x00" is the one row
-// with an empty operand: it is fixed, and the prefix keeps it in the same
-// scheme (the literal "test-all" stays exempt because it is compared by exact
-// equality before any prefix test).
+// name charset, so this screen must not depend on it. Every action row carries
+// an empty operand now that the verbs act on the sticky-selected provider
+// (user ask U2), and the prefix keeps them in the same scheme (the literal
+// "test-all" stays exempt because it is compared by exact equality before any
+// prefix test).
 const (
 	providersRowIDTestAll = "test-all"
 	providerRowPrefix     = "provider\x00"
@@ -101,41 +96,74 @@ const (
 )
 
 // ProvidersScreen is S2: the providers list. One row per registered provider
-// (Enter opens its models screen), plus fixed action rows: "Add provider",
-// "Test all", then one test, one edit, and one delete row per provider (delete
-// is danger, gated by the M4 approval modal). Add and edit open the provider
-// form through the shell callback (decision 1A: registration happens inside the
-// TUI, the CLI/wizard is no longer the only door); this screen itself never
-// writes providers.json except through the approval modal behind
-// Core.ProviderDelete.
+// (Enter opens its models screen), then the registry-level verbs "Add provider"
+// and "Test all", then the three sticky-target verbs Test, Edit, and Delete
+// (delete is danger, gated by the M4 approval modal). The three verbs act on the
+// provider the cursor last rested on, so the row set no longer grows with the
+// registry (user ask U2; the models screen's withCursorModel pattern). Add and
+// edit open the provider form through the shell callback (decision 1A:
+// registration happens inside the TUI, the CLI/wizard is no longer the only
+// door); this screen itself never writes providers.json except through the
+// approval modal behind Core.ProviderDelete.
+//
+// The sticky selection is held by PROVIDER NAME, not by index (the models and
+// presets screens' by-ID convention, code review W1): the registry is rewritten
+// whole by other surfaces (this screen's own delete, the form above it, another
+// session), so a raw index re-clamped after a reload can point at a DIFFERENT
+// provider than the user selected. A name survives a reorder and, when the
+// provider is gone, resolves to nothing: the marker clears and the verbs refuse
+// with the select-a-provider message instead of silently hitting a neighbour.
 type ProvidersScreen struct {
 	core       *settings.Core
 	openModels func(providerName string, a *App)
 	openForm   func(mode, providerName string, a *App)
 	bundle     *i18n.Bundle
 	list       *stepList
+	rows       []Row // row inventory; shared with the stepList for in-place marker writes
 	reg        *providers.Registry
 	loadErr    error
 	sig        string // registry signature the rows were built from
+	selName    string // sticky-selected provider NAME: the identity the verbs resolve
+	sel        int    // derived marker index of selName in reg.Providers, -1 when none
 	app        *App   // set by HandleKey; the list callback needs it
 }
 
 // NewProvidersScreen builds the providers list over core. openModels is the
 // shell callback that pushes the per-provider models screen, and openForm is
-// the provider form factory the Add row and every Edit row call: mode is the
-// form screen's own "add" / "edit" contract, and providerName is empty in add
-// mode (NewProviderFormScreen(core, mode, providerName), owned by the form
-// unit). Tests inject spies.
+// the provider form factory the Add row and the sticky-target Edit row call:
+// mode is the form screen's own "add" / "edit" contract, and providerName is
+// empty in add mode (NewProviderFormScreen(core, mode, providerName), owned by
+// the form unit). Tests inject spies. The sticky selection starts at -1 (user
+// decision 2A, the models and presets screens' rule): entering the screen and
+// firing an action verb without first resting the cursor on a provider row
+// refuses with the select-a-provider message instead of silently targeting
+// provider[0].
 func NewProvidersScreen(core *settings.Core, openModels func(providerName string, a *App), openForm func(mode, providerName string, a *App)) Screen {
 	s := &ProvidersScreen{
 		core:       core,
 		openModels: openModels,
 		openForm:   openForm,
 		bundle:     Bundle(),
+		sel:        -1,
 	}
 	s.list = newStepList(s.pick)
 	s.reload()
 	return s
+}
+
+// pushProvidersScreen opens the providers screen with the standard factory
+// wiring (the hub row inlines the same callbacks at app.go). The settings grid
+// routes its retired typed-name test/delete rows here so both actions live on
+// one row-picked surface instead of asking for a typed name (survey-1 debt
+// item 18).
+func pushProvidersScreen(core *settings.Core, a *App) {
+	a.Push(NewProvidersScreen(core, func(name string, app *App) {
+		app.Push(NewModelsScreen(core, name, func(modeName, modelID string, app2 *App) {
+			app2.Push(NewModelFormScreen(core, name, modeName, modelID))
+		}))
+	}, func(modeName, providerName string, app *App) {
+		app.Push(NewProviderFormScreen(core, modeName, providerName))
+	}))
 }
 
 // Title returns the screen title.
@@ -197,18 +225,57 @@ func providersEmptyLine(b *i18n.Bundle) string {
 	return b.T("providers.empty") + " " + hint
 }
 
-// HandleKey routes one key to the shared stepList. The app pointer is kept
-// for the activation callback, which needs it to open screens, set messages,
-// and show the approval modal.
+// HandleKey routes one key to the shared stepList and keeps the sticky provider
+// selection in sync while the cursor sits on a provider row; when the selection
+// moves, the marker follows in place (syncMarker), so the list window never
+// resets. Every key that reaches this screen passes here, so an arrow key that
+// does not move the cursor still re-asserts the selection of the row it rests
+// on. The app pointer is kept for the activation callback, which needs it to
+// open screens, set messages, and show the approval modal.
 func (s *ProvidersScreen) HandleKey(k Key, a *App) {
 	s.app = a
 	s.list.HandleKey(k)
+	if c := s.list.Cursor(); c >= 0 && c < len(s.reg.Providers) {
+		name := s.reg.Providers[c].Name
+		if s.sel != c || s.selName != name {
+			s.sel, s.selName = c, name
+			s.syncMarker()
+		}
+	}
+}
+
+// syncMarker moves the visible selection marker to the sticky-selected provider
+// row by rewriting the row labels IN PLACE (the models screen's F-S1 pattern):
+// s.rows and the stepList share the same backing array (SetRows stores the slice
+// header), so the label writes are picked up by the next Render without a
+// SetRows call, which would reset the scroll window and make the view jump on
+// every selection move. Labels are recomputed from the row ID (the slot masker
+// over the provider name) rather than prefix-stripped, so a name that happens to
+// start with the marker glyph cannot confuse the sync, and a credential-shaped
+// on-disk name masks here exactly as it does in rebuild.
+func (s *ProvidersScreen) syncMarker() {
+	for i := range s.rows {
+		if !strings.HasPrefix(s.rows[i].ID, providerRowPrefix) {
+			continue
+		}
+		label := providers.MaskSlot(s.rows[i].ID[len(providerRowPrefix):])
+		if i == s.sel {
+			label = "● " + label
+		}
+		if s.rows[i].Label != label {
+			s.rows[i].Label = label
+		}
+	}
 }
 
 // reload re-reads the registry and rebuilds the rows. A missing file is the
 // normal pre-setup state (empty list); any other error is kept for Draw. The
 // signature is recorded so reloadIfChanged can tell a stale row set from a
-// current one.
+// current one. The sticky selection is re-anchored by provider NAME against the
+// fresh registry (code review W1): a provider that still exists keeps its
+// selection wherever it now sits, and a selected provider that is gone clears
+// the selection and floors at -1 (none selected), so no action verb can inherit
+// the index of the record that used to sit at that position.
 func (s *ProvidersScreen) reload() {
 	reg, err := providers.Load()
 	if err != nil {
@@ -224,7 +291,30 @@ func (s *ProvidersScreen) reload() {
 		s.loadErr = nil
 	}
 	s.sig = providersSig(s.reg)
+	s.sel = providersIndexByName(s.reg, s.selName)
+	if s.sel < 0 {
+		// The selected provider is no longer in the registry: drop the identity
+		// too, so a later provider that happens to reuse the name starts from an
+		// unselected screen rather than re-adopting a stale selection.
+		s.selName = ""
+	}
 	s.rebuild()
+}
+
+// providersIndexByName resolves a provider NAME to its index in reg, or -1 when
+// the registry does not carry it. The name is the registry's addressing key (the
+// row IDs and Core.ProviderDelete both address a name, never a position), so it
+// is also the identity the sticky selection is held by.
+func providersIndexByName(reg *providers.Registry, name string) int {
+	if reg == nil || name == "" {
+		return -1
+	}
+	for i := range reg.Providers {
+		if reg.Providers[i].Name == name {
+			return i
+		}
+	}
+	return -1
 }
 
 // providersSig signs the registry fields the provider rows render: the name,
@@ -269,56 +359,60 @@ func (s *ProvidersScreen) reloadIfChanged() {
 	s.reload()
 }
 
-// rebuild composes the rows in the documented order: one row per provider
-// (the entity block, so digit 1..N keep opening each provider's models screen),
-// then the registry-level "Add provider" and "Test all" verbs, then the
-// per-provider blocks grouped by verb: test, edit, delete. Add and Edit are the
-// in-TUI registration and repair doors (decision 1A); the delete block stays
-// last so the danger rows sit furthest from the entity rows.
+// rebuild composes the rows in the documented order: one row per provider (the
+// entity block, so digit 1..N keep opening each provider's models screen), then
+// the registry-level "Add provider" and "Test all" verbs, then the three
+// sticky-target verbs Test, Edit, and Delete. Add and Edit are the in-TUI
+// registration and repair doors (decision 1A); Delete stays last so the danger
+// row sits furthest from the entity rows. The verb rows carry no provider
+// operand (the label is the bare verb), so the row set no longer grows with the
+// registry: the target is the sticky-selected provider row, marked with "●" so
+// the object an action will hit is never invisible (the models screen's buildRows
+// shape).
+//
+// The cursor is restored by ROW ID after the rebuild, so a mutation that shifts
+// the row layout cannot leave the visible cursor on a different verb or provider
+// than the user saw (the models screen's audit-F9 rule); a row that vanished
+// falls back to the old index clamped into the new range by SetCursor.
 //
 // A registry that failed to load offers no rows at all: the error line would
 // otherwise sit above a live Add/Edit row that could write to a file this
 // screen could not read.
 func (s *ProvidersScreen) rebuild() {
 	var rows []Row
-	if s.loadErr != nil {
-		s.list.SetRows(rows)
-		return
+	oldCursor := s.list.Cursor()
+	oldID := ""
+	if oldCursor >= 0 && oldCursor < len(s.rows) {
+		oldID = s.rows[oldCursor].ID
 	}
-	for _, p := range s.reg.Providers {
-		rows = append(rows, Row{ID: providerRowPrefix + p.Name, Label: providers.MaskSlot(p.Name), Note: s.note(p)})
-	}
-	rows = append(rows, Row{ID: providersRowIDAdd, Label: missingOr(s.bundle, "providers.form.add", providersFormAdd)})
-	if len(s.reg.Providers) > 0 {
-		rows = append(rows, Row{ID: providersRowIDTestAll, Label: providersActionTestAll})
-		for _, p := range s.reg.Providers {
-			name := providers.MaskSlot(p.Name)
-			note := ""
-			if p.APIKeyEnv != "" {
-				note = providers.MaskOperand(p.APIKeyEnv)
+	if s.loadErr == nil {
+		for i, p := range s.reg.Providers {
+			label := providers.MaskSlot(p.Name)
+			if i == s.sel {
+				label = "● " + label
 			}
-			rows = append(rows, Row{
-				ID:    providersRowIDTest + p.Name,
-				Label: s.bundle.T("providers.action.test") + ": " + name,
-				Note:  note,
-			})
+			rows = append(rows, Row{ID: providerRowPrefix + p.Name, Label: label, Note: s.note(p)})
 		}
-		for _, p := range s.reg.Providers {
-			name := providers.MaskSlot(p.Name)
-			rows = append(rows, Row{
-				ID:    providersRowIDEdit + p.Name,
-				Label: missingOr(s.bundle, "providers.form.edit", providersFormEdit) + ": " + name,
-			})
-		}
-		for _, p := range s.reg.Providers {
-			name := providers.MaskSlot(p.Name)
-			rows = append(rows, Row{
-				ID:    providersRowIDDelete + p.Name,
-				Label: s.bundle.T("providers.action.delete") + ": " + name,
-			})
+		rows = append(rows, Row{ID: providersRowIDAdd, Label: missingOr(s.bundle, "providers.form.add", providersFormAdd)})
+		if len(s.reg.Providers) > 0 {
+			rows = append(rows,
+				Row{ID: providersRowIDTestAll, Label: missingOr(s.bundle, "providers.action.test_all", providersActionTestAll)},
+				Row{ID: providersRowIDTest, Label: s.bundle.T("providers.action.test")},
+				Row{ID: providersRowIDEdit, Label: missingOr(s.bundle, "providers.form.edit", providersFormEdit)},
+				Row{ID: providersRowIDDelete, Label: s.bundle.T("providers.action.delete")},
+			)
 		}
 	}
+	s.rows = rows
 	s.list.SetRows(rows)
+	cursor := oldCursor
+	for i, r := range rows {
+		if r.ID == oldID {
+			cursor = i
+			break
+		}
+	}
+	s.list.SetCursor(cursor)
 }
 
 // note composes the provider row annotation: model count plus key status.
@@ -336,16 +430,18 @@ func (s *ProvidersScreen) note(p providers.Provider) string {
 	return count + " · " + providers.MaskOperand(env) + " " + status
 }
 
-// pick is the shared stepList activation callback (digits and Enter both
-// land here). Row IDs carry a NUL-terminated kind prefix; the remainder is
-// the provider name the row was built from, so an activation always names
-// that provider. Add carries no operand (empty remainder) and edit carries the
-// provider name; both hand off to the provider form through openForm with the
-// form screen's own "add" / "edit" mode contract (the form unit owns those
-// strings, so this screen passes them literally like the models screen does).
+// pick is the shared stepList activation callback (digits and Enter both land
+// here). Provider rows carry "provider\x00" plus the registry name and open that
+// provider's models screen. The fixed rows carry a NUL-terminated kind prefix
+// with an EMPTY operand: the three verbs (test, edit, delete) resolve their
+// target from the sticky selection through withSelectedProvider, so an
+// activation never reads the cursor position for a provider name, and the Add
+// row hands off to the provider form with the form screen's own "add" mode
+// contract (the form unit owns those strings, so this screen passes them
+// literally like the models screen does).
 func (s *ProvidersScreen) pick(idx int) {
 	a := s.app
-	if a == nil {
+	if a == nil || idx < 0 || idx >= s.list.Len() {
 		return
 	}
 	id := s.list.Row(idx).ID
@@ -356,17 +452,48 @@ func (s *ProvidersScreen) pick(idx int) {
 		}
 	case id == providersRowIDTestAll:
 		s.testAll(a)
-	case strings.HasPrefix(id, providersRowIDTest):
-		s.testOne(strings.TrimPrefix(id, providersRowIDTest), a)
-	case strings.HasPrefix(id, providersRowIDEdit):
-		if s.openForm != nil {
-			s.openForm("edit", strings.TrimPrefix(id, providersRowIDEdit), a)
-		}
-	case strings.HasPrefix(id, providersRowIDDelete):
-		s.confirmDelete(strings.TrimPrefix(id, providersRowIDDelete), a)
-	default:
+	case id == providersRowIDTest:
+		s.withSelectedProvider(func(p providers.Provider) { s.testOne(p.Name, a) })
+	case id == providersRowIDEdit:
+		s.withSelectedProvider(func(p providers.Provider) {
+			if s.openForm != nil {
+				s.openForm("edit", p.Name, a)
+			}
+		})
+	case id == providersRowIDDelete:
+		s.withSelectedProvider(func(p providers.Provider) { s.confirmDelete(p.Name, a) })
+	case strings.HasPrefix(id, providerRowPrefix):
 		s.openModels(strings.TrimPrefix(id, providerRowPrefix), a)
 	}
+}
+
+// withSelectedProvider runs fn over the sticky-selected provider (the models
+// screen's withCursorModel rule). The selection follows the cursor while the
+// cursor sits on a provider row and survives the move onto an action row (a
+// digit activation jumps the cursor to the action row, so the verbs cannot read
+// the cursor position directly). The target is resolved by NAME against the
+// CURRENT registry, never by the stored index (code review W1): an index
+// re-clamped after a reload can name a different record than the one the user
+// selected. With no provider selected (or a selected one that is gone) the user
+// gets a named message instead of a silent no-op or a silent hit on a neighbour.
+func (s *ProvidersScreen) withSelectedProvider(fn func(providers.Provider)) {
+	if p, ok := s.selectedProvider(); ok {
+		fn(p)
+		return
+	}
+	if s.app != nil {
+		s.app.SetMessage(missingOr(s.bundle, "providers.msg.select_provider", providersMsgSelectProvider))
+	}
+}
+
+// selectedProvider resolves the sticky selection against the current registry:
+// the provider whose name the selection holds, or false when the selection is
+// empty or the provider is no longer registered.
+func (s *ProvidersScreen) selectedProvider() (providers.Provider, bool) {
+	if i := providersIndexByName(s.reg, s.selName); i >= 0 {
+		return s.reg.Providers[i], true
+	}
+	return providers.Provider{}, false
 }
 
 func (s *ProvidersScreen) provider(name string) (providers.Provider, bool) {

@@ -24,14 +24,10 @@ import (
 const (
 	// catalog-resolved, fallback kept: settings.prompt.add_json
 	settingsPromptAddJSON = "JSON file path"
-	// catalog-resolved, fallback kept: settings.prompt.provider_name
-	settingsPromptProviderName = "Provider name"
 	// catalog-resolved, fallback kept: settings.prompt.provider_old
 	settingsPromptProviderOld = "Current provider name"
 	// catalog-resolved, fallback kept: settings.prompt.provider_new
 	settingsPromptProviderNew = "New provider name"
-	// catalog-resolved, fallback kept: settings.prompt.delete_name
-	settingsPromptDeleteName = "Provider name to delete (registry entry only)"
 	// catalog-resolved, fallback kept: settings.prompt.fix_targets
 	settingsPromptFixTargets = "fix-keys target (all | provider list)"
 	// catalog-resolved, fallback kept: settings.prompt.backup_dir
@@ -44,14 +40,13 @@ const (
 	settingsPromptHint = "Ctrl+S submits - Tab moves to OK - Esc cancels"
 	// catalog-resolved, fallback kept: settings.msg.add_provider
 	//
-	// English chrome (decision 6B). Provider add now lives inside this TUI, so
-	// the guidance names the in-TUI route first and keeps the terminal pair as
-	// the documented alternative for scripts and non-console hosts. The retired
-	// terminal-first sentence lived under settings.msg.wizard; that key has no
-	// call site left and the catalogs no longer carry it, so this guidance
-	// resolves through settings.msg.add_provider in all twelve locales, with the
-	// const below as the fallback (the app.exit_confirm pattern).
-	settingsMsgAddProvider = "Add a provider in the TUI: Hub > Providers > Add provider. Terminal alternative: `agy pro setup --wizard` or `agy pro settings providers add-interactive`. Raw key echo is masked first-5 + ****."
+	// English chrome (decision 6B). The row routes into the providers screen
+	// (survey-1 debt item 3): the message opens that screen and names the Add
+	// row, with the terminal pair kept as the documented alternative for
+	// scripts and non-console hosts. Resolves through
+	// settings.msg.add_provider in all twelve locales, with the const below
+	// as the fallback (the app.exit_confirm pattern).
+	settingsMsgAddProvider = "Opens Hub > Providers. Rest the cursor on Add provider and press Enter. Terminal alternative: `agy pro setup --wizard` or `agy pro settings providers add-interactive`. Raw key echo is masked first-5 + ****."
 	// catalog-resolved, fallback kept: settings.msg.cancelled
 	settingsMsgCancelled = "Cancelled. Nothing was written."
 	// catalog-resolved, fallback kept: settings.msg.backups_none
@@ -60,6 +55,32 @@ const (
 	settingsMsgPresetsNone = "(no saved presets; p1/p2/p3 defaults always available)"
 	// catalog-resolved, fallback kept: settings.msg.readonly
 	settingsMsgReadonly = "read-only: {{note}}"
+	// catalog-resolved, fallback kept: settings.legend.readonly
+	//
+	// P1-4: one legend line names the [ro] badge every read-only row note
+	// carries (the shared spelling lives in settings.ReadOnlyMarker), so the
+	// read-only state is visible before the press. Only the legacy panel
+	// prints settings.ReadOnlyLegend verbatim (its footer); the `show`
+	// snapshot composes its own "Flags: [ro] ... · [danger] ..." line from the
+	// same sentence, and this screen resolves settings.legend.readonly.
+	settingsLegendReadonly = "ro = read-only (display only; pressing the row changes nothing)"
+	// catalog-resolved, fallback kept: settings.msg.provider_route
+	//
+	// The retired typed-name prompts for the provider test and delete rows
+	// (settings.prompt.provider_name / settings.prompt.delete_name) went away
+	// with the rows' new routing into the providers screen; the route message
+	// names the verb to press there, and the {{verb}} slot carries the localized
+	// verb label (providers.action.test / providers.action.delete).
+	settingsMsgProviderRoute = "Opens Hub > Providers. Rest the cursor on the provider row, then press {{verb}}."
+	// catalog-resolved, fallback kept: settings.section.position
+	//
+	// The section header counter. The title beside it is localized
+	// (section.pN.title), so a counter hardcoded in Go ("section 2 of 8") left
+	// the header half-translated on every non-English locale (code review M-5).
+	// Slots: {{title}} the localized section title, {{n}} the 1-based position,
+	// {{m}} the section count. The English value is byte-equal to this const, so
+	// the header pins hold in en and a translation replaces the whole sentence.
+	settingsSectionPosition = "{{title}} · section {{n}} of {{m}}"
 	// catalog-resolved, fallback kept: settings.result.hint
 	settingsResultHint = "Arrows and PgUp/PgDn scroll. Esc returns."
 	// catalog-resolved, fallback kept: settings.approval.add
@@ -82,6 +103,51 @@ const (
 	settingsApprovalRollbackRestore = "  {{name}}: restore recorded value"
 	// catalog-resolved, fallback kept: settings.approval.rollback_delete
 	settingsApprovalRollbackDelete = "- {{name}}: delete (recorded as absent)"
+	// catalog-resolved, fallback kept: settings.presets.selectability
+	//
+	// P3-7 route decision (D2, refusal variant): saved preset names are
+	// stored and listed but NOT selectable yet. Selection by name needs the
+	// swarm-side grammar wrapper (internal/swarm/select.go), the builder
+	// prompt, the --seats flag path, and the launcher picker (all outside
+	// this unit's file boundary), so the management screen states what works
+	// instead: retype the preset's numbers.
+	settingsPresetsSelectability = "not selectable by name yet: the swarm builder and --seats accept seat numbers, ranges, and p1/p2/p3 only; retype a preset's numbers to use it."
+	// catalog-resolved, fallback kept: settings.presets.edit
+	settingsPresetsEdit = "Edit preset"
+	// catalog-resolved, fallback kept: settings.presets.delete
+	settingsPresetsDelete = "Delete preset"
+	// catalog-resolved, fallback kept: settings.presets.hint
+	settingsPresetsHint = "Enter on a preset arms it - Enter on Edit/Delete acts on the armed preset - Esc returns."
+	// catalog-resolved, fallback kept: settings.presets.armed
+	settingsPresetsArmed = "(armed)"
+	// catalog-resolved, fallback kept: settings.msg.preset_name_invalid
+	settingsMsgPresetNameInvalid = "invalid preset name: use letters, digits, '-' or '_'; no spaces, commas, or semicolons; not a bare number and not p1/p2/p3."
+	// catalog-resolved, fallback kept: settings.msg.preset_exists
+	settingsMsgPresetExists = "a saved preset named {{name}} already exists. Open Saved Seat Presets to edit or delete it."
+	// catalog-resolved, fallback kept: settings.msg.preset_numbers_empty
+	settingsMsgPresetNumbersEmpty = "numbers must not be empty: enter a numbered selection like 1,3,19,23."
+	// catalog-resolved, fallback kept: settings.msg.preset_none_armed
+	settingsMsgPresetNoneArmed = "no preset selected: press Enter on a preset row first, then Edit or Delete."
+	// catalog-resolved, fallback kept: settings.msg.preset_vanished
+	//
+	// The armed preset can disappear between the listing and the Edit/Delete
+	// verb (a hand edit or another session rewrote swarm-state.json). That path
+	// used to reuse the ADD-path message "a saved preset named {{name}} already
+	// exists", which says the opposite of what happened. This message names the
+	// vanished target instead, and it carries a catalog entry in all twelve
+	// locales (landed with the locale owner, code review F03 follow-up), so the
+	// const below is the fallback rather than the shipped text. The sentence
+	// stays truthfully about a reload with nothing written, which is what the
+	// code does.
+	settingsMsgPresetVanished = "the saved preset {{name}} is no longer in the store (a hand edit or another session changed it); the list was reloaded and nothing was written."
+	// settings.corrupt.* reuse (security review F-3): swarm-state.json shares
+	// the fanout preset screens' corrupt-file vocabulary (presets.corrupt.title
+	// / presets.corrupt.body / presets.corrupt.warning + corruptLatch) instead
+	// of inventing a second wording for the same episode shape. Both files are
+	// saved-preset stores, both are rewritten whole on the next save, and both
+	// gates must read the same, so the strings are shared by key, not copied.
+	// catalog-resolved, fallback kept: settings.approval.preset_delete
+	settingsApprovalPresetDelete = "Delete saved seat preset {{name}}."
 )
 
 // localizeItem resolves the catalog strings for one settings row. The label
@@ -142,6 +208,12 @@ type settingsScreen struct {
 	section int
 	list    *stepList
 	app     *App
+	// corruptLatch is the swarm-state.json corrupt-file episode state of this
+	// settings surface (security review F-3). The grid owns it and hands the
+	// address to the Saved Seat Presets child screen, so ONE acknowledgment
+	// covers the episode for both the append row and the management verbs: the
+	// user answered about one file, not about one screen.
+	corruptLatch
 }
 
 // NewSettingsScreen builds the settings screen over core. A nil core builds
@@ -165,8 +237,12 @@ func (s *settingsScreen) Title() string { return s.bundle.T("settings.screen.tit
 func (s *settingsScreen) Mode() Mode { return ModeNav }
 
 // reload re-reads the Core view after a write verb and rebuilds the rows,
-// keeping the cursor inside the (possibly shorter) section.
+// keeping the cursor inside the (possibly shorter) section. The swarm store's
+// corrupt-file warning is redirected into this surface's latch counter before
+// the read (security review F-3): Core.View reads the saved presets, and the
+// store's default os.Stderr sink is invisible under the full-screen frame.
 func (s *settingsScreen) reload() {
+	wireSwarmStoreSink(s.core, &s.corruptLatch)
 	view, err := s.core.View()
 	if err != nil {
 		s.loadErr = err
@@ -181,16 +257,22 @@ func (s *settingsScreen) reload() {
 }
 
 // rebuild composes the stepList rows of the current section: the localized
-// label in the row body, the value and source in the row note.
+// label in the row body, the value and source in the row note. Read-only
+// rows carry the shared [ro] badge in the note (P1-4), so the read-only
+// state is visible on the row before any press.
 func (s *settingsScreen) rebuild() {
 	items := s.items()
 	rows := make([]Row, len(items))
 	for i, it := range items {
 		label, _ := localizeItem(s.bundle, it)
+		note := it.Value + "  (" + it.Source + ")"
+		if it.ReadOnly {
+			note += "  [" + settings.ReadOnlyMarker + "]"
+		}
 		rows[i] = Row{
 			ID:    it.ID,
 			Label: label,
-			Note:  it.Value + "  (" + it.Source + ")",
+			Note:  note,
 		}
 	}
 	s.list.SetRows(rows)
@@ -204,9 +286,20 @@ func (s *settingsScreen) items() []settings.Item {
 	return s.view.Sections[s.section].Items
 }
 
-// sectionTitle renders the current section header with the position counter.
-// The title resolves through the catalog (section.pN.title) with the view's
-// compiled title as the fallback.
+// sectionTitle renders the current section header. The title resolves through
+// the catalog (section.pN.title) with the view's compiled title as the fallback.
+// P1-6: the hub is the only numbered NAVIGATION surface (its rows render
+// [1]..[8] from stepList); in-section row badges are the shared list's own
+// numbering, not a second navigation scheme. So the section HEADER carries no
+// bracketed index and states the position in words instead. A "(n/8)" counter
+// read as a second numbered navigation space beside the hub's; "section n of m"
+// cannot be typed and cannot be mistaken for a row.
+//
+// The counter sentence resolves through the catalog (settings.section.position)
+// with the English const as the fallback (code review M-5): the title beside it
+// is localized, so a counter hardcoded in Go printed English words on every
+// non-English locale. The {{title}}/{{n}}/{{m}} slots fill through fillHubSlots,
+// the same pair providersEmptyLine and the hub summary use.
 func (s *settingsScreen) sectionTitle() string {
 	if s.section >= len(s.view.Sections) {
 		return ""
@@ -217,11 +310,20 @@ func (s *settingsScreen) sectionTitle() string {
 	if t := s.bundle.T(key); t != key {
 		title = t
 	}
-	return fmt.Sprintf("%s  (%d/%d)", title, s.section+1, len(s.view.Sections))
+	return fillHubSlots(missingOr(s.bundle, "settings.section.position", settingsSectionPosition),
+		map[string]string{
+			"title": title,
+			"n":     strconv.Itoa(s.section + 1),
+			"m":     strconv.Itoa(len(s.view.Sections)),
+		})
 }
 
 // Draw renders the section header, the item window, the cursor row detail,
-// and the two-handled legend. All cell math goes through cellwidth.
+// and the two-handled legend. All cell math goes through cellwidth. The
+// chrome reserve (14) covers the header, the detail block (up to 8 lines:
+// label, value, default, source, ro, note, choices, danger), the list
+// footer, and the read-only legend line added for P1-4; it was 12 before
+// the ro detail line and the legend existed.
 func (s *settingsScreen) Draw(a *App) []string {
 	s.app = a
 	w := a.Width()
@@ -229,14 +331,15 @@ func (s *settingsScreen) Draw(a *App) []string {
 		return []string{cellwidth.Truncate(s.bundle.Tf("err.load_failed",
 			map[string]string{"err": providers.MaskOperand(s.loadErr.Error())}), w)}
 	}
-	s.list.SetPageSize(pageSizeFor(a.Height(), 12))
+	s.list.SetPageSize(pageSizeFor(a.Height(), 14))
 	lines := []string{cellwidth.Truncate(s.sectionTitle(), w)}
 	lines = append(lines, s.list.Render(w)...)
 	if it, ok := s.cursorItem(); ok {
 		lines = append(lines, "")
 		lines = append(lines, s.detailLines(it, w)...)
 	}
-	return append(lines, "", s.list.FooterHint())
+	legend := missingOr(s.bundle, "settings.legend.readonly", settingsLegendReadonly)
+	return append(lines, "", s.list.FooterHint(), "", cellwidth.Truncate(legend, w))
 }
 
 // cursorItem returns the item under the list cursor, if any.
@@ -261,6 +364,9 @@ func (s *settingsScreen) detailLines(it settings.Item, w int) []string {
 	}
 	if note != "" {
 		lines = append(lines, "    note    : "+note)
+	}
+	if it.ReadOnly {
+		lines = append(lines, "    ro      : read-only (display only)")
 	}
 	if len(it.Choices) > 0 {
 		lines = append(lines, "    choices : "+strings.Join(it.Choices, " | ")+" (numbered)")
@@ -330,15 +436,21 @@ func (s *settingsScreen) activate(it settings.Item, a *App) {
 			a.SetMessage(providers.MaskSentence("error: " + err.Error()))
 		}
 	case it.ID == "providers.add_interactive":
+		// Survey-1 debt item 3: the row used to tell a user already inside
+		// `agy pro setup` to run `agy pro setup`. The Add verb lives on the
+		// providers screen, so the row opens it (same routing family as
+		// providers.test/delete) and the message names the Add row.
+		pushProvidersScreen(s.core, a)
 		a.SetMessage(missingOr(s.bundle, "settings.msg.add_provider", settingsMsgAddProvider))
 	case it.ID == "providers.add_json":
 		s.prompt(a, missingOr(s.bundle, "settings.prompt.add_json", settingsPromptAddJSON), "", func(text string, a *App) {
 			s.addJSON(label, text, a)
 		})
 	case it.ID == "providers.test":
-		s.prompt(a, missingOr(s.bundle, "settings.prompt.provider_name", settingsPromptProviderName), "", func(text string, a *App) {
-			s.testProvider(text, a)
-		})
+		// The typed-name prompt is retired: the action exists as the
+		// row-picked Test verb on the providers screen, so the row routes
+		// there (survey-1 debt item 18).
+		s.routeToProviders(a, "providers.action.test")
 	case it.ID == "providers.rename":
 		s.prompt(a, missingOr(s.bundle, "settings.prompt.provider_old", settingsPromptProviderOld), "", func(old string, a *App) {
 			s.prompt(a, missingOr(s.bundle, "settings.prompt.provider_new", settingsPromptProviderNew), "", func(neu string, a *App) {
@@ -346,9 +458,9 @@ func (s *settingsScreen) activate(it settings.Item, a *App) {
 			})
 		})
 	case it.ID == "providers.delete":
-		s.prompt(a, missingOr(s.bundle, "settings.prompt.delete_name", settingsPromptDeleteName), "", func(text string, a *App) {
-			s.approveProviderDelete(text, a)
-		})
+		// Same routing as providers.test: the M4-gated Delete verb on the
+		// providers screen replaces the typed-name prompt.
+		s.routeToProviders(a, "providers.action.delete")
 	case it.ID == "doctor.diagnose":
 		s.runDiagnose(a, label)
 	case it.ID == "doctor.fix_keys":
@@ -360,12 +472,10 @@ func (s *settingsScreen) activate(it settings.Item, a *App) {
 			s.approveRollbackKeys(label, text, a)
 		})
 	case it.ID == "swarm.presets":
-		s.showResult(a, label, s.presetLines())
+		s.managePresets(a, label)
 	case it.ID == "swarm.save_preset":
 		s.prompt(a, missingOr(s.bundle, "settings.prompt.preset_name", settingsPromptPresetName), "", func(name string, a *App) {
-			s.prompt(a, missingOr(s.bundle, "settings.prompt.preset_numbers", settingsPromptPresetNumbers), "", func(nums string, a *App) {
-				s.savePreset(label, name, nums, a)
-			})
+			s.savePreset(label, name, a)
 		})
 	case it.ReadOnly:
 		a.SetMessage(fillHubSlots(missingOr(s.bundle, "settings.msg.readonly", settingsMsgReadonly),
@@ -456,8 +566,9 @@ func (s *settingsScreen) applyChoice(it settings.Item, label, value string, code
 // shared y/n confirm and stamps the outcome on the message line. Error
 // echoes are masked seeded with the prompted operands. providers.json and
 // key-repair writes gate behind the M4 approval modal instead (see
-// approveProviderAdd, approveProviderDelete, approveFixKeys,
-// approveRollbackKeys).
+// approveProviderAdd, approveFixKeys, approveRollbackKeys; the provider
+// delete approval lives on the providers screen, which the providers.test
+// and providers.delete rows here route into).
 func (s *settingsScreen) confirmRun(a *App, label, note string, operands []string, run func() error) {
 	a.ShowModal(NewConfirm(label, []string{note}, func(ok bool) {
 		if !ok {
@@ -473,42 +584,19 @@ func (s *settingsScreen) confirmRun(a *App, label, note string, operands []strin
 	}))
 }
 
-// approveProviderDelete opens the M4 approval modal with the exact mutation
-// summary for one provider delete: the registry-entry-only sentence (name
-// masked), the model count before/after (N -> 0), the atomic-0600 sentence,
-// and the removed diff line (base URL masked). y is the only path to
-// Core.ProviderDelete; n/Esc writes nothing.
-func (s *settingsScreen) approveProviderDelete(name string, a *App) {
-	reg, ok := s.approvalRegistry(a)
-	if !ok {
-		return
-	}
-	p := findProvider(reg, name)
-	if p == nil {
-		a.SetMessage(providers.MaskSentence("error: provider not found", providers.FlagSeedOperands(name)...))
-		return
-	}
-	masked := providers.MaskSlot(p.Name)
-	summary := []string{
-		s.bundle.Tf("providers.delete.body", map[string]string{"name": masked}),
-		s.countsLine(len(p.Models), 0),
-		s.bundle.T("modal.approval.body"),
-		s.bundle.Tf("modal.approval.diff_removed", map[string]string{
-			"line": s.providerLine(p.Name, p.BaseURL, len(p.Models)),
-		}),
-	}
-	a.ShowModal(NewApproval(s.bundle.T("providers.delete.title"), summary, func(approved bool) {
-		if !approved {
-			a.SetMessage(missingOr(s.bundle, "settings.msg.cancelled", settingsMsgCancelled))
-			return
-		}
-		if err := s.core.ProviderDelete(p.Name); err != nil {
-			a.SetMessage(providers.MaskSentence("error: "+err.Error(), providers.FlagSeedOperands(name)...))
-			return
-		}
-		s.reload()
-		a.SetMessage(s.bundle.Tf("providers.delete.done", map[string]string{"name": masked}))
-	}))
+// routeToProviders replaces the retired typed-name prompts behind the
+// providers.test and providers.delete rows: both actions exist as row-picked
+// verbs on the providers screen (Test and the M4-gated Delete), so the row
+// opens that screen instead of asking for a typed name (survey-1 debt item
+// 18). The message names the verb to press; the target is chosen by resting
+// the cursor on the provider row. providers.rename keeps its typed old/new
+// prompts: no rename verb exists on the providers screen (the provider form
+// treats the name as fixed identity, so Edit can never rename), and the
+// legacy panel drives the same prompts.
+func (s *settingsScreen) routeToProviders(a *App, verbKey string) {
+	pushProvidersScreen(s.core, a)
+	a.SetMessage(fillHubSlots(missingOr(s.bundle, "settings.msg.provider_route", settingsMsgProviderRoute),
+		map[string]string{"verb": s.bundle.T(verbKey)}))
 }
 
 // addJSON reads the prompted path and parses the provider spec (both
@@ -579,21 +667,6 @@ func (s *settingsScreen) approveProviderAdd(label string, spec settings.Provider
 		s.reload()
 		a.SetMessage("[SUCCESS] " + label)
 	}))
-}
-
-// testProvider probes one provider through Core.ProviderTest and reports the
-// verdict on the message line. Operands render masked.
-func (s *settingsScreen) testProvider(name string, a *App) {
-	masked := providers.MaskSlot(name)
-	a.SetMessage(s.bundle.Tf("providers.test.running", map[string]string{"name": masked}))
-	if err := s.core.ProviderTest(name); err != nil {
-		a.SetMessage(s.bundle.Tf("providers.test.fail", map[string]string{
-			"name": masked,
-			"err":  providers.MaskOperand(err.Error()),
-		}))
-		return
-	}
-	a.SetMessage(s.bundle.Tf("providers.test.ok", map[string]string{"name": masked}))
 }
 
 // renameProvider opens the M4 approval modal with the exact mutation summary
@@ -886,20 +959,456 @@ func registryModelTotal(reg *providers.Registry) int {
 	return total
 }
 
-// savePreset appends one numbered seat preset through Core.SwarmSavePresets.
-func (s *settingsScreen) savePreset(label, name, nums string, a *App) {
+// wireSwarmStoreSink redirects the on-disk swarm store's one-line corrupt-file
+// warning into this surface's latch counter (the fanout corruptPresetSink
+// precedent, screen_presets.go). The store defaults WarnOut to os.Stderr, which
+// the full-screen frame cannot show: under the console painter the line lands
+// on the alternate screen or garbles a frame row, so the warning must be
+// counted here and rendered on the message line instead (security review F-3).
+// A non-file store (the test fakes, an embedder) has no sink to redirect and is
+// left alone.
+func wireSwarmStoreSink(core *settings.Core, l *corruptLatch) {
+	if fs := core.SwarmStateStore(); fs != nil {
+		fs.WarnOut = corruptPresetSink{count: &l.corruptEvents}
+	}
+}
+
+// swarmStatePath resolves the display path of swarm-state.json (AGY_PRO_HOME
+// aware), matching the store's own path resolution, so the corrupt gate can
+// name the file to back up. A non-file store falls back to the default path.
+func swarmStatePath(core *settings.Core) string {
+	if fs := core.SwarmStateStore(); fs != nil && fs.Path != "" {
+		return fs.Path
+	}
+	if p, err := swarm.DefaultStatePath(); err == nil && p != "" {
+		return p
+	}
+	return "swarm-state.json"
+}
+
+// loadSavedPresets reads the saved seat presets through the corrupt-episode
+// latch (the fanout presetsScreen.loadPresets precedent). The sink is
+// (re)installed on the store before the read, so a corrupt load moves the
+// counter, and the counter is snapshotted around the read so the latch can tell
+// a new corrupt event from a repeated observation of the same one. Every read
+// on the write path goes through here: a file that turned corrupt after the
+// listing was painted must gate the very next save.
+func loadSavedPresets(core *settings.Core, l *corruptLatch) ([]swarm.SavedPreset, error) {
+	wireSwarmStoreSink(core, l)
+	before := l.corruptEvents
+	presets, err := core.SwarmPresets()
+	loadErr := ""
+	if err != nil {
+		loadErr = providers.MaskOperand(err.Error())
+	}
+	l.reconcile(l.corruptEvents > before, loadErr)
+	return presets, err
+}
+
+// gateCorruptSwarmSave refuses the first swarm-state.json write after a corrupt
+// load until the user acknowledges it through an explicit confirm naming the
+// on-disk path (back it up before saving), the fanout presetsScreen
+// gateCorruptSave precedent. Afterwards the write proceeds directly; one
+// acknowledgment covers exactly one corrupt episode, and a later healthy load
+// closes it, so a new corrupt event re-arms the gate.
+//
+// Reachability, stated honestly: with the swarm file store a corrupt load
+// returns an EMPTY list, so the management screen's vanished-target refusal
+// fires before this gate on the edit/delete verbs (the corrupt file has no rows
+// to address). The append row is the path that exercises the gate today, and
+// the gate sits on every swarm write THIS screen makes, so a store that ever
+// reports rows alongside a corruption event cannot slip an unacknowledged
+// overwrite past the same latch.
+//
+// Coverage, stated equally honestly (code review M-2): the legacy line-mode
+// panel (`agy pro settings`, internal/settings/tui.go swarm.save_preset) writes
+// the same swarm-state.json and used to do it with no gate and no on-screen
+// warning. It now carries its own ack on its own prompt surface: a fresh probe
+// of the file it is about to replace (count-delta on the store's warning sink,
+// which still mirrors to stderr for line mode) arms the panel's y/n gate with
+// the identical presets.corrupt.body sentence. So the rule holds for BOTH
+// shipped writers of this file: no surface overwrites an unreadable
+// swarm-state.json without an explicit acknowledgment.
+func gateCorruptSwarmSave(a *App, b *i18n.Bundle, core *settings.Core, l *corruptLatch, proceed func()) {
+	if a == nil || !l.corruptWarn || l.corruptAcked {
+		proceed()
+		return
+	}
+	path := providers.MaskOperand(swarmStatePath(core))
+	a.ShowModal(NewConfirm(missingOr(b, "presets.corrupt.title", presetsCorruptTitle),
+		[]string{fillHubSlots(missingOr(b, "presets.corrupt.body", presetsCorruptBody),
+			map[string]string{"path": path})},
+		func(approved bool) {
+			if !approved {
+				a.SetMessage(missingOr(b, "settings.msg.cancelled", settingsMsgCancelled))
+				return
+			}
+			l.corruptAcked = true
+			proceed()
+		}))
+}
+
+// savePreset appends one numbered seat preset through Core.SwarmSavePresets
+// after the D17 validation the old append-only path lacked: the name must be
+// a usable preset name and must not collide with a saved preset (edit/delete
+// live on the Saved Seat Presets management screen), and the numbers must
+// not be empty. Every refusal names the reason on the message line; nothing
+// is written on a refusal.
+func (s *settingsScreen) savePreset(label, name string, a *App) {
+	if !validPresetName(name) {
+		a.SetMessage(missingOr(s.bundle, "settings.msg.preset_name_invalid", settingsMsgPresetNameInvalid))
+		return
+	}
 	presets, err := s.core.SwarmPresets()
 	if err != nil {
-		a.SetMessage(providers.MaskSentence("error: "+err.Error(), providers.FlagSeedOperands(name, nums)...))
+		a.SetMessage(providers.MaskSentence("error: "+err.Error(), providers.FlagSeedOperands(name)...))
 		return
 	}
-	presets = append(presets, swarm.SavedPreset{Name: name, Numbers: nums})
-	if err := s.core.SwarmSavePresets(presets); err != nil {
-		a.SetMessage(providers.MaskSentence("error: "+err.Error(), providers.FlagSeedOperands(name, nums)...))
+	if idx := indexPresetFold(presets, name); idx >= 0 {
+		a.SetMessage(fillHubSlots(missingOr(s.bundle, "settings.msg.preset_exists", settingsMsgPresetExists),
+			map[string]string{"name": providers.MaskOperand(name)}))
 		return
 	}
+	s.prompt(a, missingOr(s.bundle, "settings.prompt.preset_numbers", settingsPromptPresetNumbers), "", func(nums string, a *App) {
+		if strings.TrimSpace(nums) == "" {
+			a.SetMessage(missingOr(s.bundle, "settings.msg.preset_numbers_empty", settingsMsgPresetNumbersEmpty))
+			return
+		}
+		// Fresh load through the latch: the read above is only the early
+		// duplicate refusal. The write path must observe the CURRENT file, so
+		// a corruption that appeared while the prompt was open gates this
+		// write instead of being silently overwritten, and a preset another
+		// session saved meanwhile is not reverted by this append (security
+		// review F-3).
+		presets, err := loadSavedPresets(s.core, &s.corruptLatch)
+		if err != nil {
+			a.SetMessage(providers.MaskSentence("error: "+err.Error(), providers.FlagSeedOperands(name, nums)...))
+			return
+		}
+		if idx := indexPresetFold(presets, name); idx >= 0 {
+			a.SetMessage(fillHubSlots(missingOr(s.bundle, "settings.msg.preset_exists", settingsMsgPresetExists),
+				map[string]string{"name": providers.MaskOperand(name)}))
+			return
+		}
+		gateCorruptSwarmSave(a, s.bundle, s.core, &s.corruptLatch, func() {
+			if err := s.core.SwarmSavePresets(append(presets, swarm.SavedPreset{Name: name, Numbers: nums})); err != nil {
+				a.SetMessage(providers.MaskSentence("error: "+err.Error(), providers.FlagSeedOperands(name, nums)...))
+				return
+			}
+			// The file was just rewritten healthy, so the open corrupt episode
+			// is over (the fanout writePreset precedent): the notice must not
+			// outlive the save that replaced the corrupt file.
+			s.corruptLatch.reconcile(false, "")
+			s.reload()
+			a.SetMessage("[SUCCESS] " + label)
+		})
+	})
+}
+
+// validPresetName reports whether name can join the saved-preset namespace.
+// A name containing a selection separator (space, comma, semicolon) could
+// never be one token in the §2.7 grammar a later name-selection phase must
+// stay compatible with, and a bare number or p1/p2/p3 already means
+// something in that grammar; both are refused at the input surface instead
+// of planting a name the listing shows next to p1/p2/p3 but can never be
+// typed. Hyphenated names stay allowed (exact-name lookup precedes range
+// parsing in any compatible extension).
+func validPresetName(name string) bool {
+	if name == "" {
+		return false
+	}
+	if strings.ContainsAny(name, " \t\r\n,;") {
+		return false
+	}
+	switch strings.ToLower(name) {
+	case "p1", "p2", "p3":
+		return false
+	}
+	if _, err := strconv.Atoi(name); err == nil {
+		return false
+	}
+	return true
+}
+
+// indexPresetFold returns the first preset index whose name equals name
+// case-insensitively (the Core verbs' case-insensitive precedent), or -1.
+func indexPresetFold(presets []swarm.SavedPreset, name string) int {
+	for i := range presets {
+		if strings.EqualFold(presets[i].Name, name) {
+			return i
+		}
+	}
+	return -1
+}
+
+// managePresets pushes the saved seat preset management screen (defect D17):
+// the old read-only listing had no edit or delete. The screen lists every
+// saved preset, arms one with Enter, and edits or deletes the armed preset
+// through the same Core.SwarmSavePresets verb the append path uses. onChange
+// reloads the settings rows underneath so the listing row value never goes
+// stale after a mutation. The parent's corrupt latch is handed down, so one
+// acknowledgment covers the whole settings surface (security review F-3).
+func (s *settingsScreen) managePresets(a *App, label string) {
+	a.Push(newSettingsPresetsScreen(s.bundle, s.core, label, s.reload, &s.corruptLatch))
+}
+
+// settingsPresetsScreen is the saved seat preset management surface behind
+// the swarm.presets row: preset rows plus Edit/Delete action rows (the
+// preset editor's armed-row idiom). Esc pops back through the plain App
+// precedence. latch is the parent settings screen's corrupt-file episode
+// state, shared by pointer so the notice and the gate cannot disagree between
+// the two screens.
+type settingsPresetsScreen struct {
+	title    string
+	bundle   *i18n.Bundle
+	core     *settings.Core
+	onChange func()
+	list     *stepList
+	rows     []Row
+	presets  []swarm.SavedPreset
+	armed    int // index into presets, -1 = none
+	app      *App
+	latch    *corruptLatch
+}
+
+func newSettingsPresetsScreen(b *i18n.Bundle, core *settings.Core, title string, onChange func(), latch *corruptLatch) *settingsPresetsScreen {
+	if latch == nil {
+		latch = &corruptLatch{}
+	}
+	s := &settingsPresetsScreen{bundle: b, core: core, title: title, onChange: onChange, armed: -1, latch: latch}
+	s.list = newStepList(s.pick)
 	s.reload()
-	a.SetMessage("[SUCCESS] " + label)
+	return s
+}
+
+// Title returns the originating row's label.
+func (s *settingsPresetsScreen) Title() string { return s.title }
+
+// Mode is ModeNav: the stepList drives arming and the action rows.
+func (s *settingsPresetsScreen) Mode() Mode { return ModeNav }
+
+// reload re-reads the presets through the Core seam after a mutation (or at
+// open) and clamps the armed index inside the (possibly shorter) list. The read
+// goes through loadSavedPresets, so the store's corrupt-file warning is counted
+// into the shared latch instead of vanishing into the os.Stderr sink
+// (security review F-3).
+func (s *settingsPresetsScreen) reload() {
+	presets, err := loadSavedPresets(s.core, s.latch)
+	if err != nil {
+		presets = nil
+	}
+	s.presets = presets
+	if s.armed >= len(presets) {
+		s.armed = len(presets) - 1
+	}
+	s.rebuild()
+}
+
+// settingsSavedPresetRowPrefix namespaces a saved preset row ID. Row IDs are
+// never rendered; they exist so rebuild can restore the cursor by IDENTITY
+// (the modelsScreen/presetsScreen convention), which is what keeps the armed
+// row under the cursor when arming rebuilds the list (code review C6).
+const settingsSavedPresetRowPrefix = "saved-preset:"
+
+// rebuild composes the preset rows and the two action rows. Names and
+// numbers are user-set operands of the same class the old presetLines
+// listing masked (survey-5 D2 display sites), so a credential-shaped value
+// renders first-5+**** here too; benign pairs keep their exact bytes.
+//
+// The cursor is restored by ROW ID: arming a preset row rebuilds the list, and
+// SetRows resets the cursor to the top, so without the restore the row the user
+// just armed scrolled out from under them (code review C6). Preset rows carry
+// the preset's name in the ID, so a row keeps its identity across an insert or
+// a delete elsewhere in the list; a vanished row falls back to the old index,
+// which SetCursor clamps into the new range.
+func (s *settingsPresetsScreen) rebuild() {
+	oldCursor := s.list.Cursor()
+	oldID := ""
+	if oldCursor >= 0 && oldCursor < len(s.rows) {
+		oldID = s.rows[oldCursor].ID
+	}
+	rows := make([]Row, 0, len(s.presets)+2)
+	for i, p := range s.presets {
+		label := fmt.Sprintf("%s = %s", providers.MaskOperand(p.Name), providers.MaskOperand(p.Numbers))
+		if i == s.armed {
+			label += " " + missingOr(s.bundle, "settings.presets.armed", settingsPresetsArmed)
+		}
+		rows = append(rows, Row{ID: settingsSavedPresetRowPrefix + p.Name, Label: label})
+	}
+	if len(s.presets) > 0 {
+		rows = append(rows,
+			Row{ID: "edit", Label: missingOr(s.bundle, "settings.presets.edit", settingsPresetsEdit)},
+			Row{ID: "delete", Label: missingOr(s.bundle, "settings.presets.delete", settingsPresetsDelete)},
+		)
+	}
+	s.rows = rows
+	s.list.SetRows(rows)
+	if len(rows) == 0 {
+		return
+	}
+	cursor := oldCursor
+	for i, r := range rows {
+		if r.ID == oldID {
+			cursor = i
+			break
+		}
+	}
+	s.list.SetCursor(cursor)
+}
+
+// Draw renders the corrupt-file notice (when the store fell back to empty), the
+// selectability refusal line (the D2 honesty note), the preset window (or the
+// honest empty state), and the action hint. The notice is also pushed onto the
+// app message line once per corrupt episode, so the warning is visible the way
+// the fanout preset screens show it (security review F-3).
+func (s *settingsPresetsScreen) Draw(a *App) []string {
+	s.app = a
+	w := a.Width()
+	lines := []string{cellwidth.Truncate(missingOr(s.bundle, "settings.presets.selectability", settingsPresetsSelectability), w)}
+	if s.latch.corruptWarn {
+		warn := corruptPresetWarning(s.bundle, swarmStatePath(s.core))
+		lines = append(lines, cellwidth.Truncate(warn, w))
+		if !s.latch.corruptMsgSent && a.Message() == "" {
+			s.latch.corruptMsgSent = true
+			a.SetMessage(warn)
+		}
+	}
+	if len(s.presets) == 0 {
+		lines = append(lines, "", missingOr(s.bundle, "settings.msg.presets_none", settingsMsgPresetsNone))
+	} else {
+		s.list.SetPageSize(pageSizeFor(a.Height(), 6))
+		lines = append(lines, s.list.Render(w)...)
+	}
+	return append(lines, "", missingOr(s.bundle, "settings.presets.hint", settingsPresetsHint))
+}
+
+// HandleKey routes one key to the stepList.
+func (s *settingsPresetsScreen) HandleKey(k Key, a *App) {
+	s.app = a
+	s.list.HandleKey(k)
+}
+
+// pick arms a preset row or runs the Edit/Delete action rows.
+func (s *settingsPresetsScreen) pick(idx int) {
+	a := s.app
+	if a == nil {
+		return
+	}
+	n := len(s.presets)
+	switch {
+	case idx >= 0 && idx < n:
+		s.armed = idx
+		s.rebuild()
+	case idx == n:
+		s.editArmed(a)
+	case idx == n+1:
+		s.deleteArmed(a)
+	}
+}
+
+// editArmed rewrites the armed preset's numbers (the edit half of D17). The
+// prompt seeds the current numbers so an edit is a correction, not a
+// retype; an empty answer is refused by name and writes nothing. The write
+// sits behind the shared corrupt-file gate (security review F-3): the first
+// save after a corrupt load must not replace the unreadable file unannounced.
+func (s *settingsPresetsScreen) editArmed(a *App) {
+	if s.armed < 0 || s.armed >= len(s.presets) {
+		a.SetMessage(missingOr(s.bundle, "settings.msg.preset_none_armed", settingsMsgPresetNoneArmed))
+		return
+	}
+	cur := s.presets[s.armed]
+	promptPresetValue(a, s.bundle, missingOr(s.bundle, "settings.prompt.preset_numbers", settingsPromptPresetNumbers), cur.Numbers, func(nums string, a *App) {
+		if strings.TrimSpace(nums) == "" {
+			a.SetMessage(missingOr(s.bundle, "settings.msg.preset_numbers_empty", settingsMsgPresetNumbersEmpty))
+			return
+		}
+		presets, err := loadSavedPresets(s.core, s.latch)
+		if err != nil {
+			a.SetMessage(providers.MaskSentence("error: "+err.Error(), providers.FlagSeedOperands(cur.Name, nums)...))
+			return
+		}
+		idx := indexPresetFold(presets, cur.Name)
+		if idx < 0 {
+			// The preset vanished underneath (a hand edit or another session):
+			// reload and say so instead of writing at the wrong index. The
+			// message names the vanished target, not the add path's "already
+			// exists" refusal, which says the opposite of what happened (code
+			// review F03).
+			s.reload()
+			a.SetMessage(fillHubSlots(missingOr(s.bundle, "settings.msg.preset_vanished", settingsMsgPresetVanished),
+				map[string]string{"name": providers.MaskOperand(cur.Name)}))
+			return
+		}
+		presets[idx].Numbers = nums
+		gateCorruptSwarmSave(a, s.bundle, s.core, s.latch, func() {
+			if err := s.core.SwarmSavePresets(presets); err != nil {
+				a.SetMessage(providers.MaskSentence("error: "+err.Error(), providers.FlagSeedOperands(cur.Name, nums)...))
+				return
+			}
+			// The file was just rewritten healthy: the corrupt episode is over.
+			s.latch.reconcile(false, "")
+			s.reload()
+			if s.onChange != nil {
+				s.onChange()
+			}
+			a.SetMessage("[SUCCESS] " + missingOr(s.bundle, "settings.presets.edit", settingsPresetsEdit) + " = " + providers.MaskOperand(cur.Name))
+		})
+	})
+}
+
+// deleteArmed removes the armed preset behind the shared y/n confirm (the
+// delete half of D17). n/Esc writes nothing; y re-reads through the Core
+// seam, drops the preset, and persists the shortened list behind the same
+// corrupt-file gate the edit path uses (security review F-3).
+func (s *settingsPresetsScreen) deleteArmed(a *App) {
+	if s.armed < 0 || s.armed >= len(s.presets) {
+		a.SetMessage(missingOr(s.bundle, "settings.msg.preset_none_armed", settingsMsgPresetNoneArmed))
+		return
+	}
+	cur := s.presets[s.armed]
+	del := missingOr(s.bundle, "settings.presets.delete", settingsPresetsDelete)
+	a.ShowModal(NewConfirm(del, []string{fillHubSlots(missingOr(s.bundle, "settings.approval.preset_delete", settingsApprovalPresetDelete),
+		map[string]string{"name": providers.MaskOperand(cur.Name)})}, func(ok bool) {
+		if !ok {
+			a.SetMessage(missingOr(s.bundle, "settings.msg.cancelled", settingsMsgCancelled))
+			return
+		}
+		presets, err := loadSavedPresets(s.core, s.latch)
+		if err != nil {
+			a.SetMessage(providers.MaskSentence("error: "+err.Error(), providers.FlagSeedOperands(cur.Name)...))
+			return
+		}
+		idx := indexPresetFold(presets, cur.Name)
+		if idx < 0 {
+			// Same vanished-target refusal as the edit path (code review F03).
+			s.reload()
+			a.SetMessage(fillHubSlots(missingOr(s.bundle, "settings.msg.preset_vanished", settingsMsgPresetVanished),
+				map[string]string{"name": providers.MaskOperand(cur.Name)}))
+			return
+		}
+		presets = append(presets[:idx], presets[idx+1:]...)
+		gateCorruptSwarmSave(a, s.bundle, s.core, s.latch, func() {
+			if err := s.core.SwarmSavePresets(presets); err != nil {
+				a.SetMessage(providers.MaskSentence("error: "+err.Error(), providers.FlagSeedOperands(cur.Name)...))
+				return
+			}
+			s.latch.reconcile(false, "")
+			s.armed = -1
+			s.reload()
+			if s.onChange != nil {
+				s.onChange()
+			}
+			a.SetMessage("[SUCCESS] " + del + " = " + providers.MaskOperand(cur.Name))
+		})
+	}))
+}
+
+// promptPresetValue pushes the inline editor for one preset value, seeded
+// with the current text for edit-like prompts. It is the management
+// screen's twin of settingsScreen.prompt: same prompt screen, same
+// Ctrl+S/Esc contract.
+func promptPresetValue(a *App, bundle *i18n.Bundle, title, seed string, onSubmit func(text string, a *App)) {
+	a.Push(newSettingsPromptScreen(bundle, title, seed, onSubmit))
 }
 
 // runDiagnose runs the doctor report into a buffer and pushes it as a
@@ -927,27 +1436,6 @@ func (s *settingsScreen) backupLines() []string {
 	lines := make([]string, len(paths))
 	for i, p := range paths {
 		lines[i] = fmt.Sprintf("backup %d: %s", i+1, providers.MaskOperand(p))
-	}
-	return lines
-}
-
-// presetLines composes the saved seat preset listing.
-func (s *settingsScreen) presetLines() []string {
-	presets, err := s.core.SwarmPresets()
-	if err != nil {
-		return []string{s.bundle.Tf("err.load_failed", map[string]string{"err": providers.MaskOperand(err.Error())})}
-	}
-	if len(presets) == 0 {
-		return []string{missingOr(s.bundle, "settings.msg.presets_none", settingsMsgPresetsNone)}
-	}
-	lines := make([]string, len(presets))
-	for i, p := range presets {
-		// The preset name and its numbers are user-set operands of the same
-		// class the preset screens render through providers.MaskOperand
-		// (screen_presets.go buildRows, screen_preset_editor.go save and
-		// writePreset), so a credential-shaped preset renders first-5+**** here
-		// too. Benign names and number lists pass through byte-identically.
-		lines[i] = fmt.Sprintf("%s = %s", providers.MaskOperand(p.Name), providers.MaskOperand(p.Numbers))
 	}
 	return lines
 }
@@ -1049,6 +1537,13 @@ type settingsPromptScreen struct {
 func newSettingsPromptScreen(bundle *i18n.Bundle, title, seed string, onSubmit func(text string, a *App)) Screen {
 	s := &settingsPromptScreen{title: title, bundle: bundle, onSubmit: onSubmit}
 	s.ed = NewEditor(seed)
+	if seed != "" {
+		// Edit-like prompts start the caret at the end so typing extends the
+		// seeded value instead of inserting at the top-left.
+		s.ed.row = len(s.ed.lines) - 1
+		s.ed.col = s.ed.lineLen(s.ed.row)
+		s.ed.ensureVisible()
+	}
 	s.actions = newStepList(func(idx int) { s.submit() })
 	s.actions.SetRows([]Row{{ID: "ok", Label: bundle.T("common.ok")}})
 	return s

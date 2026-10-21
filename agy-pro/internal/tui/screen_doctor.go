@@ -41,7 +41,10 @@ const (
 	doctorFixTUIPath = "To repair key names, use the in-TUI path:"
 	// English chrome: the settings grid path with its section title and item
 	// label exactly as the settings screen renders them, under the M4 gate.
-	doctorFixTUIWhere = "  Hub > Settings > [5] Diagnostics & Keys > Repair Key Names (--fix-keys)"
+	// P1-6: the section is named by its title text, without the "[5]" the
+	// title used to embed (the hub owns row numbers; a second [n] here read
+	// as hub row 5, which is Doctor, not Diagnostics & Keys).
+	doctorFixTUIWhere = "  Hub > Settings > Diagnostics & Keys > Repair Key Names (--fix-keys)"
 	// English chrome.
 	doctorFixCLI = "Or run in your terminal:"
 	// English chrome (decision 6B).

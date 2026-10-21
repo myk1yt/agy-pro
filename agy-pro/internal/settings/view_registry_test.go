@@ -87,10 +87,8 @@ func TestView_NilRegistryWithoutError_RendersEmpty(t *testing.T) {
 	if !ok {
 		t.Fatal("p2 section missing")
 	}
-	for _, it := range sec.Items {
-		if it.ID == "providers.list" && it.Value != "0 registered" {
-			t.Errorf("providers.list = %q; want %q", it.Value, "0 registered")
-		}
+	if len(sec.Items) == 0 {
+		t.Error("p2 rendered empty with a nil registry")
 	}
 }
 
@@ -107,9 +105,9 @@ func TestView_CJKProviderName_RendersNormally(t *testing.T) {
 	if err != nil {
 		t.Fatalf("View on a clean CJK registry: %v", err)
 	}
-	it, ok := view.FindItem("providers.list")
-	if !ok || it.Value != "1 registered" {
-		t.Errorf("providers.list = %+v (found %v); want 1 registered", it, ok)
+	it, ok := view.FindItem("providers.add_interactive")
+	if !ok || it.Value != "agy pro setup --wizard" {
+		t.Errorf("providers.add_interactive = %+v (found %v); want the wizard path", it, ok)
 	}
 	sec, _ := view.SectionByID("p2")
 	found := false

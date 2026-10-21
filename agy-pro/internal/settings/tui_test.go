@@ -3,11 +3,15 @@ package settings
 import (
 	"bufio"
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"agypro/internal/i18n"
 	"agypro/internal/mode"
 	"agypro/internal/providers"
+	"agypro/internal/swarm"
 )
 
 func newTestTUI(t *testing.T) (*TUI, *fakeDeps, *bytes.Buffer) {
@@ -39,7 +43,7 @@ func TestTUIFrameLayout(t *testing.T) {
 	if !strings.Contains(s.Banner, "agy-pro Settings") {
 		t.Errorf("banner missing title:\n%s", s.Banner)
 	}
-	for _, want := range []string{"[1] Launch & Profile", "[2] Models & Providers", "[3] Bridge Tools", "[4] Swarm", "[5] Diagnostics", "[6] Install & Update", "●"} {
+	for _, want := range []string{"Launch & Profile", "Models & Providers", "Bridge Tools", "Swarm", "Diagnostics", "Install & Update", "●"} {
 		if !strings.Contains(s.Left, want) {
 			t.Errorf("left list missing %q:\n%s", want, s.Left)
 		}
@@ -53,8 +57,19 @@ func TestTUIFrameLayout(t *testing.T) {
 	if !strings.Contains(s.Footer, "↑↓") || !strings.Contains(s.Footer, "PgUp/PgDn") || !strings.Contains(s.Footer, "Esc") || !strings.Contains(s.Footer, "Ctrl+C") {
 		t.Errorf("footer missing keybinding legend:\n%s", s.Footer)
 	}
-	// Numbered selection language on rows.
-	if !strings.Contains(s.Right, "[1]") {
+	// P1-4: the read-only legend rides the footer and every read-only row
+	// carries the ● ro dot, both before any press.
+	if !strings.Contains(s.Footer, ReadOnlyLegend) {
+		t.Errorf("footer missing the read-only legend %q:\n%s", ReadOnlyLegend, s.Footer)
+	}
+	if !strings.Contains(s.Right, "● "+ReadOnlyMarker) {
+		t.Errorf("right pane missing the read-only dot on read-only rows:\n%s", s.Right)
+	}
+	// Numbered selection language on rows: the row index renders inside
+	// brackets, right-aligned ("[ 1]" … "[10]"). P1-6 removed the number the
+	// section title used to carry, so this pin is on the row index itself
+	// (it was passing on the title's "[1]" before, not on a row).
+	if !strings.Contains(s.Right, "[ 1]") || !strings.Contains(s.Right, "[10]") {
 		t.Errorf("rows not numbered:\n%s", s.Right)
 	}
 }
@@ -209,7 +224,7 @@ func TestTUICaptureHeadless(t *testing.T) {
 	if out.Len() == 0 && captured == "" {
 		t.Fatal("no frames captured")
 	}
-	for _, want := range []string{"agy-pro Settings", "[1] Launch & Profile", "⎿", "↑↓ move"} {
+	for _, want := range []string{"agy-pro Settings", "Launch & Profile", "⎿", "↑↓ move"} {
 		if !strings.Contains(captured, want) {
 			t.Errorf("captured run missing %q", want)
 		}
@@ -284,5 +299,153 @@ func TestRunTUILineModeFallback(t *testing.T) {
 	}
 	if strings.Contains(got, "\x1b[") {
 		t.Error("line-mode must not emit ANSI (C3)")
+	}
+}
+
+// newSwarmFileTUI builds the legacy panel over a real swarm-state.json at path,
+// so the corrupt-file gate probes the same file-backed store the production
+// Core wires (newTestTUI keeps the in-memory fake store, which has no file to
+// overwrite and therefore no gate).
+func newSwarmFileTUI(t *testing.T, path string) (*TUI, *swarm.FileStore, *bytes.Buffer) {
+	t.Helper()
+	f := newFakeDeps()
+	f.state.ManagedItems = mode.DefaultManagedItems
+	fs := &swarm.FileStore{Path: path}
+	warn := &bytes.Buffer{}
+	fs.WarnOut = warn
+	deps := f.deps()
+	deps.SwarmStore = fs
+	c := NewCore(deps)
+	view, err := c.View()
+	if err != nil {
+		t.Fatalf("View: %v", err)
+	}
+	tui := NewTUI(c, view, &ScriptedKeys{}, &ScriptedLines{}, &bytes.Buffer{})
+	return tui, fs, warn
+}
+
+// selectItemRow points the panel at the section holding itemID and returns its
+// row index (the digit-jump/Enter activation surface).
+func selectItemRow(t *testing.T, tui *TUI, itemID string) {
+	t.Helper()
+	for si, sec := range tui.view.Sections {
+		for ri, it := range sec.Items {
+			if it.ID == itemID {
+				tui.section = si
+				tui.row = ri
+				return
+			}
+		}
+	}
+	t.Fatalf("item %q missing from the panel view", itemID)
+}
+
+// TestSwarmCorruptGateWordingMatchesCatalog pins the parity choice recorded in
+// swarmCorruptGateBody's comment: the legacy panel copies the full-screen gate's
+// sentence instead of inventing one, and the copy must stay byte-equal to the en
+// catalog entry the hub surfaces resolve.
+func TestSwarmCorruptGateWordingMatchesCatalog(t *testing.T) {
+	b := i18n.Load("en")
+	if got := b.T("presets.corrupt.body"); got != swarmCorruptGateBody {
+		t.Fatalf("en presets.corrupt.body = %q, want the panel const %q", got, swarmCorruptGateBody)
+	}
+}
+
+// TestTUISwarmSavePresetGatesCorruptStore pins the M-2 parity fix: the legacy
+// panel used to append a preset over an unreadable swarm-state.json with no
+// acknowledgment (the stderr warning was visible in line mode, the overwrite was
+// not acknowledged). The write now refuses until the panel's own y/n gate is
+// answered, naming the file, while the warning line still reaches the console
+// sink.
+func TestTUISwarmSavePresetGatesCorruptStore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "swarm-state.json")
+	const corrupt = "{not json"
+	if err := os.WriteFile(path, []byte(corrupt), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tui, fs, warn := newSwarmFileTUI(t, path)
+	selectItemRow(t, tui, "swarm.save_preset")
+	tui.lines = &ScriptedLines{Lines: []string{"deep-review", "2,5"}}
+
+	tui.Step(KeyEnter)
+	if tui.pending == nil || tui.pending.item.ID != "swarm.save_preset" {
+		t.Fatalf("the corrupt store did not arm the acknowledgment gate: %+v", tui.pending)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != corrupt {
+		t.Fatalf("the gate wrote the corrupt file before it was answered: %q (%v)", got, err)
+	}
+	right := tui.Frame().Right
+	for _, want := range []string{"Confirm ", "[y/n]", "swarm-state.json is corrupt and was ignored", "Saving now overwrites it"} {
+		if !strings.Contains(right, want) {
+			t.Errorf("gate frame missing %q:\n%s", want, right)
+		}
+	}
+	if !strings.Contains(warn.String(), "is corrupt; ignoring it") {
+		t.Errorf("the store's stderr warning line is gone: %q", warn.String())
+	}
+
+	// n cancels: nothing is written and the file keeps its bytes.
+	tui.Step(KeyNo)
+	if tui.pending != nil {
+		t.Fatal("n left the gate armed")
+	}
+	if tui.message != "cancelled" {
+		t.Errorf("declined gate message = %q; want cancelled", tui.message)
+	}
+	if got, _ := os.ReadFile(path); string(got) != corrupt {
+		t.Fatalf("a declined gate wrote the file: %q", got)
+	}
+
+	// y acknowledges the overwrite and performs exactly the one write.
+	selectItemRow(t, tui, "swarm.save_preset")
+	tui.lines = &ScriptedLines{Lines: []string{"deep-review", "2,5"}}
+	tui.Step(KeyEnter)
+	if tui.pending == nil {
+		t.Fatal("the second attempt skipped the corrupt gate")
+	}
+	tui.Step(KeyYes)
+	presets, err := fs.LoadPresets()
+	if err != nil {
+		t.Fatalf("the approved gate left the file unreadable: %v", err)
+	}
+	if len(presets) != 1 || presets[0].Name != "deep-review" || presets[0].Numbers != "2,5" {
+		t.Fatalf("on-disk presets = %+v; want deep-review=2,5", presets)
+	}
+	if !strings.HasPrefix(tui.message, "[SUCCESS]") {
+		t.Errorf("approved gate message = %q; want the success stamp", tui.message)
+	}
+}
+
+// TestTUISwarmSavePresetHealthyStoreSkipsGate is the other outcome: a readable
+// store (or none yet) writes straight through with no prompt, and a second save
+// after the first healthy write is not gated either (one acknowledgment, and the
+// file it acknowledged is gone).
+func TestTUISwarmSavePresetHealthyStoreSkipsGate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "swarm-state.json")
+	fs := &swarm.FileStore{Path: path}
+	if err := fs.SavePresets([]swarm.SavedPreset{{Name: "existing", Numbers: "1"}}); err != nil {
+		t.Fatal(err)
+	}
+	tui, _, _ := newSwarmFileTUI(t, path)
+	selectItemRow(t, tui, "swarm.save_preset")
+	tui.lines = &ScriptedLines{Lines: []string{"deep-review", "2,5"}}
+
+	tui.Step(KeyEnter)
+	if tui.pending != nil {
+		t.Fatalf("a healthy store was gated: %+v", tui.pending)
+	}
+	presets, err := fs.LoadPresets()
+	if err != nil {
+		t.Fatalf("LoadPresets: %v", err)
+	}
+	if len(presets) != 2 || presets[1].Name != "deep-review" {
+		t.Fatalf("on-disk presets = %+v; want existing + deep-review", presets)
+	}
+
+	selectItemRow(t, tui, "swarm.save_preset")
+	tui.lines = &ScriptedLines{Lines: []string{"second", "3"}}
+	tui.Step(KeyEnter)
+	if tui.pending != nil {
+		t.Fatalf("the second save over a now-healthy file was gated: %+v", tui.pending)
 	}
 }
