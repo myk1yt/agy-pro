@@ -1808,3 +1808,224 @@ func TestBaseURLPercentDecodedPartArm(t *testing.T) {
 		t.Errorf("BaseURLCarriesCredential(%q) = false; want true: the decoded read must keep a literal + as a base64 rune", plusURL)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// M5: the decoded read in the host arm
+// ---------------------------------------------------------------------------
+
+// TestBaseURLHostDecodedArm pins the last layer-1 decode hole in the shared URL
+// authority. url.Parse decodes a non-ASCII host escape itself, but a "%25"
+// escape survives as the literal "%" it decoded to, so a doubled spelling
+// reaches the host arm as escape TEXT and every percent byte breaks the run the
+// label rule reads. Each closing row is an isolating row: the raw host arm must
+// be the identity on it, the whole-value arms must be the identity on the URL,
+// and the decoded host must be credential material, so the entry fails if the
+// decoded read is removed instead of passing through some other arm.
+func TestBaseURLHostDecodedArm(t *testing.T) {
+	closing := []struct {
+		name        string
+		url         string
+		rawHost     string
+		decodedHost string
+	}{
+		{
+			name:        "doubled escape-encoded underscore-head host",
+			url:         "https://%2573%256b%255f%256c%2569%2576%2565%255f%2530%2531%2532%2533%2534%2535%2536%2537%2538%2539%2561%2562%2563%2564%2565%2566/v1",
+			rawHost:     "%73%6b%5f%6c%69%76%65%5f%30%31%32%33%34%35%36%37%38%39%61%62%63%64%65%66",
+			decodedHost: "sk_live_0123456789abcdef",
+		},
+		{
+			name:        "doubled escape-encoded AWS key-id host",
+			url:         "https://%2541%254b%2549%2541%2549%254f%2553%2546%254f%2544%254e%254e%2537%2545%2558%2541%254d%2550%254c%2545.example.com/v1",
+			rawHost:     "%41%4b%49%41%49%4f%53%46%4f%44%4e%4e%37%45%58%41%4d%50%4c%45.example.com",
+			decodedHost: "AKIAIOSFODNN7EXAMPLE.example.com",
+		},
+		{
+			name:        "doubled escape-encoded line separator inside a run",
+			url:         "https://sk_live_0123456789ab%25e2%2580%25a8cdefgh5678/v1",
+			rawHost:     "sk_live_0123456789ab%e2%80%a8cdefgh5678",
+			decodedHost: "sk_live_0123456789ab\u2028cdefgh5678",
+		},
+		{
+			name:        "doubled escape that decodes to a dot",
+			url:         "https://sk_live_0123456789abcdef%252eexample.com/v1",
+			rawHost:     "sk_live_0123456789abcdef%2eexample.com",
+			decodedHost: "sk_live_0123456789abcdef.example.com",
+		},
+	}
+	for _, tc := range closing {
+		t.Run(tc.name, func(t *testing.T) {
+			u, err := url.Parse(tc.url)
+			if err != nil {
+				t.Fatalf("premise: %q must parse, or it is not a host-arm row: %v", tc.url, err)
+			}
+			if got := u.Hostname(); got != tc.rawHost {
+				t.Fatalf("premise: u.Hostname() = %q; want the escape text %q", got, tc.rawHost)
+			}
+			if baseURLHostCarriesCredential(tc.rawHost) {
+				t.Fatalf("premise broken: the RAW host arm already refuses %q, so the row no longer isolates the decoded read", tc.rawHost)
+			}
+			decoded, derr := url.PathUnescape(tc.rawHost)
+			if derr != nil || decoded != tc.decodedHost {
+				t.Fatalf("premise: url.PathUnescape(%q) = %q, %v; want %q", tc.rawHost, decoded, derr, tc.decodedHost)
+			}
+			if !baseURLHostCarriesCredential(decoded) {
+				t.Fatalf("premise broken: the decoded host %q is not credential material", decoded)
+			}
+			if SecretShaped(tc.url) || MaskOperand(tc.url) != tc.url {
+				t.Fatalf("premise broken: a whole-value arm owns the row, so the host read is not the deciding arm")
+			}
+			if !BaseURLCarriesCredential(tc.url) {
+				t.Errorf("BaseURLCarriesCredential(%q) = false; want true (decoded host)", tc.url)
+			}
+			if err := wizardBaseURLRefused(tc.url); err == nil {
+				t.Errorf("wizardBaseURLRefused(%q) = nil; want the credential refusal", tc.url)
+			}
+			if !BaseURLCarriesCredential("  " + tc.url + "\t") {
+				t.Errorf("the padded form of %q is accepted; every door trims before it classifies", tc.url)
+			}
+		})
+	}
+
+	// The dispatch spellings: a SINGLE-encoded ASCII host. Measured owner is the
+	// fail-closed parse arm, not the decoded read: url.Parse rejects an ASCII
+	// escape in the host slot ("invalid URL escape"), and the authority refuses
+	// a value it cannot parse. Pinned so the refusal is recorded with its real
+	// owner.
+	single := []struct{ name, url string }{
+		{"single escape-encoded underscore-head host", "https://%73%6b%5f%6c%69%76%65%5f%30%31%32%33%34%35%36%37%38%39%61%62%63%64%65%66/v1"},
+		{"single escape-encoded AWS key-id host", "https://%41%4b%49%41%49%4f%53%46%4f%44%4e%4e%37%45%58%41%4d%50%4c%45.example.com/v1"},
+	}
+	for _, tc := range single {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := url.Parse(tc.url); err == nil {
+				t.Fatalf("premise broken: %q parses, so it is not a parse-arm row", tc.url)
+			}
+			if SecretShaped(tc.url) || MaskOperand(tc.url) != tc.url {
+				t.Fatalf("premise broken: a whole-value arm owns the row, so the parse arm is not the deciding one")
+			}
+			if !BaseURLCarriesCredential(tc.url) {
+				t.Errorf("BaseURLCarriesCredential(%q) = false; want true (unparseable value fails closed)", tc.url)
+			}
+			if err := wizardBaseURLRefused(tc.url); err == nil {
+				t.Errorf("wizardBaseURLRefused(%q) = nil; want the credential refusal", tc.url)
+			}
+			if !BaseURLCarriesCredential("  " + tc.url + "\t") {
+				t.Errorf("the padded form of %q is accepted; every door trims before it classifies", tc.url)
+			}
+		})
+	}
+}
+
+// TestBaseURLHostDecodedArmBounds pins the accept side and the limits of the
+// host decoded read: legal escapes that decode to benign labels keep their exact
+// verdict, a host whose escapes do not decode stays raw-only with its exact
+// verdict, a host with no escape is untouched (the decoded form equals the raw
+// one, so the second read never runs), and the decode function is
+// url.PathUnescape (a literal "+" stays a base64 rune, not a form-encoded
+// space).
+func TestBaseURLHostDecodedArmBounds(t *testing.T) {
+	accept := []struct {
+		name        string
+		url         string
+		rawHost     string
+		decodedHost string
+	}{
+		{
+			name:        "doubled space decodes to a benign label",
+			url:         "https://acme%2520gateway.example.com/v1",
+			rawHost:     "acme%20gateway.example.com",
+			decodedHost: "acme gateway.example.com",
+		},
+		{
+			name:        "doubled escape decodes to a benign short label",
+			url:         "https://%2561%2562%2563.example.com/v1",
+			rawHost:     "%61%62%63.example.com",
+			decodedHost: "abc.example.com",
+		},
+		{
+			name:        "single non-ASCII escape arrives decoded from url.Parse",
+			url:         "https://sk%c2%a0live.example.com/v1",
+			rawHost:     "sk\u00a0live.example.com",
+			decodedHost: "sk\u00a0live.example.com",
+		},
+	}
+	for _, tc := range accept {
+		t.Run(tc.name, func(t *testing.T) {
+			u, err := url.Parse(tc.url)
+			if err != nil {
+				t.Fatalf("premise: %q must parse: %v", tc.url, err)
+			}
+			if got := u.Hostname(); got != tc.rawHost {
+				t.Fatalf("premise: u.Hostname() = %q; want %q", got, tc.rawHost)
+			}
+			decoded, derr := url.PathUnescape(tc.rawHost)
+			if derr != nil || decoded != tc.decodedHost {
+				t.Fatalf("premise: url.PathUnescape(%q) = %q, %v; want %q", tc.rawHost, decoded, derr, tc.decodedHost)
+			}
+			if baseURLHostCarriesCredential(tc.rawHost) {
+				t.Fatalf("premise broken: the raw host %q classifies, so the row is not a benign witness", tc.rawHost)
+			}
+			if baseURLHostCarriesCredential(tc.decodedHost) {
+				t.Fatalf("premise broken: the decoded host %q classifies, so the row is not a benign witness", tc.decodedHost)
+			}
+			if got := BaseURLCarriesCredential(tc.url); got != false {
+				t.Errorf("BaseURLCarriesCredential(%q) = %v; want false (benign legal escape)", tc.url, got)
+			}
+			if err := wizardBaseURLRefused(tc.url); err != nil {
+				t.Errorf("wizardBaseURLRefused(%q) = %v; want nil", tc.url, err)
+			}
+			if got := BaseURLCarriesCredential("  " + tc.url + "\t"); got != false {
+				t.Errorf("BaseURLCarriesCredential(padded %q) = %v; want false", tc.url, got)
+			}
+		})
+	}
+
+	// A host whose own escapes are malformed stays raw-only. The reachable
+	// spelling is the doubled one: url.Parse turns "%252" into the text "%2",
+	// which url.PathUnescape rejects. The exact verdict is pinned: ACCEPTED.
+	const malformedURL = "https://acme%252.example.com/v1"
+	u, err := url.Parse(malformedURL)
+	if err != nil {
+		t.Fatalf("premise: %q must parse, or it is not a raw-only row: %v", malformedURL, err)
+	}
+	if got := u.Hostname(); got != "acme%2.example.com" {
+		t.Fatalf("premise: u.Hostname() = %q; want %q", got, "acme%2.example.com")
+	}
+	if decoded, derr := url.PathUnescape("acme%2.example.com"); derr == nil {
+		t.Fatalf("premise: url.PathUnescape(%q) = %q, nil; want a malformed-escape error", "acme%2.example.com", decoded)
+	}
+	if got := BaseURLCarriesCredential(malformedURL); got != false {
+		t.Errorf("BaseURLCarriesCredential(%q) = %v; want false: a malformed escape is classified raw, exactly as before the decoded read", malformedURL, got)
+	}
+	if err := wizardBaseURLRefused(malformedURL); err != nil {
+		t.Errorf("wizardBaseURLRefused(%q) = %v; want nil", malformedURL, err)
+	}
+
+	// A host with no escape decodes to itself, so the second read never runs and
+	// every benign host keeps its verdict byte-identically.
+	const plainURL = "https://mycompany2024gateway.example.com/v1"
+	u, err = url.Parse(plainURL)
+	if err != nil {
+		t.Fatalf("premise: %q must parse: %v", plainURL, err)
+	}
+	if decoded, derr := url.PathUnescape(u.Hostname()); derr != nil || decoded != u.Hostname() {
+		t.Fatalf("premise: url.PathUnescape(%q) = %q, %v; want the host unchanged", u.Hostname(), decoded, derr)
+	}
+	if got := BaseURLCarriesCredential(plainURL); got != false {
+		t.Errorf("BaseURLCarriesCredential(%q) = %v; want false", plainURL, got)
+	}
+
+	// The decode function choice: url.PathUnescape, not url.QueryUnescape. A host
+	// is not form-encoded, so a literal "+" stays the base64 rune it is; the form
+	// decoder would turn it into a space.
+	const plusHost = "abcd1234+efgh%2b5678.example.com"
+	pathDecoded, pathErr := url.PathUnescape(plusHost)
+	if pathErr != nil || pathDecoded != "abcd1234+efgh+5678.example.com" {
+		t.Fatalf("premise: url.PathUnescape(%q) = %q, %v; want %q", plusHost, pathDecoded, pathErr, "abcd1234+efgh+5678.example.com")
+	}
+	queryDecoded, queryErr := url.QueryUnescape(plusHost)
+	if queryErr != nil || queryDecoded != "abcd1234 efgh+5678.example.com" {
+		t.Fatalf("premise: url.QueryUnescape(%q) = %q, %v; want %q (the form decoder turns the literal + into a space)", plusHost, queryDecoded, queryErr, "abcd1234 efgh+5678.example.com")
+	}
+}

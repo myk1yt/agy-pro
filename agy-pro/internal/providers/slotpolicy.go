@@ -674,6 +674,18 @@ func NameCarriesCredential(v string) bool {
 // query IS form-encoded). A segment whose escapes do not decode legally is
 // classified raw only, so a malformed-but-benign segment keeps its verdict. The
 // decoded read sits beside the raw read and can only add a refusal.
+//
+// The HOST is read in both forms for the same reason. url.Parse decodes a
+// non-ASCII host escape itself ("%e2%80%a8" arrives as U+2028), but a "%25"
+// escape becomes the literal "%" it decoded to, so "https://%2573%256b..."
+// reaches the label rule as the escape TEXT "%73%6b...", where every percent
+// byte breaks the run the rule reads. The host labels are classified raw (the
+// pre-existing verdict) and, when the host's own escapes decode legally, ALSO
+// through the same label rule after a url.PathUnescape of the host. It is the
+// same decode choice the path arm makes: a host is not form-encoded, so a
+// literal "+" stays the base64 rune it is. A host whose escapes are malformed
+// stays raw-only, and a host with no escape decodes to itself, so every benign
+// host keeps its verdict.
 func BaseURLCarriesCredential(raw string) bool {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
@@ -686,7 +698,15 @@ func BaseURLCarriesCredential(raw string) bool {
 	if err != nil {
 		return true
 	}
-	if baseURLHostCarriesCredential(u.Hostname()) {
+	host := u.Hostname()
+	if baseURLHostCarriesCredential(host) {
+		return true
+	}
+	// See the doc comment: a "%25" host escape reaches this arm as escape TEXT,
+	// so classify the decoded host too when its own escapes are legal. A host
+	// whose escapes are malformed stays raw-only; url.PathUnescape keeps a
+	// literal "+" as the base64 rune it is (a host is not form-encoded).
+	if decoded, err := url.PathUnescape(host); err == nil && decoded != host && baseURLHostCarriesCredential(decoded) {
 		return true
 	}
 	if u.User != nil {
