@@ -12,6 +12,7 @@ import (
 
 	"agypro/internal/inventory"
 	"agypro/internal/mode"
+	"agypro/internal/paths"
 	"agypro/internal/providers"
 	"agypro/internal/settings"
 	"agypro/internal/swarm"
@@ -39,6 +40,16 @@ func (s *testSwarmStore) SavePresets(p []swarm.SavedPreset) error   { s.presets 
 func installSettingsCore(t *testing.T) *settingsTestCore {
 	t.Helper()
 	tmp := t.TempDir()
+	// P5-1 U2: the state.json gate reads the state file and stats the live
+	// profile config directory before it presents a diff, so every settings test
+	// runs against temp dirs (the live ~/.agy-pro and ~/.gemini are never read
+	// or written) and against the in-memory state through the gate seams.
+	// HOME/USERPROFILE are redirected with the two store variables because the
+	// protected settings path resolves through the user home (F-S9B-03).
+	t.Setenv("USERPROFILE", tmp)
+	t.Setenv("HOME", tmp)
+	t.Setenv(paths.EnvAgyProHome, filepath.Join(tmp, "home"))
+	t.Setenv(paths.EnvGeminiConfigDir, filepath.Join(tmp, "gemini-config"))
 	tc := &settingsTestCore{
 		state:   &mode.State{CurrentMode: mode.ModeClean, ManagedItems: mode.DefaultManagedItems},
 		reg:     &providers.Registry{},
@@ -57,6 +68,13 @@ func installSettingsCore(t *testing.T) *settingsTestCore {
 	registrySnapshot = func() (*providers.Registry, error) { return tc.reg, nil }
 	registryReload = func() (*providers.Registry, error) { return tc.reg, nil }
 	t.Cleanup(func() { registrySnapshot, registryReload = prevSnapshot, prevReload })
+	// The state.json gate reads through the same in-memory state the Core seams
+	// write, so a stale-base re-verify compares the presented value against the
+	// file the write will actually touch.
+	prevStateSnapshot, prevStateReload := stateSnapshot, stateReload
+	stateSnapshot = func() (*mode.State, error) { return tc.state, nil }
+	stateReload = func() (*mode.State, error) { return tc.state, nil }
+	t.Cleanup(func() { stateSnapshot, stateReload = prevStateSnapshot, prevStateReload })
 	newSettingsCore = func() *settings.Core {
 		return settings.NewCore(settings.Deps{
 			LoadState: func() (*mode.State, error) { return tc.state, nil },
@@ -71,7 +89,6 @@ func installSettingsCore(t *testing.T) *settingsTestCore {
 			},
 			FixKeys:      func(target string) error { return tc.fixErr },
 			RollbackKeys: func(dir string) error { return nil },
-			RunWizard:    func(in io.Reader, out io.Writer) error { return nil },
 			Doctor: func(out io.Writer, strict bool) error {
 				tc.doctorN++
 				return nil
@@ -128,7 +145,10 @@ func TestRunSettingsCmd_Show(t *testing.T) {
 
 func TestRunSettingsCmd_Set(t *testing.T) {
 	tc := installSettingsCore(t)
-	code, out, errw := runSettings(t, []string{"set", "default-profile", "native"}, "")
+	// P5-1 U2: every `set` is a state.json write, so it prints its exact diff
+	// and needs consent; a test stdin is not a console, so the calls carry the
+	// --yes operand.
+	code, out, errw := runSettings(t, []string{"set", "default-profile", "native", "--yes"}, "")
 	if code != 0 {
 		t.Fatalf("set exit = %d stderr=%s", code, errw)
 	}
@@ -138,16 +158,22 @@ func TestRunSettingsCmd_Set(t *testing.T) {
 	if !strings.Contains(out, "[SUCCESS]") {
 		t.Errorf("set output = %q", out)
 	}
+	if !strings.Contains(out, "[agy-pro] Approve State Write") || !strings.Contains(out, "default_profile: (unset) -> native") {
+		t.Errorf("set must print the exact diff before the write:\n%s", out)
+	}
 
-	code, _, _ = runSettings(t, []string{"set", "default-profile", "bogus"}, "")
+	code, _, errw = runSettings(t, []string{"set", "default-profile", "bogus", "--yes"}, "")
 	if code != 1 {
 		t.Errorf("invalid value exit = %d; want 1", code)
+	}
+	if !strings.Contains(errw, "invalid default profile") {
+		t.Errorf("an out-of-set value must be refused by the store after consent:\n%s", errw)
 	}
 	code, _, _ = runSettings(t, []string{"set", "default-profile"}, "")
 	if code != 2 {
 		t.Errorf("missing value exit = %d; want 2", code)
 	}
-	code, _, _ = runSettings(t, []string{"set", "native_seat_concurrency", "4"}, "")
+	code, _, _ = runSettings(t, []string{"set", "native_seat_concurrency", "4", "--yes"}, "")
 	if code != 0 || tc.state.NativeSeatConcurrency != 4 {
 		t.Errorf("concurrency set failed: code=%d state=%+v", code, tc.state)
 	}
@@ -192,13 +218,15 @@ func TestRunSettingsCmdAddJSONCompositeTailSeedsTokens(t *testing.T) {
 func TestRunSettingsCmd_Providers(t *testing.T) {
 	tc := installSettingsCore(t)
 
-	// add-json from a temp file (env-var NAME accepted).
+	// add-json from a temp file (env-var NAME accepted). Every registry write
+	// verb now gates: pipe stdin has no one to ask, so the explicit --yes
+	// consent token travels with the verb (the model twins' contract).
 	specPath := filepath.Join(t.TempDir(), "spec.json")
 	spec := `{"name":"acme","baseURL":"https://acme.example/v1","apiKeyEnv":"ACME_KEY","models":[{"id":"m1"}]}`
 	if err := os.WriteFile(specPath, []byte(spec), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	code, _, errw := runSettings(t, []string{"providers", "add-json", specPath}, "")
+	code, _, errw := runSettings(t, []string{"providers", "add-json", specPath, "--yes"}, "")
 	if code != 0 {
 		t.Fatalf("add-json exit = %d stderr=%s", code, errw)
 	}
@@ -208,14 +236,14 @@ func TestRunSettingsCmd_Providers(t *testing.T) {
 
 	// add-json from stdin ("-").
 	spec2 := `{"name":"beta","baseURL":"https://beta.example/v1","apiKeyEnv":"BETA_KEY","models":[]}`
-	code, _, errw = runSettings(t, []string{"providers", "add-json", "-"}, spec2)
+	code, _, errw = runSettings(t, []string{"providers", "add-json", "-", "--yes"}, spec2)
 	if code != 0 {
 		t.Fatalf("add-json - exit = %d stderr=%s", code, errw)
 	}
 
 	// A key VALUE in apiKeyEnv is rejected and never echoed (U8/F-PROV).
 	secret := "sk-cmd-plaintext-key-abcdef"
-	code, _, errw = runSettings(t, []string{"providers", "add-json", "-"},
+	code, _, errw = runSettings(t, []string{"providers", "add-json", "-", "--yes"},
 		`{"name":"leak","baseURL":"https://leak.example/v1","apiKeyEnv":"`+secret+`","models":[]}`)
 	if code == 0 {
 		t.Fatal("key VALUE accepted by add-json")
@@ -225,7 +253,7 @@ func TestRunSettingsCmd_Providers(t *testing.T) {
 	}
 
 	// rename + list + delete.
-	code, _, errw = runSettings(t, []string{"providers", "rename", "acme", "acme2"}, "")
+	code, _, errw = runSettings(t, []string{"providers", "rename", "acme", "acme2", "--yes"}, "")
 	if code != 0 {
 		t.Fatalf("rename exit = %d stderr=%s", code, errw)
 	}
@@ -236,7 +264,7 @@ func TestRunSettingsCmd_Providers(t *testing.T) {
 	if !strings.Contains(out, "acme2") {
 		t.Errorf("list missing provider:\n%s", out)
 	}
-	code, _, errw = runSettings(t, []string{"providers", "delete", "acme2"}, "")
+	code, _, errw = runSettings(t, []string{"providers", "delete", "acme2", "--yes"}, "")
 	if code != 0 {
 		t.Fatalf("delete exit = %d stderr=%s", code, errw)
 	}
@@ -259,9 +287,14 @@ func TestRunSettingsCmd_Providers(t *testing.T) {
 
 func TestRunSettingsCmd_ModeAndInfo(t *testing.T) {
 	tc := installSettingsCore(t)
-	code, _, errw := runSettings(t, []string{"mode", "switch", "full"}, "")
+	// P5-1 U2: mode switch is a profile deployment, so it presents its exact
+	// file plan and needs consent (--yes on a non-console stdin).
+	code, out, errw := runSettings(t, []string{"mode", "switch", "full", "--yes"}, "")
 	if code != 0 {
 		t.Fatalf("mode switch exit = %d stderr=%s", code, errw)
+	}
+	if !strings.Contains(out, "[agy-pro] Approve Profile Deployment") || !strings.Contains(out, "clean -> full") {
+		t.Errorf("mode switch must print the file plan before the write:\n%s", out)
 	}
 	if len(tc.switched) != 1 || tc.switched[0] != "full" {
 		t.Errorf("switch calls = %v", tc.switched)
@@ -365,7 +398,7 @@ func TestRunSettingsCmd_KeyEchoMasked(t *testing.T) {
 	t.Run("delete success", func(t *testing.T) {
 		tc := installSettingsCore(t)
 		tc.reg = &providers.Registry{Providers: []providers.Provider{{Name: planted}}}
-		code, out, errw := runSettings(t, []string{"providers", "delete", planted}, "")
+		code, out, errw := runSettings(t, []string{"providers", "delete", planted, "--yes"}, "")
 		if code != 0 {
 			t.Fatalf("delete exit = %d stderr=%s", code, errw)
 		}
@@ -576,12 +609,18 @@ func TestRunSettingsCmd_RollbackKeysCompositeTailSeedsTokens(t *testing.T) {
 			if code != 1 {
 				t.Fatalf("rollback-keys exit = %d, want 1 (stderr=%s)", code, errw)
 			}
-			// The expected full line: the composite sentence with the plant
-			// replaced by the redaction marker. The sentence wording comes
-			// from the same stub error, so the pin is platform-independent
-			// and still byte-exact.
-			stubErr := fmt.Errorf("open %s: The system cannot find the file specified.", providers.ResolveBackupFile(tc.operand))
-			want := "[agy-pro] " + strings.ReplaceAll(stubErr.Error(), awsPlant, "[REDACTED]") + "\n"
+			// P5-1 U3: the door reads the backup file to compose its diff, so a
+			// file that does not exist refuses BEFORE consent and the tail is
+			// that read error (the store seam is never reached). The expected
+			// line is derived from the same read, so the pin stays byte-exact
+			// and platform-independent, and the redaction rule it guards is
+			// unchanged: the whole operand plus its comma/semicolon tokens seed
+			// the sentence pass.
+			_, readErr := os.ReadFile(providers.ResolveBackupFile(tc.operand))
+			if readErr == nil {
+				t.Fatalf("the operand %q unexpectedly resolves to a readable file", tc.operand)
+			}
+			want := "[agy-pro] Rollback failed: " + strings.ReplaceAll(readErr.Error(), awsPlant, "[REDACTED]") + "\n"
 			if errw != want {
 				t.Errorf("full rollback error line drifted:\ngot:  %q\nwant: %q", errw, want)
 			}
@@ -600,8 +639,11 @@ func TestRunSettingsCmd_RollbackKeysCompositeTailSeedsTokens(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("rollback-keys(benign) exit = %d; want 1", code)
 	}
-	stubErr := fmt.Errorf("open %s: The system cannot find the file specified.", providers.ResolveBackupFile(benign))
-	if want := "[agy-pro] " + stubErr.Error() + "\n"; errw != want {
+	_, readErr := os.ReadFile(providers.ResolveBackupFile(benign))
+	if readErr == nil {
+		t.Fatalf("the operand %q unexpectedly resolves to a readable file", benign)
+	}
+	if want := "[agy-pro] Rollback failed: " + readErr.Error() + "\n"; errw != want {
 		t.Errorf("benign rollback full line drifted:\ngot:  %q\nwant: %q", errw, want)
 	}
 }
@@ -688,7 +730,7 @@ func TestRunSettingsCmd_ProviderRenameKeyDoor(t *testing.T) {
 
 	// The benign arm: exit 0, the success line, and the name as the only moved
 	// bytes.
-	code, out, errw := runSettings(t, []string{"providers", "rename", "acme", "acme-main"}, "")
+	code, out, errw := runSettings(t, []string{"providers", "rename", "acme", "acme-main", "--yes"}, "")
 	if code != 0 {
 		t.Fatalf("benign rename exit = %d stderr=%s", code, errw)
 	}

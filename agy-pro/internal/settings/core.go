@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"agypro/internal/agenttools"
+	"agypro/internal/integrations"
 	"agypro/internal/inventory"
 	"agypro/internal/mode"
 	"agypro/internal/providers"
@@ -33,7 +34,6 @@ type Deps struct {
 	AuditKeys    func(*providers.Registry, providers.AuditOptions) []providers.KeyAudit
 	FixKeys      func(target string) error
 	RollbackKeys func(backupDir string) error
-	RunWizard    func(in io.Reader, out io.Writer) error
 	Doctor       func(out io.Writer, strict bool) error
 	Inventory    func(ctx context.Context) (*inventory.Inventory, error)
 	SwarmStore   swarm.Store
@@ -86,9 +86,6 @@ func NewCore(deps Deps) *Core {
 	if deps.RollbackKeys == nil {
 		deps.RollbackKeys = defaultRollbackKeys
 	}
-	if deps.RunWizard == nil {
-		deps.RunWizard = providers.InteractiveSetupWizard
-	}
 	if deps.Doctor == nil {
 		deps.Doctor = defaultDoctor
 	}
@@ -110,15 +107,18 @@ func NewCore(deps Deps) *Core {
 }
 
 // Set writes one settings key. Supported keys (contract §2.9, plus the
-// appearance keys from plan §4/§5):
+// appearance keys from plan §4/§5, plus the P5-3 integrations intent keys):
 // default-profile | bridge-tools | native-seat-concurrency | language |
-// launcher_menu.
+// launcher_menu | integration-preset | integration-statusline |
+// integration-hook | integration-rules | integration-plugins |
+// integration-skills. Every key accepts the hyphen and the underscore spelling.
 func (c *Core) Set(key, value string) error {
 	st, err := c.deps.LoadState()
 	if err != nil {
 		return fmt.Errorf("load state: %w", err)
 	}
-	switch strings.ToLower(strings.TrimSpace(key)) {
+	normKey := strings.ToLower(strings.TrimSpace(key))
+	switch normKey {
 	case "default-profile", "default_profile":
 		profile := strings.ToLower(strings.TrimSpace(value))
 		if !mode.ValidProfile(profile) {
@@ -158,13 +158,70 @@ func (c *Core) Set(key, value string) error {
 			// B2/U8: operands may be misdirected key pastes; mask before echo.
 			return fmt.Errorf("invalid launcher_menu %q (use on, off, 1, or 0)", providers.MaskOperand(value))
 		}
+	case "integration-preset", "integration_preset":
+		// P5-3 T6 (pick 3, INTENT half): the composed preset is validated
+		// through the shared internal/integrations vocabulary, so the store
+		// never keeps a second copy of the three preset words.
+		preset, err := integrations.ParsePreset(value)
+		if err != nil {
+			// B2/U8: operands may be misdirected key pastes; mask before echo.
+			return fmt.Errorf("invalid integration-preset %q (use native, tools, or custom)", providers.MaskOperand(value))
+		}
+		st.IntegrationPreset = string(preset)
 	default:
-		return fmt.Errorf("unknown settings key %q (want default-profile, bridge-tools, native-seat-concurrency, language, or launcher_menu)", providers.MaskOperand(key))
+		// P5-3 T6: the five per-feature toggles are one family. The key table
+		// below is closed and names the state.json row each key writes; the
+		// value is canonicalized by mode.NormalizeIntegrationToggle, the same
+		// helper the readers use, so the door and the readers cannot disagree.
+		set, ok := integrationToggleTarget(normKey)
+		if !ok {
+			return fmt.Errorf("unknown settings key %q (want default-profile, bridge-tools, native-seat-concurrency, language, launcher_menu, integration-preset, integration-statusline, integration-hook, integration-rules, integration-plugins, or integration-skills)", providers.MaskOperand(key))
+		}
+		toggle, err := integrationToggleValue(normKey, value)
+		if err != nil {
+			return err
+		}
+		set(st, toggle)
 	}
 	if err := c.deps.SaveState(st); err != nil {
 		return fmt.Errorf("save state: %w", err)
 	}
 	return nil
+}
+
+// integrationToggleTarget maps one closed Core.Set per-feature key onto the
+// state.json row the write sets. The accepted key set is deliberately closed
+// (the canonical hyphen and underscore spellings only): deriving it from the
+// key suffix would silently accept every alias the feature vocabulary carries.
+// TestCoreSetIntegrationFeatureToggles pins each key's suffix to
+// integrations.ParseFeature, so the two vocabularies stay one vocabulary.
+func integrationToggleTarget(key string) (func(*mode.State, string), bool) {
+	switch key {
+	case "integration-statusline", "integration_statusline":
+		return func(st *mode.State, v string) { st.IntegrationStatusline = v }, true
+	case "integration-hook", "integration_hook":
+		return func(st *mode.State, v string) { st.IntegrationHook = v }, true
+	case "integration-rules", "integration_rules":
+		return func(st *mode.State, v string) { st.IntegrationRules = v }, true
+	case "integration-plugins", "integration_plugins":
+		return func(st *mode.State, v string) { st.IntegrationPlugins = v }, true
+	case "integration-skills", "integration_skills":
+		return func(st *mode.State, v string) { st.IntegrationSkills = v }, true
+	}
+	return nil, false
+}
+
+// integrationToggleValue canonicalizes one per-feature on/off operand. The
+// stored words are mode.IntegrationToggleOn/Off; an operand outside the
+// on/off/1/0/true/false set is refused here (the readers stay tolerant, the SET
+// door does not), and the operand is masked before it is echoed.
+func integrationToggleValue(key, value string) (string, error) {
+	toggle := mode.NormalizeIntegrationToggle(value)
+	if toggle == "" {
+		// B2/U8: operands may be misdirected key pastes; mask before echo.
+		return "", fmt.Errorf("invalid %s %q (use on, off, 1, or 0)", key, providers.MaskOperand(value))
+	}
+	return toggle, nil
 }
 
 // ParseBridgeToolsSpec validates a bridge-tools value exactly like
@@ -625,12 +682,6 @@ func (c *Core) SetExcludeModels(entries []string, base ExcludeModelsBase) error 
 		return err
 	}
 	return c.deps.SaveReg(reg)
-}
-
-// RunWizard runs the interactive secret-entry wizard (the only path that
-// accepts raw key material — masked on echo per §2.11).
-func (c *Core) RunWizard(in io.Reader, out io.Writer) error {
-	return c.deps.RunWizard(in, out)
 }
 
 // DoctorDiagnose runs the doctor report. strict mirrors `agy pro doctor

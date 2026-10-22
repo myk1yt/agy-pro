@@ -308,7 +308,7 @@ func TestWrapperPlantedKeySweepSuccessPaths(t *testing.T) {
 	t.Run("delete success echoes masked provider name", func(t *testing.T) {
 		tc := installSettingsCore(t)
 		tc.reg = &providers.Registry{Providers: []providers.Provider{{Name: maskSweepKey}}}
-		code, out, errw := runSettings(t, []string{"providers", "delete", maskSweepKey}, "")
+		code, out, errw := runSettings(t, []string{"providers", "delete", maskSweepKey, "--yes"}, "")
 		if code != 0 {
 			t.Fatalf("delete exit = %d stderr=%s", code, errw)
 		}

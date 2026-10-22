@@ -581,7 +581,7 @@ func TestGateStrayKeysNeverAnswer(t *testing.T) {
 	strays := []Key{
 		Digit(0), Digit(1), Digit(5), Digit(9), KeyEnter, KeySpace,
 		KeyUp, KeyDown, KeyLeft, KeyRight, KeyTab, KeyBackspace,
-		KeyDelete, KeyCtrlS, KeyHelp, RuneKey('x'),
+		KeyDelete, KeyCtrlS, RuneKey('x'),
 	}
 	// check drives one gate through one state: optionally drop a fast y, then
 	// deliver every stray key at the elapsed offset.

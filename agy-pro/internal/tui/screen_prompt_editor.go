@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -60,6 +62,102 @@ const (
 	// catalog-resolved, fallback kept: prompts.editor.save.note
 	promptsEditorSaveNote = "(Ctrl+S)"
 )
+
+// P5-1 U6: the save gate's content diff (W29). The save used to be an M3
+// confirm naming the target and the byte count, so the operator approved a path
+// and a size while the CONTENT being written never appeared on the gate. It is
+// an M4 approval now: the same catalog sentence (path + bytes) plus a bounded
+// first-lines diff of the override file on disk against the text this write
+// stores. These intro sentences are documented English chrome (decision 6B, the
+// approvalEntriesHidden precedent): they are new keys, and a new key costs
+// twelve catalog edits, while the +/- markers reuse their catalog spellings.
+const (
+	// promptDiffExisting introduces the two-sided diff: '+' is the text this
+	// write stores, '-' is the override file on disk now.
+	promptDiffExisting = "Prompt diff ('+' lines are the text this write stores, '-' lines are the override file on disk now); each line is masked where it looks like key material:"
+	// promptDiffNew is the same introduction when no override file exists yet.
+	promptDiffNew = "No override file exists yet; this write creates it. '+' lines are the text it stores, masked where a line looks like key material:"
+	// promptDiffDrift is the write-time stale-base refusal.
+	promptDiffDrift = "refused: the override file changed on disk after this diff was composed, so the shown diff is stale; nothing was written. Press Ctrl+S again to review the current file."
+	// promptDiffReadFail labels a slot-file read failure at gate time.
+	promptDiffReadFail = "the override file could not be read for the diff, so no gate was opened; nothing was written"
+	// promptDiffSizeLine is the size clause on a line of its own. The catalog's
+	// target sentence carries the path and the byte count in one line, and a
+	// deep AGY_PRO_HOME path fills the frame width before the count: the width
+	// clamp then hides the number the operator is approving. This line cannot be
+	// clamped away by a long path because it carries no path.
+	promptDiffSizeLine = "  size: %d bytes, %d lines"
+)
+
+// promptDiffLine renders one preview line for the save gate. Every line passes
+// the display authorities in the order the frame needs: control and format runes
+// are stripped (providers.StripSlotControls, so the composed bytes are the
+// rendered bytes), a tab becomes one space (the composer counts a tab as one
+// cell while a terminal expands it, and a wrapped row costs a physical row the
+// painter cannot erase), and a credential-shaped line renders masked
+// (providers.MaskOperand) so a pasted key cannot ride into the frame raw. The
+// bytes actually stored are the buffer, whose size the body's byte count names.
+func promptDiffLine(line string) string {
+	v := providers.StripSlotControls(line)
+	v = strings.ReplaceAll(v, "\t", " ")
+	return providers.MaskOperand(v)
+}
+
+// promptDiffLines splits text into preview lines, dropping ONE trailing empty
+// element so a buffer that ends with a newline does not paint a phantom blank
+// diff line. Interior blank lines keep their row: they are real content.
+func promptDiffLines(text string) []string {
+	raw := strings.Split(text, "\n")
+	if n := len(raw); n > 1 && raw[n-1] == "" {
+		raw = raw[:n-1]
+	}
+	lines := make([]string, 0, len(raw))
+	for _, ln := range raw {
+		lines = append(lines, promptDiffLine(ln))
+	}
+	return lines
+}
+
+// promptSlotBase is the signed state of the one-file write: whether the slot
+// file existed, its byte size, and the SHA-256 of its bytes at presentation
+// time. The diff renders only the first lines the frame can hold, but the
+// signature covers the whole file, so two files that differ below the preview
+// window are still told apart. size is kept beside the digest so a refusal can
+// be read (and a same-size rewrite is not mistaken for no change).
+type promptSlotBase struct {
+	exists bool
+	size   int
+	sum    [sha256.Size]byte
+	lines  []string
+}
+
+// loadPromptSlotBase reads the slot file for the gate. A missing file is the
+// normal pre-override state, not an error. The read is unbounded by design: the
+// editor already reads the whole slot through the store when it seeds the
+// buffer, so this adds no new hazard.
+func loadPromptSlotBase(path string) (promptSlotBase, error) {
+	var b promptSlotBase
+	if path == "" {
+		return b, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return b, nil
+		}
+		return b, err
+	}
+	b.exists = true
+	b.size = len(data)
+	b.sum = sha256.Sum256(data)
+	b.lines = promptDiffLines(string(data))
+	return b, nil
+}
+
+// matches reports whether the file on disk is still the state the gate signed.
+func (b promptSlotBase) matches(live promptSlotBase) bool {
+	return b.exists == live.exists && b.size == live.size && b.sum == live.sum
+}
 
 // promptTextLooksSecret is the conservative credential-shaped check for a
 // whole multi-line prompt buffer. providers.LooksLikeAPIKey cannot be
@@ -121,12 +219,13 @@ func normalizePromptSlot(slot string) string {
 // one slot (the file or env override when one is in force, else the
 // compiled default, labeled as a read-only reference because the
 // compiled constant itself cannot be edited in place; saving writes a new
-// override file). Save (Ctrl+S or the Save row) gates behind a confirm
-// naming the path and byte count, and behind an extra credential gate
-// when the buffer looks like secret material. Reset-to-default deletes
-// the slot file behind the shared y/n gate and restores the compiled
-// constant. All writes go through the P9 store (atomic 0600); reset uses
-// os.Remove on the slot file because the store exposes no delete verb.
+// override file). Save (Ctrl+S or the Save row) gates behind the M4 approval
+// modal: the target path, the byte count, and a bounded first-lines diff of the
+// override file on disk against the text being stored (P5-1 U6), and behind an
+// extra credential gate when the buffer looks like secret material.
+// Reset-to-default deletes the slot file behind the shared y/n gate and restores
+// the compiled constant. All writes go through the P9 store (atomic 0600); reset
+// uses os.Remove on the slot file because the store exposes no delete verb.
 //
 // Esc handling: the App dispatcher consumes Esc before any screen sees
 // it (clears the message, then pops), so a dirty buffer would silently
@@ -296,8 +395,8 @@ func (s *promptEditorScreen) askDiscard() {
 
 // trySave starts the save flow. A credential-shaped buffer first gets a
 // warning on the message line plus its own y/n gate; either way the write
-// itself is confirmed with the path and byte count before the store sees
-// the text.
+// itself is confirmed through the M4 approval modal (path, byte count, and the
+// first-lines content diff) before the store sees the text.
 func (s *promptEditorScreen) trySave() {
 	a := s.app
 	if a == nil {
@@ -325,34 +424,80 @@ func (s *promptEditorScreen) trySave() {
 	s.askSaveConfirm()
 }
 
-// askSaveConfirm opens the write gate: the exact target path and the
-// byte count of the buffer (never the content). y writes through the
-// store (atomic 0600) and pops back to the library with the saved
-// message; n/Esc cancels.
+// askSaveConfirm opens the write gate: the exact target path and the byte count
+// of the buffer, plus a bounded first-lines diff of the override file on disk
+// against the text this write stores (P5-1 U6, W29). y re-reads the slot file and
+// refuses when it moved under the modal, then writes through the store (atomic
+// 0600) and pops back to the library with the saved message; n/Esc cancels.
 func (s *promptEditorScreen) askSaveConfirm() {
 	a := s.app
 	if a == nil {
 		return
 	}
 	text := s.ed.Text()
-	body := []string{fillHubSlots(missingOr(s.b, "prompts.editor.save.body", promptsEditorSaveBody), map[string]string{
-		"path":  providers.MaskOperand(s.filePath),
-		"bytes": strconv.Itoa(len([]byte(text))),
-	})}
-	if s.slot == "seat" && seatEnvSet() {
-		body = append(body, missingOr(s.b, "prompts.editor.env_note", promptsEditorEnvNote))
+	base, err := loadPromptSlotBase(s.filePath)
+	if err != nil {
+		a.SetMessage(s.b.T("common.error") + ": " + promptDiffReadFail + ": " + providers.MaskOperand(err.Error()))
+		s.rearmGuard(a)
+		return
 	}
-	a.ShowModal(NewConfirm(
+	a.ShowModal(NewApproval(
 		missingOr(s.b, "prompts.editor.save.title", promptsEditorSaveTitle),
-		body,
-		func(ok bool) {
-			if !ok {
+		s.saveApprovalSummary(text, base, a),
+		func(approved bool) {
+			if !approved {
 				a.SetMessage(missingOr(s.b, "prompts.msg.cancelled", promptsMsgCancelled))
+				s.rearmGuard(a)
+				return
+			}
+			live, err := loadPromptSlotBase(s.filePath)
+			if err != nil {
+				a.SetMessage(s.b.T("common.error") + ": " + providers.MaskOperand(err.Error()))
+				s.rearmGuard(a)
+				return
+			}
+			if !base.matches(live) {
+				a.SetMessage(promptDiffDrift)
 				s.rearmGuard(a)
 				return
 			}
 			s.commit(a, text)
 		}))
+}
+
+// saveApprovalSummary composes the M4 gate body: the catalog's path-and-bytes
+// sentence, the size clause on its own line (the one number a long path can
+// clamp away), the honest env note when the seat preamble env rung still wins,
+// the diff introduction, and then the '+' (stored text) lines ahead of the '-'
+// (on-disk) lines so the content being approved is what survives the frame
+// budget. The entry list is bounded through capApprovalEntries, whose tail line
+// names exactly how many preview lines are not shown: never a silently truncated
+// diff.
+func (s *promptEditorScreen) saveApprovalSummary(text string, base promptSlotBase, a *App) []string {
+	preview := promptDiffLines(text)
+	summary := []string{
+		fillHubSlots(missingOr(s.b, "prompts.editor.save.body", promptsEditorSaveBody), map[string]string{
+			"path":  providers.MaskOperand(s.filePath),
+			"bytes": strconv.Itoa(len([]byte(text))),
+		}),
+		fmt.Sprintf(promptDiffSizeLine, len([]byte(text)), len(preview)),
+	}
+	if s.slot == "seat" && seatEnvSet() {
+		summary = append(summary, missingOr(s.b, "prompts.editor.env_note", promptsEditorEnvNote))
+	}
+	entries := make([]string, 0, len(base.lines)+len(preview))
+	for _, ln := range preview {
+		entries = append(entries, s.b.Tf("modal.approval.diff_added", map[string]string{"line": ln}))
+	}
+	if base.exists {
+		summary = append(summary, promptDiffExisting)
+		for _, ln := range base.lines {
+			entries = append(entries, s.b.Tf("modal.approval.diff_removed", map[string]string{"line": ln}))
+		}
+	} else {
+		summary = append(summary, promptDiffNew)
+	}
+	return append(summary, capApprovalEntries(entries, len(summary), approvalBodyBudget(a))...)
 }
 
 // commit runs the approved write through the P9 store (the only write

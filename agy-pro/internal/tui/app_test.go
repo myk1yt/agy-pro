@@ -119,6 +119,11 @@ func TestSetupHubRendersCounts(t *testing.T) {
 		"2 providers",
 		"0 presets",
 		i18n.Endonym("en"),
+		// The dashboard row is part of the assembled shell's hub, so the first
+		// frame of the real setup flow proves the row is reachable. The pin is
+		// the catalog value, not the screen's stand-in, so it fails if the row
+		// ever falls back instead of resolving.
+		i18n.Load("en").T("menu.dashboard"),
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("hub frame missing %q; frames:\n%s", want, out)
@@ -250,6 +255,11 @@ func TestSetupLanguageScreenEscReturnsToHub(t *testing.T) {
 
 func TestSetupLanguageChoicePersistsAndRerenders(t *testing.T) {
 	home := appTestHome(t, "")
+	// The language screen's choose handler calls SetLanguage, so this test moves
+	// the package-level bundle. It must hand English back: the other screens'
+	// tests assert English catalog text, and without the restore a shuffled run
+	// (go test -shuffle=on) fails in whatever test happens to run next.
+	defer SetLanguage("en")
 	app := assembleSetupApp(plainTestCap())
 	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{langDigit(t, "ko")}})
 
@@ -579,8 +589,10 @@ func TestRunSetupSuppressedBannerColorCapNoEscapes(t *testing.T) {
 	}
 }
 
-// hubRowLabels returns the eight hub row labels of the en bundle, in display
-// order, for the first-frame completeness pins.
+// hubRowLabels returns the nine hub row labels of the en bundle, in display
+// order, for the first-frame completeness pins. The dashboard row has no
+// catalog entry yet (S3 owns the catalog pass), so its label is the hub's own
+// English stand-in.
 func hubRowLabels() []string {
 	b := i18n.Load("en")
 	return []string{
@@ -591,6 +603,7 @@ func hubRowLabels() []string {
 		b.T("menu.doctor"),
 		b.T("menu.help"),
 		b.T("view.appearance.language.label"),
+		missingOr(b, "menu.dashboard", missingMenuDashboard),
 		b.T("menu.quit"),
 	}
 }
@@ -1111,34 +1124,57 @@ func TestCollapsedModalLegendKeepsMutedRole(t *testing.T) {
 // TestOverHeightFrameTruncatesBodyNotChrome pins the second half of the
 // first-frame budget rule (UX audit C2-F5): when a frame cannot hold
 // everything, the body absorbs the cut and the title and footer legend survive.
-// At 80x16 the one-line wordmark leaves 15 rows; the hub body loses its hint
-// while every row and the base footer stay.
+// Two geometries cover it since the hub inventory grew to nine rows (P5-2 S2
+// added the Dashboard row):
+//
+//   - 80x16, the one-line wordmark leaving 15 rows: the cut reaches the body
+//     tail, so the hint AND the last rows go, while the chrome stays.
+//   - 80x18, the smallest wordmark frame that still holds the whole inventory:
+//     the cut takes only the body hint, so every row survives.
 func TestOverHeightFrameTruncatesBodyNotChrome(t *testing.T) {
-	appTestHome(t, "en")
-	cap := Cap{Tier: TierPlain, Width: 80, Height: 16, Palette: DefaultPalette()}
-	app := assembleSetupApp(cap)
-	banner := bannerFor(80, 16, cap, i18n.Load("en").T("banner.tagline"))
-	if len(banner) != 1 {
-		t.Fatalf("16 rows must use the one-line wordmark, got %d lines", len(banner))
-	}
-	pf := composeFrame(app, banner)
-	if got := len(pf.frame.Lines); got > 16 {
-		t.Fatalf("frame = %d lines, want <= 16", got)
-	}
-	joined := pf.frame.String()
-	if !strings.Contains(joined, i18n.Load("en").T("menu.title")) {
-		t.Fatalf("over-height frame lost the screen title:\n%s", joined)
-	}
-	if !strings.Contains(joined, baseFooter) {
-		t.Fatalf("over-height frame lost the footer legend (chrome must survive):\n%s", joined)
-	}
-	for _, label := range hubRowLabels() {
-		if !strings.Contains(joined, label) {
-			t.Fatalf("over-height frame lost hub row %q before the hint:\n%s", label, joined)
-		}
-	}
-	if strings.Contains(joined, "digits 1-9 select+activate") {
-		t.Fatalf("the body hint survived although the frame is over height:\n%s", joined)
+	for _, geom := range []struct {
+		h       int
+		allRows bool
+	}{{16, false}, {18, true}} {
+		t.Run(fmt.Sprintf("80x%d", geom.h), func(t *testing.T) {
+			appTestHome(t, "en")
+			cap := Cap{Tier: TierPlain, Width: 80, Height: geom.h, Palette: DefaultPalette()}
+			app := assembleSetupApp(cap)
+			banner := bannerFor(80, geom.h, cap, i18n.Load("en").T("banner.tagline"))
+			if len(banner) != 1 {
+				t.Fatalf("%d rows must use the one-line wordmark, got %d lines", geom.h, len(banner))
+			}
+			pf := composeFrame(app, banner)
+			if got := len(pf.frame.Lines); got > geom.h {
+				t.Fatalf("frame = %d lines, want <= %d", got, geom.h)
+			}
+			joined := pf.frame.String()
+			if !strings.Contains(joined, i18n.Load("en").T("menu.title")) {
+				t.Fatalf("over-height frame lost the screen title:\n%s", joined)
+			}
+			if !strings.Contains(joined, baseFooter) {
+				t.Fatalf("over-height frame lost the footer legend (chrome must survive):\n%s", joined)
+			}
+			labels := hubRowLabels()
+			if geom.allRows {
+				for _, label := range labels {
+					if !strings.Contains(joined, label) {
+						t.Fatalf("over-height frame lost hub row %q before the hint:\n%s", label, joined)
+					}
+				}
+			} else {
+				// The 15-row body cannot hold nine rows plus the summary, so the
+				// tail goes; the head rows must still be there.
+				for _, label := range labels[:5] {
+					if !strings.Contains(joined, label) {
+						t.Fatalf("over-height frame lost hub row %q:\n%s", label, joined)
+					}
+				}
+			}
+			if strings.Contains(joined, "digits 1-9 select+activate") {
+				t.Fatalf("the body hint survived although the frame is over height:\n%s", joined)
+			}
+		})
 	}
 }
 

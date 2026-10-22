@@ -57,7 +57,12 @@ func RunSetup(in io.Reader, out, errw io.Writer) int {
 func runSetup(in io.Reader, out, errw io.Writer, cap Cap) int {
 	app := assembleSetupApp(cap)
 
-	var keys KeySource = NewLineKeys(in)
+	// The line-mode reader answers the `help` gesture itself, so it needs the
+	// session's output stream: the word list has to land where the frames go,
+	// never on a stream the operator cannot see (SESSION6 P6-2). A console
+	// host replaces the whole reader below and the gesture is unreachable there
+	// (mapConsoleKey produces no such key), so the wiring is line-mode only.
+	var keys KeySource = NewLineKeys(in).WithHelpOut(out)
 	if f, ok := in.(*os.File); ok {
 		if ck, err := OpenConsoleKeys(f); err == nil {
 			keys = ck
@@ -216,6 +221,10 @@ func (s *setupShell) open(id string, a *App) {
 		a.Push(NewDoctorScreen(s.core))
 	case hubIDHelp:
 		a.Push(NewHelpScreen())
+	case hubIDDashboard:
+		a.Push(NewDashboardScreen())
+	case hubIDIntegrations:
+		a.Push(NewIntegrationsScreen(s.core))
 	}
 }
 

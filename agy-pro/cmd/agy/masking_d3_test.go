@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -302,7 +303,7 @@ func TestD3FixKeysTargetsAndReportMasked(t *testing.T) {
 		}, nil
 	}
 
-	out := captureStdout(t, func() { runDoctorFixKeys("all") })
+	out := captureStdout(t, func() { runDoctorFixKeys("all", true) })
 	for _, leak := range []string{maskSweepKey, sweepAWSKey} {
 		if strings.Contains(out, leak) {
 			t.Errorf("fix-keys output leaks the planted key %q:\n%s", leak, out)
@@ -561,7 +562,7 @@ func TestEchoSweepBannerKeyAuditAndRepairReportMaskRegistryName(t *testing.T) {
 
 	// The --fix-keys repair report.
 	out = captureStdout(t, func() {
-		printRepairReport(&providers.RepairReport{Entries: []providers.RepairEntry{{
+		printRepairReport(os.Stdout, &providers.RepairReport{Entries: []providers.RepairEntry{{
 			Provider: plant,
 			Env:      "AGY_PRO_TEST_ECHO_ENV",
 			Action:   providers.RepairActionRewrite,

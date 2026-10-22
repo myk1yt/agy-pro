@@ -320,10 +320,14 @@ func TestTUIRunPrompt_DangerGateNoEarlySuccess(t *testing.T) {
 	}
 }
 
-// TestTUIRunPrompt_NonDangerStillSucceedsImmediately (regression guard for B8):
-// rename has no gate and keeps its immediate SUCCESS stamp.
+// TestTUIRunPrompt_NonDangerStillSucceedsImmediately (regression guard for B8,
+// UPDATED by P5-1 U5a): rename used to have no gate, so it stamped [SUCCESS]
+// immediately after the prompt. F3(a) turned every persisted-state write into a
+// gated one, so rename now arms the exact-diff gate and [SUCCESS] appears only
+// after y. The B8 property the test was written for still holds and is now
+// asserted for this door too: no success stamp before the gate resolves.
 func TestTUIRunPrompt_NonDangerStillSucceedsImmediately(t *testing.T) {
-	tui, _, _ := newTestTUI(t)
+	tui, f, _ := newTestTUI(t)
 	tui.section = 1
 	var idx int
 	for i, it := range tui.view.Sections[1].Items {
@@ -334,8 +338,21 @@ func TestTUIRunPrompt_NonDangerStillSucceedsImmediately(t *testing.T) {
 	tui.lines = &ScriptedLines{Lines: []string{"google", "gemini"}}
 	tui.row = idx
 	tui.Step(KeyEnter)
+	if tui.pending == nil {
+		t.Fatal("rename must arm the exact-diff gate (F3(a))")
+	}
+	if f.saved != 0 {
+		t.Fatalf("rename wrote before consent: %d saves", f.saved)
+	}
+	if strings.Contains(tui.message, "[SUCCESS]") {
+		t.Errorf("SUCCESS stamped before the gate resolved: %q", tui.message)
+	}
+	tui.Step(KeyYes)
 	if !strings.Contains(tui.message, "[SUCCESS]") {
-		t.Errorf("rename message = %q", tui.message)
+		t.Errorf("rename message after consent = %q", tui.message)
+	}
+	if f.saved != 1 {
+		t.Errorf("consented rename saves = %d; want 1", f.saved)
 	}
 }
 

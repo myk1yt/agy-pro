@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"unicode"
@@ -1116,12 +1117,223 @@ func gateCorruptSwarmSave(a *App, b *i18n.Bundle, core *settings.Core, l *corrup
 		}))
 }
 
+// --- P5-1 U6: the swarm preset write gates (W21 append, W22 edit) -----------
+//
+// Both writers used to reach Core.SwarmSavePresets behind the corrupt-file
+// acknowledgment alone, so a HEALTHY swarm-state.json was rewritten with no
+// consent over what the write applies. They now open the M4 approval modal with
+// the exact append/edit diff, the same door the registry writers use, and
+// re-verify the presented entry set against a fresh read before the write runs.
+//
+// The store is swarm-state.json, not providers.json, so the catalog's
+// modal.approval.body sentence ("providers.json will be written ...") does not
+// apply. The store sentences below are documented English chrome (decision 6B,
+// the approvalEntriesHidden precedent): they are new keys, and a new key costs
+// twelve catalog edits (research-p51-writers.md section 6.2). The +/- markers
+// and the bounded tail reuse their catalog/const spellings, and the line SHAPES
+// mirror the legacy panel's append diff (internal/settings/paneldiff.go,
+// panelPreset* consts), so one store keeps one diff shape across both of its
+// shipped writers.
+const (
+	// swarmAppendSentence names the append, the store (base name: the full path
+	// gets its own line so a deep AGY_PRO_HOME cannot clamp this sentence away),
+	// and its no-collateral promise.
+	swarmAppendSentence = "Appends preset %s to %s. No existing preset changes."
+	// swarmEditSentence names the rewrite and its no-collateral promise.
+	swarmEditSentence = "Rewrites preset %s in %s. No other preset changes."
+	// swarmEditFieldLine is the changed-field line of an edit: field name, old
+	// value, new value (both masked).
+	swarmEditFieldLine = "  %s: %s -> %s"
+	// swarmCountsLine is the preset count before/after.
+	swarmCountsLine = "  presets before: %d, after: %d"
+	// swarmExistingLine introduces the entries the write keeps byte-identical.
+	swarmExistingLine = "  existing presets (kept byte-identical):"
+	// swarmExistingFmt renders one preserved entry by NAME only: another
+	// preset's numbers are that preset's business and this write changes none.
+	swarmExistingFmt = "  preset %s"
+	// swarmEntryFmt is the inner text of one +/- diff entry.
+	swarmEntryFmt = "preset %s = %s"
+	// swarmAtomicLine names the file (base name) and the write mode the diff
+	// applies to.
+	swarmAtomicLine = "%s will be written (0600, atomic) with this exact diff:"
+	// swarmDriftRefusal is the write-time stale-base refusal: it names the store
+	// and the first difference, so a refusal says WHAT moved. The base name is
+	// used, not the full path: the drift detail has to survive the width clamp.
+	swarmDriftRefusal = "refused: %s changed on disk between the diff and the write (%s), so the presented diff is stale; nothing was written."
+	// swarmNumbersField is the field name the edit diff line prints.
+	swarmNumbersField = "numbers"
+)
+
+// presetNameOperand renders a preset name through the registry-slot display
+// authority (providers.MaskSlot), the discipline the registry approvals apply to
+// their identity slots: a credential-shaped name typed into the preset-name
+// prompt renders first-5 + **** in the diff and in the drift sentence, while a
+// benign name stays readable. MaskSlot's one extra branch over MaskOperand (the
+// registry-LOCATION rewrite, "C:\x" -> "x") can only fire on a value no write
+// this gate guards can store: validPresetName refuses ':' and '/'. A
+// hand-edited swarm-state.json may still hold such an old-shape name, in which
+// case the gate renders its marker-stripped core while the list row
+// (MaskOperand) keeps the prefix: a display normalization of one name, never a
+// hidden change to what is written, since the stored bytes are the name itself.
+func presetNameOperand(name string) string { return providers.MaskSlot(name) }
+
+// presetNumbersOperand renders a numbers operand through providers.MaskOperand,
+// the authority the saved-preset rows already render the same field with, so the
+// gate body and the listing cannot disagree about one stored value.
+func presetNumbersOperand(numbers string) string { return providers.MaskOperand(numbers) }
+
+// swarmPresetBase is the signed state of one swarm preset write: the ordered
+// preset NAMES the diff listed plus, for an edit, the numbers of the ONE entry
+// whose field the diff shows changing.
+//
+// The other presets' numbers are deliberately NOT signed: both writers rebuild
+// the file from a FRESH read (swarmPresetReverify), so an external edit to
+// another preset's numbers is carried over instead of reverted, and the name set
+// is the whole claim the diff makes about the rest of the file (the panel's
+// panelPresetDrift signs the same shape).
+type swarmPresetBase struct {
+	names   []string
+	target  string // edit only: the entry whose numbers the diff shows changing
+	numbers string // edit only: that entry's numbers at presentation time
+}
+
+// swarmPresetBaseFrom signs the list a gate presents.
+func swarmPresetBaseFrom(presets []swarm.SavedPreset) swarmPresetBase {
+	b := swarmPresetBase{names: make([]string, 0, len(presets))}
+	for _, p := range presets {
+		b.names = append(b.names, p.Name)
+	}
+	return b
+}
+
+// swarmEditBaseFrom signs the same list PLUS the edited entry's current numbers,
+// so a concurrent edit of the very field this write changes is caught even when
+// the name set still matches.
+func swarmEditBaseFrom(presets []swarm.SavedPreset, target swarm.SavedPreset) swarmPresetBase {
+	b := swarmPresetBaseFrom(presets)
+	b.target, b.numbers = target.Name, target.Numbers
+	return b
+}
+
+// swarmPresetDrift names the first difference between the presented base and a
+// fresh read, or "" when they agree. Operands render masked.
+func swarmPresetDrift(presented swarmPresetBase, live []swarm.SavedPreset) string {
+	if len(presented.names) != len(live) {
+		return fmt.Sprintf("the preset count moved from %d to %d", len(presented.names), len(live))
+	}
+	for i := range presented.names {
+		if presented.names[i] != live[i].Name {
+			return fmt.Sprintf("preset %d moved from %s to %s", i+1,
+				presetNameOperand(presented.names[i]), presetNameOperand(live[i].Name))
+		}
+	}
+	if presented.target == "" {
+		return ""
+	}
+	idx := indexPresetFold(live, presented.target)
+	if idx < 0 {
+		return fmt.Sprintf("preset %s vanished", presetNameOperand(presented.target))
+	}
+	if live[idx].Numbers != presented.numbers {
+		return fmt.Sprintf("preset %s %s moved from %s to %s", presetNameOperand(presented.target), swarmNumbersField,
+			presetNumbersOperand(presented.numbers), presetNumbersOperand(live[idx].Numbers))
+	}
+	return ""
+}
+
+// swarmPresetReverify is the write-time stale-base check both swarm writers run
+// after consent: it re-reads swarm-state.json through the corrupt latch and
+// reports the fresh list, the first drift ("" when the presented diff still
+// describes the file), or the read error. The caller writes the FRESH list, so
+// the file state the gate signed is the file state the write extends.
+func swarmPresetReverify(core *settings.Core, latch *corruptLatch, base swarmPresetBase) ([]swarm.SavedPreset, string, error) {
+	fresh, err := loadSavedPresets(core, latch)
+	if err != nil {
+		return nil, "", err
+	}
+	return fresh, swarmPresetDrift(base, fresh), nil
+}
+
+// replaceSwarmPreset returns a copy of fresh with the named entry's numbers
+// rewritten and every other entry untouched, or ok=false when the entry is gone
+// (the write-time half of the vanished-target refusal).
+func replaceSwarmPreset(fresh []swarm.SavedPreset, name, numbers string) ([]swarm.SavedPreset, bool) {
+	idx := indexPresetFold(fresh, name)
+	if idx < 0 {
+		return nil, false
+	}
+	out := append([]swarm.SavedPreset(nil), fresh...)
+	out[idx].Numbers = numbers
+	return out, true
+}
+
+// approveSwarmAppend opens the M4 approval modal for one saved-preset append
+// (W21): the append sentence naming the store, the preset counts, the added diff
+// line (name and numbers masked), the atomic sentence, and the existing entries
+// the write keeps byte-identical. The entry list is bounded to the frame budget
+// through capApprovalEntries, so a long preset list still shows the gate legend
+// and an exact "N more entries NOT shown" tail. y re-verifies the presented name
+// list against a fresh read and then writes the fresh list plus the new entry;
+// n/Esc writes nothing, and a moved list is refused by name.
+func (s *settingsScreen) approveSwarmAppend(a *App, label string, presets []swarm.SavedPreset, add swarm.SavedPreset) {
+	storePath := swarmStatePath(s.core)
+	storeBase := providers.MaskOperand(filepath.Base(storePath))
+	store := providers.MaskOperand(storePath)
+	base := swarmPresetBaseFrom(presets)
+	seeds := providers.FlagSeedOperands(add.Name, add.Numbers)
+	summary := []string{
+		fmt.Sprintf(swarmAppendSentence, presetNameOperand(add.Name), storeBase),
+		fmt.Sprintf(swarmCountsLine, len(presets), len(presets)+1),
+		s.bundle.Tf("presets.explain.file", map[string]string{"path": store}),
+		fmt.Sprintf(swarmAtomicLine, storeBase),
+		s.bundle.Tf("modal.approval.diff_added", map[string]string{
+			"line": fmt.Sprintf(swarmEntryFmt, presetNameOperand(add.Name), presetNumbersOperand(add.Numbers)),
+		}),
+	}
+	if len(presets) > 0 {
+		summary = append(summary, swarmExistingLine)
+		entries := make([]string, 0, len(presets))
+		for _, p := range presets {
+			entries = append(entries, fmt.Sprintf(swarmExistingFmt, presetNameOperand(p.Name)))
+		}
+		summary = append(summary, capApprovalEntries(entries, len(summary), approvalBodyBudget(a))...)
+	}
+	a.ShowModal(NewApproval(label, summary, func(approved bool) {
+		if !approved {
+			a.SetMessage(missingOr(s.bundle, "settings.msg.cancelled", settingsMsgCancelled))
+			return
+		}
+		fresh, drift, err := swarmPresetReverify(s.core, &s.corruptLatch, base)
+		if err != nil {
+			a.SetMessage(providers.MaskSentence("error: "+err.Error(), seeds...))
+			return
+		}
+		if drift != "" {
+			s.reload()
+			a.SetMessage(providers.MaskSentence(fmt.Sprintf(swarmDriftRefusal, storeBase, drift), seeds...))
+			return
+		}
+		if err := s.core.SwarmSavePresets(append(fresh, add)); err != nil {
+			a.SetMessage(providers.MaskSentence("error: "+err.Error(), seeds...))
+			return
+		}
+		// The file was just rewritten healthy, so the open corrupt episode is
+		// over (the fanout writePreset precedent): the notice must not outlive
+		// the save that replaced the corrupt file.
+		s.corruptLatch.reconcile(false, "")
+		s.reload()
+		a.SetMessage("[SUCCESS] " + label)
+	}))
+}
+
 // savePreset appends one numbered seat preset through Core.SwarmSavePresets
 // after the D17 validation the old append-only path lacked: the name must be
 // a usable preset name and must not collide with a saved preset (edit/delete
 // live on the Saved Seat Presets management screen), and the numbers must
 // not be empty. Every refusal names the reason on the message line; nothing
-// is written on a refusal.
+// is written on a refusal. The write itself is the M4 gate in
+// approveSwarmAppend (F3(a): a healthy path used to rewrite the file with no
+// consent over its content).
 func (s *settingsScreen) savePreset(label, name string, a *App) {
 	if !validPresetName(name) {
 		a.SetMessage(missingOr(s.bundle, "settings.msg.preset_name_invalid", settingsMsgPresetNameInvalid))
@@ -1158,17 +1370,12 @@ func (s *settingsScreen) savePreset(label, name string, a *App) {
 				map[string]string{"name": providers.MaskOperand(name)}))
 			return
 		}
+		// The corrupt acknowledgment stays the OUTERMOST gate (it is a
+		// precondition about the file's readability), and the exact-diff consent
+		// it releases is the decision that runs the write. Both are per-write:
+		// one acknowledgment covers one episode, one approval covers one append.
 		gateCorruptSwarmSave(a, s.bundle, s.core, &s.corruptLatch, func() {
-			if err := s.core.SwarmSavePresets(append(presets, swarm.SavedPreset{Name: name, Numbers: nums})); err != nil {
-				a.SetMessage(providers.MaskSentence("error: "+err.Error(), providers.FlagSeedOperands(name, nums)...))
-				return
-			}
-			// The file was just rewritten healthy, so the open corrupt episode
-			// is over (the fanout writePreset precedent): the notice must not
-			// outlive the save that replaced the corrupt file.
-			s.corruptLatch.reconcile(false, "")
-			s.reload()
-			a.SetMessage("[SUCCESS] " + label)
+			s.approveSwarmAppend(a, label, presets, swarm.SavedPreset{Name: name, Numbers: nums})
 		})
 	})
 }
@@ -1414,7 +1621,9 @@ func (s *settingsPresetsScreen) pick(idx int) {
 // prompt seeds the current numbers so an edit is a correction, not a
 // retype; an empty answer is refused by name and writes nothing. The write
 // sits behind the shared corrupt-file gate (security review F-3): the first
-// save after a corrupt load must not replace the unreadable file unannounced.
+// save after a corrupt load must not replace the unreadable file unannounced,
+// and behind the M4 exact-diff gate (P5-1 U6, approveSwarmEdit): the healthy
+// path used to rewrite the file while the operator saw only a prompt.
 func (s *settingsPresetsScreen) editArmed(a *App) {
 	if s.armed < 0 || s.armed >= len(s.presets) {
 		a.SetMessage(missingOr(s.bundle, "settings.msg.preset_none_armed", settingsMsgPresetNoneArmed))
@@ -1443,21 +1652,90 @@ func (s *settingsPresetsScreen) editArmed(a *App) {
 				map[string]string{"name": providers.MaskOperand(cur.Name)}))
 			return
 		}
-		presets[idx].Numbers = nums
 		gateCorruptSwarmSave(a, s.bundle, s.core, s.latch, func() {
-			if err := s.core.SwarmSavePresets(presets); err != nil {
-				a.SetMessage(providers.MaskSentence("error: "+err.Error(), providers.FlagSeedOperands(cur.Name, nums)...))
-				return
-			}
-			// The file was just rewritten healthy: the corrupt episode is over.
-			s.latch.reconcile(false, "")
+			// The presented "old" numbers are the FRESH read's value, not the one
+			// the armed row was painted with: if the two differ (a hand edit
+			// between the listing and the prompt), the diff has to describe the
+			// file, and the write-time drift check signs that same value.
+			s.approveSwarmEdit(a, presets[idx], nums, presets)
+		})
+	})
+}
+
+// approveSwarmEdit opens the M4 approval modal for one saved-preset edit (W22):
+// the rewrite sentence naming the store, the changed-field line (numbers old ->
+// new, both masked), the preset counts, the atomic sentence, and the removed and
+// added diff lines. y re-verifies the presented name list AND the edited entry's
+// numbers against a fresh read, then writes the fresh list with that one entry
+// rewritten, so an external numbers edit of another preset is carried over
+// instead of reverted; n/Esc writes nothing, and a moved store is refused by
+// name.
+//
+// Frame budget: the body is a FIXED six lines with no per-entry list, so there is
+// nothing for capApprovalEntries to bound (an edit touches exactly one entry, and
+// both its old and new spelling are already two of those six lines). The six fit
+// every console the composer keeps a gate on; at the 80x24 reference it uses 6 of
+// the 18 rows approvalBodyBudget reserves, which is the same fixed-prefix limit
+// the excludeModels gate carries.
+func (s *settingsPresetsScreen) approveSwarmEdit(a *App, cur swarm.SavedPreset, nums string, presets []swarm.SavedPreset) {
+	storePath := swarmStatePath(s.core)
+	storeBase := providers.MaskOperand(filepath.Base(storePath))
+	store := providers.MaskOperand(storePath)
+	base := swarmEditBaseFrom(presets, cur)
+	seeds := providers.FlagSeedOperands(cur.Name, nums)
+	title := missingOr(s.bundle, "settings.presets.edit", settingsPresetsEdit)
+	summary := []string{
+		fmt.Sprintf(swarmEditSentence, presetNameOperand(cur.Name), storeBase),
+		fmt.Sprintf(swarmEditFieldLine, swarmNumbersField, presetNumbersOperand(cur.Numbers), presetNumbersOperand(nums)),
+		fmt.Sprintf(swarmCountsLine, len(presets), len(presets)),
+		s.bundle.Tf("presets.explain.file", map[string]string{"path": store}),
+		fmt.Sprintf(swarmAtomicLine, storeBase),
+		s.bundle.Tf("modal.approval.diff_removed", map[string]string{
+			"line": fmt.Sprintf(swarmEntryFmt, presetNameOperand(cur.Name), presetNumbersOperand(cur.Numbers)),
+		}),
+		s.bundle.Tf("modal.approval.diff_added", map[string]string{
+			"line": fmt.Sprintf(swarmEntryFmt, presetNameOperand(cur.Name), presetNumbersOperand(nums)),
+		}),
+	}
+	a.ShowModal(NewApproval(title, summary, func(approved bool) {
+		if !approved {
+			a.SetMessage(missingOr(s.bundle, "settings.msg.cancelled", settingsMsgCancelled))
+			return
+		}
+		fresh, drift, err := swarmPresetReverify(s.core, s.latch, base)
+		if err != nil {
+			a.SetMessage(providers.MaskSentence("error: "+err.Error(), seeds...))
+			return
+		}
+		if drift != "" {
 			s.reload()
 			if s.onChange != nil {
 				s.onChange()
 			}
-			a.SetMessage("[SUCCESS] " + missingOr(s.bundle, "settings.presets.edit", settingsPresetsEdit) + " = " + providers.MaskOperand(cur.Name))
-		})
-	})
+			a.SetMessage(providers.MaskSentence(fmt.Sprintf(swarmDriftRefusal, storeBase, drift), seeds...))
+			return
+		}
+		next, found := replaceSwarmPreset(fresh, cur.Name, nums)
+		if !found {
+			// The name list matched, so this is a defensive arm rather than a
+			// reachable one; it still refuses by name instead of writing.
+			s.reload()
+			a.SetMessage(fillHubSlots(missingOr(s.bundle, "settings.msg.preset_vanished", settingsMsgPresetVanished),
+				map[string]string{"name": providers.MaskOperand(cur.Name)}))
+			return
+		}
+		if err := s.core.SwarmSavePresets(next); err != nil {
+			a.SetMessage(providers.MaskSentence("error: "+err.Error(), seeds...))
+			return
+		}
+		// The file was just rewritten healthy: the corrupt episode is over.
+		s.latch.reconcile(false, "")
+		s.reload()
+		if s.onChange != nil {
+			s.onChange()
+		}
+		a.SetMessage("[SUCCESS] " + title + " = " + providers.MaskOperand(cur.Name))
+	}))
 }
 
 // deleteArmed removes the armed preset behind the shared y/n confirm (the

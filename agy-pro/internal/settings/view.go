@@ -50,7 +50,7 @@ type Item struct {
 	MsgID string `json:"-"`
 }
 
-// Section groups items into one TUI panel (P1..P6).
+// Section groups items into one TUI panel (P1..P8).
 type Section struct {
 	ID    string `json:"id"`
 	Title string `json:"title"`
@@ -411,7 +411,7 @@ func sectionEnvDocs(st *mode.State) Section {
 			Note: "overrides the Gemini config directory managed by profile switches"},
 		{ID: "env.AGY_PRO_WORKSPACE", Label: "AGY_PRO_WORKSPACE", Value: envOr("AGY_PRO_WORKSPACE", "(unset)"), Source: "env", ReadOnly: true,
 			Note: "workspace root passed to the bridge tool loop"},
-		{ID: "env.AGY_PRO_BRIDGE", Label: "AGY_PRO_BRIDGE / AGY_BRIDGE (legacy)", Value: envOr("AGY_PRO_BRIDGE", "(unset)"), Source: "env", ReadOnly: true,
+		{ID: "env.AGY_PRO_BRIDGE", Label: "AGY_PRO_BRIDGE / AGY_BRIDGE (legacy)", Value: envPairValue("AGY_PRO_BRIDGE", "AGY_BRIDGE"), Source: "env", ReadOnly: true,
 			Note: "legacy bridge activation flags (launcher.go)"},
 	}}
 }
@@ -456,6 +456,16 @@ func envOr(name, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// envPairValue renders TWO env vars into the single Value slot of one row.
+// The env docs panel documents AGY_PRO_BRIDGE and its AGY_BRIDGE legacy alias
+// on one row (the catalog label view.env.AGY_PRO_BRIDGE.label names both, and
+// launcher.go enables the bridge when EITHER variable is "1"), so the value has
+// to name both: reading only the first left the legacy variable uninspectable
+// from the panel whose job is env documentation.
+func envPairValue(first, second string) string {
+	return first + "=" + envOr(first, "(unset)") + " · " + second + "=" + envOr(second, "(unset)")
 }
 
 func emptyDash(s string) string {

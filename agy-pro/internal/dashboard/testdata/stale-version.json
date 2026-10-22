@@ -1,0 +1,73 @@
+{
+  "version": 2,
+  "generatedAt": "2026-10-19T22:40:11.000Z",
+  "currency": "usd",
+  "lang": "en",
+  "isRtl": false,
+  "model": "gemini-3.8-flash-high",
+  "models": [
+    {
+      "model": "gemini-3.8-flash-high",
+      "totalTokens": 310000,
+      "inputTokens": 200000,
+      "cachedTokens": 60000,
+      "outputTokens": 50000,
+      "cacheHitRate": 23.0769,
+      "costUsd": 1.402,
+      "sessions": 7,
+      "turns": 28
+    }
+  ],
+  "daily": [
+    {
+      "date": "2026-10-19",
+      "sessions": 3,
+      "turns": 12,
+      "totalTokens": 141000,
+      "cacheHitRate": 21.5,
+      "costUsd": 0.71
+    }
+  ],
+  "summaries": {
+    "today": {
+      "totalSessions": 3,
+      "totalTurns": 12,
+      "inputTokens": 88000,
+      "cachedTokens": 26000,
+      "outputTokens": 27000,
+      "totalTokens": 141000,
+      "cacheHitRate": 22.807,
+      "costUsd": 0.71,
+      "period": "today"
+    },
+    "last7d": {
+      "totalSessions": 9,
+      "totalTurns": 44,
+      "inputTokens": 210000,
+      "cachedTokens": 70000,
+      "outputTokens": 80000,
+      "totalTokens": 360000,
+      "cacheHitRate": 25,
+      "costUsd": 1.88,
+      "period": "7d"
+    },
+    "last30d": {
+      "totalSessions": 22,
+      "totalTurns": 120,
+      "inputTokens": 640000,
+      "cachedTokens": 210000,
+      "outputTokens": 240000,
+      "totalTokens": 1090000,
+      "cacheHitRate": 24.7,
+      "costUsd": 5.61,
+      "period": "30d"
+    }
+  },
+  "cacheStats": {
+    "totalSessions": 22,
+    "parsedCount": 22,
+    "cachedCount": 0,
+    "elapsedMs": 980
+  },
+  "geminiQuota": null
+}

@@ -74,7 +74,13 @@ type pendingConfirm struct {
 	// corrupt swarm-state.json acknowledgment, which must name the file the
 	// save would overwrite).
 	notice string
-	run    func() error
+	// body is the exact diff the gate presents before it asks (P5-1 U5a, user
+	// decision F3(a)): the pre-write lines composed by paneldiff.go, rendered
+	// ABOVE the prompt so the approval describes the write it authorizes. The
+	// panel renders them into the right pane, the same path notice takes, so a
+	// line-mode frame and an interactive frame show the same bytes.
+	body []string
+	run  func() error
 }
 
 type choiceState struct {
@@ -120,6 +126,10 @@ type Snapshot struct {
 // the twelve catalogs describe the hub's own surfaces, and a key added here
 // would need every catalog to follow in lockstep. Nothing in this text is
 // registry- or remote-derived, so no masker applies (nothing to mask).
+//
+// Catalog boundary (S7-C7 convention, decisions.md 2026-10-22 S7-C7 entry):
+// the notice stays a package const, deliberately outside the twelve catalogs.
+// Revisit when the P5 unified settings surface exists.
 const LegacyPanelNotice = "  DEPRECATED: this legacy panel still works exactly as today, but it is deprecated; new setting work lands in the setup hub.\n" +
 	"  Open the hub: agy pro setup   (full-screen setup TUI; `agy pro setup --wizard` runs the line wizard)"
 
@@ -188,7 +198,18 @@ func (t *TUI) Frame() Snapshot {
 		}
 	}
 	if t.pending != nil {
-		right = append(right, "", fmt.Sprintf("  Confirm %s? [y/n]", t.pending.item.Label))
+		right = append(right, "")
+		// P5-1 U5a: the exact diff the answer authorizes, above the prompt. The
+		// body lines are already control-stripped and masked at composition
+		// (paneldiff.go), so the frame renders them verbatim: the diff the
+		// operator approves is the diff that was composed from disk.
+		for _, ln := range t.pending.body {
+			right = append(right, "    "+ln)
+		}
+		if len(t.pending.body) > 0 {
+			right = append(right, "")
+		}
+		right = append(right, fmt.Sprintf("  Confirm %s? [y/n]", t.pending.item.Label))
 		if t.pending.notice != "" {
 			right = append(right, "  "+t.pending.notice)
 		}
@@ -343,6 +364,13 @@ func (t *TUI) stepChoices(k Key) {
 	}
 }
 
+// applyChoice runs the choice row's write arm. P5-1 U5b (F3(a)) moved the gate
+// INSIDE every choice-bearing write arm (W20 scalars, W13 mode switch), so this
+// function no longer opens a second, body-less confirmation of its own: an arm
+// that arms pendingConfirm has already presented its exact diff, and answering
+// that gate is what runs the Core verb. The row's Danger flag still drives the
+// panel markers and the detail-pane notice; it is no longer the gate switch, so
+// a future choice-bearing write row MUST compose its own gate in the arm.
 func (t *TUI) applyChoice(value string) {
 	cs := t.choices
 	t.choices = nil
@@ -350,12 +378,12 @@ func (t *TUI) applyChoice(value string) {
 	if run == nil {
 		return
 	}
-	if cs.item.Danger {
-		t.pending = &pendingConfirm{item: cs.item, operands: []string{value}, run: func() error { return run(value) }}
-		return
-	}
 	if err := run(value); err != nil {
 		t.setMaskedError("error: "+err.Error(), value)
+	} else if t.pending != nil {
+		// The arm only presented the diff; [SUCCESS] is stamped by the confirm
+		// runner once the gate resolves (B8, the same rule runPrompt follows).
+		t.message = "confirm to proceed - " + cs.item.Label
 	} else {
 		t.message = "[SUCCESS] " + cs.item.Label + " = " + value
 	}
@@ -368,14 +396,21 @@ func (t *TUI) activate(it Item) {
 	case it.ID == "default_profile" || it.ID == "bridge_tools" || it.ID == "native_seat_concurrency":
 		key := it.ID
 		t.choices = &choiceState{item: it, choices: it.Choices, after: func(v string) error {
-			return t.core.Set(key, v)
+			return t.setScalar(it, key, v)
 		}}
 	case it.ID == "current_mode" || it.ID == "mode.switch":
 		t.choices = &choiceState{item: it, choices: []string{"full", "clean"}, after: func(v string) error {
-			return t.core.ModeSwitch(v)
+			return t.switchMode(it, v)
 		}}
 	case it.ID == "mode.restore":
-		t.pending = &pendingConfirm{item: it, run: t.core.ModeRestore}
+		// P5-1 U5b (W15): the restore plan is composed BEFORE consent (the source
+		// directory, its file groups and the pre-restore destination), so the
+		// operator approves a deployment instead of a row label. A source that
+		// cannot be resolved refuses before the gate: there is no plan to present
+		// and no deployment to consent to.
+		if err := t.restoreMode(it); err != nil {
+			t.setMaskedError("error: " + err.Error())
+		}
 	case it.ID == "mode.backups":
 		paths, err := t.core.ModeBackups()
 		if err != nil {
@@ -400,27 +435,20 @@ func (t *TUI) activate(it Item) {
 		t.message = "interactive wizard: run `agy pro setup` (or `agy pro settings providers add-interactive`) - raw key echo is masked first-5 + ****"
 	case it.ID == "providers.add_json":
 		t.runPrompt("JSON file path or - for stdin", func(s string) error {
-			return t.addJSON(s)
+			return t.addJSON(it, s)
 		})
 	case it.ID == "providers.test":
 		t.runPrompt("provider name", func(s string) error { return t.core.ProviderTest(s) })
 	case it.ID == "providers.rename":
 		t.runPrompt("current provider name", func(old string) error {
 			_, err := t.promptLine("new provider name", func(neu string) error {
-				return t.core.ProviderRename(old, neu)
+				return t.renameProvider(it, old, neu)
 			})
 			return err
 		})
 	case it.ID == "providers.delete":
 		t.runPrompt("provider name to delete (registry entry only)", func(s string) error {
-			// Batch N (M6 preemptive): the danger-gate tail seeds the frame
-			// mask with the per-token forms too (providers.FlagSeedOperands),
-			// the composition the promptLine twin and the CLI rollback tails
-			// use: a location-shaped whole operand ("./backups,<secret>")
-			// never seeds, so the composite not-found error re-echoed the
-			// bare secret token raw.
-			t.pending = &pendingConfirm{item: it, operands: providers.FlagSeedOperands(s), run: func() error { return t.core.ProviderDelete(s) }}
-			return nil
+			return t.deleteProvider(it, s)
 		})
 	case it.ID == "doctor.diagnose":
 		var b strings.Builder
@@ -433,9 +461,23 @@ func (t *TUI) activate(it Item) {
 		}
 	case it.ID == "doctor.fix_keys":
 		t.runPrompt("fix-keys target (all | provider list)", func(s string) error {
+			// P5-1 U5a (W32/W33): the plan is composed BEFORE consent and its
+			// entries are rendered in the gate, so the operator approves the
+			// NAMES this op may write, never the values.
 			// H4: seed per-token forms like the CLI twin (a multi-token target
 			// quotes individual tokens in the aggregate error).
-			t.pending = &pendingConfirm{item: it, operands: providers.FlagSeedOperands(s), run: func() error { return t.core.DoctorFixKeys(s) }}
+			plan := t.core.panelFixPlan(s)
+			t.pending = &pendingConfirm{
+				item:     it,
+				operands: providers.FlagSeedOperands(s),
+				body:     plan.diff(),
+				run: func() error {
+					if err := t.core.panelRepairReverify(plan, "agy pro settings doctor fix-keys"); err != nil {
+						return err
+					}
+					return t.core.DoctorFixKeys(s)
+				},
+			}
 			return nil
 		})
 	case it.ID == "doctor.rollback_keys":
@@ -449,10 +491,19 @@ func (t *TUI) activate(it Item) {
 			// promptLine twin and the CLI rollback tails use: a location-shaped
 			// whole operand ("./backups,<secret>") never seeds, so the
 			// composite PathError re-echoed the bare secret token raw.
+			// P5-1 U5a (W34): the backed-up entry set is read here and rendered
+			// in the gate (names and roots only), then re-verified at write time.
+			plan := panelRollbackPlan(s)
 			t.pending = &pendingConfirm{
 				item:     it,
 				operands: providers.FlagSeedOperands(s, providers.ResolveBackupFile(s)),
-				run:      func() error { return t.core.DoctorRollbackKeys(s) },
+				body:     plan.diff(),
+				run: func() error {
+					if err := t.core.panelRepairReverify(plan, "agy pro settings doctor rollback-keys"); err != nil {
+						return err
+					}
+					return t.core.DoctorRollbackKeys(s)
+				},
 			}
 			return nil
 		})
@@ -478,31 +529,15 @@ func (t *TUI) activate(it Item) {
 		t.runPrompt("preset name", func(name string) error {
 			_, err := t.promptLine("numbers (e.g. 1,3,19,23)", func(nums string) error {
 				// P5-1/M-2 parity with the full-screen hub (tui.gateCorruptSwarmSave):
-				// a corrupt swarm-state.json is silently replaced here otherwise. The
-				// store's warning line is visible in line mode (it goes to stderr), but
-				// the OVERWRITE was never acknowledged, so the file's content could
-				// disappear without the operator agreeing to it. Probe the exact file
-				// this save replaces and refuse the write until the panel's own y/n
-				// gate is answered.
+				// a corrupt swarm-state.json is silently replaced here otherwise, and
+				// P5-1 U5b (W24) added the missing append consent: the healthy-path save
+				// used to append with no presentation at all. One gate now covers both
+				// halves, with two independent reasons on it.
 				presets, corrupt, err := t.swarmPresetsProbe()
 				if err != nil {
 					return err
 				}
-				write := func() error {
-					return t.core.SwarmSavePresets(append(presets, swarm.SavedPreset{Name: name, Numbers: nums}))
-				}
-				if !corrupt {
-					return write()
-				}
-				t.pending = &pendingConfirm{
-					item:     it,
-					operands: providers.FlagSeedOperands(name, nums),
-					notice: i18n.Fill(swarmCorruptGateBody, map[string]string{
-						"path": providers.MaskOperand(t.swarmStoreDisplayPath()),
-					}),
-					run: write,
-				}
-				return nil
+				return t.savePreset(it, presets, corrupt, name, nums)
 			})
 			return err
 		})
@@ -517,7 +552,8 @@ func (t *TUI) activate(it Item) {
 }
 
 // runPrompt reads one text line, runs fn, and records the outcome message.
-// When fn only arms the danger y/n gate (delete / fix-keys / rollback), the
+// When fn only arms the y/n gate (every persisted-state write: add-json, rename,
+// delete, fix-keys, rollback), the
 // message is "confirm to proceed" — [SUCCESS] is stamped only by the confirm
 // runner once the gate resolves (B8). A failing fn's error is masked seeded
 // with the prompted value (F6): the error may be a composite the library built
@@ -648,7 +684,7 @@ func (t *TUI) swarmStoreDisplayPath() string {
 	return "swarm-state.json"
 }
 
-func (t *TUI) addJSON(path string) error {
+func (t *TUI) addJSON(it Item, path string) error {
 	data, err := readSpecSource(path, t.lines)
 	if err != nil {
 		return err
@@ -657,7 +693,196 @@ func (t *TUI) addJSON(path string) error {
 	if err != nil {
 		return err
 	}
-	return t.core.ProviderAdd(spec)
+	base, err := t.core.panelProviderBaseFor(spec.Name)
+	if err != nil {
+		return err
+	}
+	t.pending = &pendingConfirm{
+		item:     it,
+		operands: append(providers.FlagSeedOperands(spec.Name, spec.BaseURL), providers.FlagSeedOperands(spec.APIKeyEnv)...),
+		body:     panelProviderAddDiff(base, spec),
+		run: func() error {
+			if err := t.core.panelProviderReverify(base, "agy pro settings providers add-json"); err != nil {
+				return err
+			}
+			return t.core.ProviderAdd(spec)
+		},
+	}
+	return nil
+}
+
+// renameProvider is the panel's W2 arm (P5-1 U5a): it composes the exact rename
+// diff from disk and arms the y/n gate instead of writing. A name that is not on
+// disk refuses BEFORE the gate, the same ordering the hub's rename approval uses
+// (screen_settings.go:751-755): there is no record to move, so there is no diff
+// to approve and no write to consent to.
+func (t *TUI) renameProvider(it Item, old, neu string) error {
+	base, err := t.core.panelProviderBaseForRename(old, neu)
+	if err != nil {
+		return err
+	}
+	if !base.present {
+		return panelRefusal(panelMissingRenameFmt+"; nothing renamed", providers.FlagSeedOperands(old, neu), panelSlot(old))
+	}
+	t.pending = &pendingConfirm{
+		item:     it,
+		operands: append(providers.FlagSeedOperands(old), providers.FlagSeedOperands(neu)...),
+		body:     panelProviderRenameDiff(base, neu),
+		run: func() error {
+			if err := t.core.panelProviderReverify(base, "agy pro settings providers rename"); err != nil {
+				return err
+			}
+			// The base record's own name is the exact spelling the presented diff
+			// committed to; the store matches case-insensitively, so handing it the
+			// on-disk spelling addresses the record that was displayed.
+			return t.core.ProviderRename(base.record.Name, neu)
+		},
+	}
+	return nil
+}
+
+// deleteProvider is the panel's W3 arm (P5-1 U5a): it composes the exact delete
+// diff from disk and arms the y/n gate. The pre-change arm gated the write with
+// the bare item label and no body, so the operator approved a word instead of a
+// record; a name that is not on disk now refuses before the gate like the
+// providers screen's confirmDelete (screen_providers.go:667-673).
+func (t *TUI) deleteProvider(it Item, name string) error {
+	base, err := t.core.panelProviderBaseFor(name)
+	if err != nil {
+		return err
+	}
+	if !base.present {
+		return panelRefusal(panelMissingDeleteFmt+"; nothing deleted", providers.FlagSeedOperands(name), panelSlot(name))
+	}
+	t.pending = &pendingConfirm{
+		item:     it,
+		operands: providers.FlagSeedOperands(name),
+		body:     panelProviderDeleteDiff(base),
+		run: func() error {
+			if err := t.core.panelProviderReverify(base, "agy pro settings providers delete"); err != nil {
+				return err
+			}
+			return t.core.ProviderDelete(base.record.Name)
+		},
+	}
+	return nil
+}
+
+// --- P5-1 U5b: the remaining panel write doors (F3(a)) ----------------------
+//
+// W20 (state.json scalars), W24 (the swarm preset append) and W13/W15 (the mode
+// switch and restore) were the panel's last ungated write paths. Each arm below
+// composes its exact diff through paneldiff.go, arms ONE y/N gate, and re-verifies
+// the signed state immediately before the Core verb runs, so the diff the
+// operator approved is the diff that was composed from disk.
+
+// panelRowVerb names the door in a stale-base refusal sentence: the panel route
+// plus the row label the operator pressed.
+func panelRowVerb(it Item) string {
+	return "the " + it.Label + " row of the `agy pro settings` panel"
+}
+
+// setScalar is the panel's W20 arm: a state.json scalar choice row (default
+// profile, bridge-tools allow-list, native seat concurrency). The pre-change arm
+// called Core.Set the instant a number was pressed, so state.json changed with no
+// presentation; the diff is composed here and the write waits for y.
+func (t *TUI) setScalar(it Item, key, value string) error {
+	plan, err := t.core.panelStatePlanFor(key, panelAfterStateValue(key, value))
+	if err != nil {
+		return err
+	}
+	t.pending = &pendingConfirm{
+		item: it,
+		// The prompted value may be a misdirected key paste, so it seeds the mask
+		// for any error the store forwards (B2/U8, the same seeding applyChoice
+		// already applies to a choice value).
+		operands: providers.FlagSeedOperands(value),
+		body:     plan.diff(),
+		run: func() error {
+			if err := t.core.panelStateReverify(plan, panelRowVerb(it)); err != nil {
+				return err
+			}
+			return t.core.Set(key, value)
+		},
+	}
+	return nil
+}
+
+// switchMode is the panel's W13 arm (the `current_mode` and `mode.switch` rows).
+// It used to open a body-less confirmation; it now presents U2's file plan (mode
+// transition, config dir, managed set, deployment groups, current_mode row) and
+// re-verifies the mode and the managed set before the deployment starts.
+func (t *TUI) switchMode(it Item, target string) error {
+	plan, err := t.core.panelModeSwitchPlan(target)
+	if err != nil {
+		return err
+	}
+	t.pending = &pendingConfirm{
+		item: it,
+		body: plan.diff(),
+		run: func() error {
+			if err := t.core.panelModeReverify(plan, panelRowVerb(it)); err != nil {
+				return err
+			}
+			return t.core.ModeSwitch(target)
+		},
+	}
+	return nil
+}
+
+// restoreMode is the panel's W15 arm (the `mode.restore` row). The plan names the
+// resolved source directory, its file groups and the pre-restore destination; a
+// source that cannot be resolved refuses BEFORE the gate (there is no plan to
+// present), matching U2's CLI ordering. mode.Restore itself still re-resolves the
+// source, so a backup that disappears between consent and the write is named by
+// mode's own sentence.
+func (t *TUI) restoreMode(it Item) error {
+	plan, err := t.core.panelModeRestorePlan()
+	if err != nil {
+		return err
+	}
+	t.pending = &pendingConfirm{
+		item: it,
+		body: plan.diff(),
+		run: func() error {
+			if err := t.core.panelModeReverify(plan, panelRowVerb(it)); err != nil {
+				return err
+			}
+			return t.core.ModeRestore()
+		},
+	}
+	return nil
+}
+
+// savePreset is the panel's W24 arm. Two independent reasons can ride the ONE
+// gate: the append consent (the exact "+ preset <name> = <numbers>" line, the
+// bounded list of presets it keeps, the atomic-0600 sentence for the file it
+// rewrites) and, when the store was corrupt on this read, the overwrite
+// acknowledgment naming the file (notice). The append itself re-reads the preset
+// list and appends to what it verified, so a preset saved under the prompt
+// refuses instead of being duplicated or dropped.
+func (t *TUI) savePreset(it Item, presets []swarm.SavedPreset, corrupt bool, name, nums string) error {
+	plan := panelPresetPlanFor(presets, name, nums)
+	notice := ""
+	if corrupt {
+		notice = i18n.Fill(swarmCorruptGateBody, map[string]string{
+			"path": providers.MaskOperand(t.swarmStoreDisplayPath()),
+		})
+	}
+	t.pending = &pendingConfirm{
+		item:     it,
+		operands: providers.FlagSeedOperands(name, nums),
+		notice:   notice,
+		body:     plan.diff(),
+		run: func() error {
+			fresh, err := t.core.panelPresetReverify(plan, panelRowVerb(it))
+			if err != nil {
+				return err
+			}
+			return t.core.SwarmSavePresets(append(fresh, swarm.SavedPreset{Name: name, Numbers: nums}))
+		},
+	}
+	return nil
 }
 
 // reload refreshes the view snapshot after a write verb.

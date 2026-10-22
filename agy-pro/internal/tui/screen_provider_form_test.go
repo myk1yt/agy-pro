@@ -456,7 +456,7 @@ func TestProviderFormValidationRefusals(t *testing.T) {
 				keys := append(providerFormType("acme-new"), KeyTab)
 				keys = append(keys, providerFormType("https://api.acme.example/v1")...)
 				keys = append(keys, KeyTab)
-				keys = append(keys, providerFormType("sk-live-0123456789abcdef")...)
+				keys = append(keys, providerFormType(providerFormPastedKeyValue)...)
 				return append(keys, KeyEnter)
 			},
 			wants: []string{
@@ -617,7 +617,7 @@ func TestProviderFormApprovalSwallowsNonAnswerKeys(t *testing.T) {
 // VALUE pasted into the apiKeyEnv field is refused by name, and the value never
 // appears raw in a frame, in the message line, or in a diff line.
 func TestProviderFormSecretValueNeverRenders(t *testing.T) {
-	const secret = "sk-live-0123456789abcdefXYZ"
+	const secret = providerFormSecretValue
 	app, path := newProviderFormTestApp(t, providerFormFixtureReg(), "add", "")
 	before := providerFormDisk(t, path)
 
@@ -898,8 +898,15 @@ func TestProviderFormPlainTierEmitsNoEscapes(t *testing.T) {
 
 // providerFormSecretValue is a synthetic key VALUE. It is shaped like live key
 // material (a listed credential head plus an opaque alnum run) so the shared
-// classifier reads it as a secret; it is not a real credential.
-const providerFormSecretValue = "sk-live-0123456789abcdefXYZ"
+// classifier reads it as a secret; it is not a real credential. The head is
+// built by concatenation so the tracked source carries no contiguous
+// provider-key spelling; the runtime value is byte-identical to the literal it
+// replaced.
+const providerFormSecretValue = "sk-" + "live-" + "0123456789abcdefXYZ"
+
+// providerFormPastedKeyValue is the shorter synthetic key VALUE pasted into the
+// apiKeyEnv field by the refusal pins. Same concatenation discipline.
+const providerFormPastedKeyValue = "sk-" + "live-" + "0123456789abcdef"
 
 // TestProviderFormSecretShapedFieldsRefused is the FIX-A pin: a key VALUE pasted
 // into the name or the base URL field is refused at validation time, before the
@@ -1577,8 +1584,8 @@ func TestProviderFormBaseURLPathArmAddsOnlyCredentialPaths(t *testing.T) {
 		// it only because the display masker drops userinfo).
 		{"https://user:pw@gw.example/v1", true, false},
 		// Pre-existing query and head refusals: unchanged.
-		{"https://gw.example/v1?api_key=sk-live-0123456789abcdefXYZ", true, true},
-		{"https://gw.example/v1/sk-live-0123456789abcdefXYZ", true, true},
+		{"https://gw.example/v1?api_key=" + providerFormSecretValue, true, true},
+		{"https://gw.example/v1/" + providerFormSecretValue, true, true},
 	}
 	credPath := map[string]bool{}
 	for _, tc := range providerFormCredentialPathURLs {
@@ -1962,7 +1969,7 @@ var providerFormURLDoorCorpus = []struct {
 	{"query value", "https://host/v1?api_key=" + testfixtures.SKLive, true, testfixtures.SKLive},
 	{"query key", "https://host/v1?" + testfixtures.SKLive + "=1", true, testfixtures.SKLive},
 	{"fragment", "https://host/v1#" + testfixtures.SKLive, true, testfixtures.SKLive},
-	{"path sk head", "https://gw.example/v1/sk-live-0123456789abcdefXYZ", true, "sk-live-0123456789abcdefXYZ"},
+	{"path sk head", "https://gw.example/v1/" + providerFormSecretValue, true, providerFormSecretValue},
 	{"path nvapi head", "https://gw.example/v1/" + testfixtures.NvidiaKey, true, testfixtures.NvidiaKey},
 	// FIX-8h H-1: the malformed query pair url.Query() drops. The decoded view
 	// never sees it, so all three doors accepted it before the raw-pair read.

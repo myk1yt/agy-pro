@@ -19,14 +19,16 @@ type HubCounts struct {
 // Row IDs of the hub list, in display order. The open factory maps these
 // IDs to screens; "exit" is resolved locally and never reaches open.
 const (
-	hubIDProviders = "providers"
-	hubIDPresets   = "presets"
-	hubIDPrompts   = "prompts"
-	hubIDSettings  = "settings"
-	hubIDDoctor    = "doctor"
-	hubIDHelp      = "help"
-	hubIDLanguage  = "language"
-	hubIDExit      = "exit"
+	hubIDProviders    = "providers"
+	hubIDPresets      = "presets"
+	hubIDPrompts      = "prompts"
+	hubIDSettings     = "settings"
+	hubIDDoctor       = "doctor"
+	hubIDHelp         = "help"
+	hubIDLanguage     = "language"
+	hubIDDashboard    = "dashboard"
+	hubIDIntegrations = "integrations"
+	hubIDExit         = "exit"
 )
 
 // Catalog keys the hub needs that are not in en.json yet. Per mission rule
@@ -39,6 +41,14 @@ const (
 	missingRegistryOK = "registry OK"
 	// catalog-resolved, fallback kept: menu.registry.fail
 	missingRegistryFail = "registry load failed"
+	// catalog key S3 must add: menu.dashboard. The dashboard row ships this
+	// English stand-in until the S3 catalog pass adds the key to all twelve
+	// catalogs; the stand-in wins only while the catalog lacks the key.
+	missingMenuDashboard = "Dashboard"
+	// catalog-resolved, fallback kept: menu.integrations. The key ships in all
+	// twelve catalogs (P5-3 T8); the stand-in only covers a catalog that is
+	// being edited while this row exists.
+	missingMenuIntegrations = "Integrations"
 )
 
 // hubScreen is the setup TUI main menu: a health summary line over the
@@ -99,6 +109,8 @@ func (h *hubScreen) syncRows() {
 		{Label: b.T("menu.doctor"), ID: hubIDDoctor},
 		{Label: b.T("menu.help"), ID: hubIDHelp},
 		{Label: b.T("view.appearance.language.label"), ID: hubIDLanguage, Note: i18n.Endonym(lang)},
+		{Label: missingOr(b, "menu.dashboard", missingMenuDashboard), ID: hubIDDashboard},
+		{Label: missingOr(b, "menu.integrations", missingMenuIntegrations), ID: hubIDIntegrations},
 		{Label: b.T("menu.quit"), ID: hubIDExit},
 	}
 	cursor := h.list.Cursor()

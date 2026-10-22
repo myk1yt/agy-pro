@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -84,6 +85,87 @@ const (
 	// catalog-resolved, fallback kept: presets.summary.pinned
 	presetsSummaryPinned = "{{count}} of 14 fields pinned: see Edit"
 )
+
+// P5-1 U6: the default_preset gate (W28). The healthy path used to rewrite
+// fanout-presets.json with no consent at all; it now opens the M4 approval modal
+// over the exact key change. The store is not providers.json, so the catalog's
+// modal.approval.body sentence does not apply: the store sentences below are
+// documented English chrome (decision 6B, the approvalEntriesHidden precedent)
+// because they are new keys and a new key costs twelve catalog edits, while the
+// +/- markers reuse their catalog spellings and the preset names and the file
+// path render through the display authorities.
+const (
+	// presetsApprovalDefault names the key change and states the no-collateral
+	// promise. The store is named on its own "File:" line and in the atomic
+	// sentence below, so a deep AGY_PRO_HOME cannot clamp the change away.
+	presetsApprovalDefault = "Sets default_preset: %s -> %s. No preset record changes; the key applies to every run that names no preset."
+	// presetsApprovalAtomic names the file (base name) and the write mode the
+	// diff applies to.
+	presetsApprovalAtomic = "%s will be written (0600, atomic) with this exact diff:"
+	// presetsApprovalKeyFmt is the inner text of one +/- diff entry.
+	presetsApprovalKeyFmt = "default_preset = %s"
+	// presetsApprovalUnset renders the empty default key honestly instead of as
+	// an empty string, so the diff line cannot read as a deletion of nothing.
+	presetsApprovalUnset = "(unset)"
+	// presetsApprovalDrift is the write-time stale-base refusal: it names the
+	// store (base name) and the first difference, so a refusal says WHAT moved.
+	presetsApprovalDrift = "refused: %s changed on disk between the diff and the write (%s), so the presented diff is stale; nothing was written."
+)
+
+// presetDefaultDisplay renders one default_preset value for the gate body.
+func presetDefaultDisplay(name string) string {
+	if strings.TrimSpace(name) == "" {
+		return presetsApprovalUnset
+	}
+	return presetNameOperand(name)
+}
+
+// presetsWriteBase is the signed state of one fanout preset write: the ordered
+// preset names and the default_preset value the diff described. The preset
+// RECORDS are signed by name only because the write rebuilds the file from a
+// fresh read, so an external edit to a record (another run's field change) is
+// carried over instead of reverted; the default key is signed by value because
+// that is the field this write changes.
+type presetsWriteBase struct {
+	names []string
+	def   string
+}
+
+// presetsWriteBaseFrom signs the store state a gate presents.
+func presetsWriteBaseFrom(pf *fanout.PresetsFile) presetsWriteBase {
+	b := presetsWriteBase{}
+	if pf == nil {
+		return b
+	}
+	b.names = make([]string, 0, len(pf.Presets))
+	for i := range pf.Presets {
+		b.names = append(b.names, pf.Presets[i].Name)
+	}
+	b.def = pf.DefaultPreset
+	return b
+}
+
+// drift names the first difference between the presented base and a fresh read,
+// or "" when they agree. Operands render masked.
+func (b presetsWriteBase) drift(live *fanout.PresetsFile) string {
+	if live == nil {
+		live = &fanout.PresetsFile{}
+	}
+	if len(b.names) != len(live.Presets) {
+		return fmt.Sprintf("the preset count moved from %d to %d", len(b.names), len(live.Presets))
+	}
+	for i := range b.names {
+		if b.names[i] != live.Presets[i].Name {
+			return fmt.Sprintf("preset %d moved from %s to %s", i+1,
+				presetNameOperand(b.names[i]), presetNameOperand(live.Presets[i].Name))
+		}
+	}
+	if b.def != live.DefaultPreset {
+		return fmt.Sprintf("default_preset moved from %s to %s",
+			presetDefaultDisplay(b.def), presetDefaultDisplay(live.DefaultPreset))
+	}
+	return ""
+}
 
 // corruptPresetSink captures the store's one-line corrupt-file fallback
 // warning. The screens wire it as PresetFileStore.WarnOut at load time: a
@@ -650,13 +732,19 @@ func uniquePresetCopyName(pf *fanout.PresetsFile, base string) string {
 	}
 }
 
-// askDelete opens the M3 y/n gate (plain Confirm: the preset file is not
-// providers.json, so no M4 approval is needed). y removes the preset and
-// clears the default key when it pointed there; n/Esc cancels with an
-// explicit nothing-written message. The in-memory list is only mutated
-// inside the corrupt gate callback, after both gates answered, so a declined
-// gate leaves memory untouched and the next acknowledged save cannot pick up
-// a half-applied deletion.
+// askDelete opens the M3 y/n gate. y removes the preset and clears the default
+// key when it pointed there; n/Esc cancels with an explicit nothing-written
+// message. The in-memory list is only mutated inside the corrupt gate
+// callback, after both gates answered, so a declined gate leaves memory
+// untouched and the next acknowledged save cannot pick up a half-applied
+// deletion.
+//
+// Gate class, stated precisely (P5-1 U6): delete keeps the M3 y/n because the
+// body already names the one record that disappears, while the default_preset
+// write next door is M4 (approveSetDefault) because it changes a KEY the record
+// listing does not show. The old note here said "the preset file is not
+// providers.json, so no M4 approval is needed", which stopped being true the
+// moment the same file's default write got the exact-diff door.
 func (s *presetsScreen) askDelete(p fanout.Preset) {
 	a := s.app
 	masked := providers.MaskOperand(p.Name)
@@ -690,12 +778,72 @@ func (s *presetsScreen) askDelete(p fanout.Preset) {
 		}))
 }
 
-// setDefault writes the store's default_preset key to the selected preset.
+// setDefault writes the store's default_preset key to the selected preset. The
+// corrupt acknowledgment stays the outermost gate (a precondition about the
+// file's readability); the exact-diff consent it releases is the M4 decision
+// that runs the write (P5-1 U6: this key used to be written with no approval on
+// a healthy file).
 func (s *presetsScreen) setDefault(p fanout.Preset) {
 	a := s.app
-	s.gateCorruptSave(func() {
-		s.pf.DefaultPreset = p.Name
-		if err := s.store.SavePresets(s.pf); err != nil {
+	if a == nil {
+		return
+	}
+	s.gateCorruptSave(func() { s.approveSetDefault(a, p) })
+}
+
+// approveSetDefault opens the M4 approval modal for the default_preset write
+// (W28): the key sentence (old value -> new value, both display-masked), the
+// store's own "File:" line, the atomic sentence for that file, and the
+// removed/added diff lines. y re-reads the store and refuses when the presented
+// preset list or the default key moved, then writes the FRESH store with the key
+// set; n/Esc writes nothing. Nothing here mutates s.pf before the answer.
+func (s *presetsScreen) approveSetDefault(a *App, p fanout.Preset) {
+	storePath := presetFilePath(storeFile(s.store))
+	storeBase := providers.MaskOperand(filepath.Base(storePath))
+	path := providers.MaskOperand(storePath)
+	base := presetsWriteBaseFrom(s.pf)
+	name := presetNameOperand(p.Name)
+	fileLine := fillHubSlots(missingOr(s.b, "presets.explain.file", presetsExplainFile), map[string]string{"path": path})
+	summary := []string{
+		fmt.Sprintf(presetsApprovalDefault, presetDefaultDisplay(s.pf.DefaultPreset), name),
+		fileLine,
+		fmt.Sprintf(presetsApprovalAtomic, storeBase),
+	}
+	if strings.TrimSpace(s.pf.DefaultPreset) == "" {
+		summary = append(summary, s.b.Tf("modal.approval.diff_added", map[string]string{
+			"line": fmt.Sprintf(presetsApprovalKeyFmt, name),
+		}))
+	} else {
+		summary = append(summary,
+			s.b.Tf("modal.approval.diff_removed", map[string]string{
+				"line": fmt.Sprintf(presetsApprovalKeyFmt, presetDefaultDisplay(s.pf.DefaultPreset)),
+			}),
+			s.b.Tf("modal.approval.diff_added", map[string]string{
+				"line": fmt.Sprintf(presetsApprovalKeyFmt, name),
+			}),
+		)
+	}
+	a.ShowModal(NewApproval(s.b.T("presets.action.set_default"), summary, func(approved bool) {
+		if !approved {
+			a.SetMessage(missingOr(s.b, "presets.msg.cancelled", presetsMsgCancelled))
+			return
+		}
+		// Write-time re-read: the store the modal described is the store the
+		// write extends, and a moved file is refused by name instead of being
+		// silently overwritten from a stale in-memory snapshot.
+		fresh, loadErr := s.loadPresets()
+		if loadErr != "" {
+			a.SetMessage(s.b.T("common.error") + ": " + loadErr)
+			s.reload()
+			return
+		}
+		if drift := base.drift(fresh); drift != "" {
+			s.reload()
+			a.SetMessage(providers.MaskSentence(fmt.Sprintf(presetsApprovalDrift, storeBase, drift)))
+			return
+		}
+		fresh.DefaultPreset = p.Name
+		if err := s.store.SavePresets(fresh); err != nil {
 			a.SetMessage(s.b.T("common.error") + ": " + s.b.Tf("err.write_failed", map[string]string{"err": providers.MaskOperand(err.Error())}))
 			s.reload()
 			return
@@ -703,7 +851,7 @@ func (s *presetsScreen) setDefault(p fanout.Preset) {
 		s.reload()
 		a.SetMessage(s.b.T("common.success") + ": " + fillHubSlots(missingOr(s.b, "presets.msg.default_set", presetsMsgDefaultSet),
 			map[string]string{"name": providers.MaskOperand(p.Name)}))
-	})
+	}))
 }
 
 // Draw renders the default-status line, the four explanation lines naming

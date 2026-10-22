@@ -24,6 +24,7 @@ const (
 // newPlantTUI builds a TUI over a core whose Deps are overridden by mutate.
 func newPlantTUI(t *testing.T, mutate func(d *Deps)) (*TUI, *fakeDeps) {
 	t.Helper()
+	isolatePanelModeDirs(t)
 	f := newFakeDeps()
 	f.state.ManagedItems = mode.DefaultManagedItems
 	d := f.deps()
@@ -141,21 +142,27 @@ func TestTUIRollbackErrorMasksPromptedBackupDir(t *testing.T) {
 //
 // The pin asserts the FULL frame message. Without the fix the raw plant
 // reaches the frame through the sentence and the equality pin fails.
+//
+// UPDATED by P5-1 U5a: a name that is not on disk now refuses BEFORE the gate
+// (no record to describe means no diff to approve: the hub's ordering at
+// screen_providers.go:667-673), so the seeded sentence is the panel's own
+// refusal instead of the store's. The property the pin exists for is unchanged
+// and still asserted in full: the operand reaches the frame only masked, and a
+// benign value stays readable.
 func TestTUIDeleteGateCompositeTailSeedsTokens(t *testing.T) {
 	tui, _ := newPlantTUI(t, nil)
 	findItem(t, tui, "providers.delete")
 	operand := "./backups," + tuiAWSPlant
 	tui.lines = &ScriptedLines{Lines: []string{operand}}
-	tui.Step(KeyEnter) // prompt reads the operand and arms the danger gate
-	if tui.pending == nil {
-		t.Fatal("delete prompt did not arm the danger gate")
+	tui.Step(KeyEnter) // prompt reads the operand; the missing record refuses
+	if tui.pending != nil {
+		t.Fatal("an unknown delete target opened the consent gate")
 	}
-	tui.Step(KeyYes) // runs the op; the forwarded not-found error is masked
 	msg := tui.Frame().Message
-	// providers.DeleteProvider quotes the (already MaskOperand-passed, here
-	// unchanged) name; the seed masks the plant inside the quotes.
+	// The refusal quotes the slot-masked operand; the seed masks the plant
+	// inside the quotes.
 	want := "error: " + strings.ReplaceAll(
-		fmt.Sprintf("provider %q not found", providers.MaskOperand(operand)),
+		fmt.Sprintf(panelMissingDeleteFmt+"; nothing deleted", providers.MaskSlot(operand)),
 		tuiAWSPlant, tuiRedact)
 	if msg != want {
 		t.Errorf("full delete error frame drifted:\ngot:  %q\nwant: %q", msg, want)
@@ -171,8 +178,7 @@ func TestTUIDeleteGateCompositeTailSeedsTokens(t *testing.T) {
 	const benign = "read,search"
 	tui2.lines = &ScriptedLines{Lines: []string{benign}}
 	tui2.Step(KeyEnter)
-	tui2.Step(KeyYes)
-	wantBenign := "error: " + fmt.Sprintf("provider %q not found", providers.MaskOperand(benign))
+	wantBenign := "error: " + fmt.Sprintf(panelMissingDeleteFmt+"; nothing deleted", providers.MaskSlot(benign))
 	if msg2 := tui2.Frame().Message; msg2 != wantBenign {
 		t.Errorf("benign delete error frame drifted:\ngot:  %q\nwant: %q", msg2, wantBenign)
 	}

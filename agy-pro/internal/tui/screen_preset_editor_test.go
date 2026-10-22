@@ -12,6 +12,13 @@ import (
 	"agypro/internal/testfixtures"
 )
 
+// presetEditorSkLiveValue is a synthetic key VALUE for the search_key_env
+// boundary pins (a listed credential head plus an opaque run). The head is
+// built by concatenation so the tracked source carries no contiguous
+// provider-key spelling; the runtime value is byte-identical to the literal it
+// replaced.
+const presetEditorSkLiveValue = "sk-" + "livekey1234567890abcd"
+
 // editorHome isolates the editor: AGY_PRO_HOME gets a fresh temp dir (the
 // preset store and state.json resolve under it) and AGY_PRO_PROVIDERS points
 // at a nonexistent temp path (no defaults block unless a test writes one).
@@ -154,7 +161,7 @@ func TestEditorSavesRoundTrip(t *testing.T) {
 func TestEditorSearchKeyEnvRejectsValue(t *testing.T) {
 	path := editorHome(t)
 	app, _ := newEditorApp("")
-	secret := "sk-livekey1234567890abcd"
+	secret := presetEditorSkLiveValue
 	keys := joinPresetKeys(
 		zoneAKeys("p1", "", "", "", "", "", ""),
 		// Host zone -> zone B (no hosts): two Downs cross into zone B on
@@ -787,7 +794,7 @@ func TestEditorCorruptFileWarnsAndGatesFirstSave(t *testing.T) {
 func TestEditorSearchKeyEnvEchoMaskedInFrame(t *testing.T) {
 	editorHome(t)
 	app, scr := newEditorApp("")
-	secret := "sk-livekey1234567890abcd"
+	secret := presetEditorSkLiveValue
 	keys := joinPresetKeys(
 		zoneAKeys("p1", "", "", "", "", "", ""),
 		k1(KeyDown, KeyDown, KeyEnter), // -> zone B, focus on search_key_env

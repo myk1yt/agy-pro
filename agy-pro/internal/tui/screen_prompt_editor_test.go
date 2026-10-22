@@ -2,6 +2,7 @@ package tui
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -1152,5 +1153,257 @@ func TestPromptEditorCaretPainterCJKCell(t *testing.T) {
 	}
 	if cellwidth.String("나") != 2 {
 		t.Fatalf("CJK rune width = %d, want 2", cellwidth.String("나"))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// P5-1 U6: the prompt save gate (W29).
+//
+// The save used to be an M3 confirm naming the target and the byte count, so the
+// operator approved a path and a size while the CONTENT being written never
+// appeared on the gate. It is an M4 approval now, with a bounded first-lines
+// diff, a write-time stale-base check, and masked preview lines.
+// ---------------------------------------------------------------------------
+
+// TestPromptEditorSaveGateShowsContentDiff pins the upgrade itself: the gate
+// renders the stored text as '+' lines and, when an override already exists, the
+// on-disk file as '-' lines beside them.
+func TestPromptEditorSaveGateShowsContentDiff(t *testing.T) {
+	t.Run("new file", func(t *testing.T) {
+		promptTestHome(t)
+		const typed = "Review the diff, then report."
+		app := newPromptEditorApp("research")
+		for _, k := range append(typeRunes(typed), KeyCtrlS) {
+			app.Step(k)
+		}
+		m := app.Modal()
+		if m == nil {
+			t.Fatal("save approval gate did not open")
+		}
+		body := strings.Join(m.Body(app.Width()), "\n")
+		if !strings.Contains(body, promptDiffNew) {
+			t.Errorf("gate body missing the no-override introduction\n%s", body)
+		}
+		if !strings.Contains(body, "+ "+typed) {
+			t.Errorf("gate body does not show the stored text as an added line\n%s", body)
+		}
+		if strings.Contains(body, promptDiffExisting) {
+			t.Errorf("gate body claims an on-disk file that does not exist\n%s", body)
+		}
+	})
+
+	t.Run("existing file", func(t *testing.T) {
+		promptTestHome(t)
+		if _, err := fanout.SaveTaskPrompt("security", "old first line\nold second line"); err != nil {
+			t.Fatalf("seed override: %v", err)
+		}
+		app := newPromptEditorApp("security")
+		for _, k := range append(typeRunes("new: "), KeyCtrlS) {
+			app.Step(k)
+		}
+		m := app.Modal()
+		if m == nil {
+			t.Fatal("save approval gate did not open")
+		}
+		body := strings.Join(m.Body(app.Width()), "\n")
+		for _, want := range []string{
+			promptDiffExisting,
+			"- old first line",
+			"- old second line",
+			"+ new: old first line",
+		} {
+			if !strings.Contains(body, want) {
+				t.Errorf("gate body missing %q\n%s", want, body)
+			}
+		}
+		if strings.Contains(body, promptDiffNew) {
+			t.Errorf("gate body claims no file on disk while one exists\n%s", body)
+		}
+	})
+}
+
+// TestPromptEditorSaveGateConsentMatrix pins y/n/Esc on the W29 gate: y is the
+// only path to the store, and both refusals leave the slot file absent, keep the
+// buffer, and print the shared cancel sentence.
+func TestPromptEditorSaveGateConsentMatrix(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		key   Key
+		wrote bool
+	}{
+		{"y", KeyYes, true},
+		{"n", KeyNo, false},
+		{"esc", KeyEsc, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			promptTestHome(t)
+			const typed = "custom prompt text"
+			app := newPromptEditorApp("research")
+			for _, k := range append(typeRunes(typed), KeyCtrlS) {
+				app.Step(k)
+			}
+			if app.Modal() == nil {
+				t.Fatal("save approval gate did not open")
+			}
+			app.Step(tc.key)
+			path := filepath.Join(mustPromptsDir(t), "research.txt")
+			_, err := os.Stat(path)
+			if tc.wrote {
+				if err != nil {
+					t.Fatalf("y did not write the slot: %v", err)
+				}
+				if msg := app.Message(); !strings.Contains(msg, "Prompt saved:") {
+					t.Fatalf("y message = %q; want the saved notice", msg)
+				}
+				return
+			}
+			if !os.IsNotExist(err) {
+				t.Fatalf("%s wrote the slot (stat err = %v)", tc.name, err)
+			}
+			if msg := app.Message(); !strings.Contains(msg, "Cancelled. Nothing was written.") {
+				t.Fatalf("%s cancel message = %q", tc.name, msg)
+			}
+			if !strings.Contains(app.Frame().String(), typed) {
+				t.Fatalf("%s dropped the buffer\n%s", tc.name, app.Frame().String())
+			}
+		})
+	}
+}
+
+// TestPromptEditorSaveGateStaleBaseRefused pins the write-time re-read: another
+// writer replaces the slot file while the diff is on screen, so y refuses and
+// leaves the external content in place.
+func TestPromptEditorSaveGateStaleBaseRefused(t *testing.T) {
+	promptTestHome(t)
+	path := filepath.Join(mustPromptsDir(t), "research.txt")
+	if _, err := fanout.SaveTaskPrompt("research", "on disk before"); err != nil {
+		t.Fatalf("seed override: %v", err)
+	}
+	app := newPromptEditorApp("research")
+	for _, k := range append(typeRunes("buffer "), KeyCtrlS) {
+		app.Step(k)
+	}
+	if app.Modal() == nil {
+		t.Fatal("save approval gate did not open")
+	}
+	if err := os.WriteFile(path, []byte("external rewrite"), 0o600); err != nil {
+		t.Fatalf("external write: %v", err)
+	}
+
+	app.Step(KeyYes)
+	if msg := app.Message(); msg != promptDiffDrift {
+		t.Fatalf("message = %q; want the stale-diff refusal", msg)
+	}
+	if data, err := os.ReadFile(path); err != nil || string(data) != "external rewrite" {
+		t.Fatalf("the refused save overwrote the external file: %q, %v", data, err)
+	}
+}
+
+// TestPromptEditorSaveGateMasksSecretLines pins the display discipline: a
+// credential-shaped line renders masked in the gate body, so the preview can
+// never read a pasted key back to the frame raw. The credential gate answers
+// first; the save approval is the diff behind it.
+func TestPromptEditorSaveGateMasksSecretLines(t *testing.T) {
+	promptTestHome(t)
+	const secret = "sk-abcdef0123456789"
+	app := newPromptEditorApp("ideas")
+	// The buffer STARTS with the credential head, which is what the
+	// credential classifier keys on; the trailing words keep the line readable so
+	// the mask assertion is about the token, not the whole line.
+	for _, k := range append(typeRunes(secret+" trailing words"), KeyCtrlS) {
+		app.Step(k)
+	}
+	if app.Modal() == nil || !strings.Contains(app.Frame().String(), "Save secret-looking text?") {
+		t.Fatalf("the credential gate did not open first; modal = %T", app.Modal())
+	}
+	app.Step(KeyYes) // the credential gate
+	m := app.Modal()
+	if m == nil {
+		t.Fatal("save approval gate did not open after the credential gate")
+	}
+	body := strings.Join(m.Body(app.Width()), "\n")
+	if strings.Contains(body, secret) {
+		t.Fatalf("save gate body echoes the credential raw\n%s", body)
+	}
+	if !strings.Contains(body, "****") {
+		t.Errorf("save gate body carries no mask marker\n%s", body)
+	}
+	if _, err := os.Stat(filepath.Join(mustPromptsDir(t), "ideas.txt")); !os.IsNotExist(err) {
+		t.Fatalf("the save gate wrote before the answer: %v", err)
+	}
+}
+
+// TestPromptEditorSaveGateAnswersLineModeWords pins the off-console answer path:
+// the real line-mode reader maps the mandated words to the keys the console
+// produces, and those keys answer the real gate with no arm-window delay.
+func TestPromptEditorSaveGateAnswersLineModeWords(t *testing.T) {
+	for _, tc := range []struct {
+		line  string
+		want  Key
+		wrote bool
+	}{
+		{"y\n", KeyYes, true},
+		{"yes\n", KeyYes, true},
+		{"n\n", KeyNo, false},
+		{"no\n", KeyNo, false},
+	} {
+		t.Run(tc.line, func(t *testing.T) {
+			promptTestHome(t)
+			app := newPromptEditorApp("research")
+			for _, k := range append(typeRunes("line mode save"), KeyCtrlS) {
+				app.Step(k)
+			}
+			if app.Modal() == nil {
+				t.Fatal("save approval gate did not open")
+			}
+			k, ok := NewLineKeys(strings.NewReader(tc.line)).ReadKey()
+			if !ok || k != tc.want {
+				t.Fatalf("%q mapped to %q,%v; want %q", tc.line, k, ok, tc.want)
+			}
+			app.Step(k)
+			_, err := os.Stat(filepath.Join(mustPromptsDir(t), "research.txt"))
+			if got := err == nil; got != tc.wrote {
+				t.Fatalf("%q: wrote=%v, want %v (stat err = %v)", tc.line, got, tc.wrote, err)
+			}
+		})
+	}
+}
+
+// TestPromptEditorSaveGateBoundedAt80x24 pins the frame bound: a 40-line
+// override at 80x24 renders a partial diff with one exact tail line, and the
+// gate title, legend, and shared footer stay on the frame.
+func TestPromptEditorSaveGateBoundedAt80x24(t *testing.T) {
+	promptTestHome(t)
+	const lines = 40
+	body := make([]string, 0, lines)
+	for i := 1; i <= lines; i++ {
+		body = append(body, fmt.Sprintf("prompt line %02d", i))
+	}
+	if _, err := fanout.SaveTaskPrompt("security", strings.Join(body, "\n")); err != nil {
+		t.Fatalf("seed override: %v", err)
+	}
+	app := NewApp(80, 24, DirLTR)
+	app.Push(&stubScreen{title: "root", mode: ModeNav})
+	app.Push(NewPromptEditorScreen("security"))
+	app.Step(KeyCtrlS)
+	m := app.Modal()
+	if m == nil {
+		t.Fatal("save approval gate did not open")
+	}
+
+	f, first, last := gateFrame(t, app, m)
+	visible := 0
+	for i := first; i <= last; i++ {
+		if strings.Contains(f.Lines[i], "prompt line ") {
+			visible++
+		}
+	}
+	// The entry list is the 40 stored lines plus the 40 on-disk lines; the cut
+	// keeps the leading '+' side, so a partial diff is guaranteed here.
+	if total := 2 * lines; visible < 1 || visible >= total {
+		t.Fatalf("bounded gate shows %d of %d preview lines:\n%s", visible, total, f.String())
+	}
+	if want := fmt.Sprintf("%d more entries NOT shown", 2*lines-visible); !strings.Contains(f.String(), want) {
+		t.Errorf("tail %q missing from the frame:\n%s", want, f.String())
 	}
 }

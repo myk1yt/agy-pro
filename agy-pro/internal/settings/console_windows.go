@@ -44,7 +44,6 @@ type inputRecord struct {
 const (
 	keyEventRecordType = 0x0001
 
-	vkBack    = 0x08
 	vkTab     = 0x09
 	vkReturn  = 0x0d
 	vkEscape  = 0x1b
@@ -107,7 +106,10 @@ func (w win32ConsoleBuffer) consume(n int) (int, bool) {
 }
 
 // mapConsoleKey translates one key event to a Key. Extended beyond the
-// launcher's digit+Enter set (contract §2.9 F-TUI keybindings).
+// launcher's digit+Enter set (contract §2.9 F-TUI keybindings). Backspace is
+// deliberately unmapped: the panel has no text-editing Step arm, so a mapped
+// backspace would be a key with no consumer (SESSION6 P6-2), and an unmapped
+// event is dropped by readKeyFrom exactly like any other noise.
 func mapConsoleKey(char, vk uint16, state uint32) (Key, bool) {
 	shift := state&shiftMask != 0
 	switch vk {
@@ -135,8 +137,6 @@ func mapConsoleKey(char, vk uint16, state uint32) (Key, bool) {
 		return KeyTab, true
 	case vkReturn:
 		return KeyEnter, true
-	case vkBack:
-		return KeyBackspace, true
 	}
 	switch char {
 	case 0x03:

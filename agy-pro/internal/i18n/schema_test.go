@@ -168,32 +168,74 @@ func TestNoCombiningDiacritics(t *testing.T) {
 	}
 }
 
-// TestArabicNoPresentationFormsOrOverrides: ar must not use legacy Arabic
-// Presentation Forms (U+FE70-U+FEFF) nor bidi override characters. Only the
-// embedding marks RLM (U+200F) and LRM (U+200E) are allowed.
-func TestArabicNoPresentationFormsOrOverrides(t *testing.T) {
+// bannedInvisible holds every character no catalog value may carry. Two groups
+// live here: bidi overrides/isolates (they reorder a rendered line without a
+// visible glyph) and zero-width/format characters (ZWSP/ZWNJ/ZWJ, BOM, word
+// joiner, soft hyphen) plus the Unicode tag block. A translation PR is
+// supply-chain input; this ban is the layer that keeps a payload out of the
+// tree even though the TUI already strips Cf+Cc at paint.
+//
+// LRM (U+200E) and RLM (U+200F) stay ALLOWED on purpose: they are the
+// embedding marks a right-to-left translation may legitimately carry, and
+// unlike an override they cannot reverse the rest of a line.
+var bannedInvisible = map[rune]string{
+	0x200B: "zero width space",
+	0x200C: "zero width non-joiner",
+	0x200D: "zero width joiner",
+	0x202A: "bidi override LRE",
+	0x202B: "bidi override RLE",
+	0x202C: "bidi override PDF",
+	0x202D: "bidi override LRO",
+	0x202E: "bidi override RLO",
+	0x2060: "word joiner",
+	0x2066: "bidi isolate LRI",
+	0x2067: "bidi isolate RLI",
+	0x2068: "bidi isolate FSI",
+	0x2069: "bidi isolate PDI",
+	0xFEFF: "byte order mark / zero width no-break space",
+	0x00AD: "soft hyphen",
+}
+
+// bannedInvisibleReason names the character at r, or returns "" when r is
+// allowed. Tag characters (U+E0000-U+E007F) are invisible and have no
+// legitimate use in a UI string, so the whole block is banned.
+func bannedInvisibleReason(r rune) string {
+	if r >= 0xE0000 && r <= 0xE007F {
+		return "Unicode tag character"
+	}
+	return bannedInvisible[r]
+}
+
+// TestEveryLocaleBansInvisibleAndBidiChars: the ban covers ALL twelve
+// catalogs, not just ar. Before this test the bidi-override ban ran over
+// ar.json alone and zero-width characters were banned nowhere, so a crafted
+// ru.json or de.json kept the whole suite green.
+func TestEveryLocaleBansInvisibleAndBidiChars(t *testing.T) {
+	for code, m := range readAllCatalogs(t) {
+		for k, v := range m {
+			for _, r := range v {
+				if reason := bannedInvisibleReason(r); reason != "" {
+					t.Errorf("%s.json: key %q contains U+%04X (%s); catalog values carry no invisible or bidi-override characters",
+						code, k, r, reason)
+				}
+			}
+		}
+	}
+}
+
+// TestArabicNoPresentationForms: ar must not use legacy Arabic Presentation
+// Forms (U+FE70-U+FEFF); the modern block is the authored form. The bidi half
+// of the old test moved to TestEveryLocaleBansInvisibleAndBidiChars, which
+// covers this locale too.
+func TestArabicNoPresentationForms(t *testing.T) {
 	m, ok := readAllCatalogs(t)["ar"]
 	if !ok {
 		t.Skip("ar.json not authored yet")
-	}
-	banned := map[rune]bool{
-		0x202A: true, // LRE
-		0x202B: true, // RLE
-		0x202C: true, // PDF
-		0x202D: true, // LRO
-		0x202E: true, // RLO
-		0x2066: true, // LRI
-		0x2067: true, // RLI
-		0x2068: true, // FSI
-		0x2069: true, // PDI
 	}
 	for k, v := range m {
 		for _, r := range v {
 			if r >= 0xFE70 && r <= 0xFEFF {
 				t.Errorf("ar.json: key %q contains Arabic Presentation Form U+%04X", k, r)
-			}
-			if banned[r] {
-				t.Errorf("ar.json: key %q contains bidi override U+%04X; only RLM/LRM are allowed", k, r)
 			}
 		}
 	}

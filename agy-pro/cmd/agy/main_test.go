@@ -133,8 +133,10 @@ func TestRunConfigDefaultProfileRoundTrip(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "home")
 	t.Setenv(paths.EnvAgyProHome, home)
 
+	// P5-1 U2: every state.json write prints its exact diff and needs consent;
+	// a test stdin is not a console, so the calls carry the --yes operand.
 	out := captureStdout(t, func() {
-		runConfig([]string{"default-profile", "gateway"})
+		runConfig([]string{"default-profile", "gateway", "--yes"})
 	})
 	if !strings.Contains(out, "[SUCCESS] Default launch profile set to: gateway") {
 		t.Errorf("set output missing confirmation:\n%s", out)
@@ -154,7 +156,7 @@ func TestRunConfigDefaultProfileRoundTrip(t *testing.T) {
 	// Native and prompt values round trip too.
 	for _, profile := range []string{"native", "prompt"} {
 		captureStdout(t, func() {
-			runConfig([]string{"default-profile", profile})
+			runConfig([]string{"default-profile", profile, "--yes"})
 		})
 		got := captureStdout(t, func() {
 			runConfig([]string{"show"})
@@ -180,13 +182,14 @@ func TestRunConfigShowFreshHome(t *testing.T) {
 }
 
 // R1-6: `agy pro config bridge-tools` persists the allow-list in state.json and
-// `config show` reads it back; "none" disables the loop.
+// `config show` reads it back; "none" disables the loop. The writes carry the
+// --yes consent operand (P5-1 U2: the diff prints first, then consent).
 func TestRunConfigBridgeToolsRoundTrip(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "home")
 	t.Setenv(paths.EnvAgyProHome, home)
 
 	out := captureStdout(t, func() {
-		runConfig([]string{"bridge-tools", "read,search,write"})
+		runConfig([]string{"bridge-tools", "read,search,write", "--yes"})
 	})
 	if !strings.Contains(out, "[SUCCESS] Bridge tools set to: read,search,write") {
 		t.Errorf("set output missing confirmation:\n%s", out)
@@ -204,7 +207,7 @@ func TestRunConfigBridgeToolsRoundTrip(t *testing.T) {
 
 	// Canonical ordering: the stored value is normalized, not echoed raw.
 	captureStdout(t, func() {
-		runConfig([]string{"bridge-tools", "exec,read"})
+		runConfig([]string{"bridge-tools", "exec,read", "--yes"})
 	})
 	out = captureStdout(t, func() {
 		runConfig([]string{"show"})
@@ -215,7 +218,7 @@ func TestRunConfigBridgeToolsRoundTrip(t *testing.T) {
 
 	// "none" disables the loop and survives a reload.
 	captureStdout(t, func() {
-		runConfig([]string{"bridge-tools", "none"})
+		runConfig([]string{"bridge-tools", "none", "--yes"})
 	})
 	out = captureStdout(t, func() {
 		runConfig([]string{"show"})
@@ -273,7 +276,7 @@ func TestPrintProHelpReflectsStatusAndConfig(t *testing.T) {
 	for _, want := range []string{
 		"status          Display current mode, providers, and real agy status",
 		"config          Show or set persistent defaults (default-profile, bridge-tools)",
-		"doctor          Diagnose toolchain, paths, keys (--strict, --fix-keys, --rollback-keys)",
+		"doctor          Diagnose toolchain, paths, keys (--strict, --fix-keys, --rollback-keys, --yes)",
 		"models          Configured providers & models; --all adds the numbered combined inventory",
 		"swarm           Build and run a multi-model swarm with numbered seat selection",
 		"settings        Show or change settings (TUI, show/set, providers, mode, doctor)",
@@ -431,7 +434,7 @@ func TestRunDoctorFixKeysPrintsBackupRollbackTarget(t *testing.T) {
 		}, nil
 	}
 
-	out := captureStdout(t, func() { runDoctorFixKeys("all") })
+	out := captureStdout(t, func() { runDoctorFixKeys("all", true) })
 	if gotTargets != "all" {
 		t.Errorf("ResolveRepairTargets got %q; want %q", gotTargets, "all")
 	}
@@ -465,11 +468,15 @@ func TestRunDoctorRollbackAcceptsDirOrFile(t *testing.T) {
 		return nil
 	}
 
+	// P5-1 U3: the rollback door reads the backup file to compose its diff and
+	// refuses a missing/unparsable one BEFORE consent, so both call sites below
+	// write a readable backup first (a bare "{}" already parses: the entry list
+	// is empty, which the diff names and the verb itself refuses after consent).
 	backupDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(backupDir, "registry-keys.v2.json"), []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	out := captureStdout(t, func() { runDoctorRollback(backupDir) })
+	out := captureStdout(t, func() { runDoctorRollback(backupDir, true) })
 	wantFile := filepath.Join(backupDir, "registry-keys.v2.json")
 	if gotPath != wantFile {
 		t.Errorf("rollback got %q; want %q", gotPath, wantFile)
@@ -480,7 +487,10 @@ func TestRunDoctorRollbackAcceptsDirOrFile(t *testing.T) {
 
 	// A direct file path is passed through unchanged.
 	direct := filepath.Join(t.TempDir(), "custom-backup.json")
-	runDoctorRollback(direct)
+	if err := os.WriteFile(direct, []byte(`{"version":2,"tool":"x","entries":[{"root":"user","name":"NW_API_KEY","existed":true}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runDoctorRollback(direct, true)
 	if gotPath != direct {
 		t.Errorf("rollback got %q; want %q", gotPath, direct)
 	}
@@ -1008,7 +1018,7 @@ func TestRunDoctorFixKeysMasksFailureTailAndNote(t *testing.T) {
 	var out, errOut string
 	// runDoctorFixKeys writes to both streams in one call; nest the captures.
 	errOut = captureStderr(t, func() {
-		out = captureStdout(t, func() { runDoctorFixKeys("all") })
+		out = captureStdout(t, func() { runDoctorFixKeys("all", true) })
 	})
 	if *exit != 1 {
 		t.Fatalf("doctor exit = %d; want 1", *exit)
@@ -1044,7 +1054,7 @@ func TestRunDoctorRollbackMasksPlantedBackupPath(t *testing.T) {
 		exit := stubDoctorExit(t)
 		var out, errOut string
 		errOut = captureStderr(t, func() {
-			out = captureStdout(t, func() { runDoctorRollback(plant) })
+			out = captureStdout(t, func() { runDoctorRollback(plant, false) })
 		})
 		if *exit != 1 {
 			t.Fatalf("exit = %d; want 1", *exit)
@@ -1068,7 +1078,7 @@ func TestRunDoctorRollbackMasksPlantedBackupPath(t *testing.T) {
 		exit := stubDoctorExit(t)
 		var out, errOut string
 		errOut = captureStderr(t, func() {
-			out = captureStdout(t, func() { runDoctorRollback(dir) })
+			out = captureStdout(t, func() { runDoctorRollback(dir, false) })
 		})
 		if *exit != 1 {
 			t.Fatalf("exit = %d; want 1", *exit)
@@ -1089,7 +1099,7 @@ func TestRunDoctorRollbackMasksPlantedBackupPath(t *testing.T) {
 		exit := stubDoctorExit(t)
 		var out, errOut string
 		errOut = captureStderr(t, func() {
-			out = captureStdout(t, func() { runDoctorRollback(dir) })
+			out = captureStdout(t, func() { runDoctorRollback(dir, false) })
 		})
 		if *exit != 1 {
 			t.Fatalf("exit = %d; want 1", *exit)
@@ -1107,7 +1117,7 @@ func TestRunDoctorRollbackMasksPlantedBackupPath(t *testing.T) {
 		exit := stubDoctorExit(t)
 		var out, errOut string
 		errOut = captureStderr(t, func() {
-			out = captureStdout(t, func() { runDoctorRollback(dir) })
+			out = captureStdout(t, func() { runDoctorRollback(dir, false) })
 		})
 		if *exit != 1 {
 			t.Fatalf("exit = %d; want 1", *exit)
@@ -1146,7 +1156,7 @@ func TestRunDoctorFixKeysNilReportMasksAndReturns(t *testing.T) {
 	exit := stubDoctorExit(t)
 	var out, errOut string
 	errOut = captureStderr(t, func() {
-		out = captureStdout(t, func() { runDoctorFixKeys("all") })
+		out = captureStdout(t, func() { runDoctorFixKeys("all", true) })
 	})
 	if *exit != 1 {
 		t.Fatalf("exit = %d; want 1", *exit)
@@ -1176,7 +1186,7 @@ func TestRunDoctorFixKeysMasksResolveErrorTokens(t *testing.T) {
 		return nil, fmt.Errorf("cannot resolve %q", "native:"+plant)
 	}
 
-	errOut := captureStderr(t, func() { runDoctorFixKeys("1,native:" + plant) })
+	errOut := captureStderr(t, func() { runDoctorFixKeys("1,native:"+plant, false) })
 	if strings.Contains(errOut, plant) {
 		t.Errorf("doctor fix-keys resolve error leaked the decorated plant: %q", errOut)
 	}
@@ -1195,7 +1205,7 @@ func TestRunDoctorRollbackMasksDecoratedPlant(t *testing.T) {
 	exit := stubDoctorExit(t)
 	var out, errOut string
 	errOut = captureStderr(t, func() {
-		out = captureStdout(t, func() { runDoctorRollback(plant) })
+		out = captureStdout(t, func() { runDoctorRollback(plant, false) })
 	})
 	if *exit != 1 {
 		t.Fatalf("exit = %d; want 1", *exit)
@@ -1231,7 +1241,7 @@ func TestRunDoctorRollbackSlotHardenedCompoundTarget(t *testing.T) {
 	exit := stubDoctorExit(t)
 	var out, errOut string
 	errOut = captureStderr(t, func() {
-		out = captureStdout(t, func() { runDoctorRollback(target) })
+		out = captureStdout(t, func() { runDoctorRollback(target, false) })
 	})
 	if *exit != 1 {
 		t.Fatalf("exit = %d; want 1", *exit)
@@ -1266,7 +1276,7 @@ func TestRunDoctorRollbackSlotRenderingPins(t *testing.T) {
 			exit := stubDoctorExit(t)
 			var out, errOut string
 			errOut = captureStderr(t, func() {
-				out = captureStdout(t, func() { runDoctorRollback(tc.target) })
+				out = captureStdout(t, func() { runDoctorRollback(tc.target, false) })
 			})
 			if *exit != 1 {
 				t.Fatalf("exit = %d; want 1", *exit)
@@ -1304,7 +1314,7 @@ func TestRunDoctorRollbackSlotCommaDecoratedTargets(t *testing.T) {
 			exit := stubDoctorExit(t)
 			var out, errOut string
 			errOut = captureStderr(t, func() {
-				out = captureStdout(t, func() { runDoctorRollback(tc.target) })
+				out = captureStdout(t, func() { runDoctorRollback(tc.target, false) })
 			})
 			if *exit != 1 {
 				t.Fatalf("exit = %d; want 1", *exit)
@@ -1572,9 +1582,10 @@ func TestSetupGateDegradeRestoresProbedCapExactlyOnce(t *testing.T) {
 			restores := captureSetupRestore(t)
 
 			restoresBeforeWizard := -1
-			setupWizardRunner = func(in io.Reader, out io.Writer) error {
+			setupWizardRunner = func(in io.Reader, out io.Writer, opts providers.WizardOptions) error {
 				rec.wizardCalled = true
 				rec.wizardIn, rec.wizardOut = in, out
+				rec.wizardOpts = opts
 				restoresBeforeWizard = restores.calls
 				fmt.Fprint(out, marker)
 				return nil

@@ -4,10 +4,12 @@ import "strings"
 
 // Key is one input key for the setup TUI. It generalizes the settings panel
 // key enum (same string values) with the Phase 3 additions from the key map:
-// Home/End/Delete/Space/Ctrl+S/Help plus a printable-rune carrier (KeyRune)
-// that carries one text rune and is consumed only in EDIT mode. The Windows
-// console mapper that produces these values is a later unit (P4); everything
-// here is platform-neutral.
+// Home/End/Delete/Space/Ctrl+S plus a printable-rune carrier (KeyRune) that
+// carries one text rune and is consumed only in EDIT mode. There is no Help
+// key: no screen ever consumed one, and the raw console mapper never produced
+// one, so `help` is a line-mode gesture answered inside the reader instead
+// (linemode.go, SESSION6 P6-2). The Windows console mapper that produces these
+// values is a later unit (P4); everything here is platform-neutral.
 type Key string
 
 const (
@@ -30,7 +32,6 @@ const (
 	KeyCtrlC     Key = "ctrl-c"
 	KeyCtrlL     Key = "ctrl-l"
 	KeyCtrlS     Key = "ctrl-s"
-	KeyHelp      Key = "help"
 )
 
 // runePrefix marks Key values that carry one printable rune (the EDIT-mode

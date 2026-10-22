@@ -559,6 +559,10 @@ func TestRunSettingsCmd_ModelVerbs_PromptReadBounded(t *testing.T) {
 // the CLI ingest lacked).
 func TestRunSettingsCmd_ModelVerbs_SecretShapedSpecRejected(t *testing.T) {
 	const twenty = "Ab3dEf7Gh9jK1mNpQr5t" // 20 runes, opaque, mixed letter/digit
+	// skLiveHead is the bare credential head the classifier recognizes at any
+	// length. Built by concatenation so the tracked source carries no
+	// contiguous provider-key spelling.
+	const skLiveHead = "sk-" + "live"
 	path := installFileBackedSettingsCore(t, twoModelRegistry())
 
 	cases := []struct {
@@ -567,10 +571,10 @@ func TestRunSettingsCmd_ModelVerbs_SecretShapedSpecRejected(t *testing.T) {
 		rawWant string
 	}{
 		{"opaque run in id", `{"id":"` + twenty + `"}`, twenty},
-		{"known prefix in family at any length", `{"id":"m9","family":"sk-live"}`, "sk-live"},
+		{"known prefix in family at any length", `{"id":"m9","family":"` + skLiveHead + `"}`, skLiveHead},
 		{"opaque run in a tag", `{"id":"m9","tags":["` + twenty + `"]}`, twenty},
 		{"opaque run in a tool grant", `{"id":"m9","capabilities":{"allowedTools":["read_file","` + twenty + `"]}}`, twenty},
-		{"known prefix in reasoningEffort", `{"id":"m9","capabilities":{"reasoningEffort":"sk-live"}}`, "sk-live"},
+		{"known prefix in reasoningEffort", `{"id":"m9","capabilities":{"reasoningEffort":"` + skLiveHead + `"}}`, skLiveHead},
 		// Round-6 F-01: a 16+ rune base64 credential carrying + / = (the AWS
 		// secret class) is refused too; the widened opaque-token alphabet
 		// admits those runes into the run.

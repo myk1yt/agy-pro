@@ -13,6 +13,7 @@ import (
 
 	"agypro/internal/fanout"
 	"agypro/internal/i18n"
+	"agypro/internal/integrations"
 	"agypro/internal/inventory"
 	"agypro/internal/mode"
 	"agypro/internal/providers"
@@ -69,7 +70,6 @@ func (f *fakeDeps) deps() Deps {
 		},
 		FixKeys:      func(target string) error { f.fixed = append(f.fixed, target); return nil },
 		RollbackKeys: func(dir string) error { f.rolled = append(f.rolled, dir); return nil },
-		RunWizard:    func(in io.Reader, out io.Writer) error { return nil },
 		Doctor:       func(out io.Writer, strict bool) error { f.doctorN++; return nil },
 		Inventory: func(ctx context.Context) (*inventory.Inventory, error) {
 			return &inventory.Inventory{}, nil
@@ -349,6 +349,32 @@ func TestViewFanoutTimeoutRendersSharedConstant(t *testing.T) {
 	}
 	if it.Value == "120s" {
 		t.Error("fanout.timeout still renders the stale 120s string")
+	}
+}
+
+// TestViewEnvBridgeRowReadsBothVariables (P6-4): the env docs row documents
+// AGY_PRO_BRIDGE and its AGY_BRIDGE legacy alias on one row, and launcher.go
+// enables the bridge when EITHER is "1", so the row value must show both. It
+// used to read only the first variable, which made the legacy one uninspectable
+// from the panel whose job is env documentation.
+func TestViewEnvBridgeRowReadsBothVariables(t *testing.T) {
+	t.Setenv("AGY_PRO_BRIDGE", "")
+	t.Setenv("AGY_BRIDGE", "1")
+	f := newFakeDeps()
+	f.state.ManagedItems = mode.DefaultManagedItems
+	c := NewCore(f.deps())
+	view, err := c.View()
+	if err != nil {
+		t.Fatalf("View: %v", err)
+	}
+	it, ok := view.FindItem("env.AGY_PRO_BRIDGE")
+	if !ok {
+		t.Fatal("env.AGY_PRO_BRIDGE item missing from View()")
+	}
+	for _, want := range []string{"AGY_PRO_BRIDGE=(unset)", "AGY_BRIDGE=1"} {
+		if !strings.Contains(it.Value, want) {
+			t.Errorf("env.AGY_PRO_BRIDGE Value %q does not carry %q (both variables must be readable)", it.Value, want)
+		}
 	}
 }
 
@@ -1170,5 +1196,211 @@ func TestLegacyPanelExclusionRowIsReadOnlyWithHubRoute(t *testing.T) {
 	tui.Step(KeyEnter)
 	if strings.Contains(tui.message, "edit in the hub: agy pro setup") {
 		t.Fatalf("control row carries the exclusion route: %q", tui.message)
+	}
+}
+
+// --- P5-3 T6: integrations intent keys (state.json additive rows) ----------
+//
+// Six additive keys carry the integrations INTENT half through the existing
+// settings door: integration-preset plus the five per-feature toggles. These
+// tests pin the accept/reject matrix, the exact state.json row each key writes
+// (and that no sibling row moves), the hand-enumerated refusal sentence, and
+// the agreement between the state-layer spellings (internal/mode) and the
+// engine vocabulary (internal/integrations).
+
+// integrationIntentNames labels the six persisted integration rows in the order
+// integrationIntentRows returns them.
+var integrationIntentNames = [6]string{
+	"integration_preset",
+	"integration_statusline",
+	"integration_hook",
+	"integration_rules",
+	"integration_plugins",
+	"integration_skills",
+}
+
+// integrationIntentRows returns the six persisted integration rows in a fixed
+// order, so a write can be proven to touch exactly one of them.
+func integrationIntentRows(st *mode.State) [6]string {
+	return [6]string{
+		st.IntegrationPreset,
+		st.IntegrationStatusline,
+		st.IntegrationHook,
+		st.IntegrationRules,
+		st.IntegrationPlugins,
+		st.IntegrationSkills,
+	}
+}
+
+// TestCoreSetIntegrationPreset pins the preset door: both key spellings accept
+// the three engine preset words (case-folded, padded), store the canonical
+// word, and refuse everything else without writing.
+func TestCoreSetIntegrationPreset(t *testing.T) {
+	f := newFakeDeps()
+	c := NewCore(f.deps())
+
+	for _, key := range []string{"integration-preset", "integration_preset", "  Integration-Preset  "} {
+		for _, tc := range []struct{ operand, want string }{
+			{"native", string(integrations.PresetNative)},
+			{"TOOLS", string(integrations.PresetTools)},
+			{" Custom ", string(integrations.PresetCustom)},
+		} {
+			before := integrationIntentRows(f.state)
+			if err := c.Set(key, tc.operand); err != nil {
+				t.Fatalf("Set(%q, %q) = %v", key, tc.operand, err)
+			}
+			after := integrationIntentRows(f.state)
+			if after[0] != tc.want {
+				t.Fatalf("Set(%q, %q) stored %q; want %q", key, tc.operand, after[0], tc.want)
+			}
+			for i := 1; i < len(after); i++ {
+				if after[i] != before[i] {
+					t.Fatalf("Set(%q, %q) moved %s as well", key, tc.operand, integrationIntentNames[i])
+				}
+			}
+		}
+
+		for _, bad := range []string{"", "bogus", "on", "all"} {
+			saved := f.saved
+			before := integrationIntentRows(f.state)
+			err := c.Set(key, bad)
+			if err == nil {
+				t.Fatalf("Set(%q, %q) accepted", key, bad)
+			}
+			if !strings.Contains(err.Error(), "use native, tools, or custom") {
+				t.Errorf("the refusal must name the valid presets: %v", err)
+			}
+			if f.saved != saved || integrationIntentRows(f.state) != before {
+				t.Errorf("a refused preset write reached the state: %v", integrationIntentRows(f.state))
+			}
+		}
+	}
+}
+
+// TestCoreSetIntegrationFeatureToggles pins the five per-feature doors: each
+// closed key spelling writes exactly its own row, the on/off alias set is the
+// launcher menu's, and an out-of-set operand (including a preset word, which is
+// the easy typo) is refused without writing.
+func TestCoreSetIntegrationFeatureToggles(t *testing.T) {
+	f := newFakeDeps()
+	c := NewCore(f.deps())
+
+	rows := []struct {
+		keys    []string
+		index   int
+		feature integrations.Feature
+	}{
+		{[]string{"integration-statusline", "integration_statusline"}, 1, integrations.FeatureStatusline},
+		{[]string{"integration-hook", "integration_hook"}, 2, integrations.FeatureHook},
+		{[]string{"integration-rules", "integration_rules"}, 3, integrations.FeatureRules},
+		{[]string{"integration-plugins", "integration_plugins"}, 4, integrations.FeaturePlugins},
+		{[]string{"integration-skills", "integration_skills"}, 5, integrations.FeatureSkills},
+	}
+
+	for _, row := range rows {
+		// The key suffix IS the feature word the engine vocabulary declares, so
+		// the store's closed table cannot drift away from internal/integrations.
+		if got, err := integrations.ParseFeature(strings.TrimPrefix(row.keys[0], "integration-")); err != nil || got != row.feature {
+			t.Fatalf("ParseFeature(%q) = %q, %v; want %q", row.keys[0], got, err, row.feature)
+		}
+
+		for _, key := range row.keys {
+			for _, tc := range []struct{ operand, want string }{
+				{"on", mode.IntegrationToggleOn},
+				{"OFF", mode.IntegrationToggleOff},
+				{"1", mode.IntegrationToggleOn},
+				{"0", mode.IntegrationToggleOff},
+				{"true", mode.IntegrationToggleOn},
+				{"false", mode.IntegrationToggleOff},
+			} {
+				before := integrationIntentRows(f.state)
+				if err := c.Set(key, tc.operand); err != nil {
+					t.Fatalf("Set(%q, %q) = %v", key, tc.operand, err)
+				}
+				after := integrationIntentRows(f.state)
+				if after[row.index] != tc.want {
+					t.Fatalf("Set(%q, %q) stored %q; want %q", key, tc.operand, after[row.index], tc.want)
+				}
+				for i := range after {
+					if i != row.index && after[i] != before[i] {
+						t.Fatalf("Set(%q, %q) moved %s as well", key, tc.operand, integrationIntentNames[i])
+					}
+				}
+			}
+
+			for _, bad := range []string{"enabled", "2", "native", ""} {
+				saved := f.saved
+				before := integrationIntentRows(f.state)
+				err := c.Set(key, bad)
+				if err == nil {
+					t.Fatalf("Set(%q, %q) accepted", key, bad)
+				}
+				if !strings.Contains(err.Error(), key) || !strings.Contains(err.Error(), "use on, off, 1, or 0") {
+					t.Errorf("the refusal must name the key and the valid values: %v", err)
+				}
+				if f.saved != saved || integrationIntentRows(f.state) != before {
+					t.Errorf("a refused toggle write reached the state: %v", integrationIntentRows(f.state))
+				}
+			}
+		}
+	}
+}
+
+// TestCoreSetRefusalNamesEveryIntegrationKey pins the hand-enumerated refusal
+// sentence (constraint 9: one closed key table, one sentence) so adding a key
+// without naming it here fails a test.
+func TestCoreSetRefusalNamesEveryIntegrationKey(t *testing.T) {
+	f := newFakeDeps()
+	c := NewCore(f.deps())
+	err := c.Set("integration-nope", "on")
+	if err == nil {
+		t.Fatal("an unknown integration key was accepted")
+	}
+	for _, key := range []string{
+		"default-profile", "bridge-tools", "native-seat-concurrency", "language", "launcher_menu",
+		"integration-preset", "integration-statusline", "integration-hook",
+		"integration-rules", "integration-plugins", "integration-skills",
+	} {
+		if !strings.Contains(err.Error(), key) {
+			t.Errorf("the refusal must name %q: %v", key, err)
+		}
+	}
+	if f.saved != 0 {
+		t.Errorf("a refused key wrote the state %d times", f.saved)
+	}
+}
+
+// TestIntegrationVocabularyAgreesAcrossPackages pins the one place where the
+// state layer repeats the engine's words (internal/mode declares them so it
+// need not import internal/integrations): the preset words agree in both
+// directions, and the preset and toggle value domains stay disjoint.
+func TestIntegrationVocabularyAgreesAcrossPackages(t *testing.T) {
+	for _, preset := range []integrations.Preset{integrations.PresetNative, integrations.PresetTools, integrations.PresetCustom} {
+		if got := mode.NormalizeIntegrationPreset(string(preset)); got != string(preset) {
+			t.Errorf("mode.NormalizeIntegrationPreset(%q) = %q; the state and engine preset words drifted", preset, got)
+		}
+	}
+	for _, word := range []string{mode.IntegrationPresetNative, mode.IntegrationPresetTools, mode.IntegrationPresetCustom} {
+		if _, err := integrations.ParsePreset(word); err != nil {
+			t.Errorf("the engine refuses the state-layer preset word %q: %v", word, err)
+		}
+	}
+	for _, word := range []string{mode.IntegrationPresetNative, mode.IntegrationPresetTools, mode.IntegrationPresetCustom} {
+		if got := mode.NormalizeIntegrationToggle(word); got != "" {
+			t.Errorf("NormalizeIntegrationToggle(%q) = %q; a preset word must not read as a toggle", word, got)
+		}
+	}
+	for _, word := range []string{mode.IntegrationToggleOn, mode.IntegrationToggleOff} {
+		if got := mode.NormalizeIntegrationPreset(word); got != "" {
+			t.Errorf("NormalizeIntegrationPreset(%q) = %q; a toggle word must not read as a preset", word, got)
+		}
+		if got := mode.NormalizeIntegrationToggle(word); got != word {
+			t.Errorf("NormalizeIntegrationToggle(%q) = %q; want itself", word, got)
+		}
+	}
+	// The closed Core.Set table carries one toggle per feature the engine
+	// declares, so a sixth feature cannot appear without this test failing.
+	if got := len(integrations.AllFeatures()); got != 5 {
+		t.Fatalf("the engine declares %d features; the closed Core.Set table carries five toggles", got)
 	}
 }

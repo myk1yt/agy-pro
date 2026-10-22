@@ -45,6 +45,8 @@ func TestHubDigitActivatesRow(t *testing.T) {
 		{Digit(1), hubIDProviders},
 		{Digit(3), hubIDPrompts},
 		{Digit(7), hubIDLanguage},
+		{Digit(8), hubIDDashboard},
+		{Digit(9), hubIDIntegrations},
 	}
 	for _, tc := range cases {
 		_, opened := runHubKeys(t, []Key{tc.digit})
@@ -109,16 +111,52 @@ func TestHubLanguageRowNote(t *testing.T) {
 	}
 }
 
+// TestHubFrameFitsTenRowsWithBanner is the P5-3 T8 frame-fit measurement: with
+// the Integrations row the hub carries ten rows, and at the default 80x24 console
+// geometry the compact banner (the variant bannerFor picks for rows>=22) still
+// leaves room for all ten numbered rows plus both legends. The assertion is on
+// the composed frame, so it measures what the operator actually sees.
+func TestHubFrameFitsTenRowsWithBanner(t *testing.T) {
+	app := newHubApp(nil)
+	cap := Cap{Tier: TierPlain, Palette: DefaultPalette()}
+	banner := bannerFor(80, 24, cap, "tagline")
+	if len(banner) == 0 {
+		t.Fatalf("bannerFor(80,24) returned no banner; the 80x24 console frame carries one")
+	}
+	frame := composeFrame(app, banner).frame
+	if len(frame.Lines) > 24 {
+		t.Fatalf("frame lines = %d, want <= 24:\n%s", len(frame.Lines), frame.String())
+	}
+	t.Logf("measured: %d banner line(s) + frame %d of 24 lines", len(banner), len(frame.Lines))
+	body := frame.String()
+	for row := 1; row <= 10; row++ {
+		want := fmt.Sprintf("[%2d]", row)
+		if !strings.Contains(body, want) {
+			t.Fatalf("row marker %q is not on the 80x24 frame:\n%s", want, body)
+		}
+	}
+	if !strings.Contains(body, baseFooter) {
+		t.Fatalf("the base footer was cut:\n%s", body)
+	}
+}
+
 // TestHubExitRowQuits pins requirement (e): the exit row calls a.Exit(),
 // so the run stops after the exit key and the trailing key is never
 // processed (only one frame renders for two scripted keys).
+//
+// P5-3 T8 moved Exit to row 10 (the Integrations row landed at 9), so the exit
+// row is reached through the shared list's 0-prefix compose: 0 then 1 then 0
+// spells row 10. That is the documented multi-digit gesture, not a second
+// navigation path (stepList.HandleKey owns it), so the frame count still proves
+// the exit stopped the run: three keys are consumed (one frame painted before
+// each) and the fourth key, which would have opened row 1 again, is never read.
 func TestHubExitRowQuits(t *testing.T) {
-	out, opened := runHubKeys(t, []Key{Digit(8), Digit(1)})
+	out, opened := runHubKeys(t, []Key{Key("0"), Digit(1), Key("0"), Digit(1)})
 	if len(opened) != 0 {
 		t.Fatalf("exit row reached open with %v; want none", opened)
 	}
-	if n := strings.Count(out, baseFooter); n != 1 {
-		t.Fatalf("frame count = %d, want 1 (exit must stop the run); frames:\n%s", n, out)
+	if n := strings.Count(out, baseFooter); n != 3 {
+		t.Fatalf("frame count = %d, want 3 (the exit key must stop the run before the trailing key); frames:\n%s", n, out)
 	}
 }
 
@@ -135,11 +173,15 @@ func TestHubTitleAndMode(t *testing.T) {
 }
 
 // TestHubRowsOrder pins the row inventory: providers, presets, prompts,
-// settings, doctor, help, language, exit, numbered 1..8. The exit row
-// quits instead of opening, so open sees the first seven IDs in order.
+// settings, doctor, help, language, dashboard, integrations, exit, numbered
+// 1..10. P5-3 T8 added the Integrations row at 9, so every single-digit
+// shortcut that existed keeps its meaning and only Exit moved, to 10; rows past
+// 9 are reached with the shared list's 0-prefix compose (one navigation path,
+// not a second one). The exit row quits instead of opening, so open sees the
+// first nine IDs in order and nothing for row 10.
 func TestHubRowsOrder(t *testing.T) {
-	wantIDs := []string{hubIDProviders, hubIDPresets, hubIDPrompts, hubIDSettings, hubIDDoctor, hubIDHelp, hubIDLanguage}
-	_, got := runHubKeys(t, []Key{Digit(1), Digit(2), Digit(3), Digit(4), Digit(5), Digit(6), Digit(7), Digit(8)})
+	wantIDs := []string{hubIDProviders, hubIDPresets, hubIDPrompts, hubIDSettings, hubIDDoctor, hubIDHelp, hubIDLanguage, hubIDDashboard, hubIDIntegrations}
+	_, got := runHubKeys(t, []Key{Digit(1), Digit(2), Digit(3), Digit(4), Digit(5), Digit(6), Digit(7), Digit(8), Key("0"), Digit(9)})
 	if len(got) != len(wantIDs) {
 		t.Fatalf("activated %d rows, want %d: %v", len(got), len(wantIDs), got)
 	}
@@ -147,6 +189,9 @@ func TestHubRowsOrder(t *testing.T) {
 		if got[i] != wantIDs[i] {
 			t.Fatalf("row %d ID = %q, want %q (order: %v)", i+1, got[i], wantIDs[i], got)
 		}
+	}
+	if _, opened := runHubKeys(t, []Key{Key("0"), Digit(1), Key("0")}); len(opened) != 0 {
+		t.Fatalf("row 10 reached open with %v; want the exit row", opened)
 	}
 }
 

@@ -874,6 +874,12 @@ func TestSettingsScreenSavePresetChainedPrompts(t *testing.T) {
 	for _, k := range append(typeKeys("1,3"), KeyCtrlS) {
 		app.Step(k)
 	}
+	// PIN MOVED (P5-1 U6): the numbers submit opens the M4 append approval; the
+	// append lands on y.
+	if app.Modal() == nil {
+		t.Fatalf("append approval gate did not open after the numbers submit")
+	}
+	app.Step(KeyYes)
 	if len(h.presets) != 1 || h.presets[0].Name != "p9" || h.presets[0].Numbers != "1,3" {
 		t.Fatalf("presets = %+v; want p9=1,3", h.presets)
 	}
@@ -1846,6 +1852,39 @@ func TestSettingsScreenSavePresetNameValidation(t *testing.T) {
 	}
 }
 
+// TestSettingsScreenSavePresetDuplicateAtCommitRefused pins the SECOND
+// duplicate check: the collect/commit arm re-reads the store after the numbers
+// prompt, so a preset another session (or another surface) saved while the
+// prompt was open is refused there too instead of being appended as a second
+// entry with the same name. The append gate never opens and the store keeps the
+// entries it had.
+func TestSettingsScreenSavePresetDuplicateAtCommitRefused(t *testing.T) {
+	SetLanguage("en")
+	h := newSettingsTestCore(t)
+	h.presets = []swarm.SavedPreset{{Name: "quick", Numbers: "1,3"}}
+	app := newSettingsApp(h)
+
+	openSettingsRow(t, app, "swarm.save_preset")
+	for _, k := range append(typeKeys("fresh"), KeyCtrlS) {
+		app.Step(k)
+	}
+	// The name was free at the early check and is taken by the time the numbers
+	// are submitted: the fresh load inside the commit arm is what catches it.
+	h.presets = append(h.presets, swarm.SavedPreset{Name: "FRESH", Numbers: "9"})
+	for _, k := range append(typeKeys("2,4"), KeyCtrlS) {
+		app.Step(k)
+	}
+	if got := app.Message(); !strings.Contains(got, "already exists") {
+		t.Errorf("commit-time duplicate message = %q; want the exists refusal", got)
+	}
+	if app.Modal() != nil {
+		t.Errorf("the append approval gate opened for a refused duplicate: %T", app.Modal())
+	}
+	if len(h.presets) != 2 || h.presets[1].Name != "FRESH" || h.presets[1].Numbers != "9" {
+		t.Fatalf("store = %+v; want the two pre-existing entries untouched", h.presets)
+	}
+}
+
 // TestSettingsScreenSavePresetEmptyNumbersRefused pins the second half of
 // the D17 validation: a valid name with empty numbers writes nothing.
 func TestSettingsScreenSavePresetEmptyNumbersRefused(t *testing.T) {
@@ -1868,7 +1907,9 @@ func TestSettingsScreenSavePresetEmptyNumbersRefused(t *testing.T) {
 }
 
 // TestSettingsScreenSavePresetValidAppends covers the happy path on top of
-// the validation: a valid name and numbers append through the store.
+// the validation: a valid name and numbers append through the store once the M4
+// approval gate answers y (P5-1 U6: the healthy path used to write with no
+// consent at all).
 func TestSettingsScreenSavePresetValidAppends(t *testing.T) {
 	h := newSettingsTestCore(t)
 	app := newSettingsApp(h)
@@ -1880,6 +1921,15 @@ func TestSettingsScreenSavePresetValidAppends(t *testing.T) {
 	for _, k := range append(typeKeys("2,5"), KeyCtrlS) {
 		app.Step(k)
 	}
+	// PIN MOVED (P5-1 U6): the numbers submit now opens the exact-diff approval
+	// and nothing is stored before the answer.
+	if app.Modal() == nil {
+		t.Fatalf("append approval gate did not open")
+	}
+	if len(h.presets) != 0 {
+		t.Fatalf("presets written before the approval answer: %+v", h.presets)
+	}
+	app.Step(KeyYes)
 	if len(h.presets) != 1 || h.presets[0].Name != "deep-review" || h.presets[0].Numbers != "2,5" {
 		t.Fatalf("presets = %+v; want deep-review=2,5", h.presets)
 	}
@@ -1916,6 +1966,14 @@ func TestSettingsScreenPresetsEditRoundTrip(t *testing.T) {
 	for _, k := range append(typeKeys("9,10"), KeyCtrlS) {
 		app.Step(k)
 	}
+	// PIN MOVED (P5-1 U6): the edit is an M4-gated write now. The numbers submit
+	// opens the exact-diff approval and nothing reaches the store before y; the
+	// gate body is asserted by TestSettingsScreenPresetsEditGateShowsDiff, and
+	// this round-trip pin only has to answer it.
+	if app.Modal() == nil {
+		t.Fatalf("edit approval gate did not open; top = %T", app.Top())
+	}
+	app.Step(KeyYes)
 	if len(h.presets) != 2 || h.presets[0].Name != "deep" || h.presets[0].Numbers != "9,10" {
 		t.Fatalf("edit did not persist: %+v", h.presets)
 	}
@@ -2052,6 +2110,9 @@ func TestSettingsScreenPresetsDiskRoundTrip(t *testing.T) {
 	for _, k := range append(typeKeys("7,8"), KeyCtrlS) {
 		app.Step(k)
 	}
+	// PIN MOVED (P5-1 U6): the edit's approval gate answers before the store
+	// write; the disk round-trip itself is unchanged.
+	app.Step(KeyYes)
 	app.Step(Digit(2)) // arm "swift" (digits pick rows directly)
 	app.Step(Digit(4)) // Delete row
 	app.Step(KeyYes)
@@ -2168,6 +2229,21 @@ func TestSettingsScreenSavePresetCorruptStoreGatesFirstWrite(t *testing.T) {
 	submitPreset(t)
 	if app.Modal() == nil {
 		t.Fatal("the second attempt skipped the corrupt gate")
+	}
+	app.Step(KeyYes)
+	// PIN MOVED (P5-1 U6): the corrupt acknowledgment is the OUTERMOST gate, so
+	// approving it releases the exact-diff append approval underneath. Nothing is
+	// written until that second answer lands, which is the ordering the two gates
+	// are meant to have (acknowledge the unreadable file, then consent to the
+	// diff written over it).
+	if got, _ := os.ReadFile(path); string(got) != corrupt {
+		t.Fatalf("the corrupt ack alone wrote the file: %q", got)
+	}
+	if app.Modal() == nil {
+		t.Fatal("the corrupt ack did not release the append approval gate")
+	}
+	if body := strings.Join(app.Modal().Body(110), "\n"); !strings.Contains(body, "+ preset deep-review = 2,5") {
+		t.Errorf("append approval body missing the exact diff; body:\n%s", body)
 	}
 	app.Step(KeyYes)
 	presets, err := fs.LoadPresets()
@@ -2793,6 +2869,8 @@ func TestSettingsScreenOldShapePresetStaysListedAndIsNeverDeleted(t *testing.T) 
 	for _, k := range append(typeKeys("4,5"), KeyCtrlS) {
 		app.Step(k)
 	}
+	// PIN MOVED (P5-1 U6): the append is the M4 gate now; y runs the write.
+	app.Step(KeyYes)
 	if len(h.presets) != 4 {
 		t.Fatalf("store after append = %+v; want the three old rows plus the new one", h.presets)
 	}
@@ -3025,5 +3103,375 @@ func TestSettingsScreenExcludeEditorDuplicateRowKeepsCursorOnArmedRow(t *testing
 		}
 	} else {
 		t.Fatal("draft no longer matches the stored list after arming a row")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// P5-1 U6: the swarm preset write gates (W21 append, W22 edit).
+//
+// Both writers used to reach Core.SwarmSavePresets behind the corrupt-file
+// acknowledgment alone, so a HEALTHY swarm-state.json was rewritten with no
+// consent over the content the write applies. Per writer these pins cover the
+// exact diff body, the y/n/Esc consent matrix, the write-time stale-base
+// refusal, operand masking, the frame bound, and the line-mode answer path.
+// ---------------------------------------------------------------------------
+
+// submitSwarmAppend drives the swarm.save_preset row through both prompts and
+// leaves the append approval gate live.
+func submitSwarmAppend(t *testing.T, app *App, name, nums string) {
+	t.Helper()
+	openSettingsRow(t, app, "swarm.save_preset")
+	for _, k := range append(typeKeys(name), KeyCtrlS) {
+		app.Step(k)
+	}
+	for _, k := range append(typeKeys(nums), KeyCtrlS) {
+		app.Step(k)
+	}
+}
+
+// submitSwarmEdit arms the FIRST saved preset on the management screen, opens
+// the Edit prompt, replaces the seeded numbers, and submits, leaving that
+// approval gate live. presets is the store's preset count, because the Edit row
+// sits directly under the preset rows.
+func submitSwarmEdit(t *testing.T, app *App, presets int, seed, nums string) {
+	t.Helper()
+	openSettingsRow(t, app, "swarm.presets")
+	app.Step(Digit(1))           // arm the first preset row
+	app.Step(Digit(presets + 1)) // Edit preset row
+	if app.Top().Mode() != ModeEdit {
+		t.Fatalf("edit prompt did not open; top = %T", app.Top())
+	}
+	for i := 0; i < len(seed); i++ {
+		app.Step(KeyBackspace)
+	}
+	for _, k := range append(typeKeys(nums), KeyCtrlS) {
+		app.Step(k)
+	}
+}
+
+// TestSettingsSwarmAppendGateShowsExactDiff pins the W21 gate body: the append
+// sentence naming the store, the preset counts, the atomic sentence, the added
+// entry, and the existing entries the write keeps byte-identical. Nothing is
+// written before the answer.
+func TestSettingsSwarmAppendGateShowsExactDiff(t *testing.T) {
+	SetLanguage("en")
+	h := newSettingsTestCore(t)
+	h.presets = []swarm.SavedPreset{{Name: "quick", Numbers: "1,3"}}
+	app := newSettingsApp(h)
+	submitSwarmAppend(t, app, "deep-review", "2,5")
+
+	m := app.Modal()
+	if m == nil {
+		t.Fatal("append approval gate did not open")
+	}
+	if got, want := m.Title(), "Save Seat Preset"; got != want {
+		t.Errorf("gate title = %q; want the row label %q", got, want)
+	}
+	body := strings.Join(m.Body(app.Width()), "\n")
+	for _, want := range []string{
+		"Appends preset deep-review to ",
+		"swarm-state.json. No existing preset changes.",
+		"presets before: 1, after: 2",
+		"swarm-state.json will be written (0600, atomic) with this exact diff:",
+		"+ preset deep-review = 2,5",
+		"existing presets (kept byte-identical):",
+		"  preset quick",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("append gate body missing %q\n%s", want, body)
+		}
+	}
+	if len(h.presets) != 1 {
+		t.Fatalf("the gate wrote before the answer: %+v", h.presets)
+	}
+}
+
+// TestSettingsSwarmAppendGateConsentMatrix pins y/n/Esc on the W21 gate: y is
+// the only path to the store, and both refusals leave the entry set untouched
+// with the shared cancel sentence.
+func TestSettingsSwarmAppendGateConsentMatrix(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		key   Key
+		wrote bool
+	}{
+		{"y", KeyYes, true},
+		{"n", KeyNo, false},
+		{"esc", KeyEsc, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			SetLanguage("en")
+			h := newSettingsTestCore(t)
+			app := newSettingsApp(h)
+			submitSwarmAppend(t, app, "deep-review", "2,5")
+			if app.Modal() == nil {
+				t.Fatal("append approval gate did not open")
+			}
+			app.Step(tc.key)
+			if got := len(h.presets) == 1; got != tc.wrote {
+				t.Fatalf("after %s: store = %+v, wrote=%v, want wrote=%v", tc.name, h.presets, got, tc.wrote)
+			}
+			if !tc.wrote {
+				if msg := app.Message(); !strings.Contains(msg, "Cancelled. Nothing was written.") {
+					t.Fatalf("%s cancel message = %q", tc.name, msg)
+				}
+			} else if got := app.Message(); !strings.HasPrefix(got, "[SUCCESS]") {
+				t.Fatalf("y message = %q; want the success stamp", got)
+			}
+		})
+	}
+}
+
+// TestSettingsSwarmAppendGateStaleBaseRefused pins the write-time stale base:
+// another writer adds a preset while the append diff is on screen, so the diff
+// no longer describes the file. y then refuses by name and writes nothing.
+func TestSettingsSwarmAppendGateStaleBaseRefused(t *testing.T) {
+	SetLanguage("en")
+	h := newSettingsTestCore(t)
+	h.presets = []swarm.SavedPreset{{Name: "quick", Numbers: "1,3"}}
+	app := newSettingsApp(h)
+	submitSwarmAppend(t, app, "deep-review", "2,5")
+	if app.Modal() == nil {
+		t.Fatal("append approval gate did not open")
+	}
+
+	// Another session appends while the gate is live: the presented diff listed
+	// one existing preset, the file now holds two.
+	external := []swarm.SavedPreset{{Name: "quick", Numbers: "1,3"}, {Name: "external", Numbers: "4"}}
+	h.presets = external
+
+	app.Step(KeyYes)
+	msg := app.Message()
+	if !strings.Contains(msg, "changed on disk between the diff and the write") {
+		t.Fatalf("message = %q; want the stale-base refusal", msg)
+	}
+	if !strings.Contains(msg, "preset count moved from 1 to 2") {
+		t.Fatalf("refusal does not name the drift: %q", msg)
+	}
+	if len(h.presets) != 2 || h.presets[1].Name != "external" {
+		t.Fatalf("the refused append wrote the store: %+v", h.presets)
+	}
+}
+
+// TestSettingsSwarmAppendGateMasksOperands pins the display discipline: a
+// credential-shaped preset name and a credential-shaped numbers operand render
+// masked in the gate body, and neither the raw plant nor its tail survives.
+func TestSettingsSwarmAppendGateMasksOperands(t *testing.T) {
+	SetLanguage("en")
+	h := newSettingsTestCore(t)
+	app := newSettingsApp(h)
+	submitSwarmAppend(t, app, settingsPresetNamePlant, settingsPresetNumsPlant)
+
+	m := app.Modal()
+	if m == nil {
+		t.Fatal("append approval gate did not open")
+	}
+	body := strings.Join(m.Body(app.Width()), "\n")
+	for _, want := range []string{
+		"+ preset " + settingsPresetNameMask + " = " + settingsPresetNumsMask,
+		"Appends preset " + settingsPresetNameMask + " to ",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("append gate body missing the masked form %q\n%s", want, body)
+		}
+	}
+	for _, raw := range []string{settingsPresetNamePlant, settingsPresetNumsPlant,
+		settingsPresetNameTail, settingsPresetNumsTail} {
+		if strings.Contains(body, raw) {
+			t.Errorf("append gate body leaks %q\n%s", raw, body)
+		}
+	}
+}
+
+// TestSettingsSwarmAppendGateBoundedAt80x24 pins the frame bound on the W21
+// gate: 20 existing presets at 80x24 render a bounded entry list with one exact
+// tail line, and the gate block plus the shared footer stay on the frame.
+func TestSettingsSwarmAppendGateBoundedAt80x24(t *testing.T) {
+	SetLanguage("en")
+	h := newSettingsTestCore(t)
+	const existing = 20
+	for i := 1; i <= existing; i++ {
+		h.presets = append(h.presets, swarm.SavedPreset{Name: fmt.Sprintf("p%02d", i), Numbers: "1"})
+	}
+	app := newSettingsAppSized(h, 80, 24)
+	submitSwarmAppend(t, app, "fresh", "2,5")
+	m := app.Modal()
+	if m == nil {
+		t.Fatal("append approval gate did not open")
+	}
+
+	f, first, last := gateFrame(t, app, m)
+	frame := f.String()
+	visible := 0
+	for i := first; i <= last; i++ {
+		if strings.Contains(f.Lines[i], "  preset p") {
+			visible++
+		}
+	}
+	hidden := existing - visible
+	if visible < 1 || hidden < 1 {
+		t.Fatalf("bounded gate shows %d of %d existing entries and hides %d:\n%s",
+			visible, existing, hidden, frame)
+	}
+	if want := fmt.Sprintf("%d more entries NOT shown", hidden); !strings.Contains(frame, want) {
+		t.Errorf("tail %q missing from the frame:\n%s", want, frame)
+	}
+	// The added entry and the counts are part of the fixed prefix, so the bound
+	// can never hide the write being approved.
+	if !strings.Contains(frame, "+ preset fresh = 2,5") {
+		t.Errorf("the added diff line was cut:\n%s", frame)
+	}
+}
+
+// TestSettingsSwarmEditGateShowsExactDiff pins the W22 gate body: the rewrite
+// sentence, the changed-field line with old -> new numbers, the unchanged preset
+// count, the atomic sentence, and the removed/added diff lines.
+func TestSettingsSwarmEditGateShowsExactDiff(t *testing.T) {
+	SetLanguage("en")
+	h := newSettingsTestCore(t)
+	h.presets = []swarm.SavedPreset{{Name: "deep", Numbers: "1,3"}, {Name: "swift", Numbers: "1"}}
+	app := newSettingsApp(h)
+	submitSwarmEdit(t, app, 2, "1,3", "9,10")
+
+	m := app.Modal()
+	if m == nil {
+		t.Fatal("edit approval gate did not open")
+	}
+	if got, want := m.Title(), "Edit preset"; got != want {
+		t.Errorf("gate title = %q; want %q", got, want)
+	}
+	body := strings.Join(m.Body(app.Width()), "\n")
+	for _, want := range []string{
+		"Rewrites preset deep in ",
+		"swarm-state.json. No other preset changes.",
+		"  numbers: 1,3 -> 9,10",
+		"presets before: 2, after: 2",
+		"swarm-state.json will be written (0600, atomic) with this exact diff:",
+		"- preset deep = 1,3",
+		"+ preset deep = 9,10",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("edit gate body missing %q\n%s", want, body)
+		}
+	}
+	if len(h.presets) != 2 || h.presets[0].Numbers != "1,3" {
+		t.Fatalf("the gate wrote before the answer: %+v", h.presets)
+	}
+}
+
+// TestSettingsSwarmEditGateConsentMatrix pins y/n/Esc on the W22 gate.
+func TestSettingsSwarmEditGateConsentMatrix(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		key   Key
+		wrote bool
+	}{
+		{"y", KeyYes, true},
+		{"n", KeyNo, false},
+		{"esc", KeyEsc, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			SetLanguage("en")
+			h := newSettingsTestCore(t)
+			h.presets = []swarm.SavedPreset{{Name: "deep", Numbers: "1,3"}}
+			app := newSettingsApp(h)
+			submitSwarmEdit(t, app, 1, "1,3", "9,10")
+			if app.Modal() == nil {
+				t.Fatal("edit approval gate did not open")
+			}
+			app.Step(tc.key)
+			if got := h.presets[0].Numbers == "9,10"; got != tc.wrote {
+				t.Fatalf("after %s: store = %+v, wrote=%v, want wrote=%v", tc.name, h.presets, got, tc.wrote)
+			}
+			if !tc.wrote && !strings.Contains(app.Message(), "Cancelled. Nothing was written.") {
+				t.Fatalf("%s cancel message = %q", tc.name, app.Message())
+			}
+		})
+	}
+}
+
+// TestSettingsSwarmEditGateStaleBaseRefused pins the W22 stale base on the field
+// the diff shows changing: another writer edits the SAME preset's numbers while
+// the gate is on screen, so the presented "old" value is stale. y refuses by
+// name and writes nothing, so the external edit is never reverted.
+func TestSettingsSwarmEditGateStaleBaseRefused(t *testing.T) {
+	SetLanguage("en")
+	h := newSettingsTestCore(t)
+	h.presets = []swarm.SavedPreset{{Name: "deep", Numbers: "1,3"}, {Name: "swift", Numbers: "1"}}
+	app := newSettingsApp(h)
+	submitSwarmEdit(t, app, 2, "1,3", "9,10")
+	if app.Modal() == nil {
+		t.Fatal("edit approval gate did not open")
+	}
+
+	h.presets[0].Numbers = "7,8" // another session corrected the same field
+
+	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyYes}})
+	msg := app.Message()
+	if !strings.Contains(msg, "changed on disk between the diff and the write") {
+		t.Fatalf("message = %q; want the stale-base refusal\n%s", msg, out)
+	}
+	if !strings.Contains(msg, "numbers moved from 1,3 to 7,8") {
+		t.Fatalf("refusal does not name the moved field: %q", msg)
+	}
+	if h.presets[0].Numbers != "7,8" {
+		t.Fatalf("the refused edit overwrote the external change: %+v", h.presets)
+	}
+	if !strings.Contains(strings.Join(app.Frame().Lines, "\n"), "deep = 7,8") {
+		t.Errorf("the screen did not reload the on-disk value\n%s", app.Frame().String())
+	}
+}
+
+// TestSettingsSwarmGatesAnswerLineModeWords pins the off-console answer path for
+// both swarm gates: the real line-mode reader maps the mandated y/yes/n/no words
+// to the same keys the console produces, and those keys open-and-answer the real
+// gate with no arm-window delay.
+func TestSettingsSwarmGatesAnswerLineModeWords(t *testing.T) {
+	cases := []struct {
+		line  string
+		want  Key
+		wrote bool
+	}{
+		{"y\n", KeyYes, true},
+		{"yes\n", KeyYes, true},
+		{"n\n", KeyNo, false},
+		{"no\n", KeyNo, false},
+	}
+	for _, tc := range cases {
+		t.Run("append "+tc.line, func(t *testing.T) {
+			SetLanguage("en")
+			h := newSettingsTestCore(t)
+			app := newSettingsApp(h)
+			submitSwarmAppend(t, app, "deep-review", "2,5")
+			if app.Modal() == nil {
+				t.Fatal("append approval gate did not open")
+			}
+			k, ok := NewLineKeys(strings.NewReader(tc.line)).ReadKey()
+			if !ok || k != tc.want {
+				t.Fatalf("%q mapped to %q,%v; want %q", tc.line, k, ok, tc.want)
+			}
+			app.Step(k)
+			if got := len(h.presets) == 1; got != tc.wrote {
+				t.Fatalf("%q: store = %+v, wrote=%v, want %v", tc.line, h.presets, got, tc.wrote)
+			}
+		})
+		t.Run("edit "+tc.line, func(t *testing.T) {
+			SetLanguage("en")
+			h := newSettingsTestCore(t)
+			h.presets = []swarm.SavedPreset{{Name: "deep", Numbers: "1,3"}}
+			app := newSettingsApp(h)
+			submitSwarmEdit(t, app, 1, "1,3", "9,10")
+			if app.Modal() == nil {
+				t.Fatal("edit approval gate did not open")
+			}
+			k, ok := NewLineKeys(strings.NewReader(tc.line)).ReadKey()
+			if !ok || k != tc.want {
+				t.Fatalf("%q mapped to %q,%v; want %q", tc.line, k, ok, tc.want)
+			}
+			app.Step(k)
+			if got := h.presets[0].Numbers == "9,10"; got != tc.wrote {
+				t.Fatalf("%q: store = %+v, wrote=%v, want %v", tc.line, h.presets, got, tc.wrote)
+			}
+		})
 	}
 }

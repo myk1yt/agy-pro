@@ -19,4 +19,8 @@ const ReadOnlyMarker = "ro"
 // panel footer renders the const byte-for-byte. The setup TUI resolves the
 // same sentence through its catalog (settings.legend.readonly) so the legend
 // follows the shell language there.
+//
+// Catalog boundary (S7-C7 convention, the precedent for the rule): this
+// user-visible string lives OUTSIDE the twelve i18n catalogs on purpose, as a
+// package const. Revisit when the P5 unified settings surface exists.
 const ReadOnlyLegend = "ro = read-only (display only; pressing the row changes nothing)"

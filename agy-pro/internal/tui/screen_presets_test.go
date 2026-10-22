@@ -389,12 +389,15 @@ func TestPresetsDeleteCancelWritesNothing(t *testing.T) {
 	}
 }
 
-// TestPresetsSetDefaultWritesStoreKey pins the Set-default flow: the store's
-// default_preset key is rewritten and the status line follows.
+// TestPresetsSetDefaultWritesStoreKey pins the Set-default flow: the selected
+// preset is armed, the M4 approval gate names the key change, and y rewrites the
+// store's default_preset key so the status line follows. PIN MOVED (P5-1 U6): the
+// healthy path used to write with no consent, so the key pressed here is the
+// approval answer, not the write.
 func TestPresetsSetDefaultWritesStoreKey(t *testing.T) {
 	st, _ := presetsFixture(t)
-	// Down Down arms beta (row 3); digit 8 activates Set default.
-	out, _ := presetsKeys(t, st, []Key{KeyDown, KeyDown, Digit(8)})
+	// Down Down arms beta (row 3); digit 8 activates Set default; y approves.
+	out, _ := presetsKeys(t, st, []Key{KeyDown, KeyDown, Digit(8), KeyYes})
 	pf := reloadPresets(t, st)
 	if pf.DefaultPreset != "beta" {
 		t.Fatalf("default_preset = %q, want beta", pf.DefaultPreset)
@@ -967,5 +970,180 @@ func TestPresetsMessageRoles(t *testing.T) {
 		if strings.Contains(out.String(), "\x1b") {
 			t.Fatalf("%s plain-tier paint emitted escape bytes:\n%q", f.name, out.String())
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// P5-1 U6: the default_preset write gate (W28).
+//
+// The healthy path used to rewrite fanout-presets.json with no consent; it now
+// opens the M4 approval modal over the exact key change, re-reads the store
+// before the write, and refuses a stale presentation by name.
+// ---------------------------------------------------------------------------
+
+// openSetDefaultGate arms one preset row on the fixture (two presets) and
+// activates Set default, leaving the M4 approval gate live.
+func openSetDefaultGate(t *testing.T, app *App, downs int) Modal {
+	t.Helper()
+	for i := 0; i < downs; i++ {
+		app.Step(KeyDown)
+	}
+	app.Step(Digit(8)) // builtin, 2 presets, new, edit, duplicate, delete, set default
+	m := app.Modal()
+	if m == nil {
+		t.Fatalf("set-default approval gate did not open")
+	}
+	return m
+}
+
+// TestPresetsSetDefaultGateShowsExactDiff pins the W28 gate body: the key
+// sentence (store path, old value, new value), the atomic sentence for the same
+// file, and the removed/added diff lines. Nothing is written before the answer.
+func TestPresetsSetDefaultGateShowsExactDiff(t *testing.T) {
+	st, before := presetsFixture(t)
+	app, _ := newPresetsApp(st, nil)
+	m := openSetDefaultGate(t, app, 2) // arm beta
+
+	if got, want := m.Title(), "Set default"; got != want {
+		t.Errorf("gate title = %q; want %q", got, want)
+	}
+	body := strings.Join(m.Body(app.Width()), "\n")
+	for _, want := range []string{
+		"Sets default_preset: alpha -> beta.",
+		"No preset record changes",
+		"File: " + st.Path,
+		"fanout-presets.json will be written (0600, atomic) with this exact diff:",
+		"- default_preset = alpha",
+		"+ default_preset = beta",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("set-default gate body missing %q\n%s", want, body)
+		}
+	}
+	if got := reloadPresets(t, st); got.DefaultPreset != before.DefaultPreset {
+		t.Fatalf("the gate wrote default_preset = %q before the answer", got.DefaultPreset)
+	}
+}
+
+// TestPresetsSetDefaultGateConsentMatrix pins y/n/Esc on the W28 gate.
+func TestPresetsSetDefaultGateConsentMatrix(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		key  Key
+		want string
+	}{
+		{"y", KeyYes, "beta"},
+		{"n", KeyNo, "alpha"},
+		{"esc", KeyEsc, "alpha"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st, _ := presetsFixture(t)
+			app, _ := newPresetsApp(st, nil)
+			openSetDefaultGate(t, app, 2)
+			app.Step(tc.key)
+			if got := reloadPresets(t, st).DefaultPreset; got != tc.want {
+				t.Fatalf("after %s: default_preset = %q, want %q", tc.name, got, tc.want)
+			}
+			if tc.want == "alpha" {
+				if msg := app.Message(); !strings.Contains(msg, "Cancelled. Nothing was written.") {
+					t.Fatalf("%s cancel message = %q", tc.name, msg)
+				}
+			} else if msg := app.Message(); !strings.Contains(msg, "Default preset set to beta.") {
+				t.Fatalf("y message = %q; want the default-set notice", msg)
+			}
+		})
+	}
+}
+
+// TestPresetsSetDefaultGateStaleBaseRefused pins the write-time re-read: another
+// writer moves the same key while the diff is on screen, so y refuses by name
+// and leaves the external value in place.
+func TestPresetsSetDefaultGateStaleBaseRefused(t *testing.T) {
+	st, before := presetsFixture(t)
+	app, _ := newPresetsApp(st, nil)
+	openSetDefaultGate(t, app, 2) // arm beta, diff says alpha -> beta
+
+	external := *before
+	external.DefaultPreset = "beta" // another session already made beta the default
+	external.Presets = append([]fanout.Preset(nil), before.Presets...)
+	if err := st.SavePresets(&external); err != nil {
+		t.Fatalf("external write: %v", err)
+	}
+
+	app.Step(KeyYes)
+	msg := app.Message()
+	if !strings.Contains(msg, "changed on disk between the diff and the write") {
+		t.Fatalf("message = %q; want the stale-base refusal", msg)
+	}
+	if !strings.Contains(msg, "default_preset moved from alpha to beta") {
+		t.Fatalf("refusal does not name the moved key: %q", msg)
+	}
+	if got := reloadPresets(t, st); got.DefaultPreset != "beta" {
+		t.Fatalf("the refused write changed the store: %+v", got)
+	}
+	if frame := app.Frame().String(); !strings.Contains(frame, "Default preset: beta") {
+		t.Errorf("the list did not reload the on-disk default\n%s", frame)
+	}
+}
+
+// TestPresetsSetDefaultGateMasksName pins the display discipline on the identity
+// slot: a credential-shaped preset name renders masked in the gate body, and
+// neither the raw plant nor its tail survives.
+func TestPresetsSetDefaultGateMasksName(t *testing.T) {
+	t.Setenv(providers.EnvHome, t.TempDir())
+	st := &fanout.PresetFileStore{Path: filepath.Join(t.TempDir(), "fanout-presets.json")}
+	const planted = testfixtures.AKIAExample
+	if err := st.SavePresets(&fanout.PresetsFile{
+		Presets:       []fanout.Preset{{Name: "alpha", N: 2}, {Name: planted, N: 3}},
+		DefaultPreset: "alpha",
+	}); err != nil {
+		t.Fatalf("seed presets: %v", err)
+	}
+	app, _ := newPresetsApp(st, nil)
+	m := openSetDefaultGate(t, app, 2) // arm the planted row
+
+	body := strings.Join(m.Body(app.Width()), "\n")
+	for _, want := range []string{
+		"alpha -> AKIAI****",
+		"+ default_preset = AKIAI****",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("set-default gate body missing the masked form %q\n%s", want, body)
+		}
+	}
+	for _, raw := range []string{planted, "IOSFODNN7EXAMPLE"} {
+		if strings.Contains(body, raw) {
+			t.Errorf("set-default gate body leaks %q\n%s", raw, body)
+		}
+	}
+}
+
+// TestPresetsSetDefaultGateAnswersLineModeWords pins the off-console answer path:
+// the real line-mode reader maps the mandated words to the keys the console
+// produces, and those keys answer the real gate with no arm-window delay.
+func TestPresetsSetDefaultGateAnswersLineModeWords(t *testing.T) {
+	for _, tc := range []struct {
+		line string
+		want Key
+		def  string
+	}{
+		{"y\n", KeyYes, "beta"},
+		{"yes\n", KeyYes, "beta"},
+		{"n\n", KeyNo, "alpha"},
+		{"no\n", KeyNo, "alpha"},
+	} {
+		t.Run(tc.line, func(t *testing.T) {
+			st, _ := presetsFixture(t)
+			app, _ := newPresetsApp(st, nil)
+			openSetDefaultGate(t, app, 2)
+			k, ok := NewLineKeys(strings.NewReader(tc.line)).ReadKey()
+			if !ok || k != tc.want {
+				t.Fatalf("%q mapped to %q,%v; want %q", tc.line, k, ok, tc.want)
+			}
+			app.Step(k)
+			if got := reloadPresets(t, st).DefaultPreset; got != tc.def {
+				t.Fatalf("%q: default_preset = %q, want %q", tc.line, got, tc.def)
+			}
+		})
 	}
 }

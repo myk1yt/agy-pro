@@ -29,7 +29,6 @@ func TestKeyStrings(t *testing.T) {
 		{KeyCtrlC, "ctrl-c"},
 		{KeyCtrlL, "ctrl-l"},
 		{KeyCtrlS, "ctrl-s"},
-		{KeyHelp, "help"},
 	}
 	for _, c := range cases {
 		if string(c.key) != c.want {

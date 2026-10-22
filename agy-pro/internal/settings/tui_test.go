@@ -16,6 +16,7 @@ import (
 
 func newTestTUI(t *testing.T) (*TUI, *fakeDeps, *bytes.Buffer) {
 	t.Helper()
+	isolatePanelModeDirs(t)
 	f := newFakeDeps()
 	f.state.ManagedItems = mode.DefaultManagedItems
 	f.reg = &providers.Registry{Providers: []providers.Provider{
@@ -225,8 +226,16 @@ func TestTUINavigation(t *testing.T) {
 
 // TestTUIDangerGate: destructive ops require a y/n confirmation (contract
 // §2.9 Danger items; research §3.1 confirmations).
+//
+// UPDATED by P5-1 U5b: the restore door now presents the deployment plan it
+// authorizes (W15), and with no resolvable backup source it refuses before the
+// gate instead of opening a body-less confirmation (see
+// TestU5bModeRestoreGateRefusesWithoutASource). The pin seeds the one backup the
+// plan needs, so the danger-gate property it was written for is asserted
+// unchanged: activation gates, n cancels, y runs the op once.
 func TestTUIDangerGate(t *testing.T) {
 	tui, f, _ := newTestTUI(t)
+	seedPanelBackup(t, map[string]string{"rules/AGENTS.md": "restored"})
 
 	// Jump to P1's mode.restore item (danger) by item id.
 	var idx int
@@ -265,6 +274,11 @@ func TestTUIDangerGate(t *testing.T) {
 }
 
 // TestTUIChoiceSelection: Choices use numbered selection (digits / Enter).
+//
+// UPDATED by P5-1 U5b: the state.json scalar rows are gated writes now (F3(a)),
+// so a numbered choice arms the exact-diff gate and the value lands on y. The
+// property this pin was written for (numbered selection drives Choices) is kept
+// and now asserted together with the gate in between.
 func TestTUIChoiceSelection(t *testing.T) {
 	tui, f, _ := newTestTUI(t)
 
@@ -279,14 +293,27 @@ func TestTUIChoiceSelection(t *testing.T) {
 		t.Errorf("choice list not rendered:\n%s", s.Right)
 	}
 	tui.Step(Key('2')) // second choice = native
-	if f.state.DefaultProfile != mode.ProfileNative {
-		t.Errorf("digit choice did not set the value: %q", f.state.DefaultProfile)
-	}
 	if tui.choices != nil {
 		t.Error("choice mode not closed after selection")
 	}
+	if tui.pending == nil {
+		t.Fatalf("the scalar choice did not arm the exact-diff gate: %q", tui.message)
+	}
+	if f.state.DefaultProfile != mode.ProfilePrompt {
+		t.Errorf("the choice wrote before consent: %q", f.state.DefaultProfile)
+	}
+	if !strings.Contains(tui.message, "confirm to proceed") {
+		t.Errorf("no consent message after choice: %q", tui.message)
+	}
+	if !strings.Contains(tui.Frame().Right, "default_profile: prompt -> native") {
+		t.Errorf("gate body missing the exact diff:\n%s", tui.Frame().Right)
+	}
+	tui.Step(KeyYes)
+	if f.state.DefaultProfile != mode.ProfileNative {
+		t.Errorf("digit choice did not set the value after consent: %q", f.state.DefaultProfile)
+	}
 	if !strings.Contains(tui.message, "[SUCCESS]") {
-		t.Errorf("no success message after choice: %q", tui.message)
+		t.Errorf("no success message after the confirmed choice: %q", tui.message)
 	}
 }
 
@@ -310,7 +337,9 @@ func TestTUICaptureHeadless(t *testing.T) {
 	}
 }
 
-// TestTUIPromptOps: rename flows through the line prompt and the Core seam.
+// TestTUIPromptOps: rename flows through the line prompts and the Core seam.
+// UPDATED by P5-1 U5a: the write is gated (F3(a)), so the flow is prompts ->
+// exact-diff gate -> y -> the same Core verb it always called.
 func TestTUIPromptOps(t *testing.T) {
 	tui, f, _ := newTestTUI(t)
 	// Navigate to P2 (Models & Providers) and find providers.rename.
@@ -329,9 +358,13 @@ func TestTUIPromptOps(t *testing.T) {
 	tui.lines = &ScriptedLines{Lines: []string{"google", "gemini"}}
 	tui.row = idx
 	tui.Step(KeyEnter)
-	if tui.pending != nil {
-		t.Fatal("rename should not ask a danger gate")
+	if tui.pending == nil {
+		t.Fatal("rename must ask the exact-diff gate (F3(a))")
 	}
+	if len(f.reg.Providers) != 1 || f.reg.Providers[0].Name != "google" {
+		t.Fatalf("rename applied before consent: %+v", f.reg.Providers)
+	}
+	tui.Step(KeyYes)
 	if len(f.reg.Providers) != 1 || f.reg.Providers[0].Name != "gemini" {
 		t.Errorf("rename did not apply: %+v", f.reg.Providers)
 	}
@@ -384,6 +417,7 @@ func TestRunTUILineModeFallback(t *testing.T) {
 // overwrite and therefore no gate).
 func newSwarmFileTUI(t *testing.T, path string) (*TUI, *swarm.FileStore, *bytes.Buffer) {
 	t.Helper()
+	isolatePanelModeDirs(t)
 	f := newFakeDeps()
 	f.state.ManagedItems = mode.DefaultManagedItems
 	fs := &swarm.FileStore{Path: path}
@@ -492,11 +526,12 @@ func TestTUISwarmSavePresetGatesCorruptStore(t *testing.T) {
 	}
 }
 
-// TestTUISwarmSavePresetHealthyStoreSkipsGate is the other outcome: a readable
-// store (or none yet) writes straight through with no prompt, and a second save
-// after the first healthy write is not gated either (one acknowledgment, and the
-// file it acknowledged is gone).
-func TestTUISwarmSavePresetHealthyStoreSkipsGate(t *testing.T) {
+// TestTUISwarmSavePresetHealthyStoreConsentsAppend pins the W24 half of P5-1
+// U5b: a healthy store (or none yet) used to append straight through with no
+// prompt at all. The append is now presented as an exact diff and waits for y;
+// the corrupt branch above keeps its overwrite acknowledgment on the same gate,
+// so one answer can no longer cover only half of what the save does.
+func TestTUISwarmSavePresetHealthyStoreConsentsAppend(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "swarm-state.json")
 	fs := &swarm.FileStore{Path: path}
 	if err := fs.SavePresets([]swarm.SavedPreset{{Name: "existing", Numbers: "1"}}); err != nil {
@@ -507,22 +542,49 @@ func TestTUISwarmSavePresetHealthyStoreSkipsGate(t *testing.T) {
 	tui.lines = &ScriptedLines{Lines: []string{"deep-review", "2,5"}}
 
 	tui.Step(KeyEnter)
-	if tui.pending != nil {
-		t.Fatalf("a healthy store was gated: %+v", tui.pending)
+	if tui.pending == nil {
+		t.Fatal("a healthy store appended without a consent gate")
 	}
+	if tui.pending.notice != "" {
+		t.Errorf("a healthy store carried the corrupt-overwrite notice: %q", tui.pending.notice)
+	}
+	right := tui.Frame().Right
+	for _, want := range []string{
+		"Appends preset deep-review to swarm-state.json.",
+		"presets before: 1, after: 2",
+		"existing presets (kept byte-identical):",
+		"  preset existing",
+		"+ preset deep-review = 2,5",
+		"swarm-state.json will be written (0600, atomic)",
+	} {
+		if !strings.Contains(right, want) {
+			t.Errorf("append gate body missing %q:\n%s", want, right)
+		}
+	}
+	if presets, err := fs.LoadPresets(); err != nil || len(presets) != 1 {
+		t.Fatalf("the gate wrote before it was answered: %+v (%v)", presets, err)
+	}
+
+	// n cancels: the file keeps its one preset.
+	tui.Step(KeyNo)
+	if presets, err := fs.LoadPresets(); err != nil || len(presets) != 1 || presets[0].Name != "existing" {
+		t.Fatalf("a declined append changed the file: %+v (%v)", presets, err)
+	}
+
+	// y appends the presented entry.
+	selectItemRow(t, tui, "swarm.save_preset")
+	tui.lines = &ScriptedLines{Lines: []string{"deep-review", "2,5"}}
+	tui.Step(KeyEnter)
+	tui.Step(KeyYes)
 	presets, err := fs.LoadPresets()
 	if err != nil {
 		t.Fatalf("LoadPresets: %v", err)
 	}
-	if len(presets) != 2 || presets[1].Name != "deep-review" {
+	if len(presets) != 2 || presets[1].Name != "deep-review" || presets[1].Numbers != "2,5" {
 		t.Fatalf("on-disk presets = %+v; want existing + deep-review", presets)
 	}
-
-	selectItemRow(t, tui, "swarm.save_preset")
-	tui.lines = &ScriptedLines{Lines: []string{"second", "3"}}
-	tui.Step(KeyEnter)
-	if tui.pending != nil {
-		t.Fatalf("the second save over a now-healthy file was gated: %+v", tui.pending)
+	if !strings.HasPrefix(tui.message, "[SUCCESS]") {
+		t.Errorf("approved append message = %q; want the success stamp", tui.message)
 	}
 }
 

@@ -25,12 +25,19 @@ import (
 // instruction; the mesh front door that reads this profile is wired by the
 // launcher unit. The AGY_PRO_HYBRID env override (p1|p2|off) beats the persisted
 // value at launch time (hybrid.ResolveProfile).
+//
+// P5-1 U2 (F3(a)): `on` and `off` are state.json writers, so each presents the
+// exact old -> new diff for the hybrid_profile key, requires consent (console
+// y/N, or --yes on a non-interactive stdin), and re-reads the same key
+// immediately before the save, refusing on drift. status/check stay read-only.
 
-const proHybridUsage = `Usage: agy pro hybrid <on p1|on p2|off|status|check>
+const proHybridUsage = `Usage: agy pro hybrid <on p1|on p2|off|status|check> [--yes]
   on p1 | on p2   persist the profile and print its cost line + launch instruction
   off             clear the persisted profile
   status          show the effective profile (env override vs persisted) + wirecheck verdict
-  check           render the wirecheck report; exit 1 when the effective profile is NOGO`
+  check           render the wirecheck report; exit 1 when the effective profile is NOGO
+  --yes           consent to the state.json write without the console y/N prompt
+                  (required when stdin is not a console)`
 
 // wirecheckCheck is the production wirecheck entry point. Tests replace this
 // seam so status/check run against a synthetic report instead of scanning the
@@ -43,56 +50,64 @@ func runHybridCmd(args []string) int {
 	return runHybridCmdTo(args, os.Stdout, os.Stderr)
 }
 
-// runHybridCmdTo is the writer-injectable core of runHybridCmd.
+// runHybridCmdTo is the writer-injectable core of runHybridCmd (console stdin).
 func runHybridCmdTo(args []string, out, errw io.Writer) int {
-	if len(args) == 0 {
+	return runHybridCmdToIn(args, os.Stdin, out, errw)
+}
+
+// runHybridCmdToIn is the reader- and writer-injectable core: the consent gate
+// needs the caller's stdin, so tests drive the console y/N and pipe paths
+// through this entry instead of a real terminal.
+func runHybridCmdToIn(args []string, in io.Reader, out, errw io.Writer) int {
+	rest, yes := splitYesFlag(args)
+	if len(rest) == 0 {
 		fmt.Fprintln(errw, proHybridUsage)
 		return 2
 	}
-	switch strings.ToLower(strings.TrimSpace(args[0])) {
+	switch strings.ToLower(strings.TrimSpace(rest[0])) {
 	case "on":
-		if len(args) != 2 {
+		if len(rest) != 2 {
 			fmt.Fprintf(errw, "[agy-pro] on requires exactly one profile: p1 or p2\n%s\n", proHybridUsage)
 			return 2
 		}
-		p, err := hybrid.ParseProfile(args[1])
+		p, err := hybrid.ParseProfile(rest[1])
 		if err != nil {
 			// C2: the operand is echoed in the parse error; mask it so a
 			// misdirected key paste in the profile slot never prints raw.
-			fmt.Fprintf(errw, "[agy-pro] %s\n", maskOperandSentence(err.Error(), args[1]))
+			fmt.Fprintf(errw, "[agy-pro] %s\n", maskOperandSentence(err.Error(), rest[1]))
 			return 2
 		}
 		if p == hybrid.ProfileNone {
-			fmt.Fprintf(errw, "[agy-pro] on requires a profile (p1 or p2), not %q\n%s\n", providers.MaskOperand(args[1]), proHybridUsage)
+			fmt.Fprintf(errw, "[agy-pro] on requires a profile (p1 or p2), not %q\n%s\n", providers.MaskOperand(rest[1]), proHybridUsage)
 			return 2
 		}
-		return hybridOn(out, errw, p)
+		return hybridOn(in, out, errw, p, yes)
 	case "off":
-		if len(args) != 1 {
+		if len(rest) != 1 {
 			fmt.Fprintf(errw, "[agy-pro] off takes no arguments\n%s\n", proHybridUsage)
 			return 2
 		}
-		return hybridOff(out, errw)
+		return hybridOff(in, out, errw, yes)
 	case "status":
-		if len(args) != 1 {
+		if len(rest) != 1 {
 			fmt.Fprintf(errw, "[agy-pro] status takes no arguments\n%s\n", proHybridUsage)
 			return 2
 		}
 		return hybridStatus(out, errw)
 	case "check":
-		if len(args) != 1 {
+		if len(rest) != 1 {
 			fmt.Fprintf(errw, "[agy-pro] check takes no arguments\n%s\n", proHybridUsage)
 			return 2
 		}
 		return hybridCheck(out, errw)
 	default:
-		fmt.Fprintf(errw, "[agy-pro] unknown hybrid subcommand %q\n%s\n", providers.MaskOperand(args[0]), proHybridUsage)
+		fmt.Fprintf(errw, "[agy-pro] unknown hybrid subcommand %q\n%s\n", providers.MaskOperand(rest[0]), proHybridUsage)
 		return 2
 	}
 }
 
 // hybridOn persists the profile and prints its cost line and launch instruction.
-func hybridOn(out, errw io.Writer, p hybrid.Profile) int {
+func hybridOn(in io.Reader, out, errw io.Writer, p hybrid.Profile, yes bool) int {
 	// FIX-63: pre-validate the artifact THIS profile uses, so a registry that
 	// profile cannot serve is caught now (refuse, profile NOT persisted) rather
 	// than only at launch. An unreadable/missing registry is not a collision:
@@ -101,9 +116,23 @@ func hybridOn(out, errw io.Writer, p hybrid.Profile) int {
 		fmt.Fprintf(errw, "[agy-pro] cannot enable %s: %s; fix providers.json first (profile not saved)\n", p.Label(), err)
 		return 1
 	}
-	st, err := mode.LoadState()
+	// P5-1 U2: the profile is persisted state, so the exact state.json diff is
+	// presented before anything is written and the same key is re-read after
+	// consent (a concurrent edit refuses instead of being overwritten). The
+	// artifact pre-validation above stays first: a profile whose artifact cannot
+	// be built has no writable diff to approve.
+	plan, err := snapshotStateScalar("hybrid_profile", p.String())
 	if err != nil {
-		fmt.Fprintf(errw, "[agy-pro] failed to read state: %v\n", err)
+		fmt.Fprintf(errw, "[agy-pro] %v\n", err)
+		return 1
+	}
+	proceed, code := confirmStateWrite(in, out, errw, plan.diff(), yes)
+	if !proceed {
+		return code
+	}
+	st, err := plan.reverify("agy pro hybrid on")
+	if err != nil {
+		fmt.Fprintf(errw, "[agy-pro] %v\n", err)
 		return 1
 	}
 	st.HybridProfile = p.String()
@@ -176,11 +205,21 @@ func prevalidateP2Settings() error {
 	return hybrid.ValidateP2Artifact(reg)
 }
 
-// hybridOff clears the persisted profile.
-func hybridOff(out, errw io.Writer) int {
-	st, err := mode.LoadState()
+// hybridOff clears the persisted profile. P5-1 U2: the clear is a state.json
+// write like `on`, so it presents the same old -> new diff and takes consent.
+func hybridOff(in io.Reader, out, errw io.Writer, yes bool) int {
+	plan, err := snapshotStateScalar("hybrid_profile", "")
 	if err != nil {
-		fmt.Fprintf(errw, "[agy-pro] failed to read state: %v\n", err)
+		fmt.Fprintf(errw, "[agy-pro] %v\n", err)
+		return 1
+	}
+	proceed, code := confirmStateWrite(in, out, errw, plan.diff(), yes)
+	if !proceed {
+		return code
+	}
+	st, err := plan.reverify("agy pro hybrid off")
+	if err != nil {
+		fmt.Fprintf(errw, "[agy-pro] %v\n", err)
 		return 1
 	}
 	st.HybridProfile = ""

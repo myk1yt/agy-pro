@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"agypro/internal/paths"
+	"agypro/internal/providers"
 	"agypro/internal/testfixtures"
 	"agypro/internal/tui"
 )
@@ -22,21 +23,33 @@ import (
 // returns a recorder the test can inspect.
 func swapSetupSeams(t *testing.T) (rec *setupRec) {
 	t.Helper()
-	t.Setenv(paths.EnvAgyProHome, filepath.Join(t.TempDir(), "home"))
+	root := t.TempDir()
+	// The four-redirect discipline (F-S9B-03): every home-derived variable points
+	// inside the sandbox, so no setup door can reach the operator's real home.
+	t.Setenv("USERPROFILE", root)
+	t.Setenv("HOME", root)
+	t.Setenv(paths.EnvAgyProHome, root)
+	t.Setenv(paths.EnvGeminiConfigDir, filepath.Join(root, "gemini-config"))
 	// The harness models a raw-console host by default: both the stdout and
 	// the stdin probe report a console, which is the shape the pre-P4-5 tests
 	// were written for. A pin that needs the piped-stdin shape flips
 	// stdinConsole to false.
-	rec = &setupRec{stdinConsole: true}
+	rec = &setupRec{stdinConsole: true, stdinTTY: true}
 	oldTUI, oldWizard, oldCap, oldStdin, oldExit := setupTUIRunner, setupWizardRunner, setupConsoleCap, setupStdinConsole, setupExit
+	// P5-1 U4: the wizard doors hand the wizard their consent context, whose
+	// console half is stdinIsTTY. The console-gate pins count setupStdinConsole
+	// probes, so the two seams must stay separable; this one is stubbed here so
+	// the context is deterministic whatever handle the test binary runs on.
+	oldTTY := stdinIsTTY
 	setupTUIRunner = func(in io.Reader, out, errw io.Writer) int {
 		rec.tuiCalled = true
 		rec.tuiIn, rec.tuiOut, rec.tuiErrw = in, out, errw
 		return rec.tuiCode
 	}
-	setupWizardRunner = func(in io.Reader, out io.Writer) error {
+	setupWizardRunner = func(in io.Reader, out io.Writer, opts providers.WizardOptions) error {
 		rec.wizardCalled = true
 		rec.wizardIn, rec.wizardOut = in, out
+		rec.wizardOpts = opts
 		return rec.wizardErr
 	}
 	setupConsoleCap = func() tui.Cap { return rec.cap }
@@ -45,8 +58,10 @@ func swapSetupSeams(t *testing.T) (rec *setupRec) {
 		return rec.stdinConsole
 	}
 	setupExit = func(code int) { rec.exitCode = code }
+	stdinIsTTY = func(in io.Reader) bool { return rec.stdinTTY }
 	t.Cleanup(func() {
 		setupTUIRunner, setupWizardRunner, setupConsoleCap, setupStdinConsole, setupExit = oldTUI, oldWizard, oldCap, oldStdin, oldExit
+		stdinIsTTY = oldTTY
 	})
 	return rec
 }
@@ -54,6 +69,7 @@ func swapSetupSeams(t *testing.T) (rec *setupRec) {
 type setupRec struct {
 	cap          tui.Cap
 	stdinConsole bool // value the stdin-console probe reports
+	stdinTTY     bool // value the wizard consent context's console probe reports
 	stdinProbes  int  // how many times the gate queried the stdin probe
 	tuiCalled    bool
 	tuiIn        io.Reader
@@ -63,6 +79,7 @@ type setupRec struct {
 	wizardCalled bool
 	wizardIn     io.Reader
 	wizardOut    io.Writer
+	wizardOpts   providers.WizardOptions // P5-1 U4: the consent context the door passed
 	wizardErr    error
 	exitCode     int // -1 sentinel: never called
 }

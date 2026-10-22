@@ -29,9 +29,10 @@ func fakeHybridReport() wirecheck.Report {
 func sandboxHybrid(t *testing.T) {
 	t.Helper()
 	tmp := t.TempDir()
+	t.Setenv("USERPROFILE", tmp)
+	t.Setenv("HOME", tmp)
 	t.Setenv(paths.EnvAgyProHome, tmp)
 	t.Setenv(paths.EnvGeminiConfigDir, filepath.Join(tmp, "cfg"))
-	t.Setenv("USERPROFILE", tmp)
 	t.Setenv(hybrid.EnvHybridProfile, "")
 
 	old := wirecheckCheck
@@ -53,14 +54,16 @@ func TestRunHybridCmd_ArgTable(t *testing.T) {
 		{"on without profile", []string{"on"}, 2},
 		{"on garbage", []string{"on", "garbage"}, 2},
 		{"on off rejected", []string{"on", "off"}, 2},
-		{"on extra args", []string{"on", "p1", "extra"}, 2},
+		{"on extra args", []string{"on", "p1", "extra", "--yes"}, 2},
 		{"bogus subcommand", []string{"bogus"}, 2},
-		{"on p1", []string{"on", "p1"}, 0},
+		// P5-1 U2: `on`/`off` write state.json, so each carries the --yes
+		// consent operand (a test stdin is not a console).
+		{"on p1", []string{"on", "p1", "--yes"}, 0},
 		{"status p1", []string{"status"}, 0},
 		{"check p1 GO", []string{"check"}, 0},
-		{"on p2", []string{"on", "p2"}, 0},
+		{"on p2", []string{"on", "p2", "--yes"}, 0},
 		{"check p2 NOGO", []string{"check"}, 1},
-		{"off", []string{"off"}, 0},
+		{"off", []string{"off", "--yes"}, 0},
 		{"check none", []string{"check"}, 0},
 	}
 	for _, tc := range cases {
@@ -78,7 +81,7 @@ func TestRunHybridCmd_PersistsAndClears(t *testing.T) {
 	sandboxHybrid(t)
 
 	// on p1 persists "p1".
-	if code := runHybridCmdTo([]string{"on", "p1"}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+	if code := runHybridCmdTo([]string{"on", "p1", "--yes"}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
 		t.Fatalf("on p1 exit = %d; want 0", code)
 	}
 	st, err := mode.LoadState()
@@ -93,7 +96,7 @@ func TestRunHybridCmd_PersistsAndClears(t *testing.T) {
 	}
 
 	// off clears it.
-	if code := runHybridCmdTo([]string{"off"}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+	if code := runHybridCmdTo([]string{"off", "--yes"}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
 		t.Fatalf("off exit = %d; want 0", code)
 	}
 	st, err = mode.LoadState()
@@ -109,7 +112,7 @@ func TestRunHybridCmd_OnPrintsCostLine(t *testing.T) {
 	sandboxHybrid(t)
 
 	var out bytes.Buffer
-	if code := runHybridCmdTo([]string{"on", "p1"}, &out, &bytes.Buffer{}); code != 0 {
+	if code := runHybridCmdTo([]string{"on", "p1", "--yes"}, &out, &bytes.Buffer{}); code != 0 {
 		t.Fatalf("on p1 exit = %d; want 0", code)
 	}
 	got := out.String()
@@ -128,7 +131,7 @@ func TestRunHybridCmd_CheckEnvOverrideDrivesExitCode(t *testing.T) {
 	sandboxHybrid(t)
 
 	// Persist p1 (GO under the fake report).
-	if code := runHybridCmdTo([]string{"on", "p1"}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+	if code := runHybridCmdTo([]string{"on", "p1", "--yes"}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
 		t.Fatalf("on p1 exit = %d; want 0", code)
 	}
 	// The env override to p2 (NOGO) must drive the check exit code to 1 even
@@ -263,7 +266,7 @@ func TestRunHybridCmd_OnP2IgnoresTheP1DenyList(t *testing.T) {
 
 	// on p2 must PASS and persist: the id is servable as a customModels entry.
 	var out, errw2 bytes.Buffer
-	if code := runHybridCmdTo([]string{"on", "p2"}, &out, &errw2); code != 0 {
+	if code := runHybridCmdTo([]string{"on", "p2", "--yes"}, &out, &errw2); code != 0 {
 		t.Fatalf("on p2 with a P2-servable registry must pass; exit = %d\nstdout:\n%s\nstderr:\n%s", code, out.String(), errw2.String())
 	}
 	if !strings.Contains(out.String(), "[SUCCESS]") {
@@ -322,7 +325,7 @@ func TestRunHybridCmd_OnMissingRegistryStillPersists(t *testing.T) {
 	sandboxHybrid(t)
 	for _, profile := range []string{"p1", "p2"} {
 		var out, errw bytes.Buffer
-		if code := runHybridCmdTo([]string{"on", profile}, &out, &errw); code != 0 {
+		if code := runHybridCmdTo([]string{"on", profile, "--yes"}, &out, &errw); code != 0 {
 			t.Fatalf("on %s with no providers.json must still persist; exit = %d\nstderr:\n%s", profile, code, errw.String())
 		}
 		st, err := mode.LoadState()
@@ -332,7 +335,7 @@ func TestRunHybridCmd_OnMissingRegistryStillPersists(t *testing.T) {
 		if st.HybridProfile != profile {
 			t.Errorf("persisted HybridProfile = %q; want %q", st.HybridProfile, profile)
 		}
-		if code := runHybridCmdTo([]string{"off"}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		if code := runHybridCmdTo([]string{"off", "--yes"}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
 			t.Fatalf("off: exit = %d", code)
 		}
 	}
