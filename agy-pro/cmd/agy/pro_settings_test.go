@@ -46,6 +46,17 @@ func installSettingsCore(t *testing.T) *settingsTestCore {
 		swarmSt: &testSwarmStore{},
 	}
 	prev := newSettingsCore
+	// Both on-disk registry reads the CLI makes (the model-update presentation
+	// snapshot and its write-time re-verify) are pointed at the in-memory
+	// registry, so no test that installs this core depends on a live
+	// ~/.agy-pro/providers.json. A fresh machine, a CI runner, or a
+	// factory-reset home has no such file, and the two reads would otherwise
+	// disagree with the Core seams. Tests that must exercise the real disk
+	// re-read install the file-backed core instead.
+	prevSnapshot, prevReload := registrySnapshot, registryReload
+	registrySnapshot = func() (*providers.Registry, error) { return tc.reg, nil }
+	registryReload = func() (*providers.Registry, error) { return tc.reg, nil }
+	t.Cleanup(func() { registrySnapshot, registryReload = prevSnapshot, prevReload })
 	newSettingsCore = func() *settings.Core {
 		return settings.NewCore(settings.Deps{
 			LoadState: func() (*mode.State, error) { return tc.state, nil },

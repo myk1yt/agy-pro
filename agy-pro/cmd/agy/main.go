@@ -23,7 +23,7 @@ import (
 	"agypro/internal/wirecheck"
 )
 
-const Version = "0.1.0"
+const Version = "0.10.0"
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "pro" {
@@ -769,7 +769,20 @@ func runDoctor(args []string) {
 	if out, err := goCmd.Output(); err == nil {
 		fmt.Printf("[OK]   Go toolchain: %s", string(out))
 	} else {
-		defGo := "C:\\Program Files\\Go\\bin\\go.exe"
+		// Resolve the toolchain at runtime instead of trusting one hardcoded
+		// install location: a non-standard Go installation on any OS must still
+		// resolve, so LookPath wins and the Windows default path is only the
+		// last resort when nothing on PATH answers.
+		defGo := ""
+		for _, candidate := range []string{"go", "go.exe"} {
+			if p, lookErr := exec.LookPath(candidate); lookErr == nil {
+				defGo = p
+				break
+			}
+		}
+		if defGo == "" {
+			defGo = "C:\\Program Files\\Go\\bin\\go.exe"
+		}
 		if _, statErr := os.Stat(defGo); statErr == nil {
 			fmt.Printf("[OK]   Go toolchain located at: %s\n", defGo)
 		} else {

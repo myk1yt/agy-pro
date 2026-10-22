@@ -34,6 +34,23 @@ import (
 	"agypro/internal/realagy"
 )
 
+// TestMain isolates this package from the live ~/.agy-pro. A fanout run records
+// its seat allocation into state-fanout.json, so an engine-level test that does
+// not point AGY_PRO_HOME at its own temp dir would write into the developer's
+// real home (and a machine with no home directory would fail). Individual tests
+// may still override the home for their own assertions.
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "agypro-fanout-test")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "fanout test home:", err)
+		os.Exit(1)
+	}
+	os.Setenv(providers.EnvHome, dir)
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
+}
+
 // TestStubAgyProcess is the helper subprocess. It is skipped during a normal
 // test run and only executes when the spawner sets AGY_PRO_STUB_HELPER=1.
 // Behavior is driven by env vars:

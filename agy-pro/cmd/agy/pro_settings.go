@@ -599,8 +599,15 @@ func confirmRegistryMutation(in io.Reader, out, errw io.Writer, diff []string, y
 // pre-write presentation. found reports the provider; modelFound reports the
 // exact model ID. Either false renders the diff without that slice; the write
 // itself always goes through the Core seam under test.
+// registrySnapshot is the presentation-time on-disk registry read: the
+// model-update diff is rendered from it, and reverifyPresentedModel then
+// re-reads through registryReload. Tests replace this seam so a command can be
+// driven against an in-memory registry without touching the live
+// ~/.agy-pro/providers.json (a fresh machine has none).
+var registrySnapshot = providers.Load
+
 func lookupRegistryModel(providerName, modelID string) (before providers.Model, count int, found, modelFound bool) {
-	reg, err := providers.Load()
+	reg, err := registrySnapshot()
 	if err != nil || reg == nil {
 		return providers.Model{}, 0, false, false
 	}

@@ -699,7 +699,15 @@ func TestProfileConfigJSONPluginEnablementShape(t *testing.T) {
 // directories. The full profile's config.json references plugins that the
 // ROOT installer deploys (repo plugins/ -> ~/.gemini/config/plugins/), not
 // files inside the profile FS itself, so the check accepts either source.
+// The repo plugins/ tree three directories up exists only in the full workspace;
+// a standalone agy-pro checkout carries no sibling plugin trees, so keys that
+// resolve through that tree alone make the subtest SKIP (naming the missing
+// keys) rather than fail. Everything else - including the full-repo run, where
+// the tree is present - asserts exactly as before.
 func TestProfileConfigPluginKeysNameRealDirs(t *testing.T) {
+	repoPlugins := filepath.Join("..", "..", "..", "plugins")
+	_, repoErr := os.Stat(repoPlugins)
+	repoPresent := repoErr == nil
 	for _, profile := range []string{ModeFull, ModeClean} {
 		t.Run(profile, func(t *testing.T) {
 			profileFS, err := profiles.GetProfileFS(profile)
@@ -716,9 +724,22 @@ func TestProfileConfigPluginKeysNameRealDirs(t *testing.T) {
 			if err := json.Unmarshal(data, &doc); err != nil {
 				t.Fatalf("profile %s config.json is not JSON: %v", profile, err)
 			}
+			if !repoPresent {
+				// Standalone checkout: no sibling tree to resolve against, so a key
+				// absent from the profile FS is unverifiable, not wrong.
+				var unresolved []string
+				for name := range doc.Plugins {
+					if _, inProfile := fs.Stat(profileFS, "plugins/"+name); inProfile != nil {
+						unresolved = append(unresolved, name)
+					}
+				}
+				if len(unresolved) > 0 {
+					t.Skipf("profile %s: plugins key(s) %v resolve only through the repo plugins/ tree, absent at %q (a standalone agy-pro checkout ships no sibling plugin trees)", profile, unresolved, repoPlugins)
+				}
+			}
 			for name := range doc.Plugins {
 				_, inProfile := fs.Stat(profileFS, "plugins/"+name)
-				_, inRepo := os.Stat(filepath.Join("..", "..", "..", "plugins", name))
+				_, inRepo := os.Stat(filepath.Join(repoPlugins, name))
 				if inProfile != nil && inRepo != nil {
 					t.Errorf("profile %s: plugins key %q matches neither the profile FS nor the repo plugins/ dir", profile, name)
 				}
