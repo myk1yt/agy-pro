@@ -171,9 +171,9 @@ func TestDecide(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := Decide(tc.args, tc.env, tc.tty, tc.modelCount, tc.profile, tc.hybridProfile)
+			got := DecideRoute(tc.args, tc.env, tc.tty, tc.modelCount, tc.profile, tc.hybridProfile)
 			if got != tc.want {
-				t.Errorf("Decide(%v, tty=%v, models=%d, profile=%q, hybrid=%q) = %s; want %s",
+				t.Errorf("DecideRoute(%v, tty=%v, models=%d, profile=%q, hybrid=%q) = %s; want %s",
 					tc.args, tc.tty, tc.modelCount, tc.profile, tc.hybridProfile, got, tc.want)
 			}
 		})
@@ -183,8 +183,13 @@ func TestDecide(t *testing.T) {
 func TestDecideNilLookupEnv(t *testing.T) {
 	// nil lookupEnv means every variable is unset, so the menu opt-in
 	// (AGY_LAUNCHER=1) is absent and the bare launch goes straight native.
-	if got := Decide(nil, nil, true, 3, mode.ProfilePrompt, ""); got != RouteNative {
-		t.Errorf("Decide with nil lookupEnv = %s; want native", got)
+	if got := DecideRoute(nil, nil, true, 3, mode.ProfilePrompt, ""); got != RouteNative {
+		t.Errorf("DecideRoute with nil lookupEnv = %s; want native", got)
+	}
+	// The posture side must tolerate the same nil seam: no env layer to read, so
+	// only the injected persisted value counts.
+	if got := Decide(nil, nil, true, 3, mode.ProfilePrompt, "", mode.IntegrationPresetTools); got.IntegrationPreset != mode.IntegrationPresetTools || got.NativePreset {
+		t.Errorf("Decide with nil lookupEnv and a persisted tools preset = %+v; want tools, NativePreset=false", got)
 	}
 }
 
@@ -211,8 +216,8 @@ func TestLauncherOptInExactMatch(t *testing.T) {
 			}
 			return ""
 		}
-		if got := Decide(nil, env, true, 5, mode.ProfilePrompt, ""); got != tc.want {
-			t.Errorf("AGY_LAUNCHER=%q: Decide = %s; want %s", tc.value, got, tc.want)
+		if got := DecideRoute(nil, env, true, 5, mode.ProfilePrompt, ""); got != tc.want {
+			t.Errorf("AGY_LAUNCHER=%q: DecideRoute = %s; want %s", tc.value, got, tc.want)
 		}
 	}
 }
@@ -337,6 +342,208 @@ func TestProviderSummary(t *testing.T) {
 	}
 	if got := ProviderSummary(nil); got != "none" {
 		t.Errorf("ProviderSummary(nil) = %q; want 'none'", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Integrations posture (P5-4): carried on the verdict, never routed on
+// ---------------------------------------------------------------------------
+
+// TestDecideIntegrationPosture pins the posture precedence
+// EnvIntegrationPreset override > persisted key > absent, and the two shape
+// rules a consumer depends on: NativePreset is true only for an explicit
+// "native", and the Route is identical to DecideRoute for the same inputs (the
+// preset cannot move a launch, because there is only one binary).
+func TestDecideIntegrationPosture(t *testing.T) {
+	envNone := func(string) string { return "" }
+	envWith := func(value string) func(string) string {
+		return func(k string) string {
+			if k == EnvIntegrationPreset {
+				return value
+			}
+			return ""
+		}
+	}
+
+	cases := []struct {
+		name       string
+		env        func(string) string
+		persisted  string
+		want       string
+		wantNative bool
+	}{
+		// Absent everywhere: the legacy no-opinion posture.
+		{"absent both", envNone, "", "", false},
+		// Persisted key alone.
+		{"persisted native", envNone, mode.IntegrationPresetNative, mode.IntegrationPresetNative, true},
+		{"persisted tools", envNone, mode.IntegrationPresetTools, mode.IntegrationPresetTools, false},
+		{"persisted custom", envNone, mode.IntegrationPresetCustom, mode.IntegrationPresetCustom, false},
+		{"persisted padded and cased", envNone, " TOOLS ", mode.IntegrationPresetTools, false},
+		// Env override wins in both directions.
+		{"env beats persisted tools", envWith(mode.IntegrationPresetNative), mode.IntegrationPresetTools, mode.IntegrationPresetNative, true},
+		{"env beats persisted native", envWith(mode.IntegrationPresetTools), mode.IntegrationPresetNative, mode.IntegrationPresetTools, false},
+		{"env custom beats persisted", envWith(mode.IntegrationPresetCustom), mode.IntegrationPresetNative, mode.IntegrationPresetCustom, false},
+		{"env padded and cased", envWith(" Native "), "", mode.IntegrationPresetNative, true},
+		// An override that names no preset is inert: the persisted key decides.
+		{"unrecognized env falls through", envWith("bogus"), mode.IntegrationPresetCustom, mode.IntegrationPresetCustom, false},
+		{"empty env is absent", envWith(""), mode.IntegrationPresetNative, mode.IntegrationPresetNative, true},
+		{"unrecognized env and absent key", envWith("on"), "", "", false},
+		// An unrecognized persisted value is inert too, never reinterpreted.
+		{"unrecognized persisted", envNone, "bogus", "", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Decide(nil, tc.env, true, 5, mode.ProfilePrompt, "", tc.persisted)
+			if got.IntegrationPreset != tc.want {
+				t.Errorf("IntegrationPreset = %q; want %q", got.IntegrationPreset, tc.want)
+			}
+			if got.NativePreset != tc.wantNative {
+				t.Errorf("NativePreset = %v; want %v", got.NativePreset, tc.wantNative)
+			}
+			if want := DecideRoute(nil, tc.env, true, 5, mode.ProfilePrompt, ""); got.Route != want {
+				t.Errorf("the posture moved the route: Decide = %s, DecideRoute = %s; want identical",
+					got.Route, want)
+			}
+		})
+	}
+}
+
+// TestDecideRouteIsPostureBlind walks the routing shapes that decide_test pins
+// and proves the new field is inert for every one of them: the same invocation
+// under an absent, native, tools and custom posture, plus a hostile env
+// override, must produce the route DecideRoute produces with no posture at all.
+func TestDecideRouteIsPostureBlind(t *testing.T) {
+	envNone := func(string) string { return "" }
+	envOverride := func(k string) string {
+		if k == EnvIntegrationPreset {
+			return mode.IntegrationPresetNative
+		}
+		return ""
+	}
+	shapes := []struct {
+		name          string
+		args          []string
+		env           func(string) string
+		tty           bool
+		modelCount    int
+		profile       string
+		hybridProfile string
+	}{
+		{"bare tty", nil, envNone, true, 5, mode.ProfilePrompt, ""},
+		{"bare tty hostile preset env", nil, envOverride, true, 5, mode.ProfilePrompt, ""},
+		{"gateway profile", nil, envNone, true, 5, mode.ProfileGateway, ""},
+		{"native profile", nil, envNone, true, 5, mode.ProfileNative, ""},
+		{"prompt flag", []string{"-p", "hi"}, envNone, true, 5, mode.ProfilePrompt, ""},
+		{"model flag", []string{"--model", "ext-one"}, envNone, true, 5, mode.ProfilePrompt, ""},
+		{"zero models", nil, envNone, true, 0, mode.ProfilePrompt, ""},
+		{"non tty", nil, envNone, false, 5, mode.ProfilePrompt, ""},
+		{"hybrid p1", nil, envNone, true, 5, mode.ProfilePrompt, "p1"},
+		{"pro subcommand", []string{"pro", "status"}, envNone, true, 5, mode.ProfilePrompt, ""},
+	}
+	postures := []string{"", mode.IntegrationPresetNative, mode.IntegrationPresetTools, mode.IntegrationPresetCustom, "bogus"}
+
+	for _, shape := range shapes {
+		t.Run(shape.name, func(t *testing.T) {
+			want := DecideRoute(shape.args, shape.env, shape.tty, shape.modelCount, shape.profile, shape.hybridProfile)
+			for _, posture := range postures {
+				got := Decide(shape.args, shape.env, shape.tty, shape.modelCount, shape.profile, shape.hybridProfile, posture)
+				if got.Route != want {
+					t.Errorf("posture %q moved the route: got %s, want %s", posture, got.Route, want)
+				}
+			}
+		})
+	}
+}
+
+// presetStateFile returns the sandboxed state.json path, pointing AGY_PRO_HOME
+// at a fresh temp dir first so the real ~/.agy-pro is never read or written.
+func presetStateFile(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv(paths.EnvAgyProHome, home)
+	return filepath.Join(home, "state.json")
+}
+
+// TestLoadIntegrationPreset covers the persisted half of the seam: a legacy
+// state file with no integration_preset key reads as no opinion (not as
+// "native"), an explicit preset reads back as itself, and an unrecognized or
+// unreadable value is inert.
+func TestLoadIntegrationPreset(t *testing.T) {
+	// A pre-P5-3 state file: no integration_preset key at all.
+	const legacyState = `{"current_mode":"clean","default_profile":"prompt",` +
+		`"managed_items":["agents","references","profile.json","config.json"]}`
+
+	cases := []struct {
+		name    string
+		content string // raw state.json contents; "" = use SaveState with `preset`
+		preset  string
+		want    string
+	}{
+		{"legacy file without the key", legacyState, "", ""},
+		{"saved native", "", mode.IntegrationPresetNative, mode.IntegrationPresetNative},
+		{"saved tools", "", mode.IntegrationPresetTools, mode.IntegrationPresetTools},
+		{"saved custom", "", mode.IntegrationPresetCustom, mode.IntegrationPresetCustom},
+		{"saved no-opinion", "", "", ""},
+		{"hand-edited padded value", `{"integration_preset":" TOOLS "}`, "", mode.IntegrationPresetTools},
+		{"hand-edited unknown value", `{"integration_preset":"everything"}`, "", ""},
+		{"corrupt state", `{ not valid json`, "", ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stateFile := presetStateFile(t)
+			if tc.content != "" {
+				if err := os.WriteFile(stateFile, []byte(tc.content), 0o600); err != nil {
+					t.Fatalf("write state file: %v", err)
+				}
+			} else if err := mode.SaveState(&mode.State{IntegrationPreset: tc.preset}); err != nil {
+				t.Fatalf("SaveState(integration_preset=%q): %v", tc.preset, err)
+			}
+
+			if got := loadIntegrationPreset(); got != tc.want {
+				t.Errorf("loadIntegrationPreset() = %q; want %q", got, tc.want)
+			}
+			// The same value through Decide: the legacy file must leave the
+			// verdict at no-opinion rather than defaulting to "native".
+			got := Decide(nil, func(string) string { return "" }, true, 5, mode.ProfilePrompt, "", loadIntegrationPreset())
+			if got.IntegrationPreset != tc.want {
+				t.Errorf("Decide(...).IntegrationPreset = %q; want %q", got.IntegrationPreset, tc.want)
+			}
+			if got.NativePreset != (tc.want == mode.IntegrationPresetNative) {
+				t.Errorf("Decide(...).NativePreset = %v; want %v", got.NativePreset, tc.want == mode.IntegrationPresetNative)
+			}
+		})
+	}
+}
+
+// TestLegacyStateFileKeepsNoOpinionOnResave pins the forward-compatibility half:
+// loading a pre-P5-3 state file and saving it back must not invent an
+// integration_preset key, so a launch cannot silently turn "no opinion" into
+// "native".
+func TestLegacyStateFileKeepsNoOpinionOnResave(t *testing.T) {
+	const legacyState = `{"current_mode":"clean","default_profile":"prompt",` +
+		`"managed_items":["agents","references","profile.json","config.json"]}`
+	stateFile := presetStateFile(t)
+	if err := os.WriteFile(stateFile, []byte(legacyState), 0o600); err != nil {
+		t.Fatalf("write legacy state file: %v", err)
+	}
+	st, err := mode.LoadState()
+	if err != nil || st == nil {
+		t.Fatalf("LoadState on a legacy file = (%v, %v); want a state", st, err)
+	}
+	if got := loadIntegrationPreset(); got != "" {
+		t.Errorf("loadIntegrationPreset() on a legacy file = %q; want \"\"", got)
+	}
+	if err := mode.SaveState(st); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+	saved, err := os.ReadFile(stateFile)
+	if err != nil {
+		t.Fatalf("read saved state file: %v", err)
+	}
+	if strings.Contains(string(saved), "integration_preset") {
+		t.Errorf("re-saving a legacy state file invented an integration_preset key:\n%s", saved)
 	}
 }
 
@@ -594,5 +801,47 @@ func TestExecutePassthrough_MasksRealAgyPathInError(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), secret) {
 		t.Errorf("the passthrough error must mask the real-agy path (FIX-65); got %v", err)
+	}
+}
+
+// P5-4 end-to-end: the integrations posture on disk must not gate a launch.
+// This drives the REAL production chain (ExecutePassthrough -> Decide ->
+// loadIntegrationPreset -> loadDefaultProfile -> hybrid.LaunchP1) with a
+// canary-carrying stub real agy and a real mesh, once per posture. Every posture
+// must reach the same front door and hand the child the same CLOUD_CODE_URL: the
+// preset is a posture signal, not a launch selector (ratified: no second
+// binary).
+func TestExecutePassthrough_IntegrationPresetDoesNotGateLaunch(t *testing.T) {
+	sandboxHybridP1(t, `{"providers":[{"name":"stubprov","baseURL":"http://127.0.0.1:9/v1","apiKeyEnv":"STUB_PROVIDER_KEY","models":[{"id":"ext-one","contextLength":300000}]}]}`)
+	stub := buildCanaryStubAgy(t)
+	t.Setenv(paths.EnvAgyProRealAgy, stub)
+	t.Setenv(hybrid.EnvHybridProfile, "p1")
+	envFile := filepath.Join(t.TempDir(), "child.env")
+	t.Setenv("STUB_ENVFILE", envFile)
+
+	for _, preset := range []string{"", mode.IntegrationPresetNative, mode.IntegrationPresetTools, mode.IntegrationPresetCustom} {
+		t.Run("preset="+preset, func(t *testing.T) {
+			if err := mode.SaveState(&mode.State{IntegrationPreset: preset}); err != nil {
+				t.Fatalf("SaveState(integration_preset=%q): %v", preset, err)
+			}
+			if got := loadIntegrationPreset(); got != preset {
+				t.Fatalf("loadIntegrationPreset() = %q; want %q", got, preset)
+			}
+			if err := os.Remove(envFile); err != nil && !os.IsNotExist(err) {
+				t.Fatalf("reset child env dump: %v", err)
+			}
+			code, err := ExecutePassthrough(stub, nil)
+			if err != nil || code != 0 {
+				t.Fatalf("ExecutePassthrough = (%d, %v); want (0, nil)", code, err)
+			}
+			childEnv := readEnvDump(t, envFile)
+			if !strings.HasPrefix(childEnv["CLOUD_CODE_URL"], "http://127.0.0.1:") {
+				t.Errorf("preset %q must not divert the P1 route; CLOUD_CODE_URL = %q",
+					preset, childEnv["CLOUD_CODE_URL"])
+			}
+			if childEnv["AGY_PRO_ACTIVE"] != "1" {
+				t.Errorf("preset %q: AGY_PRO_ACTIVE = %q; want 1", preset, childEnv["AGY_PRO_ACTIVE"])
+			}
+		})
 	}
 }

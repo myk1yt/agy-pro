@@ -45,6 +45,12 @@ func TestStatePersistence(t *testing.T) {
 	}
 }
 
+// TestSwitchModesAndBackup pins the two halves of one switch side by side: a
+// mode-owned entry is MOVED to the timestamped backup (never deleted), while an
+// integrations-owned entry in the same config directory is left alone. The rule
+// file used to be moved too; P5-3 removed rules/skills/plugins from
+// DefaultManagedItems, so the assertion moved with the ownership, not because
+// the check was relaxed.
 func TestSwitchModesAndBackup(t *testing.T) {
 	tempDir := t.TempDir()
 	agyHome := filepath.Join(tempDir, "agy-pro")
@@ -53,12 +59,20 @@ func TestSwitchModesAndBackup(t *testing.T) {
 	t.Setenv(paths.EnvAgyProHome, agyHome)
 	t.Setenv(paths.EnvGeminiConfigDir, geminiConfig)
 
-	// Step 1: Create an existing custom rule in configDir
+	// Step 1: one entry per owner. The custom rule is an integrations-owned
+	// destination (rules/); the agent file is a mode-owned one (agents/).
 	customRule := filepath.Join(geminiConfig, "rules", "custom.md")
 	if err := os.MkdirAll(filepath.Dir(customRule), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(customRule, []byte("user-rule"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	managedAgent := filepath.Join(geminiConfig, "agents", "custom", "AGENT.md")
+	if err := os.MkdirAll(filepath.Dir(managedAgent), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(managedAgent, []byte("user-agent"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -73,9 +87,9 @@ func TestSwitchModesAndBackup(t *testing.T) {
 		t.Fatalf("expected success message, got: %s", outBuf.String())
 	}
 
-	// Verify original customRule was MOVED to backup (not deleted)
-	if _, err := os.Stat(customRule); !os.IsNotExist(err) {
-		t.Fatal("expected original custom.md to be moved out of config dir")
+	// The mode-owned entry was MOVED to the backup (not deleted)...
+	if _, err := os.Stat(managedAgent); !os.IsNotExist(err) {
+		t.Fatal("expected the managed agents entry to be moved out of the config dir")
 	}
 
 	state, err := LoadState()
@@ -89,10 +103,20 @@ func TestSwitchModesAndBackup(t *testing.T) {
 		t.Fatal("expected LastBackup to be populated")
 	}
 
-	// Verify backup contains the moved file
-	backedUpFile := filepath.Join(state.LastBackup, "rules", "custom.md")
+	// ...and the backup contains it.
+	backedUpFile := filepath.Join(state.LastBackup, "agents", "custom", "AGENT.md")
 	if _, err := os.Stat(backedUpFile); err != nil {
 		t.Fatalf("backed up file not found at %q: %v", backedUpFile, err)
+	}
+
+	// The integrations-owned rule SURVIVED the switch: rules/ is no longer in
+	// the managed register, so the retraction half of the partition cannot move
+	// it, and no backup may hold it.
+	if got, err := os.ReadFile(customRule); err != nil || string(got) != "user-rule" {
+		t.Fatalf("the integrations-owned rule did not survive the clean switch: %v (%q)", err, string(got))
+	}
+	if hits := backupFilesNamed(t, "custom.md"); len(hits) != 0 {
+		t.Fatalf("a switch moved the integrations-owned rule into backup: %v", hits)
 	}
 
 	// Step 3: Switch to "full"
@@ -101,10 +125,13 @@ func TestSwitchModesAndBackup(t *testing.T) {
 		t.Fatalf("Switch to full failed: %v", err)
 	}
 
-	// Verify full profile deployed AGENTS.md
-	agentsRule := filepath.Join(geminiConfig, "rules", "AGENTS.md")
+	// Verify the full profile deployed a mode-owned destination. rules/AGENTS.md
+	// was the pre-P5-3 witness; after the T7 trim the full profile no longer
+	// carries a rules/ tree at all, so the witness moved to agents/, which mode
+	// still owns and deploys.
+	agentsRule := filepath.Join(geminiConfig, "agents", "architect", "AGENT.md")
 	if _, err := os.Stat(agentsRule); err != nil {
-		t.Fatalf("expected AGENTS.md in config dir after full switch: %v", err)
+		t.Fatalf("expected agents/architect/AGENT.md in config dir after full switch: %v", err)
 	}
 
 	// Step 4: Test Restore
@@ -114,6 +141,23 @@ func TestSwitchModesAndBackup(t *testing.T) {
 	}
 	if !strings.Contains(outBuf.String(), "[SUCCESS]") {
 		t.Fatalf("expected restore success, got: %s", outBuf.String())
+	}
+
+	// The restore derives its pre-restore move from the same register: the live
+	// mode-owned agents tree is moved aside (never deleted) into the pre-restore
+	// backup, while the integrations-owned rule is left alone.
+	reloaded, err := LoadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.CurrentMode != "restored" {
+		t.Fatalf("expected the restored marker, got %q", reloaded.CurrentMode)
+	}
+	if _, err := os.Stat(filepath.Join(reloaded.LastBackup, "agents", "architect", "AGENT.md")); err != nil {
+		t.Fatalf("the mode-owned agents tree was not preserved in the pre-restore backup %q: %v", reloaded.LastBackup, err)
+	}
+	if got, err := os.ReadFile(customRule); err != nil || string(got) != "user-rule" {
+		t.Fatalf("the integrations-owned rule did not survive the restore: %v (%q)", err, string(got))
 	}
 }
 
@@ -138,10 +182,18 @@ func TestSwitchInteractive(t *testing.T) {
 	}
 }
 
-// TestFullCleanRoundTripNoResidue verifies that the expanded managed set
-// (agents, references, profile.json) makes full<->clean switching a complete
-// backup/restore cycle: zero residue in the config dir after clean, every
-// removed asset recoverable from the backup, and non-managed files untouched.
+// TestFullCleanRoundTripNoResidue verifies that the mode-owned half of the
+// managed register (agents, references, profile.json) makes full<->clean
+// switching a complete backup/restore cycle for its own destinations: zero
+// residue of THOSE entries in the config dir after clean, every removed asset
+// recoverable from the backup, and files outside the register untouched.
+//
+// rules/, skills/ and plugins/ are integrations-owned after P5-3, so they are
+// deliberately not part of "zero residue" here: the clean profile walks its own
+// rules/README.md, skills/README.md and plugins/README.md down (interim, T7
+// trims the walk), and the engine's own files in those trees must survive. The
+// collision proof for that half is
+// TestManagedSetRetractionLeavesIntegrationsOwnedTrees.
 func TestFullCleanRoundTripNoResidue(t *testing.T) {
 	tempDir := t.TempDir()
 	agyHome := filepath.Join(tempDir, "agy-pro")
@@ -269,6 +321,11 @@ func TestFullCleanRoundTripNoResidue(t *testing.T) {
 	if err := Restore(&out); err != nil {
 		t.Fatalf("Restore failed: %v", err)
 	}
+	// Every entry of a post-partition snapshot is register-owned, so the T9
+	// narrowing has nothing to report as left in place.
+	if strings.Contains(out.String(), "Left in place") {
+		t.Fatalf("a snapshot holding only register-owned entries reported a skip:\n%s", out.String())
+	}
 	reloaded, err := LoadState()
 	if err != nil {
 		t.Fatal(err)
@@ -297,10 +354,15 @@ func fullFS(t *testing.T) fs.FS {
 }
 
 // TestRestoreLegacyBackupKeepsUnmanagedAssets verifies compatibility with
-// backups written before the managed set was expanded: a legacy backup holds
-// only the four original items, restore must still work, residue from old
-// full deployments must be preserved (moved aside, never deleted), and files
-// outside the managed set must stay in place.
+// backups written before the managed set was expanded AND before the P5-3
+// destination partition: the snapshot is the legacy four-item shape (rules/,
+// skills/, plugins/, config.json). Restore must still work, it restores the one
+// entry the current register still owns (config.json), and it leaves the three
+// integrations-owned trees exactly as the live config dir had them - a legacy
+// snapshot entry is no longer permission to re-lay an engine-owned destination
+// (SESSION9 T9 narrowing). Residue from old full deployments is still preserved
+// (moved aside, never deleted) and files outside the managed set still stay in
+// place.
 func TestRestoreLegacyBackupKeepsUnmanagedAssets(t *testing.T) {
 	tempDir := t.TempDir()
 	agyHome := filepath.Join(tempDir, "agy-pro")
@@ -327,8 +389,9 @@ func TestRestoreLegacyBackupKeepsUnmanagedAssets(t *testing.T) {
 		}
 	}
 
-	// Active config: legacy-managed rules, full-profile residue (agents),
-	// and an unmanaged hooks file.
+	// Active config: an integrations-owned rules file that predates the
+	// partition, full-profile residue under the mode-owned agents tree, and an
+	// unmanaged hooks file.
 	staleRules := filepath.Join(geminiConfig, "rules", "stale.md")
 	if err := os.MkdirAll(filepath.Dir(staleRules), 0o755); err != nil {
 		t.Fatal(err)
@@ -366,10 +429,29 @@ func TestRestoreLegacyBackupKeepsUnmanagedAssets(t *testing.T) {
 		t.Fatalf("Restore from legacy backup failed: %v", err)
 	}
 
-	// Legacy items restored.
-	got, err := os.ReadFile(filepath.Join(geminiConfig, "rules", "AGENTS.md"))
-	if err != nil || string(got) != "legacy-rules" {
-		t.Fatalf("legacy rules not restored: %v (%q)", err, string(got))
+	// The register-owned entry is restored: config.json is the one item this
+	// snapshot carries that the managed register still lists.
+	if got, err := os.ReadFile(filepath.Join(geminiConfig, "config.json")); err != nil || string(got) != "{}" {
+		t.Fatalf("the register-owned config.json was not restored: %v (%q)", err, string(got))
+	}
+	// The three integrations-owned trees stayed on disk untouched: no legacy
+	// rules/AGENTS.md appears, and the live rules file the engine (or a
+	// pre-partition build) put there keeps its bytes.
+	if _, err := os.Stat(filepath.Join(geminiConfig, "rules", "AGENTS.md")); !os.IsNotExist(err) {
+		t.Fatalf("the restore re-laid the legacy rules/AGENTS.md (err = %v); the copy-back restores only "+
+			"entries the managed register owns", err)
+	}
+	if got, err := os.ReadFile(staleRules); err != nil || string(got) != "stale" {
+		t.Fatalf("the restore touched the live integrations-owned rules file: %v (%q)", err, string(got))
+	}
+	for _, tree := range []string{"skills", "plugins"} {
+		if _, err := os.Stat(filepath.Join(geminiConfig, tree)); !os.IsNotExist(err) {
+			t.Fatalf("the restore re-laid the legacy %q tree (err = %v)", tree, err)
+		}
+	}
+	// The skip is visible and deterministic (name order from os.ReadDir).
+	if got := out.String(); !strings.Contains(got, "Left in place (not a mode-managed item): plugins, rules, skills") {
+		t.Fatalf("the restore transcript does not name the skipped entries:\n%s", got)
 	}
 	// Residue agents moved aside to the pre-restore backup, not deleted.
 	reloaded, err := LoadState()
@@ -391,9 +473,18 @@ func TestRestoreLegacyBackupKeepsUnmanagedAssets(t *testing.T) {
 	}
 }
 
-// TestLoadStateMigratesLegacyManifest verifies the additive migration of the
-// managed manifest: a state.json written by an older build (four items) loads
-// with the new items appended, original fields intact.
+// TestLoadStateMigratesLegacyManifest verifies the load-time reconciliation of
+// the managed manifest: a state.json written by an older build (here the
+// pre-expansion four, which includes the three destinations that have since
+// moved to the integrations engine) loads with the CURRENT register, and the
+// original fields survive.
+//
+// Before P5-3 the load merged the stored list with the defaults, so a legacy
+// entry whose owner had not moved was preserved. Now the register is replaced
+// wholesale, because a stored claim on a destination another owner holds is the
+// shared-path ambiguity the partition exists to remove. The assertion moved with
+// the ownership: it still pins that a legacy file loads, that only the register
+// is present afterwards, and that no stale claim survives.
 func TestLoadStateMigratesLegacyManifest(t *testing.T) {
 	tempDir := t.TempDir()
 	t.Setenv(paths.EnvAgyProHome, tempDir)
@@ -412,9 +503,16 @@ func TestLoadStateMigratesLegacyManifest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadState of legacy state file failed: %v", err)
 	}
-	want := []string{"rules", "skills", "plugins", "config.json", "agents", "references", "profile.json"}
+	want := append([]string(nil), DefaultManagedItems...)
 	if !reflect.DeepEqual(state.ManagedItems, want) {
-		t.Fatalf("expected merged manifest %v, got %v", want, state.ManagedItems)
+		t.Fatalf("expected the reconciled manifest %v, got %v", want, state.ManagedItems)
+	}
+	for _, moved := range []string{"rules", "skills", "plugins"} {
+		for _, item := range state.ManagedItems {
+			if item == moved {
+				t.Fatalf("the stored claim %q survived the load although its owner moved: %v", moved, state.ManagedItems)
+			}
+		}
 	}
 	if state.CurrentMode != ModeFull {
 		t.Fatalf("expected current_mode preserved, got %q", state.CurrentMode)
@@ -423,7 +521,7 @@ func TestLoadStateMigratesLegacyManifest(t *testing.T) {
 		t.Fatalf("expected last_backup preserved, got %q", state.LastBackup)
 	}
 
-	// The merged set round-trips through save/load without duplicates.
+	// The reconciled set round-trips through save/load without duplicates.
 	if err := SaveState(state); err != nil {
 		t.Fatal(err)
 	}
@@ -432,7 +530,7 @@ func TestLoadStateMigratesLegacyManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(reloaded.ManagedItems, want) {
-		t.Fatalf("expected merged manifest to persist, got %v", reloaded.ManagedItems)
+		t.Fatalf("expected the reconciled manifest to persist, got %v", reloaded.ManagedItems)
 	}
 }
 
@@ -745,5 +843,75 @@ func TestProfileConfigPluginKeysNameRealDirs(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestRestoreRefusesLastBackupOutsideBackupsTree: state.json is a file the user
+// can edit, so a hand-written last_backup is not permission to copy an arbitrary
+// readable directory into the config tree. Restore refuses such a value and
+// writes nothing; it deliberately does NOT fall back to the newest in-tree
+// snapshot, because the presented plan named the outside directory and copying a
+// different one after consent would make the write disagree with the plan.
+func TestRestoreRefusesLastBackupOutsideBackupsTree(t *testing.T) {
+	tempDir := t.TempDir()
+	agyHome := filepath.Join(tempDir, "agy-pro")
+	geminiConfig := filepath.Join(tempDir, "gemini-config")
+	t.Setenv(paths.EnvAgyProHome, agyHome)
+	t.Setenv(paths.EnvGeminiConfigDir, geminiConfig)
+
+	outside := filepath.Join(tempDir, "hand-made-snapshot")
+	if err := os.MkdirAll(filepath.Join(outside, "agents"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "agents", "AGENT.md"), []byte("planted"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveState(&State{
+		CurrentMode:  ModeFull,
+		UpdatedAt:    time.Now().UTC(),
+		LastBackup:   outside,
+		ManagedItems: DefaultManagedItems,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	err := Restore(&out)
+	if err == nil {
+		t.Fatalf("Restore accepted a last_backup outside the backups tree:%s", out.String())
+	}
+	if !strings.Contains(err.Error(), "not inside the agy-pro backups directory") {
+		t.Fatalf("the refusal does not name the containment rule: %v", err)
+	}
+	if got := out.String(); got != "" {
+		t.Fatalf("a refused restore reported progress it did not make: %q", got)
+	}
+	if _, statErr := os.Stat(filepath.Join(geminiConfig, "agents")); !os.IsNotExist(statErr) {
+		t.Fatalf("the refused restore copied the outside snapshot into the config tree (err = %v)", statErr)
+	}
+	after, err := LoadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.LastBackup != outside {
+		t.Fatalf("the refused restore rewrote last_backup: %q", after.LastBackup)
+	}
+}
+
+// TestManagedItemOwnerFoldsCase pins the predicate the restore transcript and
+// both presented plans share: it folds case, because the copy-back resolves its
+// source with Join+Stat and Win32 stats case-insensitively. A byte-exact answer
+// reported a backup entry named AGENTS as "left in place" while the same run
+// copied it to agents/ (F-S9R1-SEC-7).
+func TestManagedItemOwnerFoldsCase(t *testing.T) {
+	for _, name := range []string{"agents", "AGENTS", "Agents", "profile.json", "PROFILE.JSON"} {
+		if !managedItemOwner(name) {
+			t.Errorf("managedItemOwner(%q) = false; the copy-back's Join+Stat lookup is case-insensitive on Windows", name)
+		}
+	}
+	for _, name := range []string{"", "rules", "skills", "plugins", "agents.md"} {
+		if managedItemOwner(name) {
+			t.Errorf("managedItemOwner(%q) = true; %q is not in the mode-managed register", name, name)
+		}
 	}
 }

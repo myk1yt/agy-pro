@@ -1,6 +1,10 @@
 package launcher
 
-import "strings"
+import (
+	"strings"
+
+	"agypro/internal/mode"
+)
 
 // Route is the terminal routing decision for one `agy` invocation.
 type Route int
@@ -55,11 +59,64 @@ func (r Route) String() string {
 	return "unknown"
 }
 
+// EnvIntegrationPreset is the environment override for the integrations posture
+// the decision resolves. It takes the same three words the persisted key
+// carries (native|tools|custom) and takes precedence over them.
+const EnvIntegrationPreset = "AGY_PRO_INTEGRATION_PRESET"
+
+// Decision is the full verdict for one `agy` invocation: the Route the launcher
+// acts on, plus the integrations posture the same call resolves but must not act
+// on yet (P5-4: there is no second binary, so the preset never selects a binary;
+// it is a posture signal for the T8 surfaces and the P6 docs).
+//
+// FOUR different persisted values are called "native" in this tree. They sit on
+// separate axes (ratified decision 6: orthogonal, documented) and none of them
+// implies another:
+//
+//   - mode.State.DefaultProfile ("native"|"prompt"|"gateway") is the LAUNCH
+//     PROFILE: which door a plain invocation takes (RouteNative, RouteBridge, or
+//     the menu). It is the routing axis proper, and none of the four ever selects
+//     a different binary (ratified: there is no second binary).
+//   - mode.State.HybridProfile ("p1"|"p2"|"none") is the NATIVE-COEXISTENCE
+//     PROFILE: whether a per-session mesh serves native picks, i.e. whether the
+//     session reaches RouteHybridP1/RouteHybridP2. The word "native" appears
+//     only in the axis name; "none" here means no hybrid mesh.
+//   - mode.State.CurrentMode ("full"|"clean"|"restored") is the DEPLOYED PROFILE
+//     MODE: which agents/references/profile.json/config.json tree `mode` last
+//     laid down. It never routes an invocation.
+//   - mode.State.IntegrationPreset ("native"|"tools"|"custom") is the
+//     INTEGRATIONS POSTURE: what internal/integrations last deployed or
+//     retracted. "native" here means DEPLOY NOTHING, not "run the native
+//     binary": that is RouteNative and DefaultProfile's word, and the two are
+//     independent (a native preset behind a gateway launch profile is legal).
+//
+// Decision.NativePreset carries the fourth meaning only. A consumer asking "is
+// the tools deployment off" reads NativePreset; a consumer asking "which door
+// does this invocation take" reads Route.
+type Decision struct {
+	// Route is the routing verdict. The integrations posture never changes it.
+	Route Route
+	// IntegrationPreset is the resolved posture, one of
+	// mode.IntegrationPresetNative/Tools/Custom, or "" when nothing claims it (no
+	// env override and no stored key: the legacy no-opinion posture every build
+	// before P5-3 had).
+	IntegrationPreset string
+	// NativePreset is true only for an explicit "native" posture. It is false for
+	// "tools", for "custom" AND for the absent no-opinion posture, so a caller
+	// that must tell absent from tools has to read IntegrationPreset.
+	NativePreset bool
+}
+
 // Decide maps (args, env, stdin TTY-ness, registered model count, default
-// profile, effective hybrid profile) to the routing for a non-`pro` agy
-// invocation. It is pure: the caller supplies the environment lookup and TTY
-// flag so tests can drive every branch without touching the real console or
-// ~/.agy-pro.
+// profile, effective hybrid profile, integrations preset) to the routing for a
+// non-`pro` agy invocation. It is pure: the caller supplies the environment
+// lookup and TTY flag so tests can drive every branch without touching the real
+// console or ~/.agy-pro.
+//
+// The integrations preset is resolved with the precedence EnvIntegrationPreset
+// override > persisted key > absent and is carried on the returned Decision
+// only: Decide does not gate the Route on it (P5-4; there is no second binary).
+// Rule 11 states that resolution; rules 1-10 are the routing.
 //
 // Rules, in order (precedence is explicit and load-bearing):
 //  1. `pro` subcommand: passthrough (never hybrid-routed).
@@ -86,7 +143,48 @@ func (r Route) String() string {
 //  10. Bare `agy` on a TTY: the fast launcher is opt-IN, not opt-out. The menu
 //     shows only when the user sets AGY_LAUNCHER=1; every other bare launch
 //     falls through to RouteNative.
-func Decide(args []string, lookupEnv func(string) string, stdinIsTTY bool, modelCount int, profile, hybridProfile string) Route {
+//  11. Integrations posture (carried on the Decision, never routed on): an
+//     EnvIntegrationPreset value naming native/tools/custom wins over the
+//     persisted integration_preset key, which wins over absent. An override that
+//     is set but names no preset is ignored and the persisted key decides - the
+//     same tolerance hybrid.ResolveProfile holds for AGY_PRO_HYBRID, so a typo
+//     cannot silently drop a posture the user chose in the hub. Absent stays
+//     distinct from "native": absent is no opinion, not "deploy nothing".
+func Decide(args []string, lookupEnv func(string) string, stdinIsTTY bool, modelCount int, profile, hybridProfile, integrationPreset string) Decision {
+	preset := resolveIntegrationPreset(lookupEnv, integrationPreset)
+	return Decision{
+		Route:             decideRoute(args, lookupEnv, stdinIsTTY, modelCount, profile, hybridProfile),
+		IntegrationPreset: preset,
+		NativePreset:      preset == mode.IntegrationPresetNative,
+	}
+}
+
+// DecideRoute is Decide without the integrations posture: the routing alone, for
+// callers that only route. It is exactly Decide(...).Route when no posture is in
+// play.
+func DecideRoute(args []string, lookupEnv func(string) string, stdinIsTTY bool, modelCount int, profile, hybridProfile string) Route {
+	return decideRoute(args, lookupEnv, stdinIsTTY, modelCount, profile, hybridProfile)
+}
+
+// resolveIntegrationPreset applies the posture precedence: a recognized
+// EnvIntegrationPreset override wins, then the persisted key, then "" (the legacy
+// no-opinion posture). Unrecognized values on either side are inert
+// (mode.NormalizeIntegrationPreset drops them) and are never reinterpreted, so a
+// hand-edited state file or a typo'd override cannot invent a posture.
+func resolveIntegrationPreset(lookupEnv func(string) string, persisted string) string {
+	if lookupEnv != nil {
+		if raw := strings.TrimSpace(lookupEnv(EnvIntegrationPreset)); raw != "" {
+			if p := mode.NormalizeIntegrationPreset(raw); p != "" {
+				return p
+			}
+		}
+	}
+	return mode.NormalizeIntegrationPreset(persisted)
+}
+
+// decideRoute is Decide's routing body: rules 1-10, and nothing about the
+// integrations posture.
+func decideRoute(args []string, lookupEnv func(string) string, stdinIsTTY bool, modelCount int, profile, hybridProfile string) Route {
 	if lookupEnv == nil {
 		lookupEnv = func(string) string { return "" }
 	}

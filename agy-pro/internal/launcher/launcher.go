@@ -71,7 +71,15 @@ func ExecutePassthrough(realAgyPath string, args []string) (int, error) {
 	forceBridge := false
 	forcedNativeID := ""
 	hybridProfile := hybrid.ResolveProfile(os.Getenv, loadHybridProfile())
-	switch Decide(args, launcherEnvLookup(loadLauncherMenu()), stdinIsTTY(), modelCount, loadDefaultProfile(), hybridProfile.String()) {
+	// The integrations posture rides along on the verdict and changes nothing
+	// here: P5-4 ratified no second binary, so the preset is a posture signal for
+	// the T8 surfaces (hub/menu/statusline) and the P6 docs, never a routing
+	// input. Reading it at launch keeps the seam live - a stale or hand-edited
+	// state file resolves to the legacy no-opinion posture instead of skewing the
+	// route.
+	decision := Decide(args, launcherEnvLookup(loadLauncherMenu()), stdinIsTTY(), modelCount,
+		loadDefaultProfile(), hybridProfile.String(), loadIntegrationPreset())
+	switch decision.Route {
 	case RouteMenu:
 		names := EnabledProviderNames(reg)
 		choice := ShowMenu(os.Stdout, os.Stdin, rel, modelCount, ProviderSummary(names), MenuTimeout)
@@ -378,6 +386,21 @@ func loadHybridProfile() string {
 		return mode.HybridProfileNone
 	}
 	return st.EffectiveHybridProfile()
+}
+
+// loadIntegrationPreset reads the persisted composed integrations preset
+// ("native"/"tools"/"custom": what internal/integrations last deployed or
+// retracted). The AGY_PRO_INTEGRATION_PRESET environment override is layered on
+// by Decide at the same injection seam, so this reads the persisted value only.
+// An absent key (every state file written before P5-3), unreadable state, or an
+// unrecognized stored value reads as "" - the legacy no-opinion posture, which
+// stays distinct from an explicit "native".
+func loadIntegrationPreset() string {
+	st, err := mode.LoadState()
+	if err != nil || st == nil {
+		return ""
+	}
+	return mode.NormalizeIntegrationPreset(st.IntegrationPreset)
 }
 
 // loadLauncherMenu reads the persisted launcher-menu toggle once per launch.

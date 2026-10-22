@@ -119,8 +119,8 @@ func TestDecideLauncherTogglePrecedence(t *testing.T) {
 			}
 
 			lookup := launcherEnvLookup(loadLauncherMenu())
-			if got := Decide(nil, lookup, true, 5, mode.ProfilePrompt, ""); got != tc.want {
-				t.Errorf("Decide(bare tty, models=5, prompt profile) = %s; want %s", got, tc.want)
+			if got := DecideRoute(nil, lookup, true, 5, mode.ProfilePrompt, ""); got != tc.want {
+				t.Errorf("DecideRoute(bare tty, models=5, prompt profile) = %s; want %s", got, tc.want)
 			}
 		})
 	}
@@ -147,10 +147,10 @@ func TestLauncherEnvLookupStoredOnKeepsEarlierRules(t *testing.T) {
 	writeLauncherToggleState(t, "1")
 	unsetLauncherEnv(t)
 	lookup := launcherEnvLookup(loadLauncherMenu())
-	if got := Decide([]string{"-p", "hi"}, lookup, true, 5, mode.ProfilePrompt, ""); got != RouteNative {
+	if got := DecideRoute([]string{"-p", "hi"}, lookup, true, 5, mode.ProfilePrompt, ""); got != RouteNative {
 		t.Errorf("stored 1 + prompt flag = %s; want native (one-shots never block)", got)
 	}
-	if got := Decide(nil, lookup, false, 5, mode.ProfilePrompt, ""); got != RouteNative {
+	if got := DecideRoute(nil, lookup, false, 5, mode.ProfilePrompt, ""); got != RouteNative {
 		t.Errorf("stored 1 + non-TTY = %s; want native (pipes stay zero-delay)", got)
 	}
 }
