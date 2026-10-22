@@ -31,14 +31,20 @@ executes the deterministic, non-interactive `agy pro settings` verbs and reports
    file.
 6. **Verbs only**: drive settings EXCLUSIVELY through these commands via `run_command`:
    - `agy pro settings show` / `agy pro settings show --json`
-   - `agy pro settings set <key> <value>`
+   - `agy pro settings set <key> <value> --yes`
    - `agy pro settings providers <list|add-json <file|->|test <name>|rename <old> <new>|delete <name>>`
+     (the write verbs also take the explicit `--yes` consent operand)
    - `agy pro settings mode <switch <full|clean>|restore|list|status>`
+     (`switch` and `restore` also take `--yes`; they present an exact file plan first)
    - `agy pro settings doctor <diagnose [--strict]|fix-keys [targets]|rollback-keys <dir>>`
    - `agy pro settings update-info | uninstall-info | version-info`
    - `agy pro models --all` (combined model inventory), `agy pro status`
    - `agy pro config show` (legacy read view), `agy pro setup` (interactive wizard - tell the user
      to run it in their terminal; do not attempt to feed it keys yourself)
+   - Persisted-state writes (set, providers writes, mode switch/restore, config/hybrid writes)
+     print their exact diff and then require consent. `run_command` stdin is never a console, so
+     your call MUST carry `--yes`, and you must show the printed diff to the user before/with the
+     result rather than reporting the write after the fact.
 7. **Destructive ops** (marked below) require an explicit y/n confirmation from the user before
    you run the verb. On "n", cancel and return to the menu.
 8. **Loop until exit**: after each result, re-show the main menu. Exit only when the user picks
@@ -51,6 +57,22 @@ executes the deterministic, non-interactive `agy pro settings` verbs and reports
    no name or URL is ever interpolated into a shell line; only fall back to the name-taking verbs
    (`test`, `rename`, `delete`, `fix-keys`) with a quoted, charset-valid token. If a supplied name
    violates the charset, refuse it and re-ask — do not shell-escape around the rule.
+
+## Out of scope: the deployed integrations (point, never drive)
+
+This command owns settings, not deployments. The files the engine writes into the Gemini config
+tree (rules, plugins, skills, hooks, and the `statusLine` slot in `settings.json`) belong to a
+different surface: `agy pro integrations <status|apply|retract|preset|adopt|rollback|repair>`.
+When the user asks about them, name that command and stop; do not attempt to deploy, retract or
+repair anything from this workflow.
+
+- `agy pro integrations status` is read-only and needs no consent; everything else is a writing
+  verb that composes one plan, prints its exact diff and asks once. `run_command` stdin is never a
+  console, so a write from here would need `--yes`, and there is no menu row for it: hand the user
+  the command to run in their own terminal instead.
+- The installer's deployment step is `agy pro integrations apply tools --yes` (the whole preset,
+  `settings.json` included). Mention it when a user asks why the statusline or the rules are
+  missing after an install.
 
 ## Loop footer (print after EVERY iteration, verbatim)
 
