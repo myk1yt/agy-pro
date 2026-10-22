@@ -2,8 +2,8 @@
 Antigravity-cli (agy-tools) Changelog
 ================================================================================
 
-Version: 0.10.10
-Release Date: 2026-10-21
+Version: 0.10.0
+Release Date: 2026-10-22
 Previous Version: 0.10.9
 
 --------------------------------------------------------------------------------
@@ -22,6 +22,14 @@ with a recorded boundary instead of per-site patches, and the masking class is
 closed. Every planted test credential moved into a concatenation-built
 contract package. The live providers.json (md5 d17c70ad...) and state.json
 (md5 2d6861d3...) were byte-unchanged across the whole mission.
+
+Pool exclusion is now a user decision instead of a compiled-in rule. The
+hardcoded k3 exclusion gives way to a list the user owns in providers.json,
+one rule governs auto-seating and failover alike, the setup hub becomes the
+only editor and the legacy settings panel a read-only view that routes to it,
+and saved swarm seat presets become selectable by name. An excluded row is
+marked in every list an agent reads, and the agent-facing rules point at that
+marker instead of naming a family to avoid.
 
 [Added]
 - Model form capability fields: the add and edit form gains Thinking, Reasoning
@@ -59,6 +67,24 @@ contract package. The live providers.json (md5 d17c70ad...) and state.json
   and in the prompt editor. The caret is drawn in-line: reverse video (SGR
   7/27) on the color tiers, a `|` marker with one-cell tail truncation on
   plain, and no application escape bytes on plain. No hardware cursor is used.
+- The user-owned pool-exclusion list: providers.json carries
+  `defaults.excludeModels`, a sibling of the still-reserved `excludeFamilies`.
+  An entry names a provider (every model of it), a model id (that model under
+  any provider), a provider/model pair (both sides must match), or
+  `family:<name>`, which reproduces one of the built-in default entries
+  exactly. The key absent or null applies the built-in default entry
+  `family:k3`; an explicit empty list excludes nothing.
+- Exclusion markers in the lists an agent reads: the swarm seat list and
+  `agy pro models --all` mark an excluded row `excluded (exclusion list)`, and
+  `agy pro models --json` carries the field `excluded` for the same row, so the
+  user's decision is read from the inventory instead of inferred from a model
+  name.
+- Exclusion editing in the setup hub: `agy pro setup` edits the list behind the
+  exact-diff approval modal, with a stale-base re-check, so the same gate that
+  guards every other providers.json write guards this one.
+- Seat presets by name: a saved swarm seat preset is selectable by name in the
+  seat-selection grammar, alongside numbers, ranges, and p1/p2/p3. An unknown
+  name-shaped token is refused by name at the interactive seat step.
 
 [Changed]
 - `agy pro setup` opens the TUI only when both stdin and stdout are consoles. A
@@ -82,6 +108,21 @@ contract package. The live providers.json (md5 d17c70ad...) and state.json
   states the rows-past-9 clause.
 - The line-mode vocabulary gains `r`, so the doctor refresh gesture also works
   off console.
+- One exclusion rule in every path: auto-seating and failover skip an excluded
+  entry, and an explicit pick (a number, a range, or a seat spec) is honored
+  with a warning while nothing is rejected. The previous exit-2 refusal of a
+  numbered pick that named an excluded row is removed.
+- The legacy `agy pro settings` panel and `agy pro settings show` render the
+  list read-only with a route to the hub, and the panel is deprecated: it
+  keeps working, prints a deprecation notice naming `agy pro setup`, and
+  routes the user to the hub.
+- The agent-facing rules no longer hardcode a k3 family ban: the workspace
+  AGENTS.md, rules/AGENTS.md, and the agypro_swarm plugin tell an agent to read
+  the user's exclusion list, or the marker in `agy pro models --all`, instead
+  of assuming a fixed family ban.
+- Product docs describe the shipped behavior: agy-pro/docs/fanout.md,
+  agy-pro/docs/swarm-hybrid.md, agy-pro/README.md, manual.txt, and MANUAL.ko.md
+  carry the corrected sentences, and the doc-claim tests pin them.
 
 [Fixed]
 - Arrow keys dead on a real console: the reader returned "consume 0" forever
@@ -116,6 +157,9 @@ contract package. The live providers.json (md5 d17c70ad...) and state.json
   no longer cut on 24-27 row consoles.
 - A console resize is applied to the frame geometry through App.Resize and a
   full repaint, instead of being latched and never used.
+- The remote model-list decode strip now removes the full Cc and Cf classes
+  (providers.FetchRemoteModels), so no bidi or format residual survives in the
+  edit buffer.
 
 [Security]
 - One shared masking policy for the registry-slot class
@@ -178,8 +222,8 @@ contract package. The live providers.json (md5 d17c70ad...) and state.json
 
 [Verification]
 - `go build ./...`, `go vet ./...` (also on GOOS=linux and GOOS=darwin), and
-  `go test ./... -count=1 -p 1`: 22 test packages ok, 0 FAIL; the linux and
-  darwin cross-builds pass.
+  `go test ./... -count=1 -p 1`: 22 test packages ok, 0 FAIL on that tree; the
+  linux and darwin cross-builds pass.
 - Blind-qa (single instance, headless through a Windows pseudo-console): 0 FAIL
   on every gate it could run, 1 PARTIAL by the headless rule for the
   console-only items. Observed live: exactly one SGR 7/27 pair per color frame
@@ -192,6 +236,12 @@ contract package. The live providers.json (md5 d17c70ad...) and state.json
   CRITICAL=0/HIGH=0.
 - Live registry checksums (providers.json md5 d17c70ad..., state.json md5
   2d6861d3...) unchanged across the mission.
+- Release gate re-run for the exclusion work: `go build ./...`,
+  `go vet ./...` on the native host and under GOOS=linux and GOOS=darwin, both
+  cross-builds, and `go test ./... -count=1 -p 1`: 23 test packages ok,
+  0 FAIL. The provider-pattern gate reports zero in both of its forms, a
+  headless blind-qa pass ran against the real CLI, and two double-blind review
+  cycles (code and security) closed at P0=0/P1=0 and CRITICAL=0/HIGH=0.
 
 Version: 0.10.9
 Release Date: 2026-10-18

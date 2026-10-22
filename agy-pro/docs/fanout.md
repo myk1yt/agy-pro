@@ -137,7 +137,8 @@ one ladder inside the single `buildRunConfig` choke point:
    exist is a usage error (exit 2); a dangling `default_preset` key only warns
    and runs preset-less.
 3. **The `providers.json` defaults block** (`n`, `timeoutSeconds`, `maxTurns`,
-   `tools`; `tokenBudget` / `excludeFamilies` stay reserved and are not consumed).
+   `tools`, plus `excludeModels` as the run's model exclusion policy, §4.1;
+   `tokenBudget` / `excludeFamilies` stay reserved and are not consumed).
    The block is read-only here: every `providers.json` write still goes through
    the approval modal in the settings surface. When the block supplies a value
    that differs from the engine default, one notice line per field on stderr
@@ -261,16 +262,64 @@ To ensure unbiased evaluation, model families must not overlap within a run, and
 3. **Native seats (`--seats "native:<model-id>"`)**:
    - Pinned by model id: no family rotation, no registry lookup, no API key needed.
    - Recorded in `state-fanout.json` with provider `native` and their inferred family, so later runs treat that family as used.
-   - Auto-seating never picks k3-family models (pool policy); explicit `--models` / `--seats` picks are honored as-is.
-- **"Pool policy" defined.** The pool policy is the auto-seating exclusion rule for
-  k3-family models: family `k3` (case-insensitive) or a model id carrying the
-  exact token `k3` (`kimi-k3`, `k3-agent-swarm`) is unsatisfiable for automatic
-  seating, while ids that merely contain the letters (`k3000`, `glm-k3x`) stay
-  eligible. It is a compile-time predicate of the binary
-  (`internal/providers/k3.go`, `providers.IsK3Family` / `providers.HasK3Token`),
-  not a settings file: nothing in `providers.json` or the UI toggles it. It
-  governs automatic seating only; explicit `--models` / `--seats` picks are
-  honored as-is.
+   - Auto-seating never picks an entry on the model exclusion list (§4.1); an explicit `--models` / `--seats` pick is honored and warned about, never rejected.
+
+### 4.1 The model exclusion list
+
+There is ONE exclusion rule, and the user owns it. The list is
+`defaults.excludeModels` in `providers.json` (the sibling of the still-reserved
+`excludeFamilies`), and an entry takes one of four forms:
+
+- `provider`: every model of that provider;
+- `model-id`: that model under any provider;
+- `provider/model`: both sides must match (split at the FIRST `/`, so an entry
+  that matches only one side excludes nothing),
+- `family:<name>`: every model whose family is `<name>` (case-insensitive), and
+  every model whose id carries `<name>` as a boundary-safe token.
+
+Provider names and model ids match exactly and case-sensitively. Entries are
+trimmed at load, an entry carrying interior whitespace, a control rune (Cc) or an
+invisible format rune (Cf) is refused, an individual entry that is empty after the
+trim is dropped, and a list whose every entry is blank is refused as a whole. An
+ABSENT key, or an explicit `"excludeModels": null` (what an unrelated registry write
+leaves behind when it marshals a nil list), means the built-in
+default entry governs the pool: `family:k3`, the old k3 pool policy (family `k3`,
+or an id carrying the exact token `k3` such as `kimi-k3` / `k3-agent-swarm`; ids
+that merely contain the letters, `k3000` / `glm-k3x`, stay eligible). An explicit
+EMPTY list (`[]`) is the user opting out: nothing is excluded.
+
+One matching authority answers every surface, `providers.ExclusionPolicy`
+(`internal/providers/providers.go`), and it acts in exactly three places:
+
+- **Auto-seating skips** an excluded entry: the family-rotation pass above never
+  seats one, and if the list empties the candidate pool the run fails naming the
+  list rather than seating an excluded model anyway.
+- **Failover skips** an excluded entry: neither the same-model retry (step 1) nor
+  the other-family retry (step 2) of §6 lands on a model the list names.
+- **Explicit picks are honored with a warning.** A `--models` / `--seats` pick, a
+  plan unit's `seat`, and a swarm builder number naming an excluded entry all run.
+  Every route prints the same shared tail, `is excluded (exclusion list); explicit
+  pick honored (the exclusion list covers auto-seating and failover only)`, under one
+  of two heads: fanout's own routes print `warning: <provider/model> is excluded ...`
+  and the swarm seat routes print the seat form
+  `warning: seat <n> (<spec>) is excluded ...` (swarm side: [`swarm-hybrid.md`](swarm-hybrid.md) §2.3).
+
+Nothing an EXPLICIT pick names is rejected: the warning line is the only consequence
+of picking an excluded entry. The list still fails a run in one shape: auto-seating
+never seats an excluded model, so a run whose every auto-seat candidate is excluded
+errors out with `no models available for auto-seating: every candidate is excluded by
+the exclusion list`. The list is visible as the marker
+`excluded (exclusion list)`, appended to the row in `agy pro models --all` and in
+the swarm builder's numbered seat list, and as the `excluded` key on every
+`agy pro models --json` entry row.
+
+The list has one write door: the setup hub (`agy pro setup` > Settings > "Model
+Exclusion List", row `swarm.exclude_models`), which shows the exact before/after
+diff in the approval modal that guards every `providers.json` write. The legacy
+`agy pro settings` panel and `agy pro settings show` render the row read-only and
+name the hub route in its note. A fanout run reads the list through the defaults
+rung of the ladder above (§2.4 rung 3), so the same list governs every run shape,
+partition mode included.
 
 ---
 
@@ -352,6 +401,13 @@ family, so a failure is terminal for that seat: it becomes a failed seat (`reaso
 shows 429 / quota / resource_exhausted, an `AGY_ERROR` line on its own does not trigger it; `reason=timeout`
 on the swarm deadline; otherwise the exit code plus a redacted stderr tail) and the swarm continues with the
 surviving seats. Empty stdout with exit 0 is also a failed seat, never a silent hang.
+
+**The model exclusion list filters the cascade.** Both retry steps above skip an
+alternate the list names (§4.1), so failover never auto-lands on an excluded
+provider/model; a seat whose alternates are all excluded runs out of candidates
+and degrades at step 3. Nothing here rejects a seat the run named itself: an
+explicit `--models` / `--seats` pick stays honored and carries the shared warning
+line.
 
 ---
 

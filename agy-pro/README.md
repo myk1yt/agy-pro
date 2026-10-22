@@ -357,16 +357,24 @@ agy pro fanout --task review --seats "native:gemini-3.8-flash-high,nw/glm-5.3-fl
 ```bash
 agy pro swarm            # interactive: numbered template + numbered seat selection, then run
 ```
-Numbers are the happy path: pick a template (`[1]` Code Review, `[2]` Security Audit, `[3]` Custom), then seats from the numbered combined list — `1,3,5`, a range `2-4`, or a preset (`p1` = 2 native + 2 external, `p2` = 3 external family-rotated, `p3` = 4 mixed). The builder prints the exact `agy pro fanout ...` command before running it; `c` prints it only, `--dry-run` prints it and exits 0.
+Numbers are the happy path: pick a template (`[1]` Code Review, `[2]` Security Audit, `[3]` Custom), then seats from the numbered combined list — `1,3,5`, a range `2-4`, a preset (`p1` = 2 native + 2 external, `p2` = 3 external family-rotated, `p3` = 4 mixed), or the name of a saved seat preset (managed in Hub > Settings, §10). The builder prints the exact `agy pro fanout ...` command before running it; `c` prints it only, `--dry-run` prints it and exits 0.
 
 CI and power users use flags instead (any flag means zero prompts; missing required input exits 2):
 ```bash
 agy pro swarm --template code-review --seats "1,3,5" --root .
 agy pro swarm --template security-audit --seats "native:gemini-3.8-flash-high,nw/glm-5.3-flash" --dry-run
 ```
-k3-family models are marked `excluded (pool policy)` and are never auto-seated.
+### 10. Model Exclusion List (one user-owned list)
+`providers.json` carries the exclusion list in `defaults.excludeModels` (sibling of the still-reserved `excludeFamilies`). An entry names a provider (every model of it), a model id (that model under any provider), a `provider/model` pair (both sides must match), or `family:<name>` (family match plus the boundary-safe id-token match). Provider names and model ids match exactly. Entries are trimmed at load, an entry carrying interior whitespace or a control rune (the Cc or the Cf class) is refused, an individual entry that is empty after the trim is dropped, and a list whose every entry is blank is refused as a whole. The key absent or null applies the built-in default entry `family:k3`; an explicit empty list (`[]`) excludes nothing.
 
-### 10. Settings (`agy pro settings` + `/setting_agypro`)
+- **Auto-seating and failover skip** an excluded entry: the family rotation never picks one, and neither failover retry step lands on one.
+- **Explicit picks are honored with a warning.** `--models`, `--seats`, a plan unit's `seat`, and a swarm builder number or saved preset name all run. Every route prints the same shared tail, `is excluded (exclusion list); explicit pick honored (the exclusion list covers auto-seating and failover only)`, under one of two heads: `warning: <provider/model> is excluded ...` on fanout's own routes and `warning: seat <n> (<spec>) is excluded ...` on the swarm seat routes.
+- **Nothing an explicit pick names is rejected** because of the list; a run whose every auto-seat candidate is excluded still fails with the all-excluded error.
+- Excluded rows carry the marker `excluded (exclusion list)` in `agy pro models --all` and in the builder's numbered seat list, and `excluded: true` in `agy pro models --json`.
+- An absent or null `excludeModels` key applies the built-in default entry `family:k3` (the old k3 rule: family `k3`, or an id carrying the exact token `k3`); an explicit empty list (`[]`) excludes nothing.
+- Edit the list in the setup hub (`agy pro setup` > Settings > "Model Exclusion List"), which writes through the same before/after approval modal as every other `providers.json` write. The legacy `agy pro settings` panel and `agy pro settings show` render the row read-only with the hub route in its note.
+
+### 11. Settings (`agy pro settings` + `/setting_agypro`)
 ```bash
 agy pro settings             # full-screen, keybinding-driven panel (TUI) - run it in your terminal
 agy pro settings --panel p4  # deep-link one panel
@@ -380,7 +388,7 @@ Panels: Launch & Profile, Models & Providers, Bridge Tools & Budgets, Swarm & Fa
 
 Inside an `agy` session, `/setting_agypro` is a **plugin slash command** (install with `agy plugin install plugins/agypro_settings`; the slash name comes from the file name, same class as `/agy_help`). It is an agent-mediated workflow that runs the non-interactive `agy pro settings ...` verbs behind numbered menus. It does **not** contain, embed, or launch the TUI: for the full-screen panel, run `agy pro settings` in your own terminal. Restart `agy` after installing the plugin so the slash command is discovered.
 
-### 11. Native Coexistence Profiles (`agy pro hybrid`)
+### 12. Native Coexistence Profiles (`agy pro hybrid`)
 
 ```bash
 agy pro hybrid on p1     # persist P1 (picker coexistence): externals in agy's own /model

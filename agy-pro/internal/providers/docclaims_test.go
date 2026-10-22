@@ -39,12 +39,18 @@ func providersVerbImplemented(src, verb string) bool {
 // verb the CLI implements, and the verb list is pinned against the source.
 func TestDocs_NoNonexistentProvidersCommands(t *testing.T) {
 	// Doc scope, relative to this package: agy-pro/README.md, agy-pro/docs/**,
-	// and the repo-root manual.txt / README.ko.md.
+	// and the repo-root manual.txt / README.ko.md / MANUAL.ko.md / README.md.
+	// The last two were added in the SESSION7 fix round: the round-2 finding named
+	// MANUAL.ko.md as sitting outside every doc-claim read root, and both files
+	// were proven clean against this lint before the roots were widened
+	// (TestDocs_NoNonexistentProvidersCommands PASS with both roots in place).
 	roots := []string{
 		filepath.Join("..", "..", "README.md"),
 		filepath.Join("..", "..", "docs"),
 		filepath.Join("..", "..", "..", "manual.txt"),
 		filepath.Join("..", "..", "..", "README.ko.md"),
+		filepath.Join("..", "..", "..", "MANUAL.ko.md"),
+		filepath.Join("..", "..", "..", "README.md"),
 	}
 	// Pin the verb list against the implementation so a CLI verb change fails
 	// here until the docs and this map follow.
@@ -141,5 +147,81 @@ func TestProvidersVerbs_WizardAliasAllowed(t *testing.T) {
 		if realProvidersVerbs[strings.ToLower(m[1])] {
 			t.Error("nonexistent providers verb must stay rejected")
 		}
+	}
+}
+
+// docsWS collapses whitespace runs so a pin survives a legitimate re-wrap of the
+// sentence and still fails on a wording regression.
+func docsWS(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+// docsHasSentence reports whether want is present in doc modulo whitespace.
+func docsHasSentence(doc, want string) bool {
+	return strings.Contains(docsWS(doc), docsWS(want))
+}
+
+// TestDocs_ExclusionLoaderRuleMatchesBehavior pins the exclusion-list loader rule
+// of agy-pro/README.md §10 to the single entry authority the loader runs
+// (NormalizeExcludeModels -> excludeEntries -> checkExcludeEntry,
+// internal/providers/providers.go:566-586 and :635-657). README.md is already one
+// of the doc-claim read roots the lint above scans, so this pin widens no root; it
+// adds the sentence-level claim the file never had (SESSION7 residual, round-2
+// code seat P3 test-coverage) and pairs it with the behavior in the same test, so
+// a pin that stops describing the code fails here.
+func TestDocs_ExclusionLoaderRuleMatchesBehavior(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "README.md"))
+	if err != nil {
+		t.Fatalf("read agy-pro/README.md: %v", err)
+	}
+	doc := string(data)
+
+	const loaderRule = "Entries are trimmed at load, an entry carrying interior whitespace or a control rune (the Cc or the Cf class) is refused, an individual entry that is empty after the trim is dropped, and a list whose every entry is blank is refused as a whole."
+	if !docsHasSentence(doc, loaderRule) {
+		t.Errorf("README.md §10 must document the loader rule verbatim; missing sentence:\n  %s", loaderRule)
+	}
+	const nilVsEmpty = "The key absent or null applies the built-in default entry `family:k3`; an explicit empty list (`[]`) excludes nothing."
+	if !docsHasSentence(doc, nilVsEmpty) {
+		t.Errorf("README.md §10 must document the absent-or-null vs explicit-empty rule; missing sentence:\n  %s", nilVsEmpty)
+	}
+
+	// Clause 1: entries are trimmed at load.
+	trimmed, err := NormalizeExcludeModels([]string{"  nw  "})
+	if err != nil || len(trimmed) != 1 || trimmed[0] != "nw" {
+		t.Errorf("pinned sentence drifted from the loader: trim of %q = %#v, %v; want [nw] and no error", "  nw  ", trimmed, err)
+	}
+	// Clause 2: an individual blank entry is DROPPED (the loader, not the write
+	// door, which refuses it: ValidateExcludeModels).
+	dropped, err := NormalizeExcludeModels([]string{"nw", "", "   "})
+	if err != nil || len(dropped) != 1 || dropped[0] != "nw" {
+		t.Errorf("pinned sentence drifted from the loader: [\"nw\" \"\" \"   \"] = %#v, %v; want [nw] and no error", dropped, err)
+	}
+	if _, err := ValidateExcludeModels([]string{"nw", ""}); err == nil {
+		t.Error("premise broken: the WRITE door must refuse a blank entry instead of dropping it")
+	}
+	// Clause 3 + 4: interior whitespace, Cc and Cf refused; an all-blank list
+	// refused as a whole.
+	for _, bad := range [][]string{
+		{"nw glm"},   // interior whitespace
+		{"nw\x00"},   // Cc
+		{"nw\u202e"}, // Cf (right-to-left override)
+		{"", "   "},  // every entry blank
+	} {
+		if _, err := NormalizeExcludeModels(bad); err == nil {
+			t.Errorf("pinned sentence drifted from the loader: NormalizeExcludeModels(%q) accepted an entry shape the doc says is refused", bad)
+		}
+	}
+	// The absent/null vs explicit-empty half: nil stays nil (built-in default
+	// governs), an explicit empty list stays non-nil and excludes nothing.
+	if got, err := NormalizeExcludeModels(nil); err != nil || got != nil {
+		t.Errorf("NormalizeExcludeModels(nil) = %#v, %v; want nil, nil (absent key = built-in default)", got, err)
+	}
+	if got, err := NormalizeExcludeModels([]string{}); err != nil || got == nil || len(got) != 0 {
+		t.Errorf("NormalizeExcludeModels([]) = %#v, %v; want a non-nil empty list and no error", got, err)
+	}
+
+	// Non-vacuity: the predicate rejects a regressed copy in memory, so the pin
+	// fails when the loader sentence regresses instead of matching anything.
+	regressed := strings.Replace(doc, "an entry carrying interior whitespace", "an entry carrying trailing whitespace", 1)
+	if docsHasSentence(regressed, loaderRule) {
+		t.Error("pin is vacuous: it still matches after the loader sentence regresses")
 	}
 }

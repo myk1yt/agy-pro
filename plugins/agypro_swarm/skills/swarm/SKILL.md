@@ -12,7 +12,8 @@ plugin slash command, invoked as `/agypro_swarm:swarm`).
 ## What to do when invoked
 
 Follow `commands/swarm.md` exactly. In short: collect template/seats/tools/timeout/task through
-numbered menus (or from the user's message), run `agy pro models --all` for the seat catalog,
+numbered menus (or from the user's message; a seat choice may be numbers, a range, a preset id
+p1/p2/p3, or the name of a saved seat preset), run `agy pro models --all` for the seat catalog,
 echo the resolved `agy pro swarm --dry-run` command with a cost note and an explicit go/no-go,
 and only then run the real swarm and present its artifacts.
 
@@ -21,9 +22,14 @@ fired on an ordinary prompt (no slash command, no named seats): (1) trigger chec
 questions and quick lookups are answered directly, no swarm; (2) map the request to the task
 (security audit -> security, code review -> review, deep research -> research, plan audit ->
 plan-audit); (3) pick 2-4 seats YOURSELF from `agy pro models --all` - native-first, different
-families preferred, never k3 - stating the choice in one line, falling back to the default
-preset (native:gemini-3.8-flash-high,native:claude-opus-5-5-high,native:claude-sonnet-5-5-high)
-when unsure; (4) run `agy pro fanout --task <t> --seats "<pick>" --root <target> --prompt-file
+families preferred, and read the user's exclusion list rather than assuming a fixed family ban: a
+row marked `excluded (exclusion list)` is out of the auto-seat pool and every other row is fair
+game (the list is user-owned, `providers.json defaults.excludeModels`, edited in the setup hub at
+`agy pro setup`; an absent key means the built-in k3 default entry applies) - stating the choice
+in one line, falling back to this documented native line-up when unsure (a rule-level fallback,
+not an app default preset):
+(native:gemini-3.8-flash-high,native:claude-opus-5-5-high,native:claude-sonnet-5-5-high);
+(4) run `agy pro fanout --task <t> --seats "<pick>" --root <target> --prompt-file
 <file> --tools read,search --timeout 900 --max-native <n>` in background mode when available;
 (5) relay progress live from `reports/fanout/<ts>/progress.log` (seat start/finish lines) so the
 run is never silent; (6) present the reconciliation matrix and seat findings VERBATIM with
@@ -48,6 +54,8 @@ provider partition seat `read_url_content` / `search_web` (both default OFF).
 - Every seat is a full agent turn. Native seats spend the Antigravity subscription; provider seats
   spend that provider's API credits. No real run without an explicit go after the dry-run echo.
 - API key values are never requested or echoed in chat. Entry happens only in the interactive
-  wizard (`agy pro setup`), masked as first-5 characters + `****`.
+  wizard (`agy pro setup`), masked as first-5 characters + `****`. The model exclusion list is
+  edited in that same setup hub (Swarm & Fanout); the legacy `agy pro settings` line panel is
+  deprecated in favor of the hub and renders the list read-only.
 - The task prompt goes through `--prompt-file` (a temp file you write), never spliced raw into a
   shell line.

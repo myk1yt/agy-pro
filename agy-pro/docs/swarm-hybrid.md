@@ -167,14 +167,16 @@ Enter runs it.  c = copy/print only.  1-4 = edit that field.  q = quit.
 ```
 
 - **Selection grammar**: `1,3,5`, ranges `2-4`, delimiters `,` / space / `;`, presets `p1`..`p3`
-  (case-insensitive). Empty input accepts the presented default preset (`p1`). The list is capped at 40 seats.
+  (case-insensitive), and the NAME of a saved seat preset (§2.2). Empty input accepts the presented
+  default preset (`p1`). The list is capped at 40 seats.
 - **Presets resolve against the live combined inventory** (native catalog + your registry): `p1` = first two
   available native entries + two family-rotated external entries; `p2` = three external entries with distinct
   families; `p3` = one flash-tier native + one `-pro` native + two family-rotated externals. If the inventory
   is too small, a preset degrades to "all available" with a warning instead of failing.
-- **Pool policy**: k3-family models are marked `excluded (pool policy)` in the list. Presets never auto-pick
-  them, and typing their number is rejected. An explicit spec token that names a k3 model (`--seats
-  nw/kimi-k3`) is honored with a warning — the policy governs automatic seating only.
+- **Model exclusion list**: an entry on the list (`providers.json` `defaults.excludeModels`, §2.3) is marked
+  `excluded (exclusion list)` in the numbered list. Presets never auto-pick one, and naming one by number,
+  range, saved preset name or seat spec is HONORED with the shared warning line. Nothing is rejected because
+  of the list.
 - **Preview** prints the exact `agy pro fanout ...` command that will run. `--dry-run` prints it and exits 0.
 - **Console summary** after the run: `seat | kind | model | verdict` (verdict gets ` (degraded)` when a seat
   degraded). ANSI styling only on a terminal; piped output is plain text.
@@ -191,9 +193,16 @@ agy pro swarm --template security-audit --seats "native:gemini-3.8-flash-high,nw
 agy pro swarm --template code-review --seats "p3" --prompt-file - --timeout 300
 ```
 
-`--seats` accepts either the numbered grammar (`1,3,5`, `2-4`, `p1`..`p3`) or explicit seat specs
-(`native:id,provider/model`). `--prompt-file -` reads the prompt from stdin (the only non-interactive read of
-stdin); an empty prompt falls back to the template scaffold.
+`--seats` accepts the numbered grammar (`1,3,5`, `2-4`, `p1`..`p3`), the name of a saved seat preset, or
+explicit seat specs (`native:id,provider/model`). A saved name expands to the numbered selection it stores. A
+token that names no saved preset keeps the pre-F04 seat-spec reading (a bare model id is a legal spec), so a
+lone unknown name is still a spec. In a mixed line (a number, a range, a preset id, or a known saved name
+alongside it), an unknown name-shaped token is refused with `unknown saved preset`. Typed at the interactive
+seat step, an unknown name-shaped token is refused
+with `unknown saved preset`: the builder prints that refusal and prompts for seats again. Only a valid selection
+ends the seat step; exit 2 happens only when stdin closes at the prompt.
+`--prompt-file -` reads the prompt from stdin (the only non-interactive read of stdin); an empty prompt falls
+back to the template scaffold.
 
 Templates: `code-review` (`--task review`, `read,search`), `security-audit` (`--task security`, `read,search`
 plus adversarial framing), `custom`. Default timeout 300s (the fanout CLI default).
@@ -206,7 +215,13 @@ Three different "preset" ideas meet in this command; they are not the same thing
   live combined inventory at build time. They are stored nowhere and they are not
   fanout presets.
 - **Saved swarm presets are user-saved numbered seat selections**, managed in
-  Hub > Settings.
+  Hub > Settings. They are selectable BY NAME in the selection grammar: `--seats
+  deep` (or the name typed at the seat step) resolves the numbers that preset
+  stores. At the seat step an unknown name-shaped token is refused with `unknown
+  saved preset` and the builder re-prompts; only a valid selection ends the step,
+  and exit 2 happens only if stdin closes at the prompt. The numbers a saved
+  preset expands to count as EXPLICIT picks, so an excluded entry it names is
+  honored with the warning (§2.3).
 - **Fanout presets** (the run configurations of [`fanout.md`](fanout.md) §2.4)
   are named budget sets in `~/.agy-pro/fanout-presets.json`: seat source, tools,
   timeout, output directory. Not a prompt, not a seat selection of its own. The
@@ -219,15 +234,41 @@ Three different "preset" ideas meet in this command; they are not the same thing
   with one stderr warning per knob and the run proceeds; an explicitly named
   `--preset` keeps the hard error ([`fanout.md`](fanout.md) §2.4.2, finding F1).
 
-**"Pool policy" defined.** The phrase names the auto-seating exclusion rule for
-k3-family models: a model whose family is `k3` (case-insensitive) or whose id
-carries the exact token `k3` (`kimi-k3`, `k3-agent-swarm`) is never picked
-automatically and its number is rejected in the builder; ids that merely contain
-the letters (`k3000`, `glm-k3x`) stay eligible. The rule lives in the binary as
-a predicate (`internal/providers/k3.go`, `providers.IsK3Family` /
-`providers.HasK3Token`); it is not a settings file entry and cannot be toggled
-from the UI. Automatic seating only: an explicit `--seats` token naming a k3
-model is honored with a warning.
+### 2.3 The model exclusion list
+
+The old k3 rule is now the BUILT-IN DEFAULT ENTRY of one user-owned list. The list
+is `defaults.excludeModels` in `providers.json` (the sibling of the still-reserved
+`excludeFamilies`), and an entry names one of four things: a provider (every model
+of it), a model id (that model under any provider), a `provider/model` pair (both
+sides must match; the entry splits at the FIRST `/`), or `family:<name>` (a family
+match, case-insensitive, plus the boundary-safe id-token match). Provider names and
+model ids match exactly and case-sensitively. Entries are trimmed at load, an entry
+carrying interior whitespace, a control rune (Cc) or an invisible format rune (Cf)
+is refused, an individual entry that is empty after the trim is dropped, and a list
+whose every entry is blank is refused as a whole. An ABSENT key, or an explicit
+null (`"excludeModels": null`), leaves the built-in default entry in force
+(`family:k3`: family `k3`, or an id carrying the exact token `k3` such as
+`kimi-k3` / `k3-agent-swarm`; `k3000` / `glm-k3x` stay eligible). An explicit EMPTY
+list excludes nothing.
+
+The list governs AUTO-seating and failover only:
+
+- presets `p1`..`p3` and the fanout family rotation never pick an excluded entry,
+  and a preset that loses rows to the list degrades to "all available" with a
+  warning instead of failing;
+- an explicit number, range, saved preset name or seat spec that names an excluded
+  entry is HONORED and prints the shared warning in its swarm seat form
+  `warning: seat <n> (<spec>) is excluded (exclusion list); explicit pick honored (the exclusion list covers auto-seating and failover only)`;
+  fanout's own routes print the same tail with a bare target, `warning: <provider/model> is excluded (exclusion list); ...`;
+- nothing an explicit pick names is rejected because of the list; a run whose every auto-seat candidate is excluded still fails with the all-excluded error.
+
+Excluded rows render the marker `excluded (exclusion list)` in the numbered builder
+list and in `agy pro models --all`, and carry `excluded` on the `models --json`
+entry rows. Edit the list in the setup hub (`agy pro setup` > Settings > "Model
+Exclusion List", row `swarm.exclude_models`): the write goes through the
+before/after approval modal like every other `providers.json` write. The legacy
+`agy pro settings` panel and `agy pro settings show` render the row read-only and
+name the hub route in its note.
 
 ---
 
@@ -297,6 +338,13 @@ language as everywhere else. Bridge-tool budgets are compile-time constants and 
 
 Outside a Windows console (`show`, pipes, CI) the panel degrades to a plain snapshot plus a line-mode
 fallback over the same settings core; ANSI is emitted only on a console.
+
+**The panel is deprecated.** It keeps working exactly as today (same panels, same keys, same write
+behaviour), but new setting work goes to the setup hub (`agy pro setup`, or `agy pro setup --wizard` for the
+classic line wizard), and the panel prints the same notice plus the hub command under its banner on the first
+frame. One row makes the split concrete: the model exclusion list (§2.3, row `swarm.exclude_models`) is
+editable ONLY in the hub, where its write goes through the before/after approval modal; the panel and
+`agy pro settings show` render that row read-only and put the hub route in its note.
 
 ### 4.2 Non-interactive verbs (what the plugin and CI call)
 

@@ -24,8 +24,14 @@ When the user did NOT invoke this command and did NOT name seats:
 2. Map the request to the task: security audit -> `security`, code review -> `review`, deep
    research -> `research`, plan audit -> `plan-audit`.
 3. **Pick the seats yourself** from `agy pro models --all`: 2-4 seats, native-first, DIFFERENT
-   model families preferred (cross-verification), never k3-family. State the choice in ONE line.
-   When unsure, use the default preset: `native:gemini-3.8-flash-high,native:claude-opus-5-5-high,native:claude-sonnet-5-5-high`.
+   model families preferred (cross-verification). Read the user's exclusion list rather than
+   assuming a fixed family ban: a row marked `excluded (exclusion list)` is out of the auto-seat
+   pool, and every other row is fair game. The list is user-owned (`providers.json
+   defaults.excludeModels`, edited in the setup hub at `agy pro setup`); when the key is absent a
+   built-in k3 default entry applies, so read the marker, not the model name. State the choice in
+   ONE line. When unsure, use this documented native line-up (a rule-level fallback, not an app
+   default preset):
+   `native:gemini-3.8-flash-high,native:claude-opus-5-5-high,native:claude-sonnet-5-5-high`.
 4. Run it - background mode if your shell tool supports it (see the progress protocol below):
    `agy pro fanout --task <t> --seats "<your pick>" --root <target> --prompt-file <file> --tools read,search --timeout 900 --max-native <seat count>`
    Write the user's prompt to a temp file (rule 7) and pass `--prompt-file`; `--root` is the
@@ -77,10 +83,11 @@ seat each"). Rules:
    command/tool ACTION that runs a swarm as separate subprocesses; it does NOT add external
    models to the current session's `/model` list and it does NOT change the session's model.
    The swarm's seats are chosen here, in this chat, by number.
-3. **Numbers are the only selection language**: every choice is presented as `[1] [2] [3] ...`
+3. **Numbers are the selection language**: every choice is presented as `[1] [2] [3] ...`
    and the user answers with a number (or a comma/space list where noted). Never ask the user
-   to type flags or command lines. The ONE exception is the free-text task prompt, which is
-   collected as a single chat message.
+   to type flags or command lines. Two exceptions: the free-text task prompt, collected as a single
+   chat message, and a seat choice where the user types a saved preset NAME instead of numbers
+   (the grammar resolves it, see Step 1) - never require a name, accept it when offered.
 4. **Cost confirmation is mandatory before any paid run**: every seat is a full agent turn.
    Native seats (`native:<id>`) spend the Antigravity subscription quota; provider seats
    (`<provider>/<model>`) spend that provider's API credits. Before running for real you MUST
@@ -116,7 +123,10 @@ seat each"). Rules:
    - `agy pro models --all` (numbered combined inventory: native + registered external)
    - `agy pro swarm --template <code-review|security-audit|custom> --seats "<spec>" --root <dir> --prompt-file <path> --tools <spec> --timeout <seconds> [--dry-run]`
    - `agy pro fanout --task <review|security|plan-audit|research|ideas|custom> --seats "<spec>" --root <dir> --prompt-file <path> --tools <spec> --timeout <seconds> [--json]` (no --dry-run here: the dry-run echo is the swarm builder's job)
-   - `agy pro settings show` (native seat concurrency and presets, read-only)
+   - `agy pro settings show` (read-only: native seat concurrency, the Model Exclusion List row, and
+     saved seat presets). This is the LEGACY line-mode panel, deprecated in favor of the setup hub
+     (`agy pro setup`): the hub is the only surface that EDITS the exclusion list, so send the user
+     there (in their own terminal) and never try to change the list from here.
    Any of the non-interactive flags present means zero prompts; missing required input exits 2.
    Never attempt to drive the INTERACTIVE numbered builder (`agy pro swarm` with no flags
    requires a terminal and will exit 2 here).
@@ -133,7 +143,10 @@ catalog for this session (native rows plus every enabled registered external row
 report the error verbatim (masked per rule 6) and offer `[0] Exit`.
 Before asking for seat numbers, print the COMPLETE inventory table VERBATIM in chat: every row,
 every number, every model id, no filtering, summarizing, or truncation, so the user can map any
-selection to a printed row.
+selection to a printed row. Rows the user's exclusion list covers carry the `excluded (exclusion
+list)` suffix: auto-seating and failover skip them, an explicit pick of one is honored with a
+warning, and nothing is refused because of the list. Never filter those rows out of the printed
+table - the suffix is how the user sees which rows the list covers.
 
 ### Step 1 - Collect the run (numbered; skip any step the user's message already answers)
 
@@ -142,7 +155,8 @@ jump straight to Step 2. Otherwise ask, one short menu at a time:
 
 ```
 [1] Template      [1] code-review   [2] security-audit   [3] custom
-[2] Seats         numbers from the inventory (e.g. 1,13 or 2-4 or p1/p2/p3)
+[2] Seats         numbers from the inventory (e.g. 1,13 or 2-4), a preset id (p1/p2/p3),
+                  or the name of a saved seat preset (e.g. deep)
 [3] Tools         [1] read,search (default)  [2] read,search,write  [3] read,search,exec
                    WARNING: write/exec let seats modify or run things inside --root.
                    `--tools` bounds PROVIDER seats only; native seats run the agy
@@ -153,9 +167,14 @@ jump straight to Step 2. Otherwise ask, one short menu at a time:
 ```
 
 Seat numbers map to the inventory rows: `native:<id>` for native rows, `<provider>/<model>` for
-external rows. A numbered selection like `1,13` resolves through the same grammar the terminal
-builder uses; the dry-run echo shows the resolved explicit specs so the user sees exactly what
-will run.
+external rows. `agy pro swarm --seats` reads ONE grammar: a number (`13`), a range (`2-4`), a
+preset id (`p1`, `p2`, `p3`), or the name of a saved seat preset (`deep`). A saved preset is a
+stored numbers list (`~/.agy-pro/swarm-state.json`, listed in the setup hub's Saved Seat Presets
+row); its name matches case-insensitively, a name spelled like a number or a preset id never wins
+over that spelling, and an unknown name is refused BY NAME instead of quietly falling back. `agy
+pro fanout --seats` takes explicit seat specs only - the numbers, ranges, preset ids and saved
+names are resolved by `agy pro swarm` before the engine runs. The dry-run echo shows the resolved
+explicit specs so the user sees exactly what will run.
 
 ### Step 2 - Echo + cost note + go/no-go (mandatory)
 
