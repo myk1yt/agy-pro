@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // ModelPreset represents a recommended model configuration for a provider.
@@ -578,9 +579,9 @@ func modelsFetchHost(baseURL string) string {
 	return u.Host
 }
 
-// stripModelIDControls deletes the C0 control runes and DEL from a remote model
-// id at the decode boundary, before the id can reach any caller. The id is
-// REMOTE RESPONSE MATERIAL: a hostile or broken endpoint can answer
+// stripModelIDControls deletes every control (Cc) and format (Cf) rune from a
+// remote model id at the decode boundary, before the id can reach any caller.
+// The id is REMOTE RESPONSE MATERIAL: a hostile or broken endpoint can answer
 // `{"id":"\x1b[2JFAKE-MODEL"}`, TrimSpace keeps the ESC (it is not a space),
 // and every downstream sink that does not route through a masking authority
 // would paint the rune sequence into the terminal frame. Stripping here rather
@@ -588,18 +589,27 @@ func modelsFetchHost(baseURL string) string {
 // and the non-console wizard), including the persisted form: nothing this
 // function touches can be written into providers.json either.
 //
-// The predicate is the narrow reviewed class: the C0 controls plus DEL
-// (r < 0x20 || r == 0x7f), the runes that act on a terminal and break a frame
-// or a transcript line. The wider classes (C1 0x80..0x9f, the Cf bidi and
-// zero-width set) are deliberately NOT stripped here: the option-label path
-// already deletes them through providers.MaskSlot (StripSlotControls uses the
-// Unicode control class plus Cf), so a frame cannot carry one from the picker,
-// and the edit buffer keeps them exactly as a typed or pasted value would.
-// Widening this predicate is a separate decision, recorded in the fix report.
-// A benign id is byte-identical.
+// The predicate is the full Cc plus Cf class: unicode.IsControl for Cc (the C0
+// controls 0x00..0x1f, DEL 0x7f, and the C1 controls 0x80..0x9f) and
+// unicode.Cf for the format runes (the bidi embeddings and overrides
+// U+202A..U+202E, the isolates U+2066..U+2069, ZERO WIDTH SPACE/JOINER
+// U+200B..U+200D, SOFT HYPHEN U+00AD, BOM U+FEFF). The earlier C0+DEL-only
+// predicate was too narrow for this boundary: the final painter sink
+// (internal/tui/render.go, runeSurvivesStrip) already drops Cc plus Cf, so a
+// frame never carried one, but the model-id EDIT BUFFER did. A pasted or
+// endpoint-planted RIGHT-TO-LEFT OVERRIDE survived the decode, sat in the
+// editor, and could reorder the row it was typed into. Widening this predicate
+// closes that edit-buffer residual only; no other strip site changes.
+//
+// Zl/Zp (U+2028 LINE SEPARATOR, U+2029 PARAGRAPH SEPARATOR) are NOT Cf and
+// survive here: they end a terminal line rather than format one, and they are
+// the separator class other call sites already reason about explicitly. The
+// caller's surrounding TrimSpace still trims them at the edges, exactly as it
+// trims every other space-class rune, so an interior separator is the only
+// position that can reach a sink. A benign id is byte-identical.
 func stripModelIDControls(id string) string {
 	return strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
 			return -1
 		}
 		return r
