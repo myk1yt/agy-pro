@@ -1,16 +1,28 @@
 package providers
 
-// k3-family exclusion predicate (contract §2.5b, F-C; verify-report-f01.md §6).
-// Single source of truth for the subagent/swarm AUTO-seating pool policy:
-// `InferFamily(id) == "k3"` is unsatisfiable for every input (kimi-k3 infers
-// "kimi", k3-agent-swarm infers "k"), so exclusion must key on the explicit
-// family string OR a boundary-safe id token match.
+// The k3 pool-exclusion rule, framed as the BUILT-IN DEFAULT ENTRY of the
+// user-owned exclusion list (D1 = `defaults.excludeModels` in providers.json;
+// D2 = one rule for every exclusion; plan §4.6, contract §2.5b, F-C;
+// verify-report-f01.md §6).
+//
+// There is no separate stricter constant policy. An ExclusionPolicy whose User
+// list is nil (no excludeModels block in the registry) answers purely from
+// these two predicates, and a non-nil user list REPLACES this entry. The
+// predicate is dual on purpose: `InferFamily(id) == "k3"` is unsatisfiable for
+// every input (kimi-k3 infers "kimi", k3-agent-swarm infers "k"), so a
+// family-only declaration (Family: "k3" on a benign id) and a token-bearing id
+// are BOTH part of the single rule.
+//
+// Both predicates are byte-behaviour-identical to the pre-unification forms:
+// inventory's id-only delegation is retired (inventory.Entry.Excluded now
+// carries the one verdict), so these functions are the only remaining mouth of
+// the built-in rule.
 
 import "strings"
 
-// IsK3Family reports the dual predicate: explicit family string "k3"
-// (case-insensitive, via Model.FamilyName, which honors an explicit Family
-// field) OR an id-token match (HasK3Token).
+// IsK3Family is the built-in default exclusion entry: explicit family string
+// "k3" (case-insensitive, via Model.FamilyName, which honors an explicit
+// Family field) OR an id-token match (HasK3Token).
 func IsK3Family(m Model) bool {
 	if strings.EqualFold(strings.TrimSpace(m.FamilyName()), "k3") {
 		return true

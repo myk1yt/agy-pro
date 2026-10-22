@@ -36,6 +36,22 @@ type Entry struct {
 	// used before A7 ignored a registry-declared family and could
 	// double-seat one declared family in a "family-rotated" preset.
 	Family string
+	// Excluded is the unified pool-exclusion verdict for this row, computed
+	// ONCE at Load so no consumer re-derives it (P4-2 unification of the two
+	// disagreeing predicates: providers.IsK3Family saw an explicit family,
+	// the retired inventory.IsK3Excluded saw only an id token, so a benign id
+	// declared `family: k3` was excluded in fanout auto-seating and allowed
+	// in swarm preset expansion).
+	//
+	// The one rule (user decision D2 = b): auto-seating and failover SKIP an
+	// excluded row; an explicit pick (a numbered seat or a spec) is HONORED
+	// WITH A WARNING; nothing is ever rejected. The k3 constant is folded in
+	// as the built-in default entry of the user-owned list
+	// (defaults.excludeModels, D1 = a) - there is no separate stricter path.
+	//
+	// JSON name is lowercase `excluded` for the `agy pro models --all --json`
+	// dump (pro_models.go marshals []Entry).
+	Excluded bool `json:"excluded"`
 }
 
 // NativeModel is one row of the real `agy models` catalog.
@@ -61,6 +77,19 @@ type Group struct {
 func Load(ctx context.Context, reg *providers.Registry, nf NativeFetcher) (*Inventory, error) {
 	inv := &Inventory{GeneratedAt: time.Now()}
 
+	// Exclusion policy: one verdict per row, from the ONE authority (D1 = a:
+	// `defaults.excludeModels` in providers.json, with the k3 rule folded in
+	// as the built-in default entry). A nil reg (native-only view) still
+	// evaluates the policy with an EMPTY defaults block rather than skipping
+	// the flag: the built-in default entry then applies identically on both
+	// views, so a native row that matches the built-in rule is marked the
+	// same way a provider row is, and Entry.Excluded is never a
+	// provider-only-meaningful field.
+	policy := providers.ExclusionPolicyFromDefaults(providers.Defaults{})
+	if reg != nil {
+		policy = providers.ExclusionPolicyFromDefaults(reg.Defaults)
+	}
+
 	var native []NativeModel
 	if nf != nil {
 		models, err := nf.Fetch(ctx)
@@ -80,15 +109,21 @@ func Load(ctx context.Context, reg *providers.Registry, nf NativeFetcher) (*Inve
 			continue
 		}
 		seenNative[key] = true
+		// A7: the same inference the native seat target uses
+		// (fanout nativeTarget -> providers.InferFamily).
+		fam := providers.InferFamily(m.ID)
 		inv.Entries = append(inv.Entries, Entry{
 			Kind:        "native",
 			Group:       "native",
 			ModelID:     m.ID,
 			DisplayName: m.DisplayName,
 			Spec:        "native:" + m.ID,
-			// A7: the same inference the native seat target uses
-			// (fanout nativeTarget -> providers.InferFamily).
-			Family: providers.InferFamily(m.ID),
+			Family:      fam,
+			// Native rows evaluate the policy as ("native", id, family): the
+			// same three operands a provider row passes, so a user list
+			// naming "native" excludes native rows and a family entry hits
+			// both views identically.
+			Excluded: policy.Excludes("native", m.ID, fam),
 		})
 	}
 
@@ -110,6 +145,14 @@ func Load(ctx context.Context, reg *providers.Registry, nf NativeFetcher) (*Inve
 				// value resolves empty. A provider with no APIKeyEnv needs no
 				// key and is never flagged.
 				keyMissing := p.APIKeyEnv != "" && p.KeyValue() == ""
+				// A7: familyForEntry honors an explicit registry family
+				// before falling back to the id prefix, exactly like the
+				// provider target the fanout engine builds for this row.
+				// C2: the explicit family is carried CASE-PRESERVED so
+				// display sinks (models --json) can mask a key-shaped
+				// family through the uppercase-requiring decorated
+				// class; entryFamily re-folds for rotation.
+				fam := familyForEntry(m)
 				inv.Entries = append(inv.Entries, Entry{
 					Kind:         "provider",
 					Group:        p.Name,
@@ -118,14 +161,13 @@ func Load(ctx context.Context, reg *providers.Registry, nf NativeFetcher) (*Inve
 					Capabilities: m.CapabilitySummary(),
 					Spec:         p.Name + "/" + m.ID,
 					KeyMissing:   keyMissing,
-					// A7: familyForEntry honors an explicit registry family
-					// before falling back to the id prefix, exactly like the
-					// provider target the fanout engine builds for this row.
-					// C2: the explicit family is carried CASE-PRESERVED so
-					// display sinks (models --json) can mask a key-shaped
-					// family through the uppercase-requiring decorated
-					// class; entryFamily re-folds for rotation.
-					Family: familyForEntry(m),
+					Family:       fam,
+					// Provider rows pass the provider NAME as the first
+					// operand (Entry.Group) so a provider-level list entry
+					// matches, and the carried Family so a `family: k3`
+					// declaration on a benign id is excluded exactly like
+					// the fanout side already excluded it.
+					Excluded: policy.Excludes(p.Name, m.ID, fam),
 				})
 			}
 		}
@@ -174,11 +216,24 @@ func (inv *Inventory) Groups() []Group {
 //
 //	[ 1] gemini-3.8-flash-high        Gemini 3.8 Flash (High)          [native]
 //	[19] gemini-2.5-flash             tools, vision                    [google]
-//	[23] glm-5.3-flash-flex           tools, thinking(default)         [nw]      (key missing)
+//	[23] glm-5.3-flash-flex           tools, thinking(default)         [nw]      (key missing)      excluded (exclusion list)
 //
 // Rows are numbered globally in render order. The middle column shows the
 // capability summary for provider entries and the display name for native
 // entries (native capabilities are unknown and never fabricated).
+//
+// D7: an excluded row carries providers.ExcludedMarker() as a trailing suffix,
+// in the same order and with the same separator as the swarm seat list
+// (internal/swarm/builder.go RenderSeatList): "(key missing)" first, then six
+// spaces, then the marker, so a row can carry both and the two surfaces read
+// identically. The standing rule tells an agent to pick seats from this list,
+// so this list must show which rows the exclusion list covers (auto-seating and
+// failover skip them; an explicit pick is honored with a warning).
+//
+// The suffix rides AFTER the group tag, outside both padded columns, so the
+// column widths (computed from the masked id / mid cells only) and the frame
+// are unchanged by the marker. No truncation logic exists on this path: the
+// columns are `%-*s` right-padding only, so a longer label never needs one.
 func (inv *Inventory) RenderNumbered(out io.Writer) {
 	if inv == nil {
 		return
@@ -203,6 +258,12 @@ func (inv *Inventory) RenderNumbered(out io.Writer) {
 		suffix := ""
 		if e.KeyMissing {
 			suffix = "      (key missing)"
+		}
+		if e.Excluded {
+			// D7 + sibling parity: the marker is the shared constant, appended
+			// after "(key missing)" with the same six-space separator the swarm
+			// seat list uses, so both listings of the same entry end identically.
+			suffix += "      " + providers.ExcludedMarker()
 		}
 		// G6/S5/K1: the model ID, the mid column, and the group tag are
 		// registry-derived display slots, so all three route through
@@ -232,12 +293,4 @@ func maskMidColumn(e Entry) string {
 		return providers.MaskSlot(e.DisplayName)
 	}
 	return providers.MaskSlot(e.Capabilities)
-}
-
-// IsK3Excluded reports whether a bare model id belongs to the k3 family
-// excluded from subagent/swarm AUTO-seating (CEO kickoff; plan §4.6).
-// Id-only contexts delegate to the single source of truth
-// providers.HasK3Token (contract §2.5b, F-C).
-func IsK3Excluded(modelID string) bool {
-	return providers.HasK3Token(modelID)
 }

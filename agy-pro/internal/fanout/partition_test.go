@@ -16,6 +16,7 @@ package fanout
 // refusal pin (see the coder report).
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -660,7 +661,7 @@ func TestPartitionTargetsSeatResolution(t *testing.T) {
 		{ID: "u4", Title: "t", Scope: []string{"d"}, Deliverable: "d"}, // no seat: same default
 	}
 	cfg := RunConfig{Task: partTask, Root: dir, Units: units}
-	targets, nativeSeats, gotUnits, err := partitionTargets(cfg, reg, state, providers.IsK3Family)
+	targets, nativeSeats, gotUnits, err := partitionTargets(cfg, reg, state, PolicyExcluder(providers.ExclusionPolicy{}))
 	if err != nil {
 		t.Fatalf("partitionTargets: %v", err)
 	}
@@ -976,5 +977,67 @@ func TestPartitionModeEngineForcesReadOnlyTools(t *testing.T) {
 		if strings.Contains(r.ToolsJSON, "write_file") || strings.Contains(r.ToolsJSON, "run_command") {
 			t.Errorf("partition seat exposed a write/exec tool despite read-only mode: %s", r.ToolsJSON)
 		}
+	}
+}
+
+// TestPartitionExplicitExcludedSeatHonoredWithWarning (SESSION7 P4-3, D2=b):
+// a plan unit that NAMES a seat keeps it even when the user's exclusion list
+// covers that seat; the shared warning is the only consequence, and a seatless
+// unit's run default is auto-seated from the non-excluded pool.
+func TestPartitionExplicitExcludedSeatHonoredWithWarning(t *testing.T) {
+	trueVal := true
+	dir := t.TempDir()
+	t.Setenv(providers.EnvHome, dir)
+	t.Setenv("KEY_PEXC", "pexc-key")
+	reg := &providers.Registry{Providers: []providers.Provider{
+		{
+			Name:      "prov-a",
+			BaseURL:   "http://127.0.0.1:1",
+			APIKeyEnv: "KEY_PEXC",
+			Models: []providers.Model{
+				{ID: "model-a", Family: "family-a", Enabled: &trueVal},
+			},
+		},
+		{
+			Name:      "prov-b",
+			BaseURL:   "http://127.0.0.1:1",
+			APIKeyEnv: "KEY_PEXC",
+			Models: []providers.Model{
+				{ID: "model-b", Family: "family-b", Enabled: &trueVal},
+			},
+		},
+	}}
+	regPath := filepath.Join(dir, "providers.json")
+	writeRegistry(t, regPath, reg)
+	state, err := LoadState()
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+
+	units := []Unit{
+		{ID: "u1", Title: "t", Scope: []string{"a"}, Deliverable: "d", Seat: "prov-a/model-a"},
+		{ID: "u2", Title: "t", Scope: []string{"b"}, Deliverable: "d"}, // no seat: run default
+	}
+	var warn bytes.Buffer
+	cfg := RunConfig{Task: partTask, Root: dir, Units: units, WarnOut: &warn}
+	policy := providers.ExclusionPolicyFromDefaults(providers.Defaults{ExcludeModels: []string{"prov-a"}})
+	targets, nativeSeats, gotUnits, err := partitionTargets(cfg, reg, state, PolicyExcluder(policy))
+	if err != nil {
+		t.Fatalf("partitionTargets: %v", err)
+	}
+	if len(targets) != 2 || len(nativeSeats) != 2 || len(gotUnits) != 2 {
+		t.Fatalf("targets/nativeSeats/units = %d/%d/%d; want 2 each", len(targets), len(nativeSeats), len(gotUnits))
+	}
+	if targets[0].Provider.Name != "prov-a" || targets[0].Model.ID != "model-a" {
+		t.Fatalf("explicit excluded unit seat = %s; want prov-a/model-a (the plan is the user's instruction)", targets[0].FullName())
+	}
+	if targets[1].Provider.Name != "prov-b" {
+		t.Fatalf("seatless unit default = %s; want prov-b (auto-seating skips the excluded provider)", targets[1].FullName())
+	}
+	if got := warn.String(); !strings.Contains(got, "warning: "+exclusionWarningSuffix("prov-a", "model-a")) {
+		t.Fatalf("partition warning = %q; want the shared exclusion sentence", got)
+	}
+	if strings.Count(warn.String(), "is excluded (exclusion list)") != 1 {
+		t.Fatalf("warning count = %q; want exactly one (only the explicit pick is warned)", warn.String())
 	}
 }

@@ -153,7 +153,7 @@ type SeatWorker struct {
 	InitialTarget        providers.Target
 	Registry             *providers.Registry
 	ExcludedFamilies     []string
-	Exclude              func(providers.Model) bool // F-C failover exclusion seam (contract §2.5b)
+	Exclude              ExcludeFunc // F-C failover exclusion seam (contract §2.5b)
 	Preset               TaskPreset
 	UserPrompt           string
 	UnitID               string // partition unit this seat works on (B2); empty on the cross-verification path (attribution only, never enters the request)
@@ -224,8 +224,8 @@ func (w *SeatWorker) Run(ctx context.Context) (result *SeatResult) {
 		alts := w.Registry.FindAlternatesForModel(currentTarget.Model.ID, currentTarget.Provider.Name)
 		var nextTarget *providers.Target
 		for _, alt := range alts {
-			if w.excluded(alt.Model) {
-				continue // F-C: pool policy governs AUTO-seating; skip k3 alternates
+			if w.excluded(alt.Provider.Name, alt.Model) {
+				continue // F-C: the exclusion list governs AUTO-seating; skip an excluded alternate
 			}
 			if !attemptedProviders[alt.Provider.Name] {
 				t := alt
@@ -256,8 +256,8 @@ func (w *SeatWorker) Run(ctx context.Context) (result *SeatResult) {
 
 		diffAlts := w.Registry.FindAlternatesExcludingFamilies(avoidFamilies)
 		for _, alt := range diffAlts {
-			if w.excluded(alt.Model) {
-				continue // F-C: never auto-fail onto an excluded (k3) model
+			if w.excluded(alt.Provider.Name, alt.Model) {
+				continue // F-C: never auto-fail onto an excluded model
 			}
 			if !attemptedModels[alt.Model.ID] && !attemptedProviders[alt.Provider.Name] {
 				t := alt
@@ -292,11 +292,12 @@ func (w *SeatWorker) Run(ctx context.Context) (result *SeatResult) {
 	}
 }
 
-// excluded reports whether a failover candidate model is barred from
-// AUTO-seating by the pool-policy seam (F-C, contract §2.5b). A nil seam
-// excludes nothing (the engine defaults it to providers.IsK3Family).
-func (w *SeatWorker) excluded(m providers.Model) bool {
-	return w.Exclude != nil && w.Exclude(m)
+// excluded reports whether a failover candidate is barred from AUTO-seating by
+// the pool-exclusion seam (F-C, contract §2.5b), which matches on the provider
+// name, the model id and the family. A nil seam excludes nothing (the engine
+// substitutes the built-in default policy).
+func (w *SeatWorker) excluded(providerName string, m providers.Model) bool {
+	return w.Exclude != nil && w.Exclude(providerName, m)
 }
 
 // runChatLoop conducts the conversational tool-calling loop until completion or max turns.

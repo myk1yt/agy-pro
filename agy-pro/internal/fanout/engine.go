@@ -86,11 +86,20 @@ type RunConfig struct {
 	// SpawnCommand builds the native-seat subprocess; nil ->
 	// exec.CommandContext (test seam, contract §2.1).
 	SpawnCommand func(ctx context.Context, bin string, args ...string) *exec.Cmd
-	// ExcludeModel is the F-C pool-policy exclusion seam consulted by
-	// SelectTargets rotation AND worker failover candidate filtering; it is
-	// NEVER applied to explicit user picks (--models / --seats provider
-	// tokens are honored as-is). nil -> providers.IsK3Family (contract §2.5b).
-	ExcludeModel func(providers.Model) bool
+	// ExcludeModel is the F-C pool-exclusion seam consulted by SelectTargets
+	// rotation AND worker failover candidate filtering; it matches on the
+	// provider name, the model id and the family, so the user-owned exclusion
+	// list (D1, defaults.excludeModels) can name a provider. It is NEVER applied
+	// to explicit user picks: --models / --seats provider tokens and plan-unit
+	// seats are honored, and an excluded pick carries the shared warning on
+	// WarnOut. nil -> the built-in default policy (the k3 rule, through
+	// providers.ExclusionPolicy).
+	ExcludeModel ExcludeFunc
+
+	// WarnOut receives the exclusion warning for each honored-but-excluded
+	// explicit pick (nil = discard). The CLI wires stderr; the sentence is the
+	// shared one providers/swarm also print.
+	WarnOut io.Writer
 
 	// Sources records which resolution rung supplied each config field
 	// (P8 ladder: flag|preset|defaults|engine|state). Set only by the CLI's
@@ -236,7 +245,10 @@ func Execute(ctx context.Context, cfg RunConfig) (*SummaryReport, error) {
 	// explicit seat list (mixed native+provider swarm, contract §2.1/§2.4).
 	exclude := cfg.ExcludeModel
 	if exclude == nil {
-		exclude = providers.IsK3Family
+		// Library callers and tests may leave the seam unset; the built-in
+		// default policy is the zero ExclusionPolicy (no user list), which
+		// reproduces the k3 rule through the ONE matching authority.
+		exclude = PolicyExcluder(providers.ExclusionPolicy{})
 	}
 
 	var targets []providers.Target
@@ -278,9 +290,14 @@ func Execute(ctx context.Context, cfg RunConfig) (*SummaryReport, error) {
 			}
 			targets = append(targets, tgt)
 			nativeSeats = append(nativeSeats, false)
+			// D2=(b): an explicit --seats pick is honored even when the
+			// exclusion list covers it; the warning is the only consequence.
+			// Native specs above are skipped by design: they never enter the
+			// registry pool the list names.
+			warnExplicitPick(cfg.WarnOut, exclude, tgt)
 		}
 	} else {
-		targets, err = SelectTargets(reg, state, cfg.N, cfg.Models, exclude)
+		targets, err = SelectTargets(reg, state, cfg.N, cfg.Models, exclude, cfg.WarnOut)
 		if err != nil {
 			return nil, fmt.Errorf("target selection failed: %w", err)
 		}
@@ -840,7 +857,7 @@ func buildNativeSeatPrompt(task, userPrompt string) (string, error) {
 // the seat token), so it rides through maskPlanError before it leaves: these
 // errors run before the merge redactor exists and reach the CLI engine-error
 // path, which seeds only --seats/--models (empty in --units mode).
-func partitionTargets(cfg RunConfig, reg *providers.Registry, state *FanoutState, exclude func(providers.Model) bool) (targets []providers.Target, nativeSeats []bool, units []Unit, err error) {
+func partitionTargets(cfg RunConfig, reg *providers.Registry, state *FanoutState, exclude ExcludeFunc) (targets []providers.Target, nativeSeats []bool, units []Unit, err error) {
 	var defaultTarget *providers.Target
 	for _, u := range cfg.Units {
 		spec := SeatSpec{UnitID: u.ID}
@@ -856,7 +873,7 @@ func partitionTargets(cfg RunConfig, reg *providers.Registry, state *FanoutState
 			spec.UnitID = u.ID
 		}
 		if spec.Kind == "" && defaultTarget == nil {
-			sel, serr := SelectTargets(reg, state, 1, nil, exclude)
+			sel, serr := SelectTargets(reg, state, 1, nil, exclude, cfg.WarnOut)
 			if serr != nil {
 				return nil, nil, nil, fmt.Errorf("partition default seat selection failed: %w", serr)
 			}
@@ -879,6 +896,10 @@ func partitionTargets(cfg RunConfig, reg *providers.Registry, state *FanoutState
 			}
 			targets = append(targets, tgt)
 			nativeSeats = append(nativeSeats, false)
+			// D2=(b): a unit that names an excluded seat keeps that seat (the
+			// plan is the user's own instruction), so the pick is honored and
+			// the shared warning is the only consequence.
+			warnExplicitPick(cfg.WarnOut, exclude, tgt)
 		default:
 			targets = append(targets, *defaultTarget)
 			nativeSeats = append(nativeSeats, false)

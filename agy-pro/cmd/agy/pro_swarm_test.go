@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -330,6 +332,9 @@ func TestRunSwarmCmdNonInteractiveRunsOnTTY(t *testing.T) {
 func TestRunSwarmCmdNonInteractiveDefaultTimeoutIs300(t *testing.T) {
 	t.Setenv("AGY_PRO_HOME", t.TempDir())
 	defer withStubSwarmInventory(t, swarmFixtureInventory(t), nil)()
+	// The seat-spec line reads the exclusion policy through the seam; pin the
+	// built-in default so the dry-run echo stays hermetic.
+	defer withStubSwarmPolicy(t, providers.ExclusionPolicy{})()
 	defer withTTY(t, true)()
 	ran := false
 	defer stubFanoutRun(t, cannedSummary(), nil, &ran)()
@@ -364,6 +369,7 @@ func TestRunSwarmCmdNonInteractiveDefaultTimeoutIs300(t *testing.T) {
 func TestRunSwarmCmdDryRunPrintsCommand(t *testing.T) {
 	t.Setenv("AGY_PRO_HOME", t.TempDir())
 	defer withStubSwarmInventory(t, swarmFixtureInventory(t), nil)()
+	defer withStubSwarmPolicy(t, providers.ExclusionPolicy{})()
 	defer withTTY(t, true)()
 	ran := false
 	defer stubFanoutRun(t, cannedSummary(), nil, &ran)()
@@ -472,6 +478,7 @@ func TestRunSwarmCmdAnsiOnlyOnTTY(t *testing.T) {
 func TestRunSwarmCmdToolsTaskFlagsReachFanoutArgs(t *testing.T) {
 	t.Setenv("AGY_PRO_HOME", t.TempDir())
 	defer withStubSwarmInventory(t, swarmFixtureInventory(t), nil)()
+	defer withStubSwarmPolicy(t, providers.ExclusionPolicy{})()
 	defer withTTY(t, true)()
 	ran := false
 	defer stubFanoutRun(t, cannedSummary(), nil, &ran)()
@@ -502,8 +509,8 @@ func TestResolveFlagSeatsMasksDecoratedTokenInMultiTokenLine(t *testing.T) {
 	defer withStubSwarmInventory(t, swarmFixtureInventory(t), nil)()
 
 	plant := testfixtures.AWSSecretExample
-	var outBuf, errBuf strings.Builder
-	_, code := resolveFlagSeats("1,native:"+plant, &outBuf, &errBuf)
+	var errBuf strings.Builder
+	_, code := resolveFlagSeats("1,native:"+plant, &errBuf)
 	if code != 2 {
 		t.Fatalf("exit = %d, want 2 (invalid token)", code)
 	}
@@ -735,5 +742,127 @@ func TestRunSwarmCmdPromptFileCompositeTailSeedsTokens(t *testing.T) {
 	want := "Error reading prompt file " + benign + ": " + readErr.Error() + "\n"
 	if errBuf.String() != want {
 		t.Errorf("benign comma list full line drifted:\ngot:  %q\nwant: %q", errBuf.String(), want)
+	}
+}
+
+// --- FIX-G F1 (round-2 LOW): the spec-path policy read fails open LOUDLY.
+
+// withSwarmPolicyRegistry isolates the whole env for the exclusion-policy read:
+// AGY_PRO_HOME holds swarm-state.json, and providers.json lives at an explicit
+// path. An empty body writes NO file, which is the absent-registry case.
+func withSwarmPolicyRegistry(t *testing.T, body string) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("AGY_PRO_HOME", home)
+	path := filepath.Join(home, "providers.json")
+	if body != "" {
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv(providers.EnvProviders, path)
+	return path
+}
+
+// specPathSeats is the explicit seat-spec line the notice tests drive. Neither
+// spec is excluded by the built-in default policy, so the ONLY warning these
+// runs can carry is the exclusion-unread notice.
+const specPathSeats = "native:gemini-3.8-flash-high,nw/glm-5.3-flash-flex"
+
+// TestResolveFlagSeatsPolicyReadNotice pins the fix on the resolveFlagSeats seam
+// with the REAL loadSwarmPolicy: an unreadable registry still resolves the pick
+// (no rejection, no verdict change) and now says so in one line on the error
+// writer, naming the class only. The control cases keep the loud path honest: a
+// readable registry and an absent one both stay silent, because a missing file
+// carries no user-owned list to drop.
+func TestResolveFlagSeatsPolicyReadNotice(t *testing.T) {
+	cases := []struct {
+		name       string
+		body       string
+		wantNotice bool
+	}{
+		{name: "healthy registry", body: `{"providers":[]}`},
+		{name: "corrupt registry", body: `{"providers": [`, wantNotice: true},
+		{name: "absent registry", body: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := withSwarmPolicyRegistry(t, tc.body)
+			defer withStubSwarmPresets(t, nil)()
+
+			var errOut bytes.Buffer
+			entries, code := resolveFlagSeats(specPathSeats, &errOut)
+			if code >= 0 {
+				t.Fatalf("exit = %d, want success (nothing is rejected)\nstderr:\n%s", code, errOut.String())
+			}
+			if len(entries) != 2 {
+				t.Fatalf("spec line seated %d entries, want 2 (the pick is still honored): %+v", len(entries), entries)
+			}
+			hasNotice := strings.Contains(errOut.String(), fanout.ExclusionUnreadNotice)
+			if hasNotice != tc.wantNotice {
+				t.Fatalf("notice present = %v; want %v\nstderr:\n%s", hasNotice, tc.wantNotice, errOut.String())
+			}
+			if !tc.wantNotice {
+				if errOut.Len() != 0 {
+					t.Errorf("no notice expected; stderr = %q", errOut.String())
+				}
+				return
+			}
+			if n := strings.Count(errOut.String(), "warning:"); n != 1 {
+				t.Errorf("warning count = %d; want exactly the one notice line:\n%s", n, errOut.String())
+			}
+			if strings.Contains(errOut.String(), path) {
+				t.Errorf("the notice echoed the registry path; it must name the class only:\n%s", errOut.String())
+			}
+		})
+	}
+}
+
+// TestRunSwarmCmdDryRunPolicyNoticeLeavesStdoutByteIdentical pins the relay
+// contract: the notice rides stderr, so the machine-relayed dry-run command echo
+// on stdout is byte-identical on the healthy, corrupt, and absent paths, and the
+// corrupt path still exits 0 with the seat specs in the relayed vector.
+func TestRunSwarmCmdDryRunPolicyNoticeLeavesStdoutByteIdentical(t *testing.T) {
+	args := []string{"--dry-run", "--template", "code-review", "--seats", specPathSeats, "--prompt", "x"}
+	cases := []struct {
+		name       string
+		body       string
+		wantNotice bool
+	}{
+		{name: "healthy registry", body: `{"providers":[]}`},
+		{name: "corrupt registry", body: `{"providers": [`, wantNotice: true},
+		{name: "absent registry", body: ""},
+	}
+	var baseline string
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := withSwarmPolicyRegistry(t, tc.body)
+
+			var outBuf, errBuf strings.Builder
+			code := runSwarmCmd(args, strings.NewReader(""), &outBuf, &errBuf)
+			if code != 0 {
+				t.Fatalf("exit = %d, want 0 (the pick is honored)\nstderr:\n%s", code, errBuf.String())
+			}
+			stdout := outBuf.String()
+			if i == 0 {
+				baseline = stdout
+			}
+			if stdout != baseline {
+				t.Errorf("dry-run stdout drifted (byte identity is the contract):\ngot:  %q\nwant: %q", stdout, baseline)
+			}
+			if !strings.Contains(stdout, "--seats "+specPathSeats) {
+				t.Errorf("dry-run echo lost the seat specs: %q", stdout)
+			}
+			if strings.Contains(stdout, "warning:") {
+				t.Errorf("the notice leaked into stdout: %q", stdout)
+			}
+			hasNotice := strings.Contains(errBuf.String(), fanout.ExclusionUnreadNotice)
+			if hasNotice != tc.wantNotice {
+				t.Fatalf("notice present = %v; want %v\nstderr:\n%s", hasNotice, tc.wantNotice, errBuf.String())
+			}
+			if tc.wantNotice && strings.Contains(errBuf.String(), path) {
+				t.Errorf("the notice echoed the registry path:\n%s", errBuf.String())
+			}
+		})
 	}
 }

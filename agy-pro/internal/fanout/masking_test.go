@@ -25,7 +25,7 @@ func TestSelectTargetsMasksUnresolvedExplicitModel(t *testing.T) {
 		Name: "nw", Models: []providers.Model{{ID: "glm-5.3-flash"}},
 	}}}
 
-	_, err := SelectTargets(reg, nil, 1, []string{maskSweepKey}, nil)
+	_, err := SelectTargets(reg, nil, 1, []string{maskSweepKey}, nil, nil)
 	if err == nil {
 		t.Fatal("SelectTargets must reject an unresolvable explicit model")
 	}
@@ -37,7 +37,7 @@ func TestSelectTargetsMasksUnresolvedExplicitModel(t *testing.T) {
 	}
 
 	// Benign specs keep their readable form.
-	_, err = SelectTargets(reg, nil, 1, []string{"nope-model"}, nil)
+	_, err = SelectTargets(reg, nil, 1, []string{"nope-model"}, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), `"nope-model"`) {
 		t.Errorf("benign spec must stay readable in the error, got %v", err)
 	}
@@ -396,5 +396,33 @@ func TestRunBannerSeatReportLineMasksRegistrySlots(t *testing.T) {
 		if !strings.Contains(banner, want) {
 			t.Errorf("banner lost the byte-exact seat line %q:\n%s", want, banner)
 		}
+	}
+}
+
+// P4-3: the exclusion warning echoes a registry-derived target (provider name +
+// model id), so it rides the registry-slot authority (MaskSlot) exactly like
+// seatSpecLabel. A key-shaped model id must never reach the warning raw.
+func TestSelectTargetsExclusionWarningMasksKeyShapedTarget(t *testing.T) {
+	reg := &providers.Registry{Providers: []providers.Provider{{
+		Name: "nw", Models: []providers.Model{{ID: maskSweepKey}},
+	}}}
+	policy := providers.ExclusionPolicyFromDefaults(providers.Defaults{ExcludeModels: []string{maskSweepKey}})
+
+	var warn bytes.Buffer
+	targets, err := SelectTargets(reg, nil, 1, []string{maskSweepKey}, PolicyExcluder(policy), &warn)
+	if err != nil {
+		t.Fatalf("an explicit excluded pick must be honored, got %v", err)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("targets = %+v; want the explicit pick", targets)
+	}
+	if warn.Len() == 0 {
+		t.Fatal("an excluded explicit pick must warn")
+	}
+	if strings.Contains(warn.String(), maskSweepKey) {
+		t.Errorf("exclusion warning echoes the planted key raw:\n%s", warn.String())
+	}
+	if !strings.Contains(warn.String(), "excluded (exclusion list)") {
+		t.Errorf("exclusion warning lost its sentence:\n%s", warn.String())
 	}
 }

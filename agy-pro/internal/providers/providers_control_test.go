@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode"
 )
 
 // Round-5 R9/seat3-R3: a registry file carrying C0/C1 control bytes must fail
@@ -66,6 +67,12 @@ func TestValidateRejectsControlRunes(t *testing.T) {
 		"defaults excludeFamilies": func(r *Registry, ctl string) {
 			r.Defaults.ExcludeFamilies = []string{"fam" + ctl}
 		},
+		// D1 (SESSION7 P4-1): the user-owned exclusion list is a per-entry
+		// free-text carrier in the same defaults block, so it takes the same
+		// boundary rule as tools and excludeFamilies.
+		"defaults excludeModels": func(r *Registry, ctl string) {
+			r.Defaults.ExcludeModels = []string{"nw", "m" + ctl}
+		},
 	}
 
 	for field, fn := range mutate {
@@ -90,9 +97,18 @@ func TestValidateRejectsControlRunes(t *testing.T) {
 func TestValidateAcceptsCleanRegistry(t *testing.T) {
 	reg := validControlTestRegistry()
 	reg.Providers[0].Models[0].Capabilities.ReasoningEffort = "high"
-	reg.Defaults = Defaults{Tools: "read,search", ExcludeFamilies: []string{"embed"}}
+	reg.Defaults = Defaults{
+		Tools:           "read,search",
+		ExcludeFamilies: []string{"embed"},
+		// D1: the user-owned exclusion list accepts provider, model, and
+		// provider/model entries, and is trimmed (not reordered or dropped).
+		ExcludeModels: []string{" clean-prov ", "clean-model", " clean-prov/clean-model "},
+	}
 	if err := reg.Validate(); err != nil {
 		t.Fatalf("clean registry (with reasoningEffort and defaults) must validate: %v", err)
+	}
+	if got := strings.Join(reg.Defaults.ExcludeModels, ","); got != "clean-prov,clean-model,clean-prov/clean-model" {
+		t.Errorf("excludeModels normalised to %q; want the entries trimmed in place", got)
 	}
 }
 
@@ -175,5 +191,55 @@ func TestLoadFromControlRunes(t *testing.T) {
 	}
 	if len(reg.Providers) != 1 || reg.Providers[0].Name != "good" {
 		t.Fatalf("unexpected loaded registry: %+v", reg.Providers)
+	}
+}
+
+// TestExcludeModelsRejectsInvisibleFormatRunes is the S7-C9 boundary pin at the
+// load path: the defaults.excludeModels entries are the last free-text carrier in
+// the registry that was still accepting Cf runes (bidi overrides and isolates,
+// zero-width joiners, the BOM), so an entry decorated with one loaded as a rule
+// the operator cannot read back in the editor and cannot match on purpose. The
+// Cc class was already covered by TestValidateRejectsControlRunes; the rows here
+// are the Cf half, and each one names the field class without echoing the entry.
+func TestExcludeModelsRejectsInvisibleFormatRunes(t *testing.T) {
+	rows := []struct {
+		name  string
+		entry string
+	}{
+		{"zero width joiner U+200D", "nw\u200d"},
+		{"bidi override U+202E in the family name", "family:k\u202e3"},
+		{"bidi isolate U+2066", "\u2066nw"},
+		{"soft hyphen U+00AD", "soft\u00adhyphen"},
+		{"byte order mark U+FEFF", "\ufeffnw"},
+	}
+	for _, tc := range rows {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := validControlTestRegistry()
+			reg.Defaults.ExcludeModels = []string{tc.entry}
+			err := reg.Validate()
+			if err == nil {
+				t.Fatalf("excludeModels entry %q loaded; the Cf class must be refused", tc.entry)
+			}
+			if !strings.Contains(err.Error(), "excludeModels") {
+				t.Fatalf("error %q must name the excludeModels field", err)
+			}
+			for _, r := range tc.entry {
+				if (unicode.IsControl(r) || unicode.Is(unicode.Cf, r)) && strings.Contains(err.Error(), string(r)) {
+					t.Fatalf("error echoes the offending rune %U: %q", r, err)
+				}
+			}
+			// The same entry must not survive the write door either: the two doors
+			// share one authority (see TestExcludeModelsDoorsAgree).
+			if _, doorErr := ValidateExcludeModels([]string{tc.entry}); doorErr == nil {
+				t.Fatalf("the write door accepted %q; the doors diverged", tc.entry)
+			}
+		})
+	}
+	// Non-vacuity: the same list WITHOUT the Cf rune loads, so the rows above are
+	// not refusing something unrelated to the invisible rune.
+	clean := validControlTestRegistry()
+	clean.Defaults.ExcludeModels = []string{"nw", "family:k3"}
+	if err := clean.Validate(); err != nil {
+		t.Fatalf("the clean list must still load: %v", err)
 	}
 }

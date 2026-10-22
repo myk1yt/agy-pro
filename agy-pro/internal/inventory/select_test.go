@@ -153,8 +153,8 @@ func TestParseSelectionPresets(t *testing.T) {
 		if e.Kind != "provider" {
 			t.Errorf("p2 picked a non-external entry: %+v", e)
 		}
-		if IsK3Excluded(e.ModelID) {
-			t.Errorf("p2 auto-picked k3 entry (pool policy): %+v", e)
+		if e.Excluded {
+			t.Errorf("p2 auto-picked an excluded entry (pool policy): %+v", e)
 		}
 		if e.KeyMissing {
 			t.Errorf("p2 auto-picked KeyMissing entry: %+v", e)
@@ -192,7 +192,7 @@ func TestParseSelectionPresets(t *testing.T) {
 		if e.Kind != "provider" {
 			t.Errorf("p1 external half picked non-external: %+v", e)
 		}
-		if IsK3Excluded(e.ModelID) || e.KeyMissing {
+		if e.Excluded || e.KeyMissing {
 			t.Errorf("p1 picked an unavailable external: %+v", e)
 		}
 	}
@@ -381,5 +381,112 @@ func TestParseSelectionMasksKeyShapedTokens(t *testing.T) {
 	_, err := ParseSelection(testfixtures.AnthropicPlanted, nil)
 	if err == nil || !strings.Contains(err.Error(), "sk-an****") || strings.Contains(err.Error(), "PLANT0123456789abcdef") {
 		t.Errorf("nil-inventory branch must mask a key-shaped token, got %v", err)
+	}
+}
+
+// D2 = (b) in test form: the AUTO half skips an excluded row and never errors,
+// and the EXPLICIT half is honored with no error at all. Both halves read the
+// same Entry.Excluded flag, so the two surfaces cannot disagree again (that
+// split is what the retired id-only IsK3Excluded caused).
+func TestPresetsSkipExcludedExplicitPickHonored(t *testing.T) {
+	inv := buildInventory(t)
+	const excludedRow = 7 // bigmodel/kimi-k3, excluded by the built-in default entry
+	if len(inv.Entries) < excludedRow || !inv.Entries[excludedRow-1].Excluded {
+		t.Fatalf("setup: entry %d must carry the excluded flag: %+v", excludedRow, inv.Entries)
+	}
+
+	for _, id := range []string{"p1", "p2", "p3", "P1", "", "   "} {
+		got, err := ParseSelection(id, inv)
+		if err != nil {
+			t.Fatalf("ParseSelection(%q) must skip an excluded row, never reject: %v", id, err)
+		}
+		if len(got) == 0 {
+			t.Errorf("ParseSelection(%q) returned nothing", id)
+		}
+		for _, e := range got {
+			if e.Excluded {
+				t.Errorf("ParseSelection(%q) auto-picked an excluded row: %+v", id, e)
+			}
+		}
+	}
+
+	got, err := ParseSelection("7", inv)
+	if err != nil {
+		t.Fatalf("an explicit numbered pick of an excluded row must be honored, never rejected: %v", err)
+	}
+	if len(got) != 1 || got[0].Number != excludedRow {
+		t.Fatalf("explicit pick = %+v, want entry %d", got, excludedRow)
+	}
+	if !got[0].Excluded {
+		t.Errorf("the honored row must still carry its excluded flag: %+v", got[0])
+	}
+
+	// A range/dot-free comma list names the row explicitly too: honored.
+	got, err = ParseSelection("7,8", inv)
+	if err != nil {
+		t.Fatalf("explicit list containing an excluded row must be honored: %v", err)
+	}
+	if len(got) != 2 || got[0].Number != excludedRow {
+		t.Fatalf("explicit list = %+v, want entries 7,8", got)
+	}
+}
+
+// A user-owned list (D1 = a, defaults.excludeModels) governs the presets exactly
+// like the built-in default does, even though the excluded ids carry no k3 token.
+// Non-vacuous: p2 rotated to a distinct family before the change, so the second
+// pick used to be bigmodel/glm-4.6; now it degrades to the second google row.
+func TestPresetsSkipUserExcludedRows(t *testing.T) {
+	reg := &providers.Registry{
+		Providers: []providers.Provider{
+			{Name: "google", Models: []providers.Model{{ID: "gemini-2.5-flash"}, {ID: "gemini-2.5-pro"}}},
+			{Name: "nw", Models: []providers.Model{{ID: "glm-5.3-flash"}}},
+			{Name: "bigmodel", Models: []providers.Model{{ID: "glm-4.6"}}},
+		},
+		Defaults: providers.Defaults{ExcludeModels: []string{"nw", "glm-4.6"}},
+	}
+	native := []NativeModel{{ID: "gemini-3.8-flash-high", DisplayName: "Gemini 3.8 Flash (High)"}}
+	inv, err := Load(context.Background(), reg, &stubFetcher{models: native})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Layout: 1 native, 2 google/gemini-2.5-flash, 3 google/gemini-2.5-pro,
+	// 4 nw/glm-5.3-flash (provider entry), 5 bigmodel/glm-4.6 (model entry).
+	if len(inv.Entries) != 5 {
+		t.Fatalf("setup built %d entries, want 5", len(inv.Entries))
+	}
+	for _, row := range []int{4, 5} {
+		if !inv.Entries[row-1].Excluded {
+			t.Errorf("entry %d (%s) must be excluded by the user list", row, inv.Entries[row-1].Spec)
+		}
+	}
+	for _, row := range []int{1, 2, 3} {
+		if inv.Entries[row-1].Excluded {
+			t.Errorf("entry %d (%s) must not be excluded", row, inv.Entries[row-1].Spec)
+		}
+	}
+
+	p2, err := ParseSelection("p2", inv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p2) != 2 {
+		t.Fatalf("p2 = %d entries, want the 2 remaining google rows (degrade, never error): %+v", len(p2), p2)
+	}
+	for _, e := range p2 {
+		if e.Excluded {
+			t.Errorf("p2 auto-picked a user-excluded row: %+v", e)
+		}
+		if e.Spec == "nw/glm-5.3-flash" || e.Spec == "bigmodel/glm-4.6" {
+			t.Errorf("p2 auto-picked %q, which the user list excludes", e.Spec)
+		}
+	}
+
+	// The excluded rows are still reachable by number: honored, never rejected.
+	got, err := ParseSelection("4,5", inv)
+	if err != nil {
+		t.Fatalf("explicit picks of user-excluded rows must be honored: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("explicit picks = %+v, want both rows", got)
 	}
 }

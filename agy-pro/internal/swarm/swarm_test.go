@@ -119,10 +119,15 @@ func TestPresetDegradeWarns(t *testing.T) {
 	}
 }
 
-// --- k3 pool policy (contract F-C/DoD 3: never auto-picked; explicit typing
-// rejected) ---
+// --- exclusion list (user decision D2 = b: auto-seating and failover SKIP an
+// excluded row, an explicit pick - numbered OR spec - is HONORED with the
+// shared warning, and NOTHING is ever rejected) ---
 
-func TestPresetSkipsK3(t *testing.T) {
+// excludedFixture is the D2 fixture: 1 eligible native row, 1 excluded provider
+// row (the built-in default entry: the k3 id token), plus 2 eligible provider
+// rows in distinct families so presets have something to rotate over.
+func excludedFixture(t *testing.T) (*inventory.Inventory, inventory.Entry) {
+	t.Helper()
 	inv := buildInventory(t,
 		[]inventory.NativeModel{{ID: "gemini-3.8-flash-high", DisplayName: "Flash"}},
 		[]providers.Provider{
@@ -132,18 +137,22 @@ func TestPresetSkipsK3(t *testing.T) {
 			}},
 			{Name: "ds", Models: []providers.Model{{ID: "deepseek-chat"}}},
 		})
-
-	var k3Entry *inventory.Entry
-	for i := range inv.Entries {
-		if inv.Entries[i].ModelID == "kimi-k3" {
-			k3Entry = &inv.Entries[i]
+	for _, e := range inv.Entries {
+		if e.ModelID == "kimi-k3" {
+			if !e.Excluded {
+				t.Fatalf("fixture broken: %s must carry Entry.Excluded", e.Spec)
+			}
+			return inv, e
 		}
 	}
-	if k3Entry == nil {
-		t.Fatal("fixture must contain a kimi-k3 entry")
-	}
+	t.Fatal("fixture must contain a kimi-k3 entry")
+	return nil, inventory.Entry{}
+}
 
-	// Presets never auto-pick the k3 entry.
+func TestPresetSkipsExcludedRows(t *testing.T) {
+	inv, excluded := excludedFixture(t)
+
+	// Presets never auto-pick an excluded row.
 	for _, preset := range []string{"p1", "p2", "p3"} {
 		var warn strings.Builder
 		seats, err := ResolveSeats(preset, inv, &warn)
@@ -151,74 +160,336 @@ func TestPresetSkipsK3(t *testing.T) {
 			t.Fatalf("ResolveSeats(%s): %v", preset, err)
 		}
 		for _, e := range seats {
-			if e.ModelID == "kimi-k3" {
-				t.Errorf("preset %s auto-picked k3 entry %s", preset, e.Spec)
+			if e.Excluded {
+				t.Errorf("preset %s auto-picked the excluded row %s", preset, e.Spec)
 			}
 		}
 	}
-	// p2 needs 3 externals; only 2 are eligible (k3 skipped) -> warning path.
+	// p2 needs 3 externals; only 2 are eligible (the excluded row is skipped)
+	// -> the degrade warning fires instead of an error.
 	var warn strings.Builder
 	seats, err := ResolveSeats("p2", inv, &warn)
 	if err != nil {
 		t.Fatalf("ResolveSeats(p2): %v", err)
 	}
 	if len(seats) != 2 {
-		t.Errorf("p2 returned %d seats, want 2 eligible externals", len(seats))
+		t.Errorf("p2 returned %d seats, want the 2 eligible externals", len(seats))
 	}
 	if !strings.Contains(warn.String(), "degraded") {
-		t.Errorf("p2 k3-skip should degrade with a warning; got %q", warn.String())
+		t.Errorf("p2 exclusion skip should degrade with a warning; got %q", warn.String())
 	}
+	// The auto-pick arm never prints the explicit-pick sentence: a preset is not
+	// an explicit pick.
+	if strings.Contains(warn.String(), "explicit pick honored") {
+		t.Errorf("preset skip must not claim an explicit pick: %q", warn.String())
+	}
+	_ = excluded
+}
 
-	// Explicit typing of the k3 entry number is REJECTED.
-	_, err = ResolveSeats(strconv.Itoa(k3Entry.Number), inv, &warn)
-	if err == nil {
-		t.Fatal("explicit k3 pick must be rejected")
+// TestPurePresetLineStillReportsSkippedRow is the non-vacuity control for the
+// S7-C8 fix: excluding the explicit-number set from the preset-skip report must
+// not silence a PURE preset line, whose only reason for dropping the row is the
+// auto-pick skip.
+func TestPurePresetLineStillReportsSkippedRow(t *testing.T) {
+	inv, excluded := excludedFixture(t)
+
+	var warn strings.Builder
+	if _, err := ResolveSeats("p2", inv, &warn); err != nil {
+		t.Fatalf("ResolveSeats(p2): %v", err)
 	}
-	if !strings.Contains(err.Error(), "excluded (pool policy)") {
-		t.Errorf("k3 rejection message should carry the pool-policy marker: %v", err)
+	want := "skipped seat " + strconv.Itoa(excluded.Number) + " (" + excluded.Spec + "): " + providers.ExcludedMarker()
+	if !strings.Contains(warn.String(), want) {
+		t.Errorf("a pure preset line must still report the skipped row %q: %q", want, warn.String())
 	}
-	// ... including inside a range.
-	_, err = ResolveSeats("1-"+strconv.Itoa(k3Entry.Number), inv, &warn)
-	if err == nil || !strings.Contains(err.Error(), "excluded (pool policy)") {
-		t.Errorf("k3 pick inside a range must be rejected, got %v", err)
+	if strings.Contains(warn.String(), "explicit pick honored") {
+		t.Errorf("a pure preset line names no explicit pick: %q", warn.String())
 	}
 }
 
-func TestWarnK3SpecsExplicitPickWarns(t *testing.T) {
+// TestMixedSelectionReportsExcludedRowOnce closes S7-C8: a line that mixes a
+// preset with an explicit number naming the excluded row reported that kept row
+// TWICE (the honored-pick warning and the preset-skip warning). The explicit
+// number is a deliberate pick, so the honored-pick sentence is the right reason
+// and the preset-skip report must not repeat it. The row is still seated, and no
+// OTHER row loses its report.
+func TestMixedSelectionReportsExcludedRowOnce(t *testing.T) {
+	inv, excluded := excludedFixture(t)
+	line := "p2," + strconv.Itoa(excluded.Number)
+
+	var warn strings.Builder
+	seats, err := ResolveSeats(line, inv, &warn)
+	if err != nil {
+		t.Fatalf("ResolveSeats(%q): %v", line, err)
+	}
+	seated := false
+	for _, e := range seats {
+		if e.Spec == excluded.Spec {
+			seated = true
+		}
+	}
+	if !seated {
+		t.Fatalf("the explicitly named excluded row must stay seated: %+v", seats)
+	}
+
+	out := warn.String()
+	if !strings.Contains(out, sharedPickWarning(excluded.Number, excluded.Spec)) {
+		t.Errorf("the kept row must be reported with the honored-pick sentence: %q", out)
+	}
+	if got := strings.Count(out, "skipped seat "+strconv.Itoa(excluded.Number)+" ("); got != 0 {
+		t.Errorf("the kept row must not also be reported as skipped (got %d): %q", got, out)
+	}
+	// One row, one report: the fixture holds exactly one excluded row.
+	if got := strings.Count(out, providers.ExcludedMarker()); got != 1 {
+		t.Errorf("the excluded row must be reported exactly once; got %d reports: %q", got, out)
+	}
+}
+
+// sharedPickWarning is the one sentence the numbered-pick and the spec warnings
+// both print (D2 = b), composed here from the marker authority so the test
+// pins the wording the code produces rather than a copy that can drift.
+func sharedPickWarning(seat int, spec string) string {
+	return "warning: seat " + strconv.Itoa(seat) + " (" + spec + ") is " + providers.ExcludedMarker() +
+		"; explicit pick honored (the exclusion list covers auto-seating and failover only)"
+}
+
+// TestExplicitNumberedPickOfExcludedRowIsHonored is the deliberate behavior
+// change: the old code REJECTED a numbered pick of a k3 row (exit 2). D2 = b
+// honors it WITH the shared warning, because the exclusion list governs
+// auto-seating and failover only.
+func TestExplicitNumberedPickOfExcludedRowIsHonored(t *testing.T) {
+	inv, excluded := excludedFixture(t)
+
+	var warn strings.Builder
+	seats, err := ResolveSeats(strconv.Itoa(excluded.Number), inv, &warn)
+	if err != nil {
+		t.Fatalf("explicit numbered pick of an excluded row must be honored, not rejected: %v", err)
+	}
+	if len(seats) != 1 || seats[0].Spec != excluded.Spec {
+		t.Fatalf("numbered pick seated %+v, want exactly the named row %s", seats, excluded.Spec)
+	}
+	if want := sharedPickWarning(excluded.Number, excluded.Spec); !strings.Contains(warn.String(), want) {
+		t.Errorf("numbered pick warning = %q; want the shared sentence %q", warn.String(), want)
+	}
+
+	// A range containing the excluded row is honored too: the row is seated and
+	// one warning names it.
+	warn.Reset()
+	rangeTok := "1-" + strconv.Itoa(excluded.Number)
+	seats, err = ResolveSeats(rangeTok, inv, &warn)
+	if err != nil {
+		t.Fatalf("range %q naming an excluded row must be honored: %v", rangeTok, err)
+	}
+	if len(seats) != excluded.Number {
+		t.Errorf("range %q seated %d rows, want %d", rangeTok, len(seats), excluded.Number)
+	}
+	found := false
+	for _, e := range seats {
+		if e.Spec == excluded.Spec {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("range %q dropped the excluded row %s: %+v", rangeTok, excluded.Spec, seats)
+	}
+	if !strings.Contains(warn.String(), "explicit pick honored") {
+		t.Errorf("range pick of an excluded row must warn: %q", warn.String())
+	}
+
+	// Non-vacuity, second row: a numbered pick of an ELIGIBLE row stays silent,
+	// so the warning is driven by Entry.Excluded and not by "any numbered pick".
+	var quiet strings.Builder
+	eligible := inv.Entries[0]
+	if eligible.Excluded {
+		t.Fatalf("fixture broken: row 1 (%s) must be eligible", eligible.Spec)
+	}
+	if _, err := ResolveSeats(strconv.Itoa(eligible.Number), inv, &quiet); err != nil {
+		t.Fatalf("ResolveSeats(%d): %v", eligible.Number, err)
+	}
+	if quiet.Len() != 0 {
+		t.Errorf("an eligible numbered pick must not warn: %q", quiet.String())
+	}
+}
+
+// TestWarnExcludedSpecsExplicitPickWarns pins the spec path: EntriesFromSeatSpecs
+// stamps the SAME verdict the inventory computes at Load, and the warning is the
+// shared sentence.
+func TestWarnExcludedSpecsExplicitPickWarns(t *testing.T) {
+	// P4-4b: the spec path now reads the registry for a model's DECLARED family,
+	// so this test must not depend on the live ~/.agy-pro/providers.json. Its
+	// arms are all id-token/user-list arms, which a temp (empty) home leaves
+	// exactly as they were.
+	t.Setenv("AGY_PRO_HOME", t.TempDir())
 	specs, err := fanout.ParseSeatSpecs("native:gemini-3.8-flash-high,nw/kimi-k3")
 	if err != nil {
 		t.Fatal(err)
 	}
-	entries := EntriesFromSeatSpecs(specs)
-	var warn strings.Builder
-	WarnK3Specs(entries, &warn)
-	if !strings.Contains(warn.String(), "excluded (pool policy)") {
-		t.Errorf("explicit k3 spec must warn loudly: %q", warn.String())
+	entries := EntriesFromSeatSpecs(specs, providers.ExclusionPolicy{})
+	// Non-vacuity on two rows: the native row is eligible, the k3 spec is not.
+	if entries[0].Excluded {
+		t.Errorf("%s must not be excluded: %+v", entries[0].Spec, entries[0])
 	}
-	if !strings.Contains(warn.String(), "explicit pick honored") {
-		t.Errorf("explicit spec must stay honored (pool policy covers auto-seating): %q", warn.String())
+	if !entries[1].Excluded {
+		t.Fatalf("%s must carry Entry.Excluded: %+v", entries[1].Spec, entries[1])
+	}
+
+	var warn strings.Builder
+	WarnExcludedSpecs(entries, &warn)
+	if want := sharedPickWarning(2, "nw/kimi-k3"); !strings.Contains(warn.String(), want) {
+		t.Errorf("spec warning = %q; want the shared sentence %q", warn.String(), want)
+	}
+	if got := strings.Count(warn.String(), "\n"); got != 1 {
+		t.Errorf("exactly one warning expected (the native row is eligible); got %d lines: %q", got, warn.String())
+	}
+
+	// A user-owned list REPLACES the built-in default (D1 = a): naming the
+	// provider excludes its models, and the k3 default no longer runs.
+	userEntries := EntriesFromSeatSpecs(specs, providers.ExclusionPolicy{User: []string{"nw"}})
+	if !userEntries[1].Excluded {
+		t.Errorf("a user entry naming the provider must exclude %s: %+v", userEntries[1].Spec, userEntries[1])
+	}
+	if userEntries[0].Excluded {
+		t.Errorf("a user entry naming \"nw\" must not touch the native row: %+v", userEntries[0])
+	}
+	// An EMPTY user list excludes nothing (including the k3 default entry).
+	for _, e := range EntriesFromSeatSpecs(specs, providers.ExclusionPolicy{User: []string{}}) {
+		if e.Excluded {
+			t.Errorf("an empty user list must exclude nothing: %+v", e)
+		}
+	}
+
+	// A bare provider spec is read through the registry's own spec grammar, so
+	// the model half matches even without a provider qualifier.
+	bare, err := fanout.ParseSeatSpecs("kimi-k3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := EntriesFromSeatSpecs(bare, providers.ExclusionPolicy{}); !got[0].Excluded {
+		t.Errorf("a bare excluded model id must be flagged: %+v", got[0])
 	}
 }
 
-// k3 rows render `excluded (pool policy)` in the builder's numbered inventory.
-func TestRenderSeatListMarksK3(t *testing.T) {
-	inv := buildInventory(t,
-		[]inventory.NativeModel{{ID: "gemini-3.8-flash-high", DisplayName: "Flash"}},
-		[]providers.Provider{{Name: "nw", Models: []providers.Model{
-			{ID: "kimi-k3"},
-			{ID: "glm-5.3-flash-flex"},
-		}}})
+// TestApplyExclusionPolicyArms proves the auto-pick arm directly. The inventory's
+// own preset filter normally drops an excluded row before the swarm sees it, so
+// this arm cannot be reached through ResolveSeats alone; keeping it tested is
+// what makes "auto-seating skips" true at this layer too.
+func TestApplyExclusionPolicyArms(t *testing.T) {
+	rows := []inventory.Entry{
+		{Number: 1, Spec: "native:flash", ModelID: "flash"},
+		{Number: 2, Spec: "nw/auto-dropped", ModelID: "auto-dropped", Excluded: true},
+		{Number: 3, Spec: "nw/explicit-kept", ModelID: "explicit-kept", Excluded: true},
+	}
+	var warn strings.Builder
+	kept := applyExclusionPolicy(rows, map[int]bool{1: true, 3: true}, &warn)
+	if len(kept) != 2 || kept[0].Number != 1 || kept[1].Number != 3 {
+		t.Fatalf("kept = %+v, want rows 1 and 3 (row 2 is an auto-pick)", kept)
+	}
+	out := warn.String()
+	if !strings.Contains(out, "skipped seat 2 (nw/auto-dropped): "+providers.ExcludedMarker()) {
+		t.Errorf("the auto-pick arm must drop row 2 with the marker: %q", out)
+	}
+	if !strings.Contains(out, sharedPickWarning(3, "nw/explicit-kept")) {
+		t.Errorf("the explicit arm must print the shared sentence: %q", out)
+	}
+	if got := strings.Count(out, "warning:"); got != 1 {
+		t.Errorf("exactly one shared warning expected (row 1 is eligible); got %d: %q", got, out)
+	}
+}
+
+// TestHonoredExcludedSeatKeepsFanoutVector pins that an honored excluded seat
+// leaves the dry-run vector untouched: the exclusion list never adds, drops or
+// reorders an argument. 13 elements = the 7 pinned flags (6 flag/value pairs
+// plus --json).
+func TestHonoredExcludedSeatKeepsFanoutVector(t *testing.T) {
+	inv, excluded := excludedFixture(t)
+	seats, err := ResolveSeats(strconv.Itoa(excluded.Number), inv, nil)
+	if err != nil {
+		t.Fatalf("ResolveSeats(%d): %v", excluded.Number, err)
+	}
+	got := BuildFanoutArgs(Templates()[0], seats, "/ws", "p", 300)
+	wantFlags := []string{"--task", "--seats", "--root", "--timeout", "--tools", "--prompt", "--json"}
+	if len(got) != 2*len(wantFlags)-1 {
+		t.Fatalf("args = %q; want %d elements (7 flags, 6 with values)", got, 2*len(wantFlags)-1)
+	}
+	for i, f := range wantFlags {
+		if got[2*i] != f {
+			t.Errorf("args[%d] = %q, want %q (full vector %q)", 2*i, got[2*i], f, got)
+		}
+	}
+	if got[3] != excluded.Spec {
+		t.Errorf("--seats = %q, want the honored excluded spec %q", got[3], excluded.Spec)
+	}
+}
+
+// TestUserExclusionListGovernsPresets pins the user-owned list end to end: a
+// defaults.excludeModels entry keeps its row out of preset expansion, and an
+// EMPTY user list excludes nothing at all (nil = built-in default, non-nil
+// empty = user owns an empty list).
+func TestUserExclusionListGovernsPresets(t *testing.T) {
+	provs := []providers.Provider{{Name: "nw", Models: []providers.Model{
+		{ID: "glm-5.3-flash-flex"},
+		{ID: "m-two"},
+	}}}
+	native := []inventory.NativeModel{{ID: "gemini-3.8-flash-high", DisplayName: "Flash"}}
+
+	load := func(t *testing.T, list []string) *inventory.Inventory {
+		t.Helper()
+		reg := &providers.Registry{Providers: provs, Defaults: providers.Defaults{ExcludeModels: list}}
+		inv, err := inventory.Load(context.Background(), reg, staticNative(native))
+		if err != nil {
+			t.Fatalf("inventory.Load: %v", err)
+		}
+		return inv
+	}
+
+	userList := load(t, []string{"glm-5.3-flash-flex"})
+	if !userList.Entries[1].Excluded || userList.Entries[2].Excluded {
+		t.Fatalf("user list must exclude row 2 only: %+v", userList.Entries)
+	}
+	var warn strings.Builder
+	seats, err := ResolveSeats("p2", userList, &warn)
+	if err != nil {
+		t.Fatalf("ResolveSeats(p2): %v", err)
+	}
+	if len(seats) != 1 || seats[0].ModelID != "m-two" {
+		t.Fatalf("p2 seated %+v, want only the row the user list left eligible (m-two)", seats)
+	}
+	if !strings.Contains(warn.String(), "degraded") {
+		t.Errorf("a preset short of its frozen size must warn: %q", warn.String())
+	}
+
+	emptyList := load(t, []string{})
+	for _, e := range emptyList.Entries {
+		if e.Excluded {
+			t.Fatalf("an empty user list must exclude nothing: %+v", e)
+		}
+	}
+	seats, err = ResolveSeats("p2", emptyList, nil)
+	if err != nil {
+		t.Fatalf("ResolveSeats(p2) with an empty user list: %v", err)
+	}
+	if len(seats) != 2 {
+		t.Fatalf("p2 seated %d rows under an empty user list, want both externals: %+v", len(seats), seats)
+	}
+}
+
+// Excluded rows render the one marker providers.ExcludedMarker owns in the
+// builder's numbered inventory.
+func TestRenderSeatListMarksExcludedRows(t *testing.T) {
+	inv, _ := excludedFixture(t)
 	var buf strings.Builder
 	RenderSeatList(&buf, inv)
 	got := buf.String()
-	if !strings.Contains(got, "excluded (pool policy)") {
-		t.Errorf("k3 row must render the pool-policy marker:\n%s", got)
+	if !strings.Contains(got, providers.ExcludedMarker()) {
+		t.Errorf("the excluded row must render %q:\n%s", providers.ExcludedMarker(), got)
 	}
-	if strings.Count(got, "excluded (pool policy)") != 1 {
-		t.Errorf("exactly one k3 row expected to carry the marker:\n%s", got)
+	if strings.Count(got, providers.ExcludedMarker()) != 1 {
+		t.Errorf("exactly one excluded row expected to carry the marker:\n%s", got)
+	}
+	if strings.Contains(got, "pool policy") {
+		t.Errorf("the retired pool-policy wording must be gone:\n%s", got)
 	}
 	if !strings.Contains(got, "glm-5.3-flash-flex") {
-		t.Errorf("non-k3 rows must render normally:\n%s", got)
+		t.Errorf("eligible rows must render normally:\n%s", got)
 	}
 }
 

@@ -114,9 +114,6 @@ func QuotaNote(kind string) string {
 	return "metered API"
 }
 
-// k3Marker is the exact pool-policy suffix rendered for k3 entries.
-const k3Marker = "excluded (pool policy)"
-
 // SeatLine renders one selected seat row (provenance + quota note). E8/F-beta:
 // Spec and ModelID come from the user-editable registry, so key-shaped ones
 // render masked inside the row (display consistency with the summary table and

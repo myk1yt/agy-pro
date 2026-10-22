@@ -214,8 +214,14 @@ func (b *Builder) pickTemplate(r *bufio.Reader, out io.Writer) (Template, bool) 
 }
 
 // pickSeats is step [2]: presets as numbered defaults plus the full numbered
-// inventory (k3 rows marked `excluded (pool policy)`), then the §2.7
-// selection line. Selected seats print with provenance + quota note.
+// inventory (excluded rows marked `excluded (exclusion list)`, the one marker
+// providers.ExcludedMarker owns), then the §2.7 selection line. Selected seats
+// print with provenance + quota note.
+//
+// The saved presets are loaded ONCE and used twice: for the listing below and
+// for the name resolution (F04), so the name the user reads is exactly the name
+// that resolves. A store read error degrades to "no saved presets" (the listing
+// and the grammar simply do not offer names) rather than failing the step.
 func (b *Builder) pickSeats(r *bufio.Reader, out io.Writer) ([]inventory.Entry, bool) {
 	inv := b.Inv
 	fmt.Fprintln(out, "=== agy pro swarm: seats ===")
@@ -223,25 +229,29 @@ func (b *Builder) pickSeats(r *bufio.Reader, out io.Writer) ([]inventory.Entry, 
 	fmt.Fprintln(out, "  p1  2 native + 2 external")
 	fmt.Fprintln(out, "  p2  3 external (family-rotated)")
 	fmt.Fprintln(out, "  p3  4 mixed (flash + pro native + 2 external)")
+	var saved []SavedPreset
 	if b.Store != nil {
-		if saved, err := b.Store.LoadPresets(); err == nil && len(saved) > 0 {
-			fmt.Fprintln(out, "Saved presets:")
-			for _, p := range saved {
-				// The saved preset is the same free-text value kind the three
-				// preset surfaces render through providers.MaskOperand; this
-				// picker was the swarm twin that still composed both operands
-				// raw (internal/tui/screen_settings.go presetLines writes the
-				// identical "%s = %s" line, masked). A credential planted in a
-				// name or numbers field renders first-5+**** here too, and a
-				// benign pair keeps its exact bytes.
-				fmt.Fprintf(out, "  %s = %s\n", providers.MaskOperand(p.Name), providers.MaskOperand(p.Numbers))
-			}
+		if loaded, err := b.Store.LoadPresets(); err == nil {
+			saved = loaded
+		}
+	}
+	if len(saved) > 0 {
+		fmt.Fprintln(out, "Saved presets:")
+		for _, p := range saved {
+			// The saved preset is the same free-text value kind the three
+			// preset surfaces render through providers.MaskOperand; this
+			// picker was the swarm twin that still composed both operands
+			// raw (internal/tui/screen_settings.go presetLines writes the
+			// identical "%s = %s" line, masked). A credential planted in a
+			// name or numbers field renders first-5+**** here too, and a
+			// benign pair keeps its exact bytes.
+			fmt.Fprintf(out, "  %s = %s\n", providers.MaskOperand(p.Name), providers.MaskOperand(p.Numbers))
 		}
 	}
 	fmt.Fprintln(out, "Numbered inventory:")
 	RenderSeatList(out, inv)
 	for {
-		fmt.Fprint(out, "Select seats (e.g. 1,3,5 or 2-4 or p1/p2/p3) [p1]: ")
+		fmt.Fprint(out, "Select seats (e.g. 1,3,5 or 2-4 or p1/p2/p3 or a saved preset name) [p1]: ")
 		line, ok := readBuilderLine(r)
 		if !ok {
 			fmt.Fprintln(b.ErrW, "Error: input closed during seat selection")
@@ -251,13 +261,16 @@ func (b *Builder) pickSeats(r *bufio.Reader, out io.Writer) ([]inventory.Entry, 
 		if choice == "" {
 			choice = "p1" // accept the presented default preset (§2.7)
 		}
-		seats, err := ResolveSeats(choice, inv, b.ErrW)
+		seats, err := ResolveSeatsWith(choice, inv, saved, b.ErrW)
 		if err != nil {
 			// F5: inventory selection errors quote the offending token; seed
 			// the masker with the raw line AND each §2.7 token so the quoted
 			// token is masked even when the line carries several tokens
 			// (providers.SeedEligible decides, benign tokens stay readable).
-			seeds := append([]string{choice}, splitSelTokens(choice)...)
+			// F04: a saved name expands to its stored Numbers, and the
+			// inventory error then quotes a NUMBER token instead of what the
+			// user typed, so SelectionSeeds adds each resolved Numbers value.
+			seeds := SelectionSeeds(choice, saved)
 			fmt.Fprintln(b.ErrW, providers.MaskSentence(err.Error(), seeds...))
 			continue
 		}
@@ -367,7 +380,8 @@ func readBuilderLine(r *bufio.Reader) (string, bool) {
 }
 
 // RenderSeatList writes the numbered inventory rows for the seat step
-// (contract §2.7 layout). k3 rows carry the `excluded (pool policy)` suffix.
+// (contract §2.7 layout). Excluded rows carry the `excluded (exclusion list)`
+// suffix (providers.ExcludedMarker, the one user-visible wording).
 func RenderSeatList(out io.Writer, inv *inventory.Inventory) {
 	if inv == nil {
 		return
@@ -393,8 +407,8 @@ func RenderSeatList(out io.Writer, inv *inventory.Inventory) {
 		if e.KeyMissing {
 			suffix = "      (key missing)"
 		}
-		if inventory.IsK3Excluded(e.ModelID) {
-			suffix += "      " + k3Marker
+		if e.Excluded {
+			suffix += "      " + providers.ExcludedMarker()
 		}
 		// E8/S5: the model ID, the mid column (native display name or the
 		// provider capability text), and the group tag are registry-derived

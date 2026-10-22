@@ -39,8 +39,9 @@ var proSwarmUsage = fmt.Sprintf(`Usage: agy pro swarm [options]
 Interactive (default): numbered template + seat builder (needs a TTY).
 Non-interactive (any option below present; zero prompts):
   --template NAME     code-review | security-audit | custom   (required)
-  --seats SPEC        numbered selection ("1,3,5", "2-4", "p1".."p3")
-                      or explicit seat specs ("native:id,prov/model")  (required)
+  --seats SPEC        numbered selection ("1,3,5", "2-4", "p1".."p3") or the
+                      name of a saved seat preset ("deep"), or explicit seat
+                      specs ("native:id,prov/model")  (required)
   --root DIR          workspace root (default ".")
   --prompt TEXT       user prompt (default: template scaffold)
   --prompt-file PATH  prompt file, or '-' for stdin
@@ -51,7 +52,11 @@ Non-interactive (any option below present; zero prompts):
   --dry-run           print the equivalent "agy pro fanout" command and exit 0
 
 Seat assignment is numbered selection in the happy path; flags are the
-power-user/CI fallback.`, fanout.DefaultTimeoutSec)
+power-user/CI fallback.
+Seats excluded by the user-owned exclusion list (defaults.excludeModels in
+providers.json) are never auto-seated by p1/p2/p3. Naming one explicitly (a
+number, a range, or a seat spec) honors it and prints a warning; nothing is
+refused because of the exclusion list.`, fanout.DefaultTimeoutSec)
 
 // loadSwarmInventory builds the combined inventory with the canonical
 // env-scrubbed, cached real-agy fetcher (contract §2.5). Tests replace it to
@@ -60,6 +65,44 @@ var loadSwarmInventory = func(ctx context.Context) (*inventory.Inventory, error)
 	reg, _ := providers.Load()
 	nf := inventory.Cached(inventory.NewRealAgyFetcher(reg), inventory.DefaultCacheTTL)
 	return inventory.Load(ctx, reg, nf)
+}
+
+// loadSwarmPresets is the saved-preset seam for --seats name resolution (F04):
+// the names a user saved in Settings > Saved Seat Presets become selection
+// tokens. A store that cannot be opened or read degrades to "no saved presets"
+// (the numbers/preset grammar is untouched); the store's own corrupt-file
+// warning still prints on its default WarnOut. Tests replace it to drive
+// resolveFlagSeats without touching the live ~/.agy-pro/swarm-state.json.
+var loadSwarmPresets = func() []swarm.SavedPreset {
+	st, err := swarm.NewFileStore()
+	if err != nil {
+		return nil
+	}
+	presets, err := st.LoadPresets()
+	if err != nil {
+		return nil
+	}
+	return presets
+}
+
+// loadSwarmPolicy is the exclusion-policy seam for the explicit seat-spec path
+// (P4-4): a spec line never loads the inventory, so its hand-built rows need
+// the policy directly or they cannot carry Entry.Excluded. A registry that
+// cannot be read degrades to the built-in default policy - exactly what
+// inventory.Load does for a nil registry - so the spec path keeps working
+// without a providers.json. Tests replace it to pin the verdict without
+// touching the live ~/.agy-pro/providers.json.
+//
+// FIX-G F1 (round-2 LOW): the second result reports a failure that dropped a
+// user-owned list (fanout.ExclusionListUnread), so the caller can print the
+// one-line notice. The degradation itself is unchanged: a missing or unreadable
+// registry still resolves the pick.
+var loadSwarmPolicy = func() (providers.ExclusionPolicy, bool) {
+	reg, err := providers.Load()
+	if err != nil || reg == nil {
+		return providers.ExclusionPolicyFromDefaults(providers.Defaults{}), fanout.ExclusionListUnread(reg, err)
+	}
+	return providers.ExclusionPolicyFromDefaults(reg.Defaults), false
 }
 
 // stdinIsTTY reports whether the input reader is an interactive terminal
@@ -100,7 +143,7 @@ func runSwarmCmd(args []string, in io.Reader, out, errw io.Writer) int {
 	fs.SetOutput(&maskedFlagWriter{w: errw})
 	var (
 		templateFlag = fs.String("template", "", "swarm template: code-review|security-audit|custom")
-		seatsFlag    = fs.String("seats", "", "seat selection: numbered ('1,3,5', '2-4', 'p1'..'p3') or explicit specs")
+		seatsFlag    = fs.String("seats", "", "seat selection: numbered ('1,3,5', '2-4', 'p1'..'p3'), a saved preset name, or explicit specs")
 		rootFlag     = fs.String("root", ".", "workspace root directory")
 		promptFlag   = fs.String("prompt", "", "inline user prompt text")
 		promptFile   = fs.String("prompt-file", "", "path to prompt file, or '-' for stdin")
@@ -224,7 +267,7 @@ func runSwarmNonInteractive(in io.Reader, out, errw io.Writer, fv swarmFlagValue
 	// interactive builder's edits onto the template (empty = keep default).
 	tmpl = swarm.SwarmFlags{Tools: fv.tools, Task: fv.task}.ApplyToTemplate(tmpl)
 
-	seats, code := resolveFlagSeats(fv.seats, out, errw)
+	seats, code := resolveFlagSeats(fv.seats, errw)
 	if code >= 0 {
 		return code
 	}
@@ -313,22 +356,37 @@ func seatSeedOperands(seatsVal string) []string {
 // selection resolves against the combined inventory; explicit seat specs are
 // the power-user fallback (validated by fanout.ParseSeatSpecs). Returns a
 // non-negative process exit code on failure.
-func resolveFlagSeats(seatsVal string, out, errw io.Writer) ([]inventory.Entry, int) {
-	if swarm.IsSelectionInput(seatsVal) {
+//
+// F04: a token that names a saved preset makes the line selection input, so
+// `--seats deep` resolves that preset's stored Numbers. An unknown name that
+// is still a valid bare seat spec stays on the spec path (the pre-F04
+// precedence: a bare provider model id is a legal spec and must not be
+// hijacked by the name grammar).
+//
+// Every exclusion warning this function produces rides errw, never stdout: the
+// fanout CLI prints the very same sentence on its error writer (RunConfig.
+// WarnOut = errw in internal/fanout/cli.go), and stdout on this path is the
+// machine-relayed dry-run command echo, which a warning line would interleave
+// (S7-C10).
+func resolveFlagSeats(seatsVal string, errw io.Writer) ([]inventory.Entry, int) {
+	presets := loadSwarmPresets()
+	if swarm.IsSelectionInputWith(seatsVal, presets) {
 		inv, err := loadSwarmInventory(context.Background())
 		if err != nil {
 			fmt.Fprintf(errw, "Error: model inventory error: %v\n", err)
 			return nil, 1
 		}
-		entries, err := swarm.ResolveSeats(seatsVal, inv, out)
+		entries, err := swarm.ResolveSeatsWith(seatsVal, inv, presets, errw)
 		if err != nil {
 			// C2/D1: selection errors embed the raw token; a misdirected paste
 			// in the --seats slot must not reach stderr unmasked. The error
 			// text routes through providers.MaskSentence (maskOperandSentence),
 			// which seeds the redactor with the raw --seats value when
 			// providers.SeedEligible says it may seed, so the planted secret is
-			// masked wherever the sentence echoes it.
-			fmt.Fprintf(errw, "Error: %v\n", maskOperandSentence(err.Error(), seatSeedOperands(seatsVal)...))
+			// masked wherever the sentence echoes it. F04: a saved name expands
+			// to its stored Numbers, so the seed list also carries each resolved
+			// Numbers value (an out-of-range seat error quotes a number token).
+			fmt.Fprintf(errw, "Error: %v\n", maskOperandSentence(err.Error(), swarm.SelectionSeeds(seatsVal, presets)...))
 			return nil, 2
 		}
 		if len(entries) == 0 {
@@ -344,8 +402,18 @@ func resolveFlagSeats(seatsVal string, out, errw io.Writer) ([]inventory.Entry, 
 		fmt.Fprintf(errw, "Error: %v\n", maskOperandSentence(err.Error(), seatSeedOperands(seatsVal)...))
 		return nil, 2
 	}
-	entries := swarm.EntriesFromSeatSpecs(specs)
-	swarm.WarnK3Specs(entries, out)
+	policy, policyUnread := loadSwarmPolicy()
+	if policyUnread {
+		// FIX-G F1: the read failed while a user-owned exclusion list may exist,
+		// so the rows below carry the built-in default policy instead and every
+		// excluded-pick advisory is suppressed. The run is unchanged (the pick is
+		// still honored, nothing is rejected); only the silence is fixed. The
+		// notice rides errw, never stdout: stdout here is the machine-relayed
+		// dry-run command echo (S7-C10).
+		fanout.WarnExclusionUnread(errw)
+	}
+	entries := swarm.EntriesFromSeatSpecs(specs, policy)
+	swarm.WarnExcludedSpecs(entries, errw)
 	return entries, -1
 }
 

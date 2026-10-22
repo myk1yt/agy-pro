@@ -193,20 +193,32 @@ func TestResolveSeatsAndSeatLineMaskRegistryDerivedPlants(t *testing.T) {
 			nil)
 	}
 
-	t.Run("explicit k3 pick rejects with masked spec", func(t *testing.T) {
-		_, err := ResolveSeats("1", k3Inv(t), nil)
-		if err == nil {
-			t.Fatal("explicit k3 pick must be rejected")
+	t.Run("explicit k3 pick is honored with a masked spec", func(t *testing.T) {
+		// D2 = b: an explicit numbered pick of an excluded row is HONORED with
+		// the shared warning - never rejected - and the warning still masks a
+		// key-shaped registry-derived spec.
+		var buf bytes.Buffer
+		seats, err := ResolveSeats("1", k3Inv(t), &buf)
+		if err != nil {
+			t.Fatalf("explicit pick of an excluded row must be honored: %v", err)
 		}
-		if strings.Contains(err.Error(), awsPlant) {
-			t.Errorf("k3 rejection leaks the planted model ID raw: %v", err)
+		if len(seats) != 1 || seats[0].Number != 1 {
+			t.Fatalf("explicit pick seated %+v, want the named row", seats)
 		}
-		if !strings.Contains(err.Error(), redactedMk) {
-			t.Errorf("k3 rejection missing the mask: %v", err)
+		out := buf.String()
+		if strings.Contains(out, awsPlant) {
+			t.Errorf("explicit-pick warning leaks the planted model ID raw:\n%s", out)
 		}
-		_, err = ResolveSeats("2", k3Inv(t), nil)
-		if err == nil || !strings.Contains(err.Error(), "glm-k3-pro-benign") {
-			t.Errorf("benign k3 spec must stay readable in the rejection: %v", err)
+		if !strings.Contains(out, redactedMk) || !strings.Contains(out, "explicit pick honored") {
+			t.Errorf("explicit-pick warning missing the mask or the shared sentence:\n%s", out)
+		}
+		buf.Reset()
+		seats, err = ResolveSeats("2", k3Inv(t), &buf)
+		if err != nil {
+			t.Fatalf("explicit pick of the benign excluded row must be honored: %v", err)
+		}
+		if len(seats) != 1 || !strings.Contains(buf.String(), "glm-k3-pro-benign") {
+			t.Errorf("benign k3 spec must stay readable in the warning: %v\n%s", seats, buf.String())
 		}
 	})
 

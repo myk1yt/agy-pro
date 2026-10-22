@@ -410,3 +410,117 @@ func TestRunModelsCmdJSONMasksLookAlikeModelID(t *testing.T) {
 		t.Errorf("benign row moved: %+v", entries[1])
 	}
 }
+
+// D7 machine half: `models --json` is the twin of the human listing, so the
+// `excluded` verdict must be present on EVERY row kind, not only on the rows the
+// listing marks. Entry.Excluded carries no `omitempty`, and this pin checks the
+// KEY's presence as well as the value: native excluded / native clean /
+// provider excluded + key missing / provider clean. The seam drives the real
+// inventory.Load so the registry -> entry -> dump chain runs.
+func TestRunModelsCmdJSONEmitsExcludedOnEveryRowKind(t *testing.T) {
+	reg := &providers.Registry{Providers: []providers.Provider{
+		{Name: "nw", APIKeyEnv: "NW_KEY_NOT_SET_IN_TESTS", Models: []providers.Model{
+			{ID: "kimi-k3"}, {ID: "glm-5.3-flash-flex"},
+		}},
+		{Name: "google", Models: []providers.Model{{ID: "gemini-2.5-flash"}}},
+	}}
+	native := []inventory.NativeModel{
+		{ID: "kimi-k3", DisplayName: "Kimi K3"},
+		{ID: "gemini-3.8-flash-high", DisplayName: "Gemini 3.8 Flash (High)"},
+	}
+	old := loadModelsInventory
+	loadModelsInventory = func(ctx context.Context) (*inventory.Inventory, error) {
+		return inventory.Load(ctx, reg, staticFetcher(native))
+	}
+	t.Cleanup(func() { loadModelsInventory = old })
+
+	var out, errw strings.Builder
+	if code := runModelsCmdTo([]string{"--json"}, &out, &errw); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, errw.String())
+	}
+	// Decode into raw objects, not []Entry: a struct decode cannot tell an
+	// absent `excluded` key from `false` (omitempty / tag drift would pass).
+	var rows []map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(out.String()), &rows); err != nil {
+		t.Fatalf("json decode: %v\n%s", err, out.String())
+	}
+	want := []struct {
+		spec     string
+		excluded bool
+		note     string
+	}{
+		{"native:kimi-k3", true, "native row, built-in default policy"},
+		{"native:gemini-3.8-flash-high", false, "native clean row"},
+		{"nw/kimi-k3", true, "provider row, excluded AND key missing"},
+		{"nw/glm-5.3-flash-flex", false, "provider clean row (key missing only)"},
+		{"google/gemini-2.5-flash", false, "provider clean row"},
+	}
+	if len(rows) != len(want) {
+		t.Fatalf("json rows = %d, want %d:\n%s", len(rows), len(want), out.String())
+	}
+	excludedCount := 0
+	for i, tc := range want {
+		var spec string
+		if err := json.Unmarshal(rows[i]["Spec"], &spec); err != nil || spec != tc.spec {
+			t.Fatalf("row %d spec = %q (err %v), want %q (row order drift)", i, spec, err, tc.spec)
+		}
+		raw, ok := rows[i]["excluded"]
+		if !ok {
+			t.Fatalf("%s (%s): the dump omits the `excluded` key: %s", tc.spec, tc.note, rows[i])
+		}
+		var got bool
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatalf("%s: excluded = %s is not a JSON bool: %v", tc.spec, raw, err)
+		}
+		if got != tc.excluded {
+			t.Errorf("%s (%s): excluded = %v, want %v", tc.spec, tc.note, got, tc.excluded)
+		}
+		if got {
+			excludedCount++
+		}
+	}
+	// Non-vacuity: the dump carries both verdicts.
+	if excludedCount != 2 {
+		t.Errorf("excluded rows = %d, want 2 (native kimi-k3 + nw/kimi-k3)", excludedCount)
+	}
+}
+
+// D7 end-to-end through the command: the `--all` listing marks the excluded row
+// and leaves the clean row byte-identical, driven by the same Entry.Excluded flag
+// the --json dump carries.
+func TestRunModelsCmdAllMarksExcludedRows(t *testing.T) {
+	reg := &providers.Registry{Providers: []providers.Provider{{
+		Name: "nw", Models: []providers.Model{{ID: "kimi-k3"}, {ID: "kimi-k2"}},
+	}}}
+	old := loadModelsInventory
+	loadModelsInventory = func(ctx context.Context) (*inventory.Inventory, error) {
+		return inventory.Load(ctx, reg, nil)
+	}
+	t.Cleanup(func() { loadModelsInventory = old })
+
+	var out, errw strings.Builder
+	if code := runModelsCmdTo([]string{"--all"}, &out, &errw); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, errw.String())
+	}
+	got := out.String()
+	t.Logf("--all output:\n%s", got)
+	marker := providers.ExcludedMarker()
+	if n := strings.Count(got, marker); n != 1 {
+		t.Fatalf("marker count = %d, want 1 (only kimi-k3 is excluded):\n%s", n, got)
+	}
+	var marked, clean string
+	for _, line := range strings.Split(got, "\n") {
+		switch {
+		case strings.Contains(line, "kimi-k3"):
+			marked = line
+		case strings.Contains(line, "kimi-k2"):
+			clean = line
+		}
+	}
+	if !strings.HasSuffix(marked, "      "+marker) {
+		t.Errorf("kimi-k3 row not marked: %q", marked)
+	}
+	if clean == "" || strings.Contains(clean, marker) {
+		t.Errorf("clean row = %q, want the row rendered without the marker", clean)
+	}
+}

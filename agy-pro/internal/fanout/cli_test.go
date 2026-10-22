@@ -3,7 +3,10 @@ package fanout
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -956,5 +959,255 @@ func TestFanoutEngineErrorMasksSeatSpecs(t *testing.T) {
 	}
 	if strings.Contains(errw2.String(), "[REDACTED]") {
 		t.Errorf("benign engine error must not be redacted:\n%s", errw2.String())
+	}
+}
+
+// TestLadderConsumesExcludeModels (SESSION7 P4-3, D1): the providers.json
+// defaults block's excludeModels list is CONSUMED by the run-config ladder and
+// reaches RunConfig.ExcludeModel, matching on provider name, model id and
+// family. The nil-vs-empty split keeps its meaning end-to-end: an absent key
+// leaves the built-in default (k3), an explicit empty list excludes nothing.
+func TestLadderConsumesExcludeModels(t *testing.T) {
+	type probe struct {
+		provider string
+		model    providers.Model
+	}
+	probes := []probe{
+		{"nw", providers.Model{ID: "glm-5.3-pro", Family: "glm"}},
+		{"other", providers.Model{ID: "glm-5.3-pro", Family: "glm"}},
+		{"nw", providers.Model{ID: "kimi-k3", Family: "kimi"}},
+	}
+	cases := []struct {
+		name      string
+		defaults  string
+		want      []bool
+		wantError bool
+	}{
+		{
+			name:     "provider entry excludes that provider",
+			defaults: `{"excludeModels":["nw"]}`,
+			want:     []bool{true, false, true},
+		},
+		{
+			name:     "model entry excludes that model everywhere",
+			defaults: `{"excludeModels":["glm-5.3-pro"]}`,
+			want:     []bool{true, true, false},
+		},
+		{
+			name:     "provider/model pair needs both halves",
+			defaults: `{"excludeModels":["other/glm-5.3-pro"]}`,
+			want:     []bool{false, true, false},
+		},
+		{
+			name:     "absent key keeps the built-in k3 default",
+			defaults: "",
+			want:     []bool{false, false, true},
+		},
+		{
+			name:     "explicit empty list excludes nothing",
+			defaults: `{"excludeModels":[]}`,
+			want:     []bool{false, false, false},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, stderr := ladderEnv(t)
+			writeDefaults(t, tc.defaults)
+			cfg, err := buildRunConfig(ladderFlags(stderr), "p")
+			if err != nil {
+				t.Fatalf("buildRunConfig: %v", err)
+			}
+			if cfg.ExcludeModel == nil {
+				t.Fatal("RunConfig.ExcludeModel is nil: the ladder did not thread the exclusion policy")
+			}
+			for i, p := range probes {
+				if got := cfg.ExcludeModel(p.provider, p.model); got != tc.want[i] {
+					t.Errorf("%s/%s excluded = %v; want %v\nstderr:\n%s",
+						p.provider, p.model.ID, got, tc.want[i], stderr.String())
+				}
+			}
+		})
+	}
+}
+
+// TestRunWarnsOnExplicitPickExcludedByRegistryList (SESSION7 P4-3): the CLI end
+// of the exclusion list. A real Run() against a stub provider and a registry
+// whose defaults block excludes the picked provider must still run the seat and
+// print the shared warning sentence on stderr.
+func TestRunWarnsOnExplicitPickExcludedByRegistryList(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := ChatResponse{Choices: []ChatChoice{{
+			Index:        0,
+			Message:      ChatMessage{Role: "assistant", Content: "## Findings\n- **[LOW]** excluded pick honored"},
+			FinishReason: "stop",
+		}}}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	home := t.TempDir()
+	t.Setenv(paths.EnvAgyProHome, home)
+	t.Setenv(providers.EnvProviders, filepath.Join(home, "providers.json"))
+	t.Setenv("KEY_CLIP43", "clip43-key")
+	regBody := fmt.Sprintf(`{"providers":[{"name":"nw","baseURL":%q,"apiKeyEnv":"KEY_CLIP43",
+	  "models":[{"id":"glm-5.3-pro","family":"glm","enabled":true}]}],
+	  "defaults":{"excludeModels":["nw"]}}`, server.URL)
+	if err := os.WriteFile(filepath.Join(home, "providers.json"), []byte(regBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errw bytes.Buffer
+	code := Run([]string{"-prompt", "p", "-models", "nw/glm-5.3-pro", "-out", filepath.Join(home, "reports")}, nil, &out, &errw)
+	if code != 0 {
+		t.Fatalf("exit = %d; want 0 (nothing is rejected)\nstderr:\n%s", code, errw.String())
+	}
+	if !strings.Contains(errw.String(), "warning: nw/glm-5.3-pro") ||
+		!strings.Contains(errw.String(), "explicit pick honored (the exclusion list covers auto-seating and failover only)") {
+		t.Fatalf("stderr must carry the shared exclusion warning:\n%s", errw.String())
+	}
+	if strings.Contains(out.String(), "excluded (exclusion list)") {
+		t.Errorf("the warning must not pollute the stdout summary:\n%s", out.String())
+	}
+}
+
+// --- FIX-G F1 (round-2 LOW): the exclusion-policy read fails open LOUDLY.
+
+// writeRegistryBody writes an arbitrary providers.json body at a fresh path and
+// points EnvProviders at it. An empty body writes no file at all (the
+// absent-registry case).
+func writeRegistryBody(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "providers.json")
+	if body != "" {
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv(providers.EnvProviders, path)
+	return path
+}
+
+// TestExclusionListUnreadClassification pins the three-way class the notice
+// keys on. The absent case is NOT pedantry: every ladder pin in this package
+// runs against a providers.json path that does not exist and asserts an empty
+// notice writer (preset_ladder_test.go TestLadderNoPresetNoDefaultsMatchesEngineDefaults,
+// preset_default_key_guard_test.go), so a notice on ErrNotExist would both break
+// them and nag every registry-less machine about a list it never had.
+func TestExclusionListUnreadClassification(t *testing.T) {
+	healthy := &providers.Registry{}
+	cases := []struct {
+		name string
+		reg  *providers.Registry
+		err  error
+		want bool
+	}{
+		{name: "readable registry", reg: healthy, want: false},
+		{name: "missing file", err: fmt.Errorf("open x: %w", os.ErrNotExist), want: false},
+		{name: "bare os.ErrNotExist", err: os.ErrNotExist, want: false},
+		{name: "not configured", err: providers.ErrNotConfigured, want: false},
+		{name: "invalid JSON", err: fmt.Errorf("providers file p: invalid JSON: %w", fmt.Errorf("unexpected EOF")), want: true},
+		{name: "permission denied", err: fmt.Errorf("open p: %w", os.ErrPermission), want: true},
+		{name: "nil registry, nil error", want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ExclusionListUnread(tc.reg, tc.err); got != tc.want {
+				t.Errorf("ExclusionListUnread(%v, %v) = %v; want %v", tc.reg, tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestLadderWarnsWhenExclusionPolicyUnread is the fanout-CLI half of the fix: a
+// registry that exists but cannot be parsed still fails open onto the built-in
+// default policy (nothing is rejected, no error is returned), and the operator
+// now gets ONE line saying the user-owned list is not applied. The line names
+// the class and nothing else: no path, no file bytes, no key value.
+func TestLadderWarnsWhenExclusionPolicyUnread(t *testing.T) {
+	_, stderr := ladderEnv(t)
+	path := writeRegistryBody(t, `{"providers": [`)
+
+	cfg, err := buildRunConfig(ladderFlags(stderr), "p")
+	if err != nil {
+		t.Fatalf("a corrupt registry must not fail the ladder (fail-open unchanged): %v", err)
+	}
+	if cfg.ExcludeModel == nil {
+		t.Fatal("RunConfig.ExcludeModel is nil: the fallback policy was not threaded")
+	}
+	// The fallback is the built-in default policy, exactly as before the notice.
+	if !cfg.ExcludeModel("nw", providers.Model{ID: "kimi-k3"}) {
+		t.Error("the built-in k3 rule is not in force after an unreadable registry")
+	}
+	if cfg.ExcludeModel("nw", providers.Model{ID: "glm-5.3-pro"}) {
+		t.Error("a non-k3 row is excluded; the fallback policy is not the built-in default")
+	}
+	got := stderr.String()
+	if n := strings.Count(got, ExclusionUnreadNotice); n != 1 {
+		t.Fatalf("notice count = %d; want exactly 1 in:\n%s", n, got)
+	}
+	if strings.Contains(got, path) {
+		t.Errorf("the notice echoed the registry path; it must name the class only:\n%s", got)
+	}
+}
+
+// TestLadderQuietOnHealthyAndAbsentRegistry is the control for the notice: a
+// readable registry applies the stored list silently, and an absent registry
+// (no list to drop) stays silent too.
+func TestLadderQuietOnHealthyAndAbsentRegistry(t *testing.T) {
+	t.Run("healthy registry applies the list silently", func(t *testing.T) {
+		_, stderr := ladderEnv(t)
+		writeRegistryBody(t, `{"providers":[],"defaults":{"excludeModels":["nw/glm-5.3-pro"]}}`)
+
+		cfg, err := buildRunConfig(ladderFlags(stderr), "p")
+		if err != nil {
+			t.Fatalf("buildRunConfig: %v", err)
+		}
+		if !cfg.ExcludeModel("nw", providers.Model{ID: "glm-5.3-pro"}) {
+			t.Error("the stored exclusion list was not applied on the healthy path")
+		}
+		if strings.Contains(stderr.String(), "warning:") {
+			t.Errorf("healthy path must stay silent; stderr = %q", stderr.String())
+		}
+	})
+
+	t.Run("absent registry stays silent", func(t *testing.T) {
+		_, stderr := ladderEnv(t) // AGY_PRO_PROVIDERS points at a missing file
+		if _, err := buildRunConfig(ladderFlags(stderr), "p"); err != nil {
+			t.Fatalf("buildRunConfig: %v", err)
+		}
+		if strings.Contains(stderr.String(), "warning:") {
+			t.Errorf("absent registry must stay silent (no user-owned list to drop); stderr = %q", stderr.String())
+		}
+	})
+}
+
+// TestRunNoticeRidesStderrAndKeepsJSONStdout pins the relay invariant: the new
+// notice is advisory, so it rides the error writer and stdout stays pure JSON
+// for the machine caller even when the registry is unreadable.
+func TestRunNoticeRidesStderrAndKeepsJSONStdout(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv(paths.EnvAgyProHome, home)
+	writeRegistryBody(t, `{"providers": [`)
+
+	old := executeEngine
+	executeEngine = func(ctx context.Context, cfg RunConfig) (*SummaryReport, error) {
+		return &SummaryReport{Task: cfg.Task, NRequested: cfg.N, NCompleted: cfg.N}, nil
+	}
+	t.Cleanup(func() { executeEngine = old })
+
+	var out, errw bytes.Buffer
+	code := Run([]string{"-prompt", "p", "-seats", "native:m1", "-json"}, nil, &out, &errw)
+	if code != 0 {
+		t.Fatalf("exit = %d; want 0 (the pick is still honored)\nstderr:\n%s", code, errw.String())
+	}
+	if n := strings.Count(errw.String(), ExclusionUnreadNotice); n != 1 {
+		t.Fatalf("notice count on stderr = %d; want 1 in:\n%s", n, errw.String())
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatalf("stdout is not pure JSON with the notice on stderr: %v\nstdout:\n%s", err, out.String())
+	}
+	if strings.Contains(out.String(), "warning:") {
+		t.Errorf("the notice leaked into stdout:\n%s", out.String())
 	}
 }

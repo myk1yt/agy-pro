@@ -4,6 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -472,26 +478,368 @@ func TestRenderNumberedMasksLookAlikeRegistrySlot(t *testing.T) {
 	}
 }
 
-func TestIsK3ExcludedDelegationTable(t *testing.T) {
+// P4-2 unification: Entry.Excluded is the ONE verdict, computed at Load from
+// providers.ExclusionPolicyFromDefaults. It replaces the id-only
+// inventory.IsK3Excluded delegation table that used to live here, because that
+// delegation was one half of the split this unit exists to close: the family-arm
+// rows below (a benign id carrying `family: "k3"`) were excluded by
+// providers.IsK3Family in fanout auto-seating and ALLOWED by the old id-only
+// predicate in swarm preset expansion. With no excludeModels block in the
+// registry the built-in default entry governs, so this table is the k3 rule read
+// through the authority.
+func TestEntryExcludedBuiltinDefaultTable(t *testing.T) {
 	cases := []struct {
-		id   string
+		name string
+		mod  providers.Model
 		want bool
 	}{
-		{"kimi-k3", true},
-		{"kimi-k3-flex", true},
-		{"k3-agent-swarm", true},
-		{"vendor-prefixed-k3", true},
-		{"K3", true},
-		{"kimi-k2", false},
-		{"k3000", false},
-		{"glm-k3x", false},
-		{"glm-4.6", false},
-		{"gemini-3.8-flash-high", false},
-		{"", false},
+		// The row the whole unification is for: family-only, benign id.
+		{"family k3 with benign id", providers.Model{ID: "kimi-latest", Family: "k3"}, true},
+		{"family K3 uppercase, benign id", providers.Model{ID: "kimi-latest", Family: "K3"}, true},
+		{"family k3 padded, benign id", providers.Model{ID: "kimi-latest", Family: "  k3  "}, true},
+		// id-token arm, unchanged from the retired delegation table.
+		{"id token kimi-k3", providers.Model{ID: "kimi-k3"}, true},
+		{"id token kimi-k3-flex", providers.Model{ID: "kimi-k3-flex"}, true},
+		{"swarm id k3-agent-swarm", providers.Model{ID: "k3-agent-swarm"}, true},
+		{"vendor-prefixed k3 id", providers.Model{ID: "vendor-prefixed-k3"}, true},
+		{"bare K3 id", providers.Model{ID: "K3"}, true},
+		{"family gemini but id token k3", providers.Model{ID: "kimi-k3", Family: "gemini"}, true},
+		// negatives (boundary safety must survive the move).
+		{"kimi-k2", providers.Model{ID: "kimi-k2"}, false},
+		{"k3000", providers.Model{ID: "k3000"}, false},
+		{"glm-k3x", providers.Model{ID: "glm-k3x"}, false},
+		{"glm-4.6", providers.Model{ID: "glm-4.6"}, false},
+		{"gemini-3.8-flash-high", providers.Model{ID: "gemini-3.8-flash-high"}, false},
+		{"family kimi, benign id", providers.Model{ID: "kimi-latest", Family: "kimi"}, false},
 	}
 	for _, tc := range cases {
-		if got := IsK3Excluded(tc.id); got != tc.want {
-			t.Errorf("IsK3Excluded(%q) = %v, want %v", tc.id, got, tc.want)
+		reg := &providers.Registry{Providers: []providers.Provider{{
+			Name:   "nw",
+			Models: []providers.Model{tc.mod},
+		}}}
+		inv, err := Load(context.Background(), reg, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
 		}
+		if len(inv.Entries) != 1 {
+			t.Fatalf("%s: setup built %d entries, want 1", tc.name, len(inv.Entries))
+		}
+		if got := inv.Entries[0].Excluded; got != tc.want {
+			t.Errorf("%s: Entry.Excluded = %v, want %v (entry %+v)", tc.name, got, tc.want, inv.Entries[0])
+		}
+	}
+}
+
+// The nil-registry (native-only) view evaluates the same policy with an EMPTY
+// defaults block instead of leaving the flag unset, so a native row is marked by
+// the same rule a provider row is. This is the documented choice for reg == nil.
+func TestEntryExcludedNativeOnlyViewUsesBuiltinDefault(t *testing.T) {
+	native := []NativeModel{
+		{ID: "kimi-k3", DisplayName: "Kimi K3"},
+		{ID: "gemini-3.8-flash-high", DisplayName: "Gemini 3.8 Flash (High)"},
+	}
+	inv, err := Load(context.Background(), nil, &stubFetcher{models: native})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inv.Entries) != 2 {
+		t.Fatalf("setup built %d entries, want 2", len(inv.Entries))
+	}
+	if !inv.Entries[0].Excluded {
+		t.Errorf("native kimi-k3 must be excluded by the built-in default entry: %+v", inv.Entries[0])
+	}
+	if inv.Entries[1].Excluded {
+		t.Errorf("native gemini row must not be excluded: %+v", inv.Entries[1])
+	}
+}
+
+// Load-time authority chain (D1 = a): `defaults.excludeModels` in
+// providers.json decides Entry.Excluded for every row, with all three entry
+// forms (provider, bare model id, provider/model pair). The registry is written
+// into a TEMP AGY_PRO_HOME, never the live home.
+func TestLoadExcludedFromTempHomeExcludeModels(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv(providers.EnvHome, home)
+	// Pin the path door too: a live AGY_PRO_PROVIDERS override would point this
+	// test at the real registry.
+	t.Setenv(providers.EnvProviders, "")
+	path, err := providers.DefaultPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != filepath.Join(home, "providers.json") {
+		t.Fatalf("test registry path = %q, want the temp home, never the live home", path)
+	}
+
+	const registry = `{
+  "providers": [
+    {"name": "nw", "baseURL": "https://nw.example.com", "models": [
+      {"id": "glm-5.3-flash"}, {"id": "glm-5.3-pro"}]},
+    {"name": "charm", "baseURL": "https://charm.example.com", "models": [
+      {"id": "glm-5.3-flash"}, {"id": "qwen3.8-flash"}]},
+    {"name": "mimo", "baseURL": "https://mimo.example.com", "models": [
+      {"id": "mimo-v2.6-pro"}]},
+    {"name": "kat", "baseURL": "https://kat.example.com", "models": [
+      {"id": "kimi-k3"}]}
+  ],
+  "defaults": {
+    "excludeModels": ["charm", "glm-5.3-pro", "nw/glm-5.3-flash", "  mimo  "]
+  }
+}`
+	if err := os.WriteFile(filepath.Join(home, "providers.json"), []byte(registry), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reg, err := providers.Load()
+	if err != nil {
+		t.Fatalf("providers.Load from temp home: %v", err)
+	}
+	inv, err := Load(context.Background(), reg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := map[string]bool{ // spec -> excluded
+		"nw/glm-5.3-flash":    true, // provider/model pair
+		"nw/glm-5.3-pro":      true, // bare model id
+		"charm/glm-5.3-flash": true, // provider entry (first id)
+		"charm/qwen3.8-flash": true, // provider entry (every id of that provider)
+		"mimo/mimo-v2.6-pro":  true, // padded entry, trimmed by the load normaliser
+		// The user owns the list, so the built-in k3 default NO LONGER runs:
+		// the k3 rule is a default ENTRY, not a separate constant policy.
+		"kat/kimi-k3": false,
+	}
+	got := make(map[string]bool, len(inv.Entries))
+	for _, e := range inv.Entries {
+		got[e.Spec] = e.Excluded
+	}
+	if len(got) != len(want) {
+		t.Fatalf("inventory has %d rows, want %d: %v", len(got), len(want), got)
+	}
+	for spec, wantExcluded := range want {
+		excluded, ok := got[spec]
+		if !ok {
+			t.Errorf("row %q missing from the inventory: %v", spec, got)
+			continue
+		}
+		if excluded != wantExcluded {
+			t.Errorf("%s: Entry.Excluded = %v, want %v", spec, excluded, wantExcluded)
+		}
+	}
+	if !got["nw/glm-5.3-flash"] || !got["nw/glm-5.3-pro"] || !got["charm/glm-5.3-flash"] {
+		t.Error("vacuous: at least one excluded row did not come out excluded")
+	}
+	if got["kat/kimi-k3"] {
+		t.Error("vacuous: the user-owned list must REPLACE the built-in k3 default entry")
+	}
+}
+
+// renderedRow renders the inventory and returns the ONE line carrying modelID.
+func renderedRow(t *testing.T, inv *Inventory, modelID string) string {
+	t.Helper()
+	var buf strings.Builder
+	inv.RenderNumbered(&buf)
+	var hits []string
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if strings.Contains(line, modelID) {
+			hits = append(hits, line)
+		}
+	}
+	if len(hits) != 1 {
+		t.Fatalf("rendered %d rows carrying %q, want exactly 1:\n%s", len(hits), modelID, buf.String())
+	}
+	return hits[0]
+}
+
+// D7: `agy pro models --all` is the list the standing seat-picking rule points
+// an agent at, so a row the exclusion list covers must be visibly marked there,
+// not only in the swarm seat list. The marker is providers.ExcludedMarker(), the
+// shared constant (pinned by
+// TestRenderNumberedExcludedMarkerIsSharedConstant).
+func TestRenderNumberedMarksExcludedRows(t *testing.T) {
+	marker := providers.ExcludedMarker()
+
+	// (a) Built-in default policy: `excludeModels` is ABSENT (nil slice), so the
+	// k3 default entry governs. This is the row the defect was filed for: k3 rows
+	// rendered as ordinary selectable seats here while the swarm seat list marked
+	// them.
+	reg := &providers.Registry{Providers: []providers.Provider{{
+		Name: "nw", Models: []providers.Model{{ID: "kimi-k3"}, {ID: "kimi-k2"}},
+	}}}
+	inv, err := Load(context.Background(), reg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !inv.Entries[0].Excluded || inv.Entries[1].Excluded {
+		t.Fatalf("setup: Excluded = %v/%v, want true/false", inv.Entries[0].Excluded, inv.Entries[1].Excluded)
+	}
+	if row := renderedRow(t, inv, "kimi-k3"); !strings.HasSuffix(row, "      "+marker) {
+		t.Errorf("built-in-default row is not marked: %q", row)
+	}
+	if row := renderedRow(t, inv, "kimi-k2"); strings.Contains(row, marker) {
+		t.Errorf("non-excluded row is marked: %q", row)
+	}
+
+	// (b) User-owned list, one row per entry form (provider, bare model id,
+	// provider/model pair) plus rows the list does not cover. A non-nil list
+	// REPLACES the built-in k3 default, so kat/kimi-k3 below must stay unmarked.
+	reg = &providers.Registry{
+		Providers: []providers.Provider{
+			{Name: "nw", Models: []providers.Model{
+				{ID: "glm-5.3-flash"}, {ID: "glm-5.3-pro"}, {ID: "qwen3.8-flash"},
+			}},
+			{Name: "charm", Models: []providers.Model{{ID: "glm-4.6"}}},
+			{Name: "kat", Models: []providers.Model{{ID: "kimi-k3"}}},
+		},
+		Defaults: providers.Defaults{ExcludeModels: []string{"charm", "glm-5.3-pro", "nw/glm-5.3-flash"}},
+	}
+	inv, err = Load(context.Background(), reg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		modelID string
+		via     string
+		want    bool
+	}{
+		{"glm-5.3-flash", "provider/model pair nw/glm-5.3-flash", true},
+		{"glm-5.3-pro", "bare model id glm-5.3-pro", true},
+		{"glm-4.6", "provider entry charm", true},
+		{"qwen3.8-flash", "not covered by the list", false},
+		{"kimi-k3", "not covered: the user list replaces the k3 default", false},
+	} {
+		row := renderedRow(t, inv, tc.modelID)
+		if got := strings.Contains(row, marker); got != tc.want {
+			t.Errorf("%s (%s): marked = %v, want %v; row %q", tc.modelID, tc.via, got, tc.want, row)
+		}
+	}
+
+	// Non-vacuity: exactly the three covered rows carry a marker, so neither arm
+	// of the table above is empty.
+	var all strings.Builder
+	inv.RenderNumbered(&all)
+	if n := strings.Count(all.String(), marker); n != 3 {
+		t.Errorf("marker count = %d, want 3 (one per excluded row):\n%s", n, all.String())
+	}
+}
+
+// A row can carry BOTH suffixes. Order and separator match the swarm seat list
+// (internal/swarm/builder.go RenderSeatList): "(key missing)" first, then the
+// same six-space separator, then the shared exclusion marker, so the two
+// listings of one entry end identically.
+func TestRenderNumberedExcludedMarkerFollowsKeyMissing(t *testing.T) {
+	marker := providers.ExcludedMarker()
+	reg := &providers.Registry{Providers: []providers.Provider{{
+		Name:      "nw",
+		APIKeyEnv: "NW_KEY_NOT_SET_IN_TESTS",
+		Models:    []providers.Model{{ID: "kimi-k3"}},
+	}}}
+	inv, err := Load(context.Background(), reg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e := inv.Entries[0]; !e.KeyMissing || !e.Excluded {
+		t.Fatalf("setup: KeyMissing=%v Excluded=%v, want both true", e.KeyMissing, e.Excluded)
+	}
+	row := renderedRow(t, inv, "kimi-k3")
+	if want := "      (key missing)      " + marker; !strings.HasSuffix(row, want) {
+		t.Errorf("row = %q, want the suffix %q", row, want)
+	}
+	if n := strings.Count(row, marker); n != 1 {
+		t.Errorf("marker rendered %d times, want 1: %q", n, row)
+	}
+	if i, j := strings.Index(row, "(key missing)"), strings.Index(row, marker); i < 0 || j < i {
+		t.Errorf("(key missing) must precede the exclusion marker (indexes %d, %d): %q", i, j, row)
+	}
+}
+
+// The marker rides AFTER the group tag, outside both padded columns, so it
+// cannot widen the frame or push a cell past a width limit. This listing has no
+// truncation logic at all (the columns are `%-*s` right-padding), so the pin is
+// the invariant: flipping Entry.Excluded off leaves every line byte-identical
+// apart from the appended suffix, and a long id still renders in full.
+func TestRenderNumberedExcludedMarkerKeepsFrameWidths(t *testing.T) {
+	longID := "glm-5.3-flash-flex-ultralong-" + strings.Repeat("x", 40)
+	reg := &providers.Registry{
+		Providers: []providers.Provider{{
+			Name: "nw", Models: []providers.Model{{ID: longID}, {ID: "qwen3.8-flash"}},
+		}},
+		Defaults: providers.Defaults{ExcludeModels: []string{longID}},
+	}
+	inv, err := Load(context.Background(), reg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var with strings.Builder
+	inv.RenderNumbered(&with)
+
+	plain := &Inventory{Entries: append([]Entry(nil), inv.Entries...), GeneratedAt: inv.GeneratedAt}
+	for i := range plain.Entries {
+		plain.Entries[i].Excluded = false
+	}
+	var without strings.Builder
+	plain.RenderNumbered(&without)
+
+	withLines := strings.Split(strings.TrimSuffix(with.String(), "\n"), "\n")
+	withoutLines := strings.Split(strings.TrimSuffix(without.String(), "\n"), "\n")
+	if len(withLines) != 2 || len(withoutLines) != 2 {
+		t.Fatalf("line counts = %d/%d, want 2/2:\n%s\n%s",
+			len(withLines), len(withoutLines), with.String(), without.String())
+	}
+	suffix := "      " + providers.ExcludedMarker()
+	if want := withoutLines[0] + suffix; withLines[0] != want {
+		t.Errorf("marked row = %q, want exactly %q", withLines[0], want)
+	}
+	for i := range withLines {
+		if !strings.HasPrefix(withLines[i], withoutLines[i]) {
+			t.Errorf("row %d frame shifted by the marker:\n marked: %q\n clean:  %q",
+				i, withLines[i], withoutLines[i])
+		}
+	}
+	if withLines[1] != withoutLines[1] {
+		t.Errorf("clean row changed: %q vs %q", withLines[1], withoutLines[1])
+	}
+	if !strings.Contains(withLines[0], longID) {
+		t.Errorf("the frame truncated the long id: %q", withLines[0])
+	}
+}
+
+// The marker wording lives in exactly one place (providers.ExcludedMarker), so
+// the human listing and the swarm seat list cannot drift. The pin is AST-based
+// on purpose: this file's doc example shows the rendered marker text inside a
+// comment, and only a string-literal scan can tell a comment from a local copy.
+func TestRenderNumberedExcludedMarkerIsSharedConstant(t *testing.T) {
+	src, err := os.ReadFile("inventory.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := parser.ParseFile(token.NewFileSet(), "inventory.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := providers.ExcludedMarker()
+	var literals []string
+	usesMarker := false
+	ast.Inspect(f, func(n ast.Node) bool {
+		switch v := n.(type) {
+		case *ast.BasicLit:
+			if v.Kind == token.STRING {
+				if s, unqErr := strconv.Unquote(v.Value); unqErr == nil {
+					literals = append(literals, s)
+				}
+			}
+		case *ast.SelectorExpr:
+			if id, ok := v.X.(*ast.Ident); ok && id.Name == "providers" && v.Sel.Name == "ExcludedMarker" {
+				usesMarker = true
+			}
+		}
+		return true
+	})
+	for _, lit := range literals {
+		if lit == want {
+			t.Errorf("inventory.go carries a LOCAL copy of the marker %q; it must call providers.ExcludedMarker()", want)
+		}
+	}
+	if !usesMarker {
+		t.Error("inventory.go never calls providers.ExcludedMarker(): the marker must be the shared constant")
 	}
 }

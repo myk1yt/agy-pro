@@ -16,6 +16,7 @@ import (
 	"agypro/internal/inventory"
 	"agypro/internal/providers"
 	"agypro/internal/realagy"
+	"agypro/internal/swarm"
 )
 
 // Model sub-menu behind launcher choice [2] (plan §4.2 B1, contract §2.7).
@@ -66,6 +67,24 @@ var pickerInventory = func(reg *providers.Registry) *inventory.Inventory {
 // Tests override it to drive the picker's console path deterministically.
 var readConsoleLineFn = readConsoleLine
 
+// pickerSavedPresets is the saved-preset seam for the model picker (F04): the
+// prompt accepts the same §2.7 selection grammar as the swarm seat prompt, so a
+// saved seat preset name resolves here too. A store that cannot be opened or
+// read yields no names (the numbers/range/preset grammar is untouched); the
+// store's corrupt-file warning keeps printing on its default WarnOut. Tests
+// replace it to drive the picker without touching ~/.agy-pro/swarm-state.json.
+var pickerSavedPresets = func() []swarm.SavedPreset {
+	st, err := swarm.NewFileStore()
+	if err != nil {
+		return nil
+	}
+	presets, err := st.LoadPresets()
+	if err != nil {
+		return nil
+	}
+	return presets
+}
+
 // showModelPicker renders the numbered combined inventory and reads one
 // selection. When stdin is a real console the line comes from the console path
 // (multi-digit capable, nothing consumed until the line is complete), so the
@@ -108,13 +127,36 @@ func showModelPicker(out io.Writer, consoleIn *os.File, lines lineSource, inv *i
 // silently-by-default no more: every cancel now states what happens next, so a
 // user who typed nothing (or typed a version-shaped token) is never left
 // wondering why the session did not advance.
+//
+// F04: the prompt accepts the SAME §2.7 grammar as the swarm seat prompt, so a
+// saved seat preset name resolves to that preset's stored Numbers (the first
+// number is the picked model, exactly like a p1/p2/p3 answer already is). An
+// unknown name is refused by name through the shared swarm sentence, so the two
+// surfaces cannot drift; a seat-spec-shaped answer ("native:x", "./backups")
+// stays on the old path and keeps its typed-operand rendering.
 func resolvePickerLine(line string, inv *inventory.Inventory, out io.Writer) ModelPick {
 	trimmed := strings.TrimSpace(line)
 	if trimmed == "" {
 		fmt.Fprintln(out, "[agy-pro] no model selected (cancelled); continuing with External Models (bridge)")
 		return ModelPick{}
 	}
-	entries, err := inventory.ParseSelection(trimmed, inv)
+	presets := pickerSavedPresets()
+	expanded, expErr := swarm.ExpandSavedPresetNames(trimmed, presets)
+	if expErr != nil {
+		if len(inv.Entries) == 0 {
+			fmt.Fprintln(out, "[agy-pro] no models in the combined inventory; continuing with External Models (bridge)")
+			return ModelPick{}
+		}
+		// F04: the swarm sentence names the refusal ("unknown saved preset") and
+		// quotes the token through providers.MaskOperand; the seeded sentence
+		// pass here is the same one the swarm surfaces run over the same seeds
+		// (SelectionSeeds carries the typed line and any resolved Numbers), so a
+		// decorated compound cannot slip through at this echo.
+		fmt.Fprintf(out, "[agy-pro] %s; continuing with External Models (bridge)\n",
+			providers.MaskSentence(expErr.Error(), swarm.SelectionSeeds(trimmed, presets)...))
+		return ModelPick{}
+	}
+	entries, err := inventory.ParseSelection(expanded, inv)
 	if err != nil || len(entries) == 0 {
 		if len(inv.Entries) == 0 {
 			fmt.Fprintln(out, "[agy-pro] no models in the combined inventory; continuing with External Models (bridge)")
@@ -124,8 +166,8 @@ func resolvePickerLine(line string, inv *inventory.Inventory, out io.Writer) Mod
 		// registry slot, so it stays on MaskOperand (the registry-slot authority
 		// MaskSlot would strip the markers of a location-shaped answer and change
 		// the rendered bytes for a benign non-answer).
-		fmt.Fprintf(out, "[agy-pro] invalid selection %q (want a number 1-%d, a range like 3-5, or a preset p1/p2/p3); continuing with External Models (bridge)\n",
-			providers.MaskOperand(trimmed), len(inv.Entries))
+		fmt.Fprintf(out, "[agy-pro] invalid selection %q (%s); continuing with External Models (bridge)\n",
+			providers.MaskOperand(trimmed), swarm.SelectionGrammarHint(len(inv.Entries)))
 		return ModelPick{}
 	}
 	return ModelPick{Entry: entries[0], Picked: true}

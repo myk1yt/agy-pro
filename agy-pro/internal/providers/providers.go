@@ -192,6 +192,25 @@ func (p Provider) KeyAvailable() bool {
 }
 
 // Defaults are registry-level default settings for fanout runs.
+//
+// ExcludeModels is the user-owned pool-exclusion list (D1): the persisted
+// sibling of ExcludeFamilies, consumed through ExclusionPolicy, the single
+// exclusion authority. Its nil-vs-empty shape is semantic, not cosmetic: a nil
+// slice means the key is ABSENT, so the built-in default policy (IsK3Family)
+// still governs the pool; a non-nil empty slice means the user owns an empty
+// list, which excludes nothing. For that reason the tag carries no `omitempty`
+// (which would collapse the two shapes on write) and the load-time normaliser
+// (NormalizeExcludeModels) preserves the shape it read.
+//
+// A non-nil list must also carry at least one entry that survives the trim: an
+// ALL-BLANK list (`["", "  "]`) is refused at load and at the write door, because
+// it is a typo'd list rather than a decision, and loading it as the user-owned
+// empty list would silently drop the built-in default while excluding nothing.
+// "Exclude nothing" is written as an explicit `[]`, which still loads.
+//
+// ExcludeFamilies keeps its own meaning and stays validated-but-unconsumed this
+// session: the fanout ladder still declares it reserved (internal/fanout/cli.go
+// rung 4).
 type Defaults struct {
 	N               int      `json:"n,omitempty"`
 	TimeoutSeconds  int      `json:"timeoutSeconds,omitempty"`
@@ -199,7 +218,183 @@ type Defaults struct {
 	Tools           string   `json:"tools,omitempty"`
 	TokenBudget     int      `json:"tokenBudget,omitempty"`
 	ExcludeFamilies []string `json:"excludeFamilies,omitempty"`
+	// ExcludeModels entries take one of four forms, matched by
+	// ExclusionPolicy.Excludes:
+	//   - a provider name ("nw") excludes every model of that provider;
+	//   - a model id ("glm-5") excludes that model under any provider;
+	//   - a provider/model pair ("nw/glm-5") must match both sides;
+	//   - a family entry ("family:<name>") excludes every model whose family
+	//     matches <name> case-insensitively. This is the form that makes the
+	//     BUILT-IN DEFAULT policy expressible as a list entry, so a first save
+	//     of the seeded list cannot silently weaken it: "family:k3" reproduces
+	//     the built-in k3 rule (family "k3" OR a boundary-safe "k3" id token)
+	//     entry for entry, while a bare "k3" matches only a provider or model
+	//     literally named k3 and therefore excludes nothing the built-in rule
+	//     excluded. The prefix before the first ':' must be exactly "family"
+	//     (case-insensitive) and the remainder must be non-empty; every other
+	//     entry keeps its older meaning, including a provider/model pair whose
+	//     model id happens to carry a ':'.
+	ExcludeModels []string `json:"excludeModels"`
 }
+
+// ExclusionPolicy is the single exclusion authority: it answers "is this model
+// out of the selectable pool?" for every surface that renders or seats models
+// (the swarm seat list, `agy pro models --all`). User is the user-owned list
+// copied from Defaults.ExcludeModels; nil means the key was absent and the
+// built-in default policy applies, while any non-nil slice (including an empty
+// one) means the user owns the list and the built-in default no longer runs.
+type ExclusionPolicy struct {
+	User []string
+}
+
+// ExclusionPolicyFromDefaults builds the exclusion policy from a registry
+// defaults block. It copies the slice reference, so it does not normalise: the
+// load path already did (normalizeExcludeModels), and Excludes trims every
+// entry again so a policy built from a hand-made Defaults behaves the same.
+func ExclusionPolicyFromDefaults(d Defaults) ExclusionPolicy {
+	return ExclusionPolicy{User: d.ExcludeModels}
+}
+
+// UserOwned reports whether the policy reads the user's list instead of the
+// built-in default policy.
+func (p ExclusionPolicy) UserOwned() bool { return p.User != nil }
+
+// Excludes reports whether the model is excluded from the pool.
+//
+// With a nil User list it defers to the built-in default predicate
+// IsK3Family, reproducing today's dual rule exactly: an explicit family "k3"
+// (honored by Model.FamilyName before any id inference) OR a boundary-safe
+// "k3" id token.
+//
+// With a non-nil User list it matches the entries exactly after trimming
+// surrounding space:
+//   - an entry of the form provider/model (split at the FIRST '/') must match
+//     BOTH sides, so a half match excludes nothing. This branch runs first, so
+//     every slash-bearing entry keeps the meaning it had before the family form
+//     existed;
+//   - an entry of the form family:<name> (the prefix before the first ':'
+//     equal to "family", case-insensitive) excludes a model whose family
+//     matches <name> case-insensitively after trimming, AND ALSO a model whose
+//     id carries <name> as a boundary-safe token. The second half is not
+//     decoration: the built-in default entry is a FAMILY PREDICATE, and the
+//     family operand every caller passes (Model.FamilyName, or an explicit
+//     registry family) is inferred from the id when no family is declared, so
+//     kimi-k3 reaches this method as family "kimi". Family matching alone would
+//     therefore make "family:k3" reproduce only half of the built-in rule, and
+//     the first save of the seeded list would drop kimi-k3 and k3-agent-swarm
+//     from the pool. With both halves, "family:k3" is the exact list spelling
+//     of IsK3Family (pinned by TestExcludeFamilyEntryReproducesBuiltinDefault);
+//     the token half only fires when the name is itself a single lowercase
+//     alphanumeric token, because a name carrying other runes can never be a
+//     token of the id;
+//   - an entry equal to providerName excludes every model of that provider;
+//   - an entry equal to modelID excludes that model under any provider.
+//
+// Matching is case-SENSITIVE and exact for provider names and model ids:
+// registry model ids and provider names are stored verbatim and are already
+// validated to a closed charset at load (ValidateProviderName), so folding case
+// here would silently widen a rule the user wrote against an exact slot. Only
+// the family form folds case, because model families are folded everywhere else
+// (Model.FamilyName, IsK3Family). A slash-bearing model id can only be targeted
+// through the provider-qualified form, since a bare entry containing '/' is read
+// as provider/model.
+func (p ExclusionPolicy) Excludes(providerName, modelID, family string) bool {
+	if p.User == nil {
+		return IsK3Family(Model{ID: modelID, Family: family})
+	}
+	for _, raw := range p.User {
+		entry := strings.TrimSpace(raw)
+		if entry == "" {
+			continue
+		}
+		if i := strings.Index(entry, "/"); i >= 0 {
+			if entry[:i] == providerName && entry[i+1:] == modelID {
+				return true
+			}
+			continue
+		}
+		if name, ok := familyEntryName(entry); ok {
+			if familyEntryMatches(name, modelID, family) {
+				return true
+			}
+			continue
+		}
+		if entry == providerName || entry == modelID {
+			return true
+		}
+	}
+	return false
+}
+
+// familyEntryPrefix is the literal prefix that turns a slash-free excludeModels
+// entry into a family entry. The comparison is case-insensitive, so "Family:k3"
+// and "FAMILY:k3" read as the same form.
+const familyEntryPrefix = "family"
+
+// familyEntryName splits a slash-free entry into the family-entry form: it
+// returns the name after the first ':' and true when the prefix before that ':'
+// is exactly "family" (case-insensitive). The name is returned verbatim; a
+// caller that matches must fold it. The empty-name case is the loader's refusal
+// (checkExcludeEntry), so callers that already passed the load see a non-empty
+// name.
+//
+// The prefix is RESERVED: a model id literally spelled "family:<anything>"
+// cannot be targeted by a bare entry any more (it was excluded by an exact
+// model-id match before this form existed); the provider-qualified form
+// ("nw/family:<anything>") still targets it, since the slash branch runs first.
+func familyEntryName(entry string) (string, bool) {
+	i := strings.Index(entry, ":")
+	if i < 0 || !strings.EqualFold(entry[:i], familyEntryPrefix) {
+		return "", false
+	}
+	return entry[i+1:], true
+}
+
+// familyEntryMatches answers one family entry against one model: the family
+// operand matches case-insensitively after trimming, or the model id carries the
+// name as a boundary-safe token (see ExclusionPolicy.Excludes). A name that is
+// not a single lowercase alphanumeric token can only ever match by family,
+// because the id tokenizer emits nothing else.
+func familyEntryMatches(name, modelID, family string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(family), name) {
+		return true
+	}
+	return exclusionTokenMatches(modelID, strings.ToLower(name))
+}
+
+// exclusionTokenMatches reports whether id carries token as a boundary-safe
+// token: the lowercase id is split on every non-[a-z0-9] rune and the EXACT
+// token is compared, so "k3" matches kimi-k3 and k3-agent-swarm but neither
+// k3000 nor glm-k3x. token is expected already lowercased.
+//
+// It is the generalised twin of HasK3Token (k3.go), which stays the built-in
+// default predicate's own mouth: k3.go is outside this unit's file boundary, so
+// the two implementations are kept in step by a test that walks the whole
+// k3_test.go table and requires "family:k3" to answer exactly what IsK3Family
+// answers (TestExcludeFamilyEntryReproducesBuiltinDefault).
+func exclusionTokenMatches(id, token string) bool {
+	if token == "" {
+		return false
+	}
+	for _, tok := range strings.FieldsFunc(strings.ToLower(id), func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9')
+	}) {
+		if tok == token {
+			return true
+		}
+	}
+	return false
+}
+
+// ExcludedMarker is the single user-visible suffix an excluded row carries. The
+// swarm seat list and `agy pro models --all` render this exact string, so it is
+// the one place the wording lives; it stays short because it renders as a row
+// suffix.
+func ExcludedMarker() string { return "excluded (exclusion list)" }
 
 // Registry is the parsed providers file.
 type Registry struct {
@@ -344,6 +539,144 @@ func isLoopbackHost(host string) bool {
 	return false
 }
 
+// checkExcludeEntry applies the per-entry rule of the ONE exclusion-entry
+// authority (excludeEntries) to one excludeModels entry: a Cc or Cf rune in the
+// RAW value, interior whitespace in the trimmed value, and the family: form's
+// non-empty remainder. It returns the trimmed entry; an entry that trims to ""
+// is not an error here, because the two doors treat a blank entry differently
+// (the registry loader drops it, the write door refuses it), so that decision
+// belongs to the caller (excludeEntries).
+//
+// The control-rune check reads the RAW entry, before the trim, exactly like the
+// sibling defaults-field checks (tools, excludeFamilies) read their stored
+// value. Order matters for the C1 whitespace controls: U+0085 NEL is both a Cc
+// rune and White_Space, so a trim-first order would silently erase it instead of
+// refusing the file (the terminal-rendering hazard the boundary rule exists for
+// is about the stored bytes, not about whatever survives the trim).
+//
+// The Cf half (S7-C9) is the same widening the model fields carry
+// (hasInvisibleFormatRunes): the bidi overrides and isolates, the zero-width
+// joiner, and the BOM have no visible identity, so an entry decorated with one
+// is an entry the operator cannot read back in the editor and cannot match on
+// purpose. Refusing it at BOTH doors keeps an invisible entry from loading as a
+// rule that silently excludes nothing while looking non-empty.
+//
+// The error texts name the field class and the accepted entry forms only and
+// never embed the offending entry: a misdirected paste may be a key.
+func checkExcludeEntry(raw string) (string, error) {
+	if hasControlRunes(raw) || hasInvisibleFormatRunes(raw) {
+		return "", fmt.Errorf("defaults: excludeModels contains control characters")
+	}
+	entry := strings.TrimSpace(raw)
+	if entry == "" {
+		return "", nil
+	}
+	if strings.ContainsFunc(entry, unicode.IsSpace) {
+		return "", fmt.Errorf("defaults: excludeModels entries must not contain whitespace (name one provider, one model id, provider/model, or family:<name>)")
+	}
+	// The family form needs a name after the colon: "family:" would otherwise
+	// load as an entry that can never match anything, which reads as a rule the
+	// user wrote and silently excludes nothing.
+	if !strings.Contains(entry, "/") {
+		if name, ok := familyEntryName(entry); ok && strings.TrimSpace(name) == "" {
+			return "", fmt.Errorf("defaults: excludeModels: a family entry needs a name after the colon")
+		}
+	}
+	return entry, nil
+}
+
+// ValidateExcludeEntry vets ONE proposed excludeModels entry with the per-entry
+// rules of the shared authority (checkExcludeEntry) and returns the trimmed entry
+// a write would store. It exists so a front-end door (the hub's model exclusion
+// editor) cannot compose a list the next load would refuse: unlike
+// NormalizeExcludeModels it REFUSES an entry that is empty after the trim
+// instead of dropping it, because an editor must not silently discard what the
+// user typed. The errors are value-free for the same reason the loader's are.
+func ValidateExcludeEntry(raw string) (string, error) {
+	entry, err := checkExcludeEntry(raw)
+	if err != nil {
+		return "", err
+	}
+	if entry == "" {
+		return "", fmt.Errorf("defaults: excludeModels entries must not be empty")
+	}
+	return entry, nil
+}
+
+// excludeEntries is the ONE exclusion-entry authority: the registry loader
+// (NormalizeExcludeModels, called by Registry.Validate) and the settings write
+// door (ValidateExcludeModels, called by settings.ParseExcludeModels) both run
+// this function, so the two doors cannot disagree about which entry shapes are
+// legal.
+//
+// Per entry: a Cc or Cf rune in the RAW value is refused, the entry is trimmed,
+// interior whitespace is refused, and a family: entry with no name after the
+// colon is refused. Each entry names a provider, a model id, a provider/model
+// pair, or a family (family:<name>), so interior whitespace can never match and
+// a nameless family entry can never match either.
+//
+// The two doors differ in exactly one way, and refuseBlank is that difference:
+// the loader DROPS an entry that is blank after the trim (a trailing comma in a
+// hand-edited file loads as if it were not there), while the write door REFUSES
+// it (an editor must not silently discard what the user typed).
+//
+// Both doors refuse a NON-NIL list whose every entry is blank (S7-C3). Such a
+// list used to load as a user-owned EMPTY list, which silently dropped the
+// built-in k3 default while excluding nothing, so a typo'd list weakened the pool
+// policy with no load-time signal. An explicit `[]` is not that shape: it is a
+// decision to exclude nothing and still loads. The nil-vs-empty distinction is
+// preserved exactly as read: a nil list stays nil (the key was absent, so the
+// built-in default governs) and a non-nil list stays non-nil (the user owns it),
+// because a write that cannot tell the two apart would resurrect the default.
+//
+// The list-level check below is the loader's wording of that refusal; the write
+// door refuses the FIRST blank entry on its way there, so its message is the
+// per-entry one. Both refuse the list, which is what a caller observes.
+func excludeEntries(entries []string, refuseBlank bool) ([]string, error) {
+	if entries == nil {
+		return nil, nil
+	}
+	out := make([]string, 0, len(entries))
+	for _, raw := range entries {
+		entry, err := checkExcludeEntry(raw)
+		if err != nil {
+			return nil, err
+		}
+		if entry == "" {
+			if refuseBlank {
+				return nil, fmt.Errorf("defaults: excludeModels entries must not be empty")
+			}
+			continue
+		}
+		out = append(out, entry)
+	}
+	if len(entries) > 0 && len(out) == 0 {
+		return nil, fmt.Errorf("defaults: excludeModels: every entry is empty after trimming whitespace; name a provider, a model id, provider/model, or family:<name>, or drop the key to use the built-in default")
+	}
+	return out, nil
+}
+
+// NormalizeExcludeModels is the registry LOADER's door to the exclusion-entry
+// authority (excludeEntries): trim each entry, drop the entries that are blank
+// after the trim, and refuse a Cc or Cf rune, an interior whitespace rune, a
+// family: entry with no name, and a non-nil list whose every entry is blank.
+// The nil-vs-empty shape is preserved (see excludeEntries). Registry.Validate
+// calls it, so a registry file can never carry an entry the write door refuses.
+func NormalizeExcludeModels(entries []string) ([]string, error) {
+	return excludeEntries(entries, false)
+}
+
+// ValidateExcludeModels is the WRITE DOOR's door to the same authority: the rules
+// of NormalizeExcludeModels, except that an entry that is blank after the trim is
+// REFUSED instead of dropped, because an editor must not silently discard what
+// the user typed. settings.ParseExcludeModels delegates here, which is what makes
+// the hub's exclusion editor and the next registry load agree on every row shape
+// (S7-C2: the family: remainder rule; S7-C3: the all-blank list; S7-C9: the Cf
+// runes).
+func ValidateExcludeModels(entries []string) ([]string, error) {
+	return excludeEntries(entries, true)
+}
+
 // Validate checks structural rules. It never echoes apiKeyEnv values because a
 // mistaken paste of a real key must not leak into logs; provider names and model
 // IDs are registry slots and pass through MaskSlot, the single registry-slot
@@ -358,10 +691,10 @@ func isLoopbackHost(host string) bool {
 // sinks outside the TUI frame strip (the legacy line-mode settings panel, CLI
 // echoes). Model fields reuse checkModelFields and the model loop also checks
 // capabilities.reasoningEffort; the provider-level free-text fields, the
-// defaults block strings (tools, excludeFamilies), and the closed provider
-// name charset (ValidateProviderName) are checked below. No message may embed
-// the offending value: a control byte in the error text would re-introduce
-// the exact rendering hazard.
+// defaults block strings (tools, excludeFamilies, excludeModels), and the
+// closed provider name charset (ValidateProviderName) are checked below. No
+// message may embed the offending value: a control byte in the error text would
+// re-introduce the exact rendering hazard.
 func (r *Registry) Validate() error {
 	// Round-6 F1: the defaults block strings ride CLI echoes that have no TUI
 	// frame strip (the fanout defaults-drift notice, the legacy panel), so a
@@ -375,6 +708,23 @@ func (r *Registry) Validate() error {
 			return fmt.Errorf("defaults: excludeFamilies contains control characters")
 		}
 	}
+	// excludeModels (D1): the user-owned pool-exclusion list. The loader door of
+	// the shared exclusion-entry authority (NormalizeExcludeModels) trims each
+	// entry, drops the ones that are empty after the trim (a trailing comma in a
+	// hand-edited file), and refuses the load on a Cc or Cf rune, an internal
+	// space, a family: entry with no name, or a non-nil list whose every entry is
+	// blank, since an entry is a single token naming a provider, a model id, a
+	// provider/model pair, or a family. Errors name the field class only and never
+	// embed the offending entry (a misdirected paste may be a key). The
+	// nil-vs-empty shape survives the normalisation on purpose: nil (absent key)
+	// keeps the built-in default policy, non-nil empty is the user's own empty
+	// list. See Defaults.ExcludeModels.
+	exclModels, err := NormalizeExcludeModels(r.Defaults.ExcludeModels)
+	if err != nil {
+		return err
+	}
+	r.Defaults.ExcludeModels = exclModels
+
 	seen := map[string]bool{}
 	for i, p := range r.Providers {
 		if strings.TrimSpace(p.Name) == "" {

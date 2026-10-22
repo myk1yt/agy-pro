@@ -3,6 +3,7 @@ package providers
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"unicode"
 
 	"agypro/internal/testfixtures"
 )
@@ -525,20 +527,31 @@ func TestFetchRemoteModelsCeilings(t *testing.T) {
 }
 
 // TestFetchRemoteModelsStripsControlRunes pins the decode-boundary rule
-// (FIX-SEC-F1b, review MED-2): a remote id carrying C0 control runes or DEL is
-// stripped before it leaves FetchRemoteModels, so no caller (TUI picker, wizard,
-// the persisted registry) can paint a terminal escape sequence the endpoint
-// planted in its /models answer. The strip runs BEFORE the trim, so a
-// control-padded id keeps neither the rune nor its surrounding whitespace; an
-// id that is nothing but control runes drops out of the list entirely, and a
-// benign id stays byte-identical.
+// (FIX-SEC-F1b, review MED-2; widened from C0+DEL to the full Cc+Cf class in
+// SESSION7 W1): a remote id carrying a Cc control rune (C0, DEL, C1) or a Cf
+// format rune is stripped before it leaves FetchRemoteModels, so no caller (TUI
+// picker, wizard, model-id edit buffer, the persisted registry) can paint a
+// terminal escape sequence or carry a bidi override the endpoint planted in its
+// /models answer. The strip runs BEFORE the trim, so a control-padded id keeps
+// neither the rune nor its surrounding whitespace; an id that is nothing but
+// runes of the stripped class drops out of the list entirely; a benign id, an
+// interior Zl/Zp separator, and every printable multi-byte rune stay
+// byte-identical.
 func TestFetchRemoteModelsStripsControlRunes(t *testing.T) {
 	body := `{"data":[
 		{"id":"\u001b[2J\u001b[1;1HFAKE-MODEL"},
 		{"id":"\u007fdel-head"},
 		{"id":" \u001btrim-me\u001b "},
 		{"id":"\u001b\u0001\u007f"},
-		{"id":"plain-model"}
+		{"id":"plain-model"},
+		{"id":"\u202eRLO-head"},
+		{"id":"\u2066LRI-tail\u2069"},
+		{"id":"zero\u200dwidth"},
+		{"id":"soft\u00adhyphen"},
+		{"id":"c1\u0085nel"},
+		{"id":"line\u2028sep\u2029para"},
+		{"id":"\u2584half\u2584block"},
+		{"id":"\u65e5\u672c\u8a9e-model"}
 	]}`
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -550,7 +563,14 @@ func TestFetchRemoteModelsStripsControlRunes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FetchRemoteModels: %v", err)
 	}
-	want := []string{"[2J[1;1HFAKE-MODEL", "del-head", "trim-me", "plain-model"}
+	// The separators sit between printable runes on purpose: TrimSpace trims
+	// every space-class rune (U+2028/U+2029 are White_Space) at the edges, so an
+	// interior position is the only one that can test survival here.
+	want := []string{
+		"[2J[1;1HFAKE-MODEL", "del-head", "trim-me", "plain-model",
+		"RLO-head", "LRI-tail", "zerowidth", "softhyphen", "c1nel",
+		"line\u2028sep\u2029para", "\u2584half\u2584block", "\u65e5\u672c\u8a9e-model",
+	}
 	if len(models) != len(want) {
 		t.Fatalf("got %d models %+v, want %d (the all-control id drops)", len(models), models, len(want))
 	}
@@ -559,11 +579,140 @@ func TestFetchRemoteModelsStripsControlRunes(t *testing.T) {
 			t.Fatalf("model %d id = %q, want %q", i, models[i].ID, id)
 		}
 		for _, r := range models[i].ID {
-			if r < 0x20 || r == 0x7f {
-				t.Fatalf("model %d id %q still carries control rune %U", i, models[i].ID, r)
+			if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+				t.Fatalf("model %d id %q still carries control or format rune %U", i, models[i].ID, r)
 			}
 		}
 	}
+}
+
+// legacyStripModelIDControls is the pre-W1 predicate (C0 plus DEL), kept here so
+// the widened rows can prove they discriminate instead of passing vacuously: a
+// row whose widened result equals its legacy result tests nothing new.
+func legacyStripModelIDControls(id string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, id)
+}
+
+// TestStripModelIDControlsWidenedClasses pins the W1 predicate at the function
+// itself (the fetch test above proves the decode path calls it): Cc (C0, DEL,
+// C1) and Cf (bidi override, isolate, zero-width joiner, soft hyphen, BOM) are
+// deleted; Zl/Zp separators, a half-block, and CJK runes survive byte-identical.
+func TestStripModelIDControlsWidenedClasses(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+		why  string
+	}{
+		{"C0 ESC sequence", "\x1b[2JFAKE-MODEL", "[2JFAKE-MODEL", "C0 control"},
+		{"DEL", "del\x7fhead", "delhead", "C0 boundary, DEL 0x7f"},
+		{"C1 NEL", "c1\u0085nel", "c1nel", "C1 control 0x80..0x9f"},
+		{"C1 CSI", "csi\u009b2J", "csi2J", "C1 8-bit CSI"},
+		{"bidi RLO U+202E", "\u202emodel", "model", "Cf right-to-left override"},
+		{"bidi LRI U+2066", "\u2066iso\u2069", "iso", "Cf isolate plus PDI"},
+		{"zero width joiner U+200D", "zero\u200dwidth", "zerowidth", "Cf ZWJ"},
+		{"soft hyphen U+00AD", "soft\u00adhyphen", "softhyphen", "Cf soft hyphen"},
+		{"BOM U+FEFF", "bom\ufeffhead", "bomhead", "Cf BOM"},
+		{"only stripped runes", "\x1b\u202e\u200d\u00ad", "", "nothing of the stripped class survives"},
+		{"line separator U+2028 survives", "line\u2028sep", "line\u2028sep", "Zl, not Cf"},
+		{"paragraph separator U+2029 survives", "para\u2029sep", "para\u2029sep", "Zp, not Cf"},
+		{"half block U+2584 survives", "\u2584half\u2584block", "\u2584half\u2584block", "printable So rune"},
+		{"CJK survives", "\u65e5\u672c\u8a9e-model-1", "\u65e5\u672c\u8a9e-model-1", "printable Lo runes"},
+		{"benign ascii", "remote-model-1", "remote-model-1", "byte identity pin"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := stripModelIDControls(tc.in); got != tc.want {
+				t.Fatalf("stripModelIDControls(%q) = %q, want %q (%s)", tc.in, got, tc.want, tc.why)
+			}
+		})
+	}
+}
+
+// TestStripModelIDControlsWideningIsLoadBearing proves the widening is not a
+// no-op against the pre-W1 code: for each discriminating row the legacy C0+DEL
+// predicate returns the input untouched, so that row FAILS on the old predicate
+// and only the widened one produces the pinned result. This is the non-vacuity
+// proof in mechanical form (re-run summary in the W1 report).
+func TestStripModelIDControlsWideningIsLoadBearing(t *testing.T) {
+	discriminatingYet := []string{
+		"\u202eRLO-head",       // U+202E RIGHT-TO-LEFT OVERRIDE (Cf)
+		"\u2066LRI-tail\u2069", // U+2066/U+2069 isolates (Cf)
+		"zero\u200dwidth",      // U+200D ZERO WIDTH JOINER (Cf)
+		"soft\u00adhyphen",     // U+00AD SOFT HYPHEN (Cf)
+		"c1\u0085nel",          // U+0085 C1 NEL (Cc, outside C0+DEL)
+	}
+	for _, in := range discriminatingYet {
+		widened := stripModelIDControls(in)
+		legacy := legacyStripModelIDControls(in)
+		if widened == in {
+			t.Fatalf("row %q: widened strip returned the input unchanged", in)
+		}
+		if legacy != in {
+			t.Fatalf("fixture assumption broken: legacy predicate already changed %q to %q", in, legacy)
+		}
+		if widened == legacy {
+			t.Fatalf("row %q: widened result equals legacy result %q; the row is vacuous", in, widened)
+		}
+	}
+}
+
+// TestStripModelIDControlsClassProbe verifies, rather than assumes, the class
+// facts the widened predicate rests on: unicode.IsControl covers all three Cc
+// ranges (C0 0x00..0x1f, DEL 0x7f, C1 0x80..0x9f); the discriminating Cf runes
+// are Cf and not Cc (so the Cf clause is load-bearing rather than redundant);
+// and U+2028/U+2029 are neither, which is why they survive.
+func TestStripModelIDControlsClassProbe(t *testing.T) {
+	ccGroups := []struct {
+		name  string
+		runes []rune
+	}{
+		{"C0 0x00..0x1f", runeRange(0x00, 0x1f)},
+		{"DEL 0x7f", []rune{0x7f}},
+		{"C1 0x80..0x9f", runeRange(0x80, 0x9f)},
+	}
+	for _, g := range ccGroups {
+		for _, r := range g.runes {
+			if !unicode.Is(unicode.Cc, r) {
+				t.Fatalf("%s: unicode.Is(unicode.Cc, %U) = false", g.name, r)
+			}
+			if !unicode.IsControl(r) {
+				t.Fatalf("%s: unicode.IsControl(%U) = false; the Cc clause would miss it", g.name, r)
+			}
+			if got := stripModelIDControls("a" + string(r) + "b"); got != "ab" {
+				t.Fatalf("%s: stripModelIDControls kept %U (%q)", g.name, r, got)
+			}
+		}
+	}
+
+	for _, r := range []rune{0x202e, 0x2066, 0x2069, 0x200d, 0x00ad, 0xfeff} {
+		if !unicode.Is(unicode.Cf, r) {
+			t.Fatalf("unicode.Is(unicode.Cf, %U) = false; an asserted Cf row is not Cf", r)
+		}
+		if unicode.IsControl(r) {
+			t.Fatalf("unicode.IsControl(%U) = true; the Cf clause would be redundant for this row", r)
+		}
+	}
+
+	for _, r := range []rune{0x2028, 0x2029} {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			t.Fatalf("%U is Cc or Cf; the survival rows assume Zl/Zp", r)
+		}
+	}
+}
+
+// runeRange returns lo..hi inclusive, used by the class probe above.
+func runeRange(lo, hi rune) []rune {
+	out := make([]rune, 0, hi-lo+1)
+	for r := lo; r <= hi; r++ {
+		out = append(out, r)
+	}
+	return out
 }
 
 // TestFetchRemoteModelsFailureKinds pins the five P2-6 failure surfaces: each
@@ -3079,5 +3228,722 @@ func TestWizardCapabilityDefaultsYTaken(t *testing.T) {
 	m = run("novprov", "custom-nov-model", []string{"n", "n", "n", "n"})
 	if m.Capabilities.SupportsThinking || m.Capabilities.SupportsVision || m.Capabilities.SupportsVideo {
 		t.Errorf("manual n override lost: %+v", m.Capabilities)
+	}
+}
+
+// --- SESSION7 P4-1 (D1): the user-owned exclusion list
+// (Defaults.ExcludeModels) and the single exclusion authority
+// (ExclusionPolicy). Every registry file here is written to t.TempDir(); the
+// live ~/.agy-pro home is never touched.
+
+// excludeModelsRegistryJSON builds a one-provider registry body around a raw
+// defaults fragment ("" means the defaults key is absent altogether).
+func excludeModelsRegistryJSON(defaultsFragment string) string {
+	body := `{"providers":[{"name":"nw","baseURL":"https://api.example.com/v1","apiKeyEnv":"NW_KEY","models":[{"id":"glm-5"}]}]`
+	if defaultsFragment != "" {
+		body += `,"defaults":` + defaultsFragment
+	}
+	return body + "}"
+}
+
+// TestNormalizeExcludeModels pins the registry LOADER door of the exclusion
+// authority (NormalizeExcludeModels): trim each entry, drop the entries that are
+// empty after the trim, refuse a Cc or Cf rune or an internal whitespace rune or
+// a nameless family: remainder, refuse a non-nil list whose EVERY entry is blank
+// (S7-C3), and keep the nil-vs-empty shape.
+func TestNormalizeExcludeModels(t *testing.T) {
+	cases := []struct {
+		name    string
+		entries []string
+		want    []string // nil means "the result must stay nil"
+		wantErr bool
+	}{
+		{name: "nil stays nil", entries: nil, want: nil},
+		{name: "empty stays non-nil empty", entries: []string{}, want: []string{}},
+		{name: "entries trimmed", entries: []string{"  nw  ", "   glm-5  ", " nw/glm-5 "}, want: []string{"nw", "glm-5", "nw/glm-5"}},
+		{name: "empty after trim dropped", entries: []string{"", "   ", "nw", " "}, want: []string{"nw"}},
+		// S7-C3: an all-blank non-nil list is a typo'd list, not the user's empty
+		// list, so it must fail the load instead of silently dropping the built-in
+		// k3 default. The explicit [] above stays the way to exclude nothing.
+		{name: "all entries blank refused", entries: []string{"", "  "}, wantErr: true},
+		{name: "single blank entry refused", entries: []string{""}, wantErr: true},
+		{name: "control rune refused", entries: []string{"nw", "m\x1b[2J"}, wantErr: true},
+		{name: "del refused", entries: []string{"m\x7f"}, wantErr: true},
+		// A trailing C1 NEL is both a control rune and White_Space: the check
+		// reads the raw entry, so the trim cannot erase it (see checkExcludeEntry).
+		{name: "c1 rune refused", entries: []string{"m\u0085"}, wantErr: true},
+		// S7-C9: the Cf class is refused at the loader door too, so an invisible
+		// entry cannot load as a rule that excludes nothing.
+		{name: "zero-width joiner refused", entries: []string{"nw\u200d"}, wantErr: true},
+		{name: "bidi override refused", entries: []string{"family:k\u202e3"}, wantErr: true},
+		{name: "bom refused", entries: []string{"\ufeffnw"}, wantErr: true},
+		{name: "tab refused", entries: []string{"\tnw"}, wantErr: true},
+		{name: "internal space refused", entries: []string{"nw glm-5"}, wantErr: true},
+		{name: "internal nbsp refused", entries: []string{"nw\u00a0glm-5"}, wantErr: true},
+		{name: "nameless family refused", entries: []string{"family:"}, wantErr: true},
+	}
+	for _, tc := range cases {
+		got, err := NormalizeExcludeModels(tc.entries)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("%s: NormalizeExcludeModels returned nil error", tc.name)
+				continue
+			}
+			if !strings.Contains(err.Error(), "excludeModels") {
+				t.Errorf("%s: error %q must name the excludeModels field", tc.name, err)
+			}
+			for _, e := range tc.entries {
+				if e != "" && strings.Contains(err.Error(), e) {
+					t.Errorf("%s: error echoes the offending entry: %q", tc.name, err)
+				}
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s: unexpected error: %v", tc.name, err)
+			continue
+		}
+		if tc.want == nil {
+			if got != nil {
+				t.Errorf("%s: got %v; want nil (an absent key keeps the built-in policy)", tc.name, got)
+			}
+			continue
+		}
+		if got == nil {
+			t.Errorf("%s: got nil; want a non-nil list (an explicit list is user-owned)", tc.name)
+			continue
+		}
+		if strings.Join(got, "\x1f") != strings.Join(tc.want, "\x1f") {
+			t.Errorf("%s: got %v; want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestExcludeModelsDoorsAgree is the S7-C2/S7-C3/S7-C9 cross-door pin: the
+// registry loader (NormalizeExcludeModels, the function Registry.Validate runs)
+// and the write door (ValidateExcludeModels, which settings.ParseExcludeModels
+// delegates to) are two modes of ONE authority, so they must answer every entry
+// shape the same way. The only permitted difference is what happens to an
+// INDIVIDUAL blank entry (the loader drops it, the editor refuses it), and that
+// row is asserted explicitly rather than tolerated.
+func TestExcludeModelsDoorsAgree(t *testing.T) {
+	cases := []struct {
+		name       string
+		entries    []string
+		wantErr    bool
+		want       []string // the accepted list, when wantErr is false
+		wantNil    bool     // the accepted list must stay nil
+		blankEntry bool     // the one shape the doors may treat differently
+	}{
+		{name: "valid provider", entries: []string{"nw"}, want: []string{"nw"}},
+		{name: "valid model id", entries: []string{"glm-5"}, want: []string{"glm-5"}},
+		{name: "composite provider/model", entries: []string{"nw/glm-5"}, want: []string{"nw/glm-5"}},
+		{name: "family k3", entries: []string{"family:k3"}, want: []string{"family:k3"}},
+		{name: "case is preserved", entries: []string{"Family:K3"}, want: []string{"Family:K3"}},
+		{name: "surrounding whitespace trimmed", entries: []string{"  nw  ", "  nw/glm-5  "}, want: []string{"nw", "nw/glm-5"}},
+		{name: "nameless family refused", entries: []string{"family:"}, wantErr: true},
+		{name: "blank family remainder refused", entries: []string{"family:   "}, wantErr: true},
+		{name: "interior whitespace refused", entries: []string{"nw glm-5"}, wantErr: true},
+		{name: "Cc-bearing entry refused", entries: []string{"nw\x1b"}, wantErr: true},
+		{name: "C1-bearing entry refused", entries: []string{"nw\u0085"}, wantErr: true},
+		{name: "Cf-bearing entry refused", entries: []string{"nw\u200d"}, wantErr: true},
+		{name: "Cf-bearing family name refused", entries: []string{"family:k\u202e3"}, wantErr: true},
+		{name: "blank-only list refused", entries: []string{"", "  "}, wantErr: true},
+		{name: "nil list stays nil", entries: nil, wantNil: true},
+		{name: "explicit empty list stays non-nil", entries: []string{}, want: []string{}},
+		{name: "one blank entry beside a valid one", entries: []string{"nw", "   "}, want: []string{"nw"}, blankEntry: true},
+	}
+	refused, accepted := 0, 0
+	for _, tc := range cases {
+		loadOut, loadErr := NormalizeExcludeModels(tc.entries)
+		doorOut, doorErr := ValidateExcludeModels(tc.entries)
+
+		if tc.blankEntry {
+			// The documented asymmetry, checked BEFORE the agreement rule: the loader
+			// drops the blank entry and accepts the list, the editor refuses it rather
+			// than discarding what the operator typed. Both directions are pinned so
+			// neither can flip.
+			if loadErr != nil {
+				t.Errorf("%s: the loader must drop a blank entry, got %v", tc.name, loadErr)
+			}
+			if doorErr == nil {
+				t.Errorf("%s: the write door must refuse a blank entry, got %v", tc.name, doorOut)
+			}
+			if got, want := strings.Join(loadOut, "\x1f"), strings.Join(tc.want, "\x1f"); got != want {
+				t.Errorf("%s: loader list = %q; want %q", tc.name, got, want)
+			}
+			continue
+		}
+		if (loadErr != nil) != (doorErr != nil) {
+			t.Errorf("%s: doors disagree: loader err=%v door err=%v", tc.name, loadErr, doorErr)
+			continue
+		}
+		if tc.wantErr {
+			refused++
+			if loadErr == nil || doorErr == nil {
+				t.Errorf("%s: both doors must refuse, got loader=%v door=%v", tc.name, loadOut, doorOut)
+			}
+			continue
+		}
+		accepted++
+		if (loadErr != nil) != (doorErr != nil) {
+			t.Errorf("%s: doors disagree", tc.name)
+			continue
+		}
+		if (loadOut == nil) != tc.wantNil || (doorOut == nil) != tc.wantNil {
+			t.Errorf("%s: nil-ness diverged: loader=%v door=%v wantNil=%v", tc.name, loadOut, doorOut, tc.wantNil)
+			continue
+		}
+		if got, want := strings.Join(loadOut, "\x1f"), strings.Join(tc.want, "\x1f"); got != want {
+			t.Errorf("%s: loader list = %q; want %q", tc.name, got, want)
+		}
+		if got, want := strings.Join(doorOut, "\x1f"), strings.Join(tc.want, "\x1f"); got != want {
+			t.Errorf("%s: door list = %q; want %q", tc.name, got, want)
+		}
+	}
+	// Non-vacuity: both outcomes must be exercised, or a pair of doors that
+	// accepted (or refused) everything would pass this table.
+	if accepted == 0 || refused == 0 {
+		t.Fatalf("table is vacuous: %d accepted, %d refused", accepted, refused)
+	}
+	// Non-vacuity of the two headline rows: before this unit the loader refused
+	// family: while the editor accepted it (S7-C2), and the loader accepted the
+	// all-blank list (S7-C3). Both are refused by BOTH doors now, and each is
+	// checked through the door the defect lived in.
+	if _, err := ValidateExcludeModels([]string{"family:"}); err == nil {
+		t.Fatal("the write door still accepts a nameless family entry (S7-C2)")
+	}
+	if _, err := NormalizeExcludeModels([]string{"", "  "}); err == nil {
+		t.Fatal("the loader still turns an all-blank list into the user-owned empty list (S7-C3)")
+	}
+}
+
+// TestExcludeModelsLoadPreservesNilVsEmpty is the probe the P4-5 write path
+// depends on: an absent key loads as nil (built-in default policy), an explicit
+// [] loads as a non-nil empty list (user owns an empty list), and both shapes
+// survive a marshal + reload cycle, so a registry rewritten by the UI does not
+// silently change the user's policy.
+func TestExcludeModelsLoadPreservesNilVsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	cases := []struct {
+		name     string
+		defaults string // raw defaults fragment; "" = the key is absent
+		wantNil  bool
+		wantList []string
+		wantJSON string // substring the marshalled registry must carry
+	}{
+		{name: "absent key stays nil", defaults: "", wantNil: true, wantJSON: `"excludeModels":null`},
+		{name: "explicit empty stays non-nil empty", defaults: `{"excludeModels":[]}`, wantList: []string{}, wantJSON: `"excludeModels":[]`},
+		{
+			name:     "populated list is normalised on load",
+			defaults: `{"excludeFamilies":["embed"],"excludeModels":[" nw ","","  ","nw/glm-5"]}`,
+			wantList: []string{"nw", "nw/glm-5"},
+			wantJSON: `"excludeModels":["nw","nw/glm-5"]`,
+		},
+	}
+	for i, tc := range cases {
+		path := filepath.Join(dir, fmt.Sprintf("case%d.json", i))
+		if err := os.WriteFile(path, []byte(excludeModelsRegistryJSON(tc.defaults)), 0o600); err != nil {
+			t.Fatalf("%s: write registry: %v", tc.name, err)
+		}
+		reg, err := LoadFrom(path)
+		if err != nil {
+			t.Fatalf("%s: LoadFrom: %v", tc.name, err)
+		}
+		checkShape := func(where string, got Defaults) {
+			t.Helper()
+			if tc.wantNil {
+				if got.ExcludeModels != nil {
+					t.Errorf("%s (%s): got %v; want nil", tc.name, where, got.ExcludeModels)
+				}
+				return
+			}
+			if got.ExcludeModels == nil {
+				t.Errorf("%s (%s): got nil; want a non-nil list", tc.name, where)
+				return
+			}
+			if strings.Join(got.ExcludeModels, "\x1f") != strings.Join(tc.wantList, "\x1f") {
+				t.Errorf("%s (%s): got %v; want %v", tc.name, where, got.ExcludeModels, tc.wantList)
+			}
+		}
+		checkShape("load", reg.Defaults)
+
+		// The write path (marshalled registry) must keep the same shape.
+		data, err := json.Marshal(reg)
+		if err != nil {
+			t.Fatalf("%s: marshal registry: %v", tc.name, err)
+		}
+		if !strings.Contains(string(data), tc.wantJSON) {
+			t.Errorf("%s: marshalled registry %s does not carry %s", tc.name, data, tc.wantJSON)
+		}
+		again := filepath.Join(dir, fmt.Sprintf("case%d-reload.json", i))
+		if err := os.WriteFile(again, data, 0o600); err != nil {
+			t.Fatalf("%s: write reload registry: %v", tc.name, err)
+		}
+		reg2, err := LoadFrom(again)
+		if err != nil {
+			t.Fatalf("%s: reload: %v", tc.name, err)
+		}
+		checkShape("reload", reg2.Defaults)
+	}
+}
+
+// TestExcludeModelsAllBlankRefusesAtHomeLoad is the S7-C3 defect closed at the
+// real entry point: a providers.json inside a temp AGY_PRO_HOME whose
+// defaults.excludeModels is all blank must make providers.Load FAIL, instead of
+// loading as the user-owned empty list that silently dropped the built-in k3
+// default. The sibling row proves a valid non-empty list still loads through the
+// same door, so the refusal cannot be "everything fails". The temp home is set
+// through EnvHome and EnvProviders is cleared, so DefaultPath resolves
+// $AGY_PRO_HOME/providers.json exactly like the shipped binary; the live
+// ~/.agy-pro home is never read or written.
+func TestExcludeModelsAllBlankRefusesAtHomeLoad(t *testing.T) {
+	cases := []struct {
+		name     string
+		defaults string
+		wantErr  bool
+		wantList []string
+	}{
+		{name: "all-blank list refuses the load", defaults: `{"excludeModels":["","  "]}`, wantErr: true},
+		{name: "single blank entry refuses the load", defaults: `{"excludeModels":[""]}`, wantErr: true},
+		{name: "Cf-decorated entry refuses the load", defaults: `{"excludeModels":["nw\u200d"]}`, wantErr: true},
+		{
+			name:     "valid non-empty list still loads",
+			defaults: `{"excludeModels":[" nw ","family:k3"]}`,
+			wantList: []string{"nw", "family:k3"},
+		},
+		{name: "explicit empty list still loads", defaults: `{"excludeModels":[]}`, wantList: []string{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv(EnvHome, home)
+			t.Setenv(EnvProviders, "")
+			path := filepath.Join(home, "providers.json")
+			if err := os.WriteFile(path, []byte(excludeModelsRegistryJSON(tc.defaults)), 0o600); err != nil {
+				t.Fatalf("write registry: %v", err)
+			}
+			if got, err := DefaultPath(); err != nil || got != path {
+				t.Fatalf("DefaultPath = %q, %v; want the temp home path %q", got, err, path)
+			}
+			reg, err := Load()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("Load accepted an all-blank excludeModels list (loaded %v)", reg.Defaults.ExcludeModels)
+				}
+				if !strings.Contains(err.Error(), "excludeModels") {
+					t.Fatalf("error %q must name the excludeModels field", err)
+				}
+				// Refusal register: `go test -run TestExcludeModelsAllBlankRefusesAtHomeLoad
+				// -v` shows the exact sentence each shape produces at the load boundary.
+				t.Logf("load refused: %v", err)
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load refused a valid list: %v", err)
+			}
+			if got := strings.Join(reg.Defaults.ExcludeModels, "\x1f"); got != strings.Join(tc.wantList, "\x1f") {
+				t.Fatalf("loaded %q; want %q", got, strings.Join(tc.wantList, "\x1f"))
+			}
+			// The loaded policy is the user's, so the built-in k3 default no longer
+			// runs: that is what makes the all-blank refusal matter.
+			if !ExclusionPolicyFromDefaults(reg.Defaults).UserOwned() {
+				t.Fatal("the loaded list did not reach the policy as user-owned")
+			}
+		})
+	}
+}
+
+// TestExclusionPolicyUserOwned pins the ownership flag: a nil list defers to the
+// built-in default policy, while any non-nil list (including an empty one) means
+// the user owns the decision.
+func TestExclusionPolicyUserOwned(t *testing.T) {
+	if (ExclusionPolicy{}).UserOwned() {
+		t.Error("nil User must not be user-owned")
+	}
+	if !(ExclusionPolicy{User: []string{}}).UserOwned() {
+		t.Error("an empty non-nil User list is user-owned (exclude nothing)")
+	}
+	if !(ExclusionPolicy{User: []string{"nw"}}).UserOwned() {
+		t.Error("a populated User list is user-owned")
+	}
+	if (ExclusionPolicyFromDefaults(Defaults{})).UserOwned() {
+		t.Error("Defaults{} has no excludeModels key: the built-in policy must apply")
+	}
+	if !(ExclusionPolicyFromDefaults(Defaults{ExcludeModels: []string{}})).UserOwned() {
+		t.Error("an explicit empty excludeModels list must reach the policy as user-owned")
+	}
+	p := ExclusionPolicyFromDefaults(Defaults{ExcludeModels: []string{" nw/glm-5 "}})
+	if !p.UserOwned() || strings.Join(p.User, ",") != " nw/glm-5 " {
+		t.Errorf("ExclusionPolicyFromDefaults must carry the stored entries through: %+v", p)
+	}
+}
+
+// TestExclusionPolicyExcludes is the matching table. The nil-User rows prove the
+// built-in default is reproduced exactly (the dual predicate: explicit family
+// "k3" OR a boundary-safe id token), and the assertions after the loop prove the
+// rows are non-vacuous, i.e. that neither a family-only nor an id-only reading
+// of the default can satisfy them.
+func TestExclusionPolicyExcludes(t *testing.T) {
+	cases := []struct {
+		name     string
+		policy   ExclusionPolicy
+		provider string
+		model    string
+		family   string
+		want     bool
+	}{
+		// nil User: the built-in default policy (IsK3Family).
+		{name: "default: family k3 excluded", policy: ExclusionPolicy{}, provider: "nw", model: "kimi-latest", family: "k3", want: true},
+		{name: "default: id token kimi-k3 excluded", policy: ExclusionPolicy{}, provider: "nw", model: "kimi-k3", want: true},
+		{name: "default: id token k3-agent-swarm excluded", policy: ExclusionPolicy{}, provider: "nw", model: "k3-agent-swarm", want: true},
+		{name: "default: k3000 not excluded", policy: ExclusionPolicy{}, provider: "nw", model: "k3000", want: false},
+		{name: "default: kimi-k2 not excluded", policy: ExclusionPolicy{}, provider: "nw", model: "kimi-k2", want: false},
+		{name: "default: glm-k3x not excluded", policy: ExclusionPolicy{}, provider: "nw", model: "glm-k3x", want: false},
+		// User-owned list.
+		{name: "user empty list excludes nothing", policy: ExclusionPolicy{User: []string{}}, provider: "nw", model: "kimi-k3", family: "k3", want: false},
+		{name: "user provider match", policy: ExclusionPolicy{User: []string{"nw"}}, provider: "nw", model: "glm-5", want: true},
+		{name: "user provider match does not leak to another provider", policy: ExclusionPolicy{User: []string{"nw"}}, provider: "charm", model: "glm-5", want: false},
+		{name: "user model match under any provider", policy: ExclusionPolicy{User: []string{"glm-5"}}, provider: "charm", model: "glm-5", want: true},
+		{name: "user model match leaves siblings", policy: ExclusionPolicy{User: []string{"glm-5"}}, provider: "nw", model: "glm-4", want: false},
+		{name: "user composite match", policy: ExclusionPolicy{User: []string{"nw/glm-5"}}, provider: "nw", model: "glm-5", want: true},
+		{name: "user composite provider half match not excluded", policy: ExclusionPolicy{User: []string{"nw/glm-5"}}, provider: "charm", model: "glm-5", want: false},
+		{name: "user composite model half match not excluded", policy: ExclusionPolicy{User: []string{"nw/glm-5"}}, provider: "nw", model: "glm-5-air", want: false},
+		{name: "user composite splits at the first slash", policy: ExclusionPolicy{User: []string{"nw/deepseek/deepseek-chat"}}, provider: "nw", model: "deepseek/deepseek-chat", want: true},
+		{name: "user entry trimmed before matching", policy: ExclusionPolicy{User: []string{"  nw/glm-5  "}}, provider: "nw", model: "glm-5", want: true},
+		{name: "user matching is case sensitive", policy: ExclusionPolicy{User: []string{"NW"}}, provider: "nw", model: "glm-5", want: false},
+		{name: "user model matching is case sensitive", policy: ExclusionPolicy{User: []string{"GLM-5"}}, provider: "nw", model: "glm-5", want: false},
+		{name: "user list replaces the built-in default", policy: ExclusionPolicy{User: []string{"glm-5"}}, provider: "nw", model: "kimi-k3", family: "k3", want: false},
+		{name: "blank user entries are ignored", policy: ExclusionPolicy{User: []string{"", "   ", "nw"}}, provider: "nw", model: "glm-5", want: true},
+	}
+	for _, tc := range cases {
+		if got := tc.policy.Excludes(tc.provider, tc.model, tc.family); got != tc.want {
+			t.Errorf("%s: Excludes(%q, %q, %q) = %v; want %v", tc.name, tc.provider, tc.model, tc.family, got, tc.want)
+		}
+	}
+
+	// Non-vacuity: the nil-User rows must follow the DUAL predicate. A
+	// family-only reading (the shape of the code before this unit) rejects the
+	// id-token rows, and an id-only reading rejects the family row, so at least
+	// one row fails against each of them.
+	familyOnly := func(model, family string) bool {
+		return strings.EqualFold(strings.TrimSpace(family), "k3")
+	}
+	idOnly := func(model string) bool { return HasK3Token(model) }
+	familyOnlyRows, idOnlyRows, dualRows := 0, 0, 0
+	for _, tc := range cases {
+		if tc.policy.User != nil {
+			continue
+		}
+		dualRows++
+		got := tc.policy.Excludes(tc.provider, tc.model, tc.family)
+		if familyOnly(tc.model, tc.family) != got {
+			familyOnlyRows++
+		}
+		if idOnly(tc.model) != got {
+			idOnlyRows++
+		}
+	}
+	if dualRows == 0 {
+		t.Fatal("no nil-User rows: the built-in default policy is untested")
+	}
+	if familyOnlyRows == 0 {
+		t.Error("every nil-User row agrees with a family-only rule: the id-token half of the dual predicate is untested")
+	}
+	if idOnlyRows == 0 {
+		t.Error("every nil-User row agrees with an id-only rule: the family half of the dual predicate is untested")
+	}
+}
+
+// TestExcludedMarkerStable pins the single user-visible excluded-row suffix: the
+// swarm seat list and `agy pro models --all` render this exact text, so a change
+// here must be a deliberate one.
+func TestExcludedMarkerStable(t *testing.T) {
+	const want = "excluded (exclusion list)"
+	got := ExcludedMarker()
+	if got != want {
+		t.Fatalf("ExcludedMarker() = %q; want %q", got, want)
+	}
+	if strings.ContainsAny(got, "\x1b\r\n\t") {
+		t.Errorf("ExcludedMarker() %q carries a control rune; it renders inline as a row suffix", got)
+	}
+	if len(got) > 32 {
+		t.Errorf("ExcludedMarker() %q is %d bytes; it renders as a row suffix and must stay short", got, len(got))
+	}
+}
+
+// --- SESSION7 P4-9: the family:<name> entry form of the exclusion list.
+//
+// The built-in default policy is a FAMILY PREDICATE (providers.IsK3Family), and
+// a bare list entry "k3" matches only a provider or model literally named k3.
+// The family form makes the predicate expressible as an entry, which is what
+// closes the first-save policy-weakening trap: the editor seeds family:k3, so a
+// save of the untouched draft keeps the rule the user already had.
+
+// TestExcludeFamilyEntryForm is the matching table for the family form: it
+// excludes by FAMILY (case-insensitive after trim) and by a boundary-safe id
+// token, and it leaves the boundary negatives alone. Every older entry form
+// keeps its meaning, including a provider/model pair whose model id carries a
+// colon.
+func TestExcludeFamilyEntryForm(t *testing.T) {
+	cases := []struct {
+		name  string
+		entry string
+		prov  string
+		model string
+		fam   string
+		want  bool
+	}{
+		{name: "family k3 excludes a family-declared benign row", entry: "family:k3", prov: "nw", model: "kimi-latest", fam: "k3", want: true},
+		{name: "family k3 excludes a k3 id token", entry: "family:k3", prov: "nw", model: "kimi-k3", fam: "kimi", want: true},
+		{name: "family k3 excludes a k3-agent-swarm id", entry: "family:k3", prov: "nw", model: "k3-agent-swarm", fam: "k", want: true},
+		{name: "family k3 leaves k3000", entry: "family:k3", prov: "nw", model: "k3000", fam: "k", want: false},
+		{name: "family k3 leaves kimi-k2", entry: "family:k3", prov: "nw", model: "kimi-k2", fam: "kimi", want: false},
+		{name: "family k3 leaves glm-k3x", entry: "family:k3", prov: "nw", model: "glm-k3x", fam: "glm", want: false},
+		{name: "family name folds case", entry: "family:k3", prov: "nw", model: "kimi-latest", fam: "K3", want: true},
+		{name: "family operand is trimmed", entry: "family:k3", prov: "nw", model: "kimi-latest", fam: "  K3  ", want: true},
+		{name: "family prefix folds case", entry: "Family:K3", prov: "nw", model: "kimi-latest", fam: "k3", want: true},
+		{name: "family entry does not match a provider name", entry: "family:nw", prov: "nw", model: "glm-5", fam: "glm", want: false},
+		{name: "family entry does not match a model id", entry: "family:glm-5", prov: "nw", model: "glm-5", fam: "glm", want: false},
+		{name: "id token match folds the id", entry: "family:k3", prov: "nw", model: "KIMI-K3", fam: "", want: true},
+		{name: "multi-char family name matches its token", entry: "family:gemini", prov: "nw", model: "gemini-2.5-flash", fam: "", want: true},
+		{name: "hyphenated family name matches by family only", entry: "family:gpt-4", prov: "nw", model: "x-gpt-4", fam: "", want: false},
+		{name: "bare k3 does not reproduce the family rule", entry: "k3", prov: "nw", model: "kimi-latest", fam: "k3", want: false},
+		{name: "bare k3 matches a model literally named k3", entry: "k3", prov: "nw", model: "k3", fam: "k", want: true},
+		{name: "provider/model wins over the family prefix", entry: "nw/family:k3", prov: "nw", model: "family:k3", fam: "k3", want: true},
+		{name: "provider/model family entry does not leak", entry: "nw/family:k3", prov: "charm", model: "kimi-latest", fam: "k3", want: false},
+		{name: "colon model id keeps its exact meaning", entry: "qwen:7b", prov: "nw", model: "qwen:7b", fam: "qwen", want: true},
+	}
+	hits, misses := 0, 0
+	for _, tc := range cases {
+		pol := ExclusionPolicy{User: []string{tc.entry}}
+		got := pol.Excludes(tc.prov, tc.model, tc.fam)
+		if got != tc.want {
+			t.Errorf("%s: Excludes(%q, %q, %q) with entry %q = %v; want %v", tc.name, tc.prov, tc.model, tc.fam, tc.entry, got, tc.want)
+		}
+		if tc.want {
+			hits++
+		} else {
+			misses++
+		}
+	}
+	if hits == 0 || misses == 0 {
+		t.Fatalf("table is vacuous: %d matching rows, %d non-matching rows", hits, misses)
+	}
+}
+
+// TestExcludeFamilyEntryReproducesBuiltinDefault is the trap-closing proof at the
+// policy level: a user-owned list holding exactly "family:k3" answers what the
+// built-in default (IsK3Family) answers on every row of the k3 table, and the old
+// seed ("k3") does not. k3.go is outside this unit's file boundary, so this test
+// is also what keeps the two tokenizers (HasK3Token and exclusionTokenMatches)
+// from drifting apart.
+func TestExcludeFamilyEntryReproducesBuiltinDefault(t *testing.T) {
+	familyOperand := func(m Model) string {
+		if f := strings.TrimSpace(m.Family); f != "" {
+			return f
+		}
+		return m.FamilyName()
+	}
+	models := []Model{
+		{ID: "kimi-latest", Family: "k3"},
+		{ID: "kimi-latest", Family: "K3"},
+		{ID: "anything", Family: "  k3  "},
+		{ID: "kimi-k3"},
+		{ID: "kimi-k3-flex"},
+		{ID: "k3-agent-swarm"},
+		{ID: "kimi-k3", Family: "gemini"},
+		{ID: "k3000"},
+		{ID: "kimi-k2"},
+		{ID: "glm-k3x"},
+		{ID: "gemini-2.5-flash", Family: "gemini"},
+		{ID: "kimi-latest", Family: "kimi"},
+	}
+	seeded := ExclusionPolicy{User: []string{"family:k3"}}
+	builtin := ExclusionPolicy{}
+	excluded, kept := 0, 0
+	for _, m := range models {
+		fam := familyOperand(m)
+		want := IsK3Family(m)
+		if want {
+			excluded++
+		} else {
+			kept++
+		}
+		if got := seeded.Excludes("nw", m.ID, fam); got != want {
+			t.Errorf("family:k3 on %+v = %v; want the built-in verdict %v", m, got, want)
+		}
+		if got := builtin.Excludes("nw", m.ID, fam); got != want {
+			t.Errorf("built-in policy on %+v = %v; want %v", m, got, want)
+		}
+	}
+	if excluded == 0 || kept == 0 {
+		t.Fatalf("table is vacuous: %d excluded rows, %d kept rows", excluded, kept)
+	}
+	// Without the family form the seeded entry cannot carry the rule: the bare
+	// "k3" entry misses the family-declared row (the trap), while family:k3 hits
+	// it. Both directions are asserted so neither half can rot unnoticed.
+	bare := ExclusionPolicy{User: []string{"k3"}}
+	familyRow := Model{ID: "kimi-latest", Family: "k3"}
+	if bare.Excludes("nw", familyRow.ID, "k3") {
+		t.Fatal("the bare k3 entry already excludes the family-declared row; there would be no first-save trap to close")
+	}
+	if !seeded.Excludes("nw", familyRow.ID, "k3") {
+		t.Fatal("family:k3 does not exclude the family-declared row; the seed would weaken the policy")
+	}
+}
+
+// familyTestRegistryJSON builds a one-provider registry body carrying the given
+// excludeModels entries. It marshals a Registry instead of splicing strings so a
+// control rune in a case survives as a real byte in the file.
+func familyTestRegistryJSON(t *testing.T, entries []string) []byte {
+	t.Helper()
+	reg := Registry{
+		Providers: []Provider{{
+			Name:      "nw",
+			BaseURL:   "https://api.example.com/v1",
+			APIKeyEnv: "NW_KEY",
+			Models:    []Model{{ID: "glm-5"}},
+		}},
+		Defaults: Defaults{ExcludeModels: entries},
+	}
+	data, err := json.Marshal(reg)
+	if err != nil {
+		t.Fatalf("marshal registry: %v", err)
+	}
+	return data
+}
+
+// TestExcludeFamilyEntryMalformedRefusesLoad pins the load-time refusal the
+// family form needs: a nameless remainder, an internal whitespace rune, or a
+// control rune anywhere in the entry refuses the whole registry, with the
+// established field-class wording that never echoes the entry. A colon that does
+// not start with "family" keeps the model-id meaning it had before the form
+// existed, so no older entry changes behaviour.
+func TestExcludeFamilyEntryMalformedRefusesLoad(t *testing.T) {
+	dir := t.TempDir()
+	cases := []struct {
+		name    string
+		entries []string
+		wantErr bool
+	}{
+		{name: "named family loads", entries: []string{"family:K3"}},
+		{name: "family with a token name loads", entries: []string{"family:glm"}},
+		{name: "empty remainder refused", entries: []string{"family:"}, wantErr: true},
+		{name: "whitespace remainder refused", entries: []string{"family: "}, wantErr: true},
+		{name: "internal whitespace refused", entries: []string{"family:k 3"}, wantErr: true},
+		{name: "control rune in the name refused", entries: []string{"family:k\x1b3"}, wantErr: true},
+		{name: "control rune in the prefix refused", entries: []string{"fam\x1bily:k3"}, wantErr: true},
+		{name: "non-family colon keeps the model-id meaning", entries: []string{"qwen:7b"}},
+	}
+	for i, tc := range cases {
+		path := filepath.Join(dir, fmt.Sprintf("fam%d.json", i))
+		if err := os.WriteFile(path, familyTestRegistryJSON(t, tc.entries), 0o600); err != nil {
+			t.Fatalf("%s: write registry: %v", tc.name, err)
+		}
+		reg, err := LoadFrom(path)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("%s: load accepted a malformed family entry", tc.name)
+				continue
+			}
+			if !strings.Contains(err.Error(), "excludeModels") {
+				t.Errorf("%s: error %q must name the excludeModels field", tc.name, err)
+			}
+			for _, e := range tc.entries {
+				if e != "" && strings.Contains(err.Error(), e) {
+					t.Errorf("%s: error echoes the offending entry: %q", tc.name, err)
+				}
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s: unexpected error: %v", tc.name, err)
+			continue
+		}
+		if got := strings.Join(reg.Defaults.ExcludeModels, ","); got != strings.Join(tc.entries, ",") {
+			t.Errorf("%s: loaded %q; want the entries preserved verbatim", tc.name, got)
+		}
+	}
+}
+
+// TestValidateExcludeEntry pins the front-end door's rules: the hub's exclusion
+// editor validates one typed entry through ValidateExcludeEntry, so it must
+// refuse exactly what the loader refuses (refusing an empty entry instead of
+// dropping it) and it must return the trimmed entry a write would store.
+func TestValidateExcludeEntry(t *testing.T) {
+	bad := []string{"", "   ", "family:", "family: ", "family:k 3", "family:k\x1b3", "nw glm-5", "nw\u200d", "family:k\u202e3", "\ufeffnw"}
+	for _, in := range bad {
+		if got, err := ValidateExcludeEntry(in); err == nil {
+			t.Errorf("ValidateExcludeEntry(%q) = %q, nil; want a refusal", in, got)
+		}
+	}
+	good := map[string]string{
+		"  Family:K3  ": "Family:K3",
+		"family:k3":     "family:k3",
+		"nw/glm-5":      "nw/glm-5",
+		"qwen:7b":       "qwen:7b",
+		"k3":            "k3",
+	}
+	for in, want := range good {
+		got, err := ValidateExcludeEntry(in)
+		if err != nil {
+			t.Errorf("ValidateExcludeEntry(%q) refused a valid entry: %v", in, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("ValidateExcludeEntry(%q) = %q; want %q", in, got, want)
+		}
+	}
+}
+
+// TestExcludeSeededListRoundTripKeepsFamilyRowExcluded is the trap closing at the
+// file level: the list the editor seeds when the key is absent is written to a
+// registry and reloaded, and the family-declared row must still be excluded. The
+// same round trip with the OLD seed ("k3") must LOSE that row, which is the
+// defect this unit closes; asserting both directions keeps the test from passing
+// on a policy that excludes everything or nothing.
+func TestExcludeSeededListRoundTripKeepsFamilyRowExcluded(t *testing.T) {
+	dir := t.TempDir()
+	load := func(name string, entries []string) ExclusionPolicy {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, familyTestRegistryJSON(t, entries), 0o600); err != nil {
+			t.Fatalf("%s: write registry: %v", name, err)
+		}
+		reg, err := LoadFrom(path)
+		if err != nil {
+			t.Fatalf("%s: reload: %v", name, err)
+		}
+		pol := ExclusionPolicyFromDefaults(reg.Defaults)
+		if !pol.UserOwned() {
+			t.Fatalf("%s: the reloaded policy is not user-owned", name)
+		}
+		return pol
+	}
+	seeded := load("seeded.json", []string{"family:k3"})
+	bare := load("bare.json", []string{"k3"})
+	for _, row := range []struct {
+		model  string
+		family string
+	}{
+		{model: "kimi-latest", family: "k3"},
+		{model: "kimi-k3", family: "kimi"},
+		{model: "k3-agent-swarm", family: "k"},
+	} {
+		if !seeded.Excludes("nw", row.model, row.family) {
+			t.Errorf("the seeded list lost %s (family %q) across the round trip", row.model, row.family)
+		}
+	}
+	for _, row := range []struct{ model, family string }{
+		{model: "k3000", family: "k"},
+		{model: "kimi-k2", family: "kimi"},
+		{model: "glm-k3x", family: "glm"},
+	} {
+		if seeded.Excludes("nw", row.model, row.family) {
+			t.Errorf("the seeded list excludes %s (family %q); the built-in rule does not", row.model, row.family)
+		}
+	}
+	if bare.Excludes("nw", "kimi-latest", "k3") {
+		t.Fatal("the old bare k3 seed still excludes the family-declared row; there would be no trap")
 	}
 }

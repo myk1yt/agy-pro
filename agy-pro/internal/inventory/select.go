@@ -135,6 +135,11 @@ func parseSeatNumber(tok, full string, inv *Inventory) (int, error) {
 // resolvePreset expands a frozen preset id (contract §2.7) against the live
 // inventory. Fewer available entries than a preset needs degrades to "all
 // available" - never an error (happy path must not dead-end).
+//
+// Auto-pick policy (user decision D2 = b): an EXCLUDED row is SKIPPED, never
+// rejected. The two available* helpers below already drop excluded rows, and
+// the returned list is filtered once more at the bottom so no future arm can
+// reintroduce one by reading inv.Entries directly.
 func resolvePreset(id string, inv *Inventory) ([]Entry, error) {
 	native := availableNative(inv)
 	external := availableExternal(inv)
@@ -142,9 +147,9 @@ func resolvePreset(id string, inv *Inventory) ([]Entry, error) {
 	switch strings.ToLower(id) {
 	case "p1": // 2 native + 2 external (family-rotated)
 		out := take(native, 2)
-		return append(out, rotateFamilies(external, 2)...), nil
+		return skipExcluded(append(out, rotateFamilies(external, 2)...)), nil
 	case "p2": // 3 external (family-rotated)
-		return rotateFamilies(external, 3), nil
+		return skipExcluded(rotateFamilies(external, 3)), nil
 	case "p3": // 1 native flash-tier + 1 native pro-tier + 2 family-rotated externals
 		flash := firstMatching(native, func(e Entry) bool {
 			return strings.Contains(strings.ToLower(e.ModelID), "flash")
@@ -171,32 +176,56 @@ func resolvePreset(id string, inv *Inventory) ([]Entry, error) {
 		if pro != nil {
 			out = append(out, *pro)
 		}
-		return append(out, rotateFamilies(external, 2)...), nil
+		return skipExcluded(append(out, rotateFamilies(external, 2)...)), nil
 	default:
 		return nil, fmt.Errorf("invalid selection token %q", providers.MaskOperand(id))
 	}
 }
 
-// availableNative lists usable native entries in render order.
+// skipExcluded drops excluded rows from a resolved preset (D2 = b: auto-pick
+// skips, it never rejects). nil stays nil so callers can tell "nothing
+// available" from "all dropped".
+func skipExcluded(entries []Entry) []Entry {
+	var out []Entry
+	for _, e := range entries {
+		if e.Excluded {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// availableNative lists usable native entries in render order. An excluded
+// native row is skipped like an excluded provider row: the unified flag is
+// view-agnostic (a user list entry for "native" or for a family must govern
+// both halves).
 func availableNative(inv *Inventory) []Entry {
 	var out []Entry
 	for _, e := range inv.Entries {
-		if e.Kind == "native" {
-			out = append(out, e)
+		if e.Kind != "native" {
+			continue
 		}
+		if e.Excluded {
+			continue
+		}
+		out = append(out, e)
 	}
 	return out
 }
 
 // availableExternal lists usable provider entries: keyless-in-a-bad-way rows
-// (KeyMissing) and k3-family rows are never auto-picked (pool policy).
+// (KeyMissing) and excluded rows are never auto-picked. Excluded reads
+// Entry.Excluded, the ONE verdict computed at Load from the single exclusion
+// authority, so this side and the fanout side can no longer disagree about a
+// row (that split is exactly what the retired id-only IsK3Excluded caused).
 func availableExternal(inv *Inventory) []Entry {
 	var out []Entry
 	for _, e := range inv.Entries {
 		if e.Kind != "provider" {
 			continue
 		}
-		if e.KeyMissing || IsK3Excluded(e.ModelID) {
+		if e.KeyMissing || e.Excluded {
 			continue
 		}
 		out = append(out, e)

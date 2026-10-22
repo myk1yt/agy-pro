@@ -236,6 +236,9 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 	} else {
 		cfg.ProgressOut = out
 	}
+	// Exclusion warnings ride stderr in BOTH output modes: they describe an
+	// honored pick, never the machine summary, so stdout stays parseable.
+	cfg.WarnOut = errw
 
 	// 5. Execute Fanout Engine
 	ctx := context.Background()
@@ -435,11 +438,16 @@ type fanoutFlags struct {
 //     struct): a flag NOT explicitly present on the command line resolves
 //     through the active preset (--preset flag > EnvFanoutPreset env >
 //     the store's default_preset key) > the providers.json defaults block
-//     (n, timeout_seconds, max_turns, tools; tokenBudget/excludeFamilies
-//     stay reserved, read-only here) > the engine default. A nil f.set keeps
-//     the legacy behavior: every raw value is authoritative. With no preset
-//     file and no defaults values the resolved config equals the pre-P8 flag
-//     defaults.
+//     (n, timeout_seconds, max_turns, tools, exclude_models;
+//     tokenBudget/excludeFamilies stay reserved, read-only here) > the engine
+//     default. A nil f.set keeps the legacy behavior: every raw value is
+//     authoritative. With no preset file and no defaults values the resolved
+//     config equals the pre-P8 flag defaults.
+//   - defaults.excludeModels (D1) is CONSUMED here as the run's pool-exclusion
+//     policy (RunConfig.ExcludeModel): auto-seating and failover skip the
+//     models it names, while an explicit --seats / --models / plan-unit pick is
+//     honored and warned about on stderr. An absent key keeps the built-in
+//     default (the k3 rule); an explicit empty list excludes nothing.
 //   - an explicitly selected preset (--preset or EnvFanoutPreset) that does
 //     not exist is a usage error (exit 2), never a silent fallback to another
 //     preset; a dangling default_preset key only warns and runs preset-less.
@@ -587,6 +595,11 @@ func buildRunConfig(f fanoutFlags, promptText string) (RunConfig, error) {
 		},
 		Sources:    src,
 		JSONOutput: lad.jsonOut,
+		// D1 (SESSION7 P4-3): the run's pool-exclusion policy, built from the
+		// providers.json defaults block the ladder read. The engine applies it
+		// to auto-seating and failover only; explicit picks are honored and
+		// warned about.
+		ExcludeModel: PolicyExcluder(lad.exclusion),
 	}, nil
 }
 
@@ -601,12 +614,54 @@ const (
 
 // ladderResult is resolveLadder's output: the effective (post-ladder) flag
 // values, the B7 explicit-timeout flag for the effective values, the
-// per-field rung map, and the resolved --json switch.
+// per-field rung map, the resolved --json switch, and the pool-exclusion
+// policy built from the providers.json defaults block.
 type ladderResult struct {
 	flags      fanoutFlags
 	timeoutSet bool
 	sources    map[string]string
 	jsonOut    bool
+	// exclusion is the user-owned exclusion policy (D1) derived from the
+	// defaults block this ladder read. The zero value (no user list) is the
+	// built-in default policy, which is what a ladder-less caller and an
+	// absent excludeModels key both yield.
+	exclusion providers.ExclusionPolicy
+}
+
+// ExclusionUnreadNotice is the ONE line that tells the operator a providers.json
+// read failed for a reason other than "no registry file", so the user-owned
+// exclusion list (defaults.excludeModels) could not be applied and the
+// excluded-pick advisories are suppressed for this run. It names the class of the
+// failure and nothing else: no path, no file contents, no key value. The run
+// itself keeps failing open onto the built-in default policy, exactly as the
+// ladder did before the notice existed (the engine's own hard failure on a
+// corrupt registry is unchanged and still governs the run).
+const ExclusionUnreadNotice = "warning: providers.json could not be read; the user-owned exclusion list (defaults.excludeModels) is not applied, and excluded-seat advisories are suppressed for this run"
+
+// ExclusionListUnread classifies a providers.Load() result for the notice above.
+// A readable registry is healthy. A missing one (os.ErrNotExist, or the
+// helpers' providers.ErrNotConfigured) carries no user-owned list to drop, so it
+// stays silent: that is the same absent-registry reading the settings editor's
+// reload() makes, and the pre-notice behavior every ladder test pins. Anything
+// else - a malformed file, a permission error, a nil registry - means a list may
+// exist but could not be read.
+func ExclusionListUnread(reg *providers.Registry, err error) bool {
+	if err == nil && reg != nil {
+		return false
+	}
+	if err != nil && (errors.Is(err, os.ErrNotExist) || errors.Is(err, providers.ErrNotConfigured)) {
+		return false
+	}
+	return true
+}
+
+// WarnExclusionUnread writes ExclusionUnreadNotice. A nil writer (a library
+// caller that passed none) is a no-op, matching the ladder's own w fallback.
+func WarnExclusionUnread(w io.Writer) {
+	if w == nil {
+		return
+	}
+	fmt.Fprintln(w, ExclusionUnreadNotice)
 }
 
 // resolveLadder applies the P8 resolution ladder to the parsed flag surface
@@ -624,6 +679,8 @@ type ladderResult struct {
 // legacy behavior byte-identical.
 func resolveLadder(f fanoutFlags) (ladderResult, error) {
 	if f.set == nil {
+		// Ladder-less callers keep the zero policy: the built-in default
+		// exclusion rule, exactly what the engine substitutes for a nil seam.
 		return ladderResult{flags: f, timeoutSet: f.timeoutSet}, nil
 	}
 	w := f.errw
@@ -647,9 +704,26 @@ func resolveLadder(f fanoutFlags) (ladderResult, error) {
 	// or unreadable registry simply contributes no defaults; TokenBudget and
 	// ExcludeFamilies stay reserved and are not consumed.
 	def := providers.Defaults{}
-	if reg, lerr := providers.Load(); lerr == nil && reg != nil {
+	reg, lerr := providers.Load()
+	if lerr == nil && reg != nil {
 		def = reg.Defaults
 	}
+	// FIX-G F1 (round-2 LOW): the fail-open read above is unchanged - it still
+	// contributes no defaults and the run still resolves - but it is no longer
+	// SILENT when a user-owned exclusion list exists and could not be read. One
+	// line on the notice writer names the class, so the operator knows the
+	// excluded-pick advisories are suppressed for this run. A missing registry
+	// carries no list to drop and stays silent (ExclusionListUnread).
+	if ExclusionListUnread(reg, lerr) {
+		WarnExclusionUnread(w)
+	}
+
+	// D1 (SESSION7 P4-3): the defaults block's excludeModels list IS consumed
+	// here, as the run's pool-exclusion policy. The engine applies it to
+	// auto-seating and failover; an explicit pick stays honored. An absent key
+	// leaves the zero policy, whose built-in default is the k3 rule; an
+	// explicit empty list excludes nothing because the user owns the list.
+	exclusion := providers.ExclusionPolicyFromDefaults(def)
 
 	// defaultsNotice surfaces rung-4 drift, never normalizes it (D4: the live
 	// file carries timeoutSeconds 120 while the engine default is 300; the
@@ -842,7 +916,7 @@ func resolveLadder(f fanoutFlags) (ladderResult, error) {
 		src["json"] = "engine"
 	}
 
-	return ladderResult{flags: g, timeoutSet: timeoutSet, sources: src, jsonOut: jsonOut}, nil
+	return ladderResult{flags: g, timeoutSet: timeoutSet, sources: src, jsonOut: jsonOut, exclusion: exclusion}, nil
 }
 
 // loadActivePreset resolves the preset for this run (P8 rung 3) and loads it.

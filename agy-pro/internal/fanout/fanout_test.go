@@ -1210,7 +1210,10 @@ func TestFC_RotationNeverPicksK3(t *testing.T) {
 	t.Setenv("KEY_FC3_OK", "ok-key")
 
 	// (a) k3 + one clean model -> only the clean model is auto-seated.
-	targets, err := SelectTargets(reg, nil, 3, nil, providers.IsK3Family)
+	// P4-3: the seam is the policy adapter (provider name + model), and the
+	// zero policy is the built-in default the engine substitutes.
+	builtIn := PolicyExcluder(providers.ExclusionPolicy{})
+	targets, err := SelectTargets(reg, nil, 3, nil, builtIn, nil)
 	if err != nil {
 		t.Fatalf("SelectTargets failed: %v", err)
 	}
@@ -1223,11 +1226,11 @@ func TestFC_RotationNeverPicksK3(t *testing.T) {
 		t.Fatalf("targets = %+v; want only glm-4.6", targets)
 	}
 
-	// (b) k3-only pool -> actionable pool-policy error, never a k3 seat.
+	// (b) k3-only pool -> actionable exclusion-list error, never a k3 seat.
 	k3Only := &providers.Registry{Providers: []providers.Provider{reg.Providers[0]}}
-	if _, err := SelectTargets(k3Only, nil, 3, nil, providers.IsK3Family); err == nil ||
-		!strings.Contains(err.Error(), "pool policy") {
-		t.Fatalf("k3-only pool error = %v; want pool-policy message", err)
+	if _, err := SelectTargets(k3Only, nil, 3, nil, builtIn, nil); err == nil ||
+		!strings.Contains(err.Error(), "excluded by the exclusion list") {
+		t.Fatalf("k3-only pool error = %v; want an exclusion-list message", err)
 	}
 }
 
@@ -1274,5 +1277,384 @@ func TestFC_ExplicitPickExemptFromK3Exclusion(t *testing.T) {
 	}
 	if summary.NCompleted != 1 || summary.Seats[0].FinalTarget.Model.ID != "kimi-k3" {
 		t.Fatalf("explicit pick not honored: %+v", summary.Seats)
+	}
+}
+
+// --- SESSION7 P4-3 (D1/D2=b): the user-owned exclusion list
+// (providers.json defaults.excludeModels) threaded through the fanout
+// subsystem. Auto-seating and failover skip what the list names; an explicit
+// pick is honored and warned about; nothing is ever rejected.
+
+// exclusionWarningCore is the shared sentence body, pinned verbatim. The swarm
+// subsystem prints the same words, so this constant is what makes a drift in
+// either subsystem fail a test.
+const exclusionWarningCore = " is excluded (exclusion list); explicit pick honored (the exclusion list covers auto-seating and failover only)"
+
+// exclusionWarningSuffix is the rendered warning for one provider/model pair,
+// matching warnExplicitPick's target rendering (registry-slot masking leaves a
+// benign name untouched).
+func exclusionWarningSuffix(providerName, modelID string) string {
+	return providerName + "/" + modelID + exclusionWarningCore
+}
+
+// TestExclusion_ProviderEntrySkipsAutoSeating: a user list entry that names a
+// PROVIDER excludes every model of that provider from auto-seating.
+//
+// Non-vacuity control: the pre-change seam (func(providers.Model) bool) could
+// only read the model id, and the same list applied id-only leaves the named
+// provider's models seatable. The control sub-assertion below reproduces that
+// reading, so this test cannot pass against the pre-change behavior.
+func TestExclusion_ProviderEntrySkipsAutoSeating(t *testing.T) {
+	trueVal := true
+	t.Setenv("KEY_EX1_NW", "nw-key")
+	t.Setenv("KEY_EX1_OK", "ok-key")
+	reg := &providers.Registry{Providers: []providers.Provider{
+		{
+			Name:      "nw",
+			BaseURL:   "https://example.invalid/v1",
+			APIKeyEnv: "KEY_EX1_NW",
+			Models: []providers.Model{
+				{ID: "glm-5.3-pro", Family: "glm", Enabled: &trueVal},
+				{ID: "glm-5.3-flash", Family: "glm", Enabled: &trueVal},
+			},
+		},
+		{
+			Name:      "fallback",
+			BaseURL:   "https://example.invalid/v1",
+			APIKeyEnv: "KEY_EX1_OK",
+			Models:    []providers.Model{{ID: "clean-model", Family: "clean", Enabled: &trueVal}},
+		},
+	}}
+
+	policy := providers.ExclusionPolicyFromDefaults(providers.Defaults{ExcludeModels: []string{"nw"}})
+	if !policy.UserOwned() {
+		t.Fatal("premise broken: a non-nil excludeModels list must be user-owned")
+	}
+	targets, err := SelectTargets(reg, nil, 3, nil, PolicyExcluder(policy), nil)
+	if err != nil {
+		t.Fatalf("SelectTargets: %v", err)
+	}
+	for _, tg := range targets {
+		if tg.Provider.Name == "nw" {
+			t.Fatalf("auto-seating seated an excluded provider: %s", tg.FullName())
+		}
+	}
+	if len(targets) != 1 || targets[0].Model.ID != "clean-model" {
+		t.Fatalf("targets = %+v; want only fallback/clean-model", targets)
+	}
+
+	// Control: the id-only reading of the SAME list (all the pre-change seam
+	// could express) leaves the nw models seatable.
+	idOnly := func(_ string, m providers.Model) bool { return m.ID == "nw" }
+	controls, err := SelectTargets(reg, nil, 3, nil, idOnly, nil)
+	if err != nil {
+		t.Fatalf("control SelectTargets: %v", err)
+	}
+	seated := false
+	for _, c := range controls {
+		if c.Provider.Name == "nw" {
+			seated = true
+		}
+	}
+	if !seated {
+		t.Fatal("control premise broken: an id-only predicate must leave the nw models seatable (the provider-name arm is what this test pins)")
+	}
+}
+
+// TestExclusion_AbsentKeyKeepsBuiltInDefault: with NO excludeModels key in the
+// registry file the loaded defaults stay nil, the policy stays user-less, and
+// the built-in default (the k3 rule) still governs auto-seating.
+func TestExclusion_AbsentKeyKeepsBuiltInDefault(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "providers.json")
+	// Written as raw JSON on purpose: marshaling a Registry struct always emits
+	// the defaults block (struct fields never satisfy omitempty), so only a
+	// hand-written body proves the ABSENT-key case.
+	body := `{"providers":[
+	  {"name":"p-k3","baseURL":"https://example.invalid/v1","apiKeyEnv":"KEY_EX2_K3",
+	   "models":[{"id":"kimi-k3","family":"kimi","enabled":true}]},
+	  {"name":"p-ok","baseURL":"https://example.invalid/v1","apiKeyEnv":"KEY_EX2_OK",
+	   "models":[{"id":"glm-4.6","family":"glm","enabled":true}]}]}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KEY_EX2_K3", "k3-key")
+	t.Setenv("KEY_EX2_OK", "ok-key")
+
+	reg, err := providers.LoadFrom(path)
+	if err != nil {
+		t.Fatalf("providers.LoadFrom: %v", err)
+	}
+	if reg.Defaults.ExcludeModels != nil {
+		t.Fatalf("premise broken: absent key must load as nil, got %v", reg.Defaults.ExcludeModels)
+	}
+	policy := providers.ExclusionPolicyFromDefaults(reg.Defaults)
+	if policy.UserOwned() {
+		t.Fatal("an absent excludeModels key must NOT be user-owned")
+	}
+	targets, err := SelectTargets(reg, nil, 3, nil, PolicyExcluder(policy), nil)
+	if err != nil {
+		t.Fatalf("SelectTargets: %v", err)
+	}
+	if len(targets) != 1 || targets[0].Model.ID != "glm-4.6" {
+		t.Fatalf("targets = %+v; want only glm-4.6 (the built-in k3 default must still apply)", targets)
+	}
+
+	// Control: the user-owned EMPTY list (the other side of the nil-vs-empty
+	// split) seats the k3 model, so the skip above is the built-in default
+	// firing and not an artifact of the registry.
+	emptyPolicy := providers.ExclusionPolicyFromDefaults(providers.Defaults{ExcludeModels: []string{}})
+	emptyTargets, err := SelectTargets(reg, nil, 3, nil, PolicyExcluder(emptyPolicy), nil)
+	if err != nil {
+		t.Fatalf("SelectTargets (explicit empty list): %v", err)
+	}
+	foundK3 := false
+	for _, tg := range emptyTargets {
+		if tg.Model.ID == "kimi-k3" {
+			foundK3 = true
+		}
+	}
+	if !foundK3 {
+		t.Fatalf("control premise broken: an explicit empty list must exclude nothing, got %+v", emptyTargets)
+	}
+}
+
+// TestExclusion_EmptyUserListExcludesNothing: an explicit empty list is
+// user-owned and excludes nothing, so a k3-only pool is fully seatable (the
+// pre-change behavior erroring out on the k3 default is what this pins).
+func TestExclusion_EmptyUserListExcludesNothing(t *testing.T) {
+	trueVal := true
+	t.Setenv("KEY_EX3_K3", "k3-key")
+	reg := &providers.Registry{Providers: []providers.Provider{{
+		Name:      "p-k3",
+		BaseURL:   "https://example.invalid/v1",
+		APIKeyEnv: "KEY_EX3_K3",
+		Models:    []providers.Model{{ID: "kimi-k3", Family: "kimi", Enabled: &trueVal}},
+	}}}
+
+	policy := providers.ExclusionPolicyFromDefaults(providers.Defaults{ExcludeModels: []string{}})
+	if !policy.UserOwned() {
+		t.Fatal("premise broken: an explicit empty list must be user-owned")
+	}
+	targets, err := SelectTargets(reg, nil, 3, nil, PolicyExcluder(policy), nil)
+	if err != nil {
+		t.Fatalf("an explicit empty exclusion list must exclude nothing, got error: %v", err)
+	}
+	if len(targets) != 1 || targets[0].Model.ID != "kimi-k3" {
+		t.Fatalf("targets = %+v; want the k3 model (nothing excluded)", targets)
+	}
+}
+
+// TestExclusion_AllExcludedErrorNamesTheList pins the all-excluded error text to
+// the user's own rule ("the exclusion list") and off the retired "pool policy"
+// wording the user cannot inspect.
+func TestExclusion_AllExcludedErrorNamesTheList(t *testing.T) {
+	trueVal := true
+	t.Setenv("KEY_EX4", "k")
+	reg := &providers.Registry{Providers: []providers.Provider{{
+		Name:      "nw",
+		BaseURL:   "https://example.invalid/v1",
+		APIKeyEnv: "KEY_EX4",
+		Models:    []providers.Model{{ID: "glm-5.3-pro", Family: "glm", Enabled: &trueVal}},
+	}}}
+
+	policy := providers.ExclusionPolicyFromDefaults(providers.Defaults{ExcludeModels: []string{"nw"}})
+	_, err := SelectTargets(reg, nil, 3, nil, PolicyExcluder(policy), nil)
+	if err == nil {
+		t.Fatal("an all-excluded pool must be an error")
+	}
+	const want = "no models available for auto-seating: every candidate is excluded by the exclusion list"
+	if err.Error() != want {
+		t.Errorf("all-excluded error = %q; want %q", err.Error(), want)
+	}
+	if strings.Contains(err.Error(), "pool policy") {
+		t.Errorf("all-excluded error still names the retired policy wording: %q", err.Error())
+	}
+}
+
+// TestExclusion_ExplicitModelsPickWarns: an explicit --models pick that the
+// list covers is still honored, and prints the shared warning sentence once.
+// Non-vacuity: the pre-change code printed nothing and had no warning sink.
+func TestExclusion_ExplicitModelsPickWarns(t *testing.T) {
+	trueVal := true
+	t.Setenv("KEY_EX5", "k")
+	reg := &providers.Registry{Providers: []providers.Provider{
+		{
+			Name:      "nw",
+			BaseURL:   "https://example.invalid/v1",
+			APIKeyEnv: "KEY_EX5",
+			Models:    []providers.Model{{ID: "glm-5.3-pro", Family: "glm", Enabled: &trueVal}},
+		},
+		{
+			Name:      "other",
+			BaseURL:   "https://example.invalid/v1",
+			APIKeyEnv: "KEY_EX5",
+			Models:    []providers.Model{{ID: "clean-model", Family: "clean", Enabled: &trueVal}},
+		},
+	}}
+
+	policy := providers.ExclusionPolicyFromDefaults(providers.Defaults{ExcludeModels: []string{"nw"}})
+	var warn bytes.Buffer
+	targets, err := SelectTargets(reg, nil, 1, []string{"nw/glm-5.3-pro"}, PolicyExcluder(policy), &warn)
+	if err != nil {
+		t.Fatalf("an explicit excluded pick must be honored, got error: %v", err)
+	}
+	if len(targets) != 1 || targets[0].Model.ID != "glm-5.3-pro" {
+		t.Fatalf("explicit pick not honored: %+v", targets)
+	}
+	if got := strings.TrimSpace(warn.String()); got != "warning: "+exclusionWarningSuffix("nw", "glm-5.3-pro") {
+		t.Fatalf("warning = %q; want the shared exclusion sentence", got)
+	}
+
+	// A pick the list does NOT cover stays silent.
+	warn.Reset()
+	if _, err := SelectTargets(reg, nil, 1, []string{"other/clean-model"}, PolicyExcluder(policy), &warn); err != nil {
+		t.Fatalf("SelectTargets: %v", err)
+	}
+	if warn.Len() != 0 {
+		t.Fatalf("a non-excluded pick must stay silent, got %q", warn.String())
+	}
+}
+
+// TestExclusion_ExplicitSeatPickHonoredWithWarning: the --seats path honors an
+// excluded provider target end-to-end (the seat runs and reports) and warns.
+func TestExclusion_ExplicitSeatPickHonoredWithWarning(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := ChatResponse{Choices: []ChatChoice{{
+			Index:        0,
+			Message:      ChatMessage{Role: "assistant", Content: "## Findings\n- **[LOW]** excluded seat honored"},
+			FinishReason: "stop",
+		}}}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	tmpDir := t.TempDir()
+	t.Setenv(providers.EnvHome, tmpDir)
+	t.Setenv("KEY_EX6", "good-key")
+	reg := &providers.Registry{Providers: []providers.Provider{{
+		Name:      "nw",
+		BaseURL:   server.URL,
+		APIKeyEnv: "KEY_EX6",
+		Models:    []providers.Model{{ID: "glm-5.3-pro", Family: "glm", Enabled: boolPtr(true)}},
+	}}}
+	regPath := filepath.Join(tmpDir, "providers.json")
+	writeRegistry(t, regPath, reg)
+
+	var warn bytes.Buffer
+	cfg := RunConfig{
+		Task:         "review",
+		N:            1,
+		Seats:        []SeatSpec{{Kind: SeatKindProvider, Raw: "nw/glm-5.3-pro", ModelID: "nw/glm-5.3-pro"}},
+		Root:         tmpDir,
+		OutDir:       filepath.Join(tmpDir, "reports"),
+		RegistryPath: regPath,
+		TimeoutSec:   60,
+		ExcludeModel: PolicyExcluder(providers.ExclusionPolicyFromDefaults(providers.Defaults{ExcludeModels: []string{"nw"}})),
+		WarnOut:      &warn,
+	}
+	summary, err := Execute(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("an explicit excluded seat must be honored, got %v", err)
+	}
+	if summary.NCompleted != 1 || summary.Seats[0].FinalTarget.Provider.Name != "nw" {
+		t.Fatalf("excluded seat pick not honored: %+v", summary.Seats)
+	}
+	if got := warn.String(); !strings.Contains(got, "warning: "+exclusionWarningSuffix("nw", "glm-5.3-pro")) {
+		t.Fatalf("seats warning = %q; want the shared exclusion sentence", got)
+	}
+}
+
+// TestExclusion_FailoverSkipsExcludedProvider: step-1 failover (same model,
+// other provider) skips an alternate whose PROVIDER the list names, and step-2
+// skips an alternate whose model id the list names. Nothing is seated from the
+// excluded candidates.
+//
+// Non-vacuity control: the id-only reading of the same list (all the
+// pre-change seam could express) DOES fail over to the excluded provider, so
+// the skip above is the provider-name arm and not an empty registry.
+func TestExclusion_FailoverSkipsExcludedProvider(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.Header.Get("Authorization"), "dead-key") {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error": {"message": "Service Unavailable"}}`))
+			return
+		}
+		resp := ChatResponse{Choices: []ChatChoice{{
+			Index:        0,
+			Message:      ChatMessage{Role: "assistant", Content: "## Findings\n- **[LOW]** failover answer"},
+			FinishReason: "stop",
+		}}}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	run := func(t *testing.T, seam ExcludeFunc) *SummaryReport {
+		t.Helper()
+		tmpDir := t.TempDir()
+		t.Setenv(providers.EnvHome, tmpDir)
+		t.Setenv("KEY_EX7_DEAD", "dead-key")
+		t.Setenv("KEY_EX7_EXCL", "ok-key")
+		t.Setenv("KEY_EX7_OTHER", "ok-key")
+		reg := &providers.Registry{Providers: []providers.Provider{
+			{
+				Name:      "prov-dead",
+				BaseURL:   server.URL,
+				APIKeyEnv: "KEY_EX7_DEAD",
+				Models:    []providers.Model{{ID: "dead-model", Family: "dead-fam", Enabled: boolPtr(true)}},
+			},
+			{
+				Name:      "prov-excl",
+				BaseURL:   server.URL,
+				APIKeyEnv: "KEY_EX7_EXCL",
+				Models:    []providers.Model{{ID: "dead-model", Family: "dead-fam", Enabled: boolPtr(true)}},
+			},
+			{
+				Name:      "prov-other",
+				BaseURL:   server.URL,
+				APIKeyEnv: "KEY_EX7_OTHER",
+				Models:    []providers.Model{{ID: "other-model", Family: "other-fam", Enabled: boolPtr(true)}},
+			},
+		}}
+		regPath := filepath.Join(tmpDir, "providers.json")
+		writeRegistry(t, regPath, reg)
+		cfg := RunConfig{
+			Task:         "review",
+			N:            1,
+			Models:       []string{"prov-dead/dead-model"},
+			Root:         tmpDir,
+			OutDir:       filepath.Join(tmpDir, "reports"),
+			RegistryPath: regPath,
+			TimeoutSec:   60,
+			ExcludeModel: seam,
+		}
+		summary, err := Execute(context.Background(), cfg)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		return summary
+	}
+
+	policy := providers.ExclusionPolicyFromDefaults(providers.Defaults{ExcludeModels: []string{"prov-excl", "other-model"}})
+	summary := run(t, PolicyExcluder(policy))
+	seat := summary.Seats[0]
+	for _, f := range seat.Failovers {
+		if f.ToProv == "prov-excl" || f.ToMod == "other-model" {
+			t.Fatalf("failover landed on an excluded candidate: %+v", f)
+		}
+	}
+	if seat.FinalTarget.Provider.Name != "prov-dead" {
+		t.Fatalf("final target = %s; want prov-dead (both alternates are excluded)", seat.FinalTarget.FullName())
+	}
+
+	// Control: the id-only reading of the same list does not cover "prov-excl"
+	// as a provider name, so the step-1 alternate is taken.
+	idOnly := func(_ string, m providers.Model) bool {
+		return m.ID == "prov-excl" || m.ID == "other-model"
+	}
+	control := run(t, idOnly)
+	if control.Seats[0].FinalTarget.Provider.Name != "prov-excl" {
+		t.Fatalf("control premise broken: the id-only seam must fail over to prov-excl, got %s",
+			control.Seats[0].FinalTarget.FullName())
 	}
 }
