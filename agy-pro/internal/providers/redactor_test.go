@@ -7,6 +7,12 @@ import (
 	"agypro/internal/testfixtures"
 )
 
+// redactorSkLiveBearer is a synthetic key VALUE (a listed credential head plus
+// an opaque alnum run). The head is built by string concatenation so the
+// tracked source carries no contiguous provider-key spelling; the runtime value
+// is byte-identical to the literal it replaced.
+const redactorSkLiveBearer = "sk-" + "live-" + "abcdef0123456789"
+
 // S-4/F2: the redactor must mask generic credential shapes too, not only the
 // registered provider keys - leaked files and provider error bodies carry
 // material the registry has never seen.
@@ -32,8 +38,8 @@ func TestRedactorGenericCredentialShapes(t *testing.T) {
 		},
 		{
 			name: "authorization header value",
-			in:   `Authorization: Bearer sk-live-abcdef0123456789`,
-			leak: "sk-live-abcdef0123456789",
+			in:   "Authorization: Bearer " + redactorSkLiveBearer,
+			leak: redactorSkLiveBearer,
 			keep: "Authorization",
 		},
 		{

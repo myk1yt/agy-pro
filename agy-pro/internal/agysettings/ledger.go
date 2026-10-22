@@ -1,6 +1,7 @@
 package agysettings
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +23,15 @@ const (
 	// URL and the --model selector; only the full URL form resolves, a bare
 	// modelName is rejected by agy.
 	KeyCustomModels = "customModels"
+
+	// KeyStatusLine is the managed statusLine hook object. Node's
+	// configure-statusline.js has written this object since wave 1
+	// (scripts/lib/configure-statusline.js:121-126); the ledger owns its shape so
+	// a Go writer can emit the same bytes. Declaring the key here does NOT open
+	// the protected global path: that refusal is a property of the path, not of
+	// the key (OpenWithOptions, refuseGlobalWrite), and it stays as it is. The
+	// deliberate global door belongs to the caller that passes the override.
+	KeyStatusLine = "statusLine"
 )
 
 // ErrNotManaged is returned when a caller asks for a settings key that is not
@@ -34,6 +44,7 @@ type keyKind int
 const (
 	kindString keyKind = iota
 	kindCustomModels
+	kindStatusLine
 )
 
 // ledger is the single declaration of the keys this package can write. A key
@@ -42,6 +53,7 @@ const (
 var ledger = map[string]keyKind{
 	KeyModelProvider: kindString,
 	KeyCustomModels:  kindCustomModels,
+	KeyStatusLine:    kindStatusLine,
 }
 
 // ManagedKeys returns the managed-key ledger: every settings.json key this
@@ -63,6 +75,7 @@ func ManagedKeys() []string {
 type SettingsDoc struct {
 	ModelProvider string                       `json:"modelProvider,omitempty"`
 	CustomModels  map[string]CustomModelConfig `json:"customModels,omitempty"`
+	StatusLine    *StatusLineConfig            `json:"statusLine,omitempty"`
 }
 
 // CustomModelConfig mirrors agy's CustomModelConfig struct. The json tags are
@@ -97,6 +110,116 @@ var customModelConfigLedger = []string{
 	"modelFeatures",
 }
 
+// StatusLineConfig mirrors the statusLine object Node's configure-statusline.js
+// writes (scripts/lib/configure-statusline.js:121-126): type, command, enabled
+// and stack_with_default, declared in that field order so a Node-shaped object
+// round trips through this package without gaining or reordering a field.
+//
+// Enabled is a plain bool because the Node writer always emits it, and the
+// decoder refuses an object that omits it rather than defaulting: a missing
+// field must never turn into an explicit enabled:false on the next write.
+// StackWithDefault stays a pointer because it is the one optional slot, so its
+// absence has to survive a write.
+type StatusLineConfig struct {
+	Type             string `json:"type"`
+	Command          string `json:"command"`
+	Enabled          bool   `json:"enabled"`
+	StackWithDefault *bool  `json:"stack_with_default,omitempty"`
+}
+
+// statusLineTypeCommand is the only statusLine type the Node writer emits, and
+// therefore the only one this package writes.
+const statusLineTypeCommand = "command"
+
+// NewStatusLine returns the exact object Node's configure-statusline.js writes
+// for command: type "command", the command as given, and both enabled and
+// stack_with_default true.
+func NewStatusLine(command string) *StatusLineConfig {
+	return &StatusLineConfig{
+		Type:             statusLineTypeCommand,
+		Command:          command,
+		Enabled:          true,
+		StackWithDefault: boolPtr(true),
+	}
+}
+
+// boolPtr returns a pointer to b, for the optional stack_with_default slot.
+func boolPtr(b bool) *bool { return &b }
+
+// clone copies the object so the caller and the document never share a mutable
+// value.
+func (s *StatusLineConfig) clone() *StatusLineConfig {
+	if s == nil {
+		return nil
+	}
+	out := *s
+	if s.StackWithDefault != nil {
+		out.StackWithDefault = boolPtr(*s.StackWithDefault)
+	}
+	return &out
+}
+
+// validate checks the two slots agy cannot resolve without. The command is never
+// echoed in the error: it is usually an absolute path, and this package does not
+// put one in a diagnostic.
+func (s *StatusLineConfig) validate() error {
+	if strings.TrimSpace(s.Type) == "" {
+		return fmt.Errorf("type is required (the Node writer always emits %q)", statusLineTypeCommand)
+	}
+	if strings.TrimSpace(s.Command) == "" {
+		return fmt.Errorf("command is required")
+	}
+	return nil
+}
+
+// statusLineConfigLedger declares the nested object keys, kept in step with
+// StatusLineConfig by reflection in the same way customModelConfigLedger is kept
+// in step with CustomModelConfig. A field added to the struct without an entry
+// here makes every write fail closed (assertLedgerComplete).
+var statusLineConfigLedger = []string{
+	"type",
+	"command",
+	"enabled",
+	"stack_with_default",
+}
+
+// parseStatusLine decodes the managed statusLine object strictly.
+//
+// A non-object is refused, an undeclared field inside the object is refused
+// (json's DisallowUnknownFields), and an object missing a required slot is
+// refused. Nothing is dropped and nothing is defaulted: a foreign field inside
+// the managed object would either be lost on the next write or change agy's
+// behavior, so the document is left alone and the caller decides.
+func parseStatusLine(raw json.RawMessage) (*StatusLineConfig, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return nil, fmt.Errorf("must be a JSON object")
+	}
+
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	dec.DisallowUnknownFields()
+	var out StatusLineConfig
+	if err := dec.Decode(&out); err != nil {
+		return nil, err
+	}
+
+	// enabled is required but a plain bool cannot tell absent from false, so the
+	// presence of the slot is checked separately.
+	var presence struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := json.Unmarshal(trimmed, &presence); err != nil {
+		return nil, err
+	}
+	if presence.Enabled == nil {
+		return nil, fmt.Errorf("enabled is required (the Node writer always emits it)")
+	}
+	if err := out.validate(); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // isManagedKey reports whether key is in the ledger.
 func isManagedKey(key string) bool {
 	_, ok := ledger[key]
@@ -129,6 +252,11 @@ func customModelConfigKeys() []string {
 	return jsonFieldNames(reflect.TypeOf(CustomModelConfig{}))
 }
 
+// statusLineConfigKeys returns the nested keys a StatusLineConfig can emit.
+func statusLineConfigKeys() []string {
+	return jsonFieldNames(reflect.TypeOf(StatusLineConfig{}))
+}
+
 // sameKeySet reports whether two key lists hold the same names, order ignored.
 func sameKeySet(got, want []string) bool {
 	if len(got) != len(want) {
@@ -154,7 +282,10 @@ func assertLedgerComplete() error {
 	if err := assertLedgerMatches(reflect.TypeOf(SettingsDoc{}), ManagedKeys(), "settings"); err != nil {
 		return err
 	}
-	return assertLedgerMatches(reflect.TypeOf(CustomModelConfig{}), customModelConfigLedger, "customModels entry")
+	if err := assertLedgerMatches(reflect.TypeOf(CustomModelConfig{}), customModelConfigLedger, "customModels entry"); err != nil {
+		return err
+	}
+	return assertLedgerMatches(reflect.TypeOf(StatusLineConfig{}), statusLineConfigLedger, "statusLine object")
 }
 
 // assertLedgerMatches is the guard itself, kept separate so a test can point it

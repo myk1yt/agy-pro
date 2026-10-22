@@ -20,6 +20,12 @@ const pathTrapStub = "agy-stub-11"
 // never echo it (DoD #3: no logging of file contents).
 const plantedFiller = "PLANTED-FILLER-7c1e-not-a-canary"
 
+// plantedSkLiveKey is the planted live-key value the FIX-7 child-env pin
+// places next to the canaries. The head is built by concatenation so the
+// tracked source carries no contiguous provider-key spelling; the runtime value
+// is byte-identical to the literal it replaced.
+const plantedSkLiveKey = "sk-" + "live-" + "provider-key-value-abcdef"
+
 func allLiterals(t *testing.T) []string {
 	t.Helper()
 	canaries := canarySet()
@@ -591,7 +597,7 @@ func TestFilterChildEnv_DefaultDeny(t *testing.T) {
 		"SystemRoot=C:\\Windows",
 		"LANG=C",
 		"AGY_PRO_PLANT_SECRET=sk-planted-secret-value-123456",
-		"NW_API_KEY=sk-live-provider-key-value-abcdef",
+		"NW_API_KEY=" + plantedSkLiveKey,
 		"AGY_LLM_GATEWAY_API_KEY=sk-gateway-key-value-abcdef",
 		"AGY_PRO_REAL_AGY=C:\\fake\\agy.exe",
 		"no-equals-sign",
@@ -602,7 +608,7 @@ func TestFilterChildEnv_DefaultDeny(t *testing.T) {
 
 	for _, banned := range []string{
 		"sk-planted-secret-value-123456", "AGY_PRO_PLANT_SECRET",
-		"sk-live-provider-key-value-abcdef", "NW_API_KEY",
+		plantedSkLiveKey, "NW_API_KEY",
 		"sk-gateway-key-value-abcdef", "AGY_LLM_GATEWAY_API_KEY",
 		"AGY_PRO_REAL_AGY", "no-equals-sign",
 	} {

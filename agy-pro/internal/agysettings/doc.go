@@ -31,7 +31,12 @@
 // the ledger is refused with ErrNotManaged rather than touched. Keys already
 // present in the file that this package does not manage are preserved
 // verbatim, and the write path fails closed if the ledger and the document
-// struct ever disagree (see assertLedgerComplete).
+// struct ever disagree (see assertLedgerComplete). The ledger also declares the
+// statusLine hook object (type, command, enabled, stack_with_default) that
+// Node's configure-statusline.js writes, in the same strict shape: an
+// undeclared field inside that object is refused rather than dropped. Declaring
+// a key never moves a path guard, so the global settings file stays refused
+// unless a caller passes the explicit override.
 //
 // No deletion. Backups accumulate (<path>.bak.YYYYMMDD-HHMMSS, mode 0600) and a
 // rollback never deletes anything: it restores the last backup byte-for-byte.

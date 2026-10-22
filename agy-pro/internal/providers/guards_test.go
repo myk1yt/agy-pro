@@ -1483,6 +1483,12 @@ type wizardScriptRun struct {
 
 // runWizardScript runs one scripted wizard with a temp AGY_PRO_HOME and reports
 // the transcript, the returned error, and whether a registry was written.
+//
+// P5-1 U4: every caller's script aborts BEFORE the composed write gate (a
+// per-prompt refusal or the no-models abort), so no consent line is scripted
+// here. A dialog that did reach the gate would read EOF at the consent prompt
+// and refuse, which would turn the pinned transcript and error assertions into
+// a confusing failure, so the banner is caught here by name instead.
 func runWizardScript(t *testing.T, script string) wizardScriptRun {
 	t.Helper()
 	home := t.TempDir()
@@ -1491,6 +1497,9 @@ func runWizardScript(t *testing.T, script string) wizardScriptRun {
 
 	out := &bytes.Buffer{}
 	err := InteractiveSetupWizard(strings.NewReader(script), out)
+	if strings.Contains(out.String(), wizardConsentBanner) {
+		t.Fatalf("this scripted dialog reached the composed write gate; its scripts abort before the write, so no consent line belongs in it (P5-1 U4)")
+	}
 	_, statErr := os.ReadFile(filepath.Join(home, "providers.json"))
 	return wizardScriptRun{transcript: out.String(), err: err, wrote: statErr == nil}
 }

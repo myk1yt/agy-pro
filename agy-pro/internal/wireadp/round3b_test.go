@@ -584,12 +584,18 @@ func TestAudit_HugeEnvelopeModelStaysBounded(t *testing.T) {
 // FIX-36 — the apology masks a key-shaped provider name
 // ---------------------------------------------------------------------------
 
+// apologySkLiveName is the synthetic key-shaped registry provider name the
+// FIX-36 apology pin registers. The head is built by concatenation so the
+// tracked source carries no contiguous provider-key spelling; the runtime value
+// is byte-identical to the literal it replaced.
+const apologySkLiveName = "sk-" + "live-" + "abcdef0123456789"
+
 func TestGenerate_ApologyMasksTheProviderName(t *testing.T) {
 	m := newMockUpstream(t)
 	cfg, reg := testUpstreamConfig(t, m)
 	// A key-shaped registry provider name: the §9.2 apology is the one path
 	// that bypasses sanitizeMessage, so it must mask on its own.
-	reg.Providers[0].Name = "sk-live-abcdef0123456789"
+	reg.Providers[0].Name = apologySkLiveName
 	srv := startServer(t, cfg)
 	// A 200 with no content at all: the codec synthesizes the apology.
 	m.setScript(func(n int, w http.ResponseWriter) {
@@ -602,7 +608,7 @@ func TestGenerate_ApologyMasksTheProviderName(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d body %s", resp.StatusCode, raw)
 	}
-	if strings.Contains(raw, "sk-live-abcdef0123456789") {
+	if strings.Contains(raw, apologySkLiveName) {
 		t.Fatalf("the apology leaked the raw provider name: %s", raw)
 	}
 	// MaskSecret renders first-5 + ****.

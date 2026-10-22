@@ -23,6 +23,39 @@ import (
 // at Run() level without spawning seats (same idiom as swarm.RunFanout).
 var executeEngine = Execute
 
+// setupWizardRunner is the --setup door's wizard seam (P5-1 R1). The wizard is
+// a persisted-state writer (providers.json W12, the Windows user environment
+// W31) and its composed write gate asks y/N, so the door must hand it the same
+// consent context the other three doors pass. A var, like executeEngine, so
+// this door's flag binding and consent plumbing are pinned without a dialog.
+var setupWizardRunner = providers.InteractiveSetupWizardWithGate
+
+// setupStdinIsConsole is the console half of that consent context: the door's
+// answer to "can this reader answer a y/N question".
+//
+// It is the SAME reader check every other wizard door uses. cmd/agy's
+// stdinIsTTY (pro_swarm.go:111) is the authority `agy pro setup`
+// (main.go setupWizardOptions) and `agy pro settings providers add-interactive`
+// (pro_settings.go:249) pass as WizardOptions.Console, and it is the only thing
+// wizard.go consults that field for (wizard.go:978: Console false prints the
+// refusal sentence naming --yes instead of a prompt). The predicate is
+// package-private to cmd/agy and internal/fanout must not import it (that would
+// invert the dependency), so the body is restated byte for byte: a reader that
+// is an *os.File whose Stat reports a character device. Every scripted or piped
+// caller (io.Reader, pipe, strings.Reader) is therefore NOT a console - the
+// case this door used to get wrong by hard-coding Console: true.
+var setupStdinIsConsole = func(in io.Reader) bool {
+	f, ok := in.(*os.File)
+	if !ok {
+		return false
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
+}
+
 // Run executes the fanout CLI command with standard exit codes.
 func Run(args []string, in io.Reader, out, errw io.Writer) int {
 	flags := flag.NewFlagSet("fanout", flag.ContinueOnError)
@@ -46,7 +79,8 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 		timeoutFlag    = flags.Int("timeout", DefaultTimeoutSec, "Swarm execution timeout in seconds (with --units and no explicit --timeout, the default auto-scales: 300 + 120 per unit, capped at 3600)")
 		outFlag        = flags.String("out", "", "Output directory for generated reports (default ./reports/fanout/<ts>)")
 		jsonFlag       = flags.Bool("json", false, "Output summary JSON to stdout")
-		setupFlag      = flags.Bool("setup", false, "Launch interactive provider setup wizard")
+		setupFlag      = flags.Bool("setup", false, "Launch the interactive provider setup wizard. It writes providers.json and the Windows user environment, so it prints the exact diff and asks y/N first; on a reader that cannot answer it refuses, naming --yes")
+		yesFlag        = flags.Bool("yes", false, "Consent to the --setup wizard's composed write without asking (the scripted-caller stand-in for the y/N answer, after the diff prints). Valid only with --setup")
 		presetFlag     = flags.String("preset", "", "Name of a saved fanout preset from ~/.agy-pro/fanout-presets.json (fields not set by explicit flags resolve from the preset, then the providers.json defaults block, then the engine default)")
 	)
 	// B4-2a: repeatable --allow-host entries accumulate verbatim here;
@@ -98,12 +132,35 @@ func Run(args []string, in io.Reader, out, errw io.Writer) int {
 	})
 
 	// 1. Setup Wizard flag check
+	//
+	// P5-1 R1: this door used to call the 2-arg providers.InteractiveSetupWizard,
+	// which hard-codes Console: true (wizard.go:42-51), and offered no --yes. A
+	// piped run therefore printed a [y/N] prompt nobody could answer, and the
+	// refusal hint it printed (`re-run with --yes`) exited 2 here as an unknown
+	// flag: safe (nothing written) but unactionable. Both halves now match the
+	// other three doors: Console is DERIVED from the reader this door was handed
+	// (setupStdinIsConsole, the same check cmd/agy's stdinIsTTY makes) and --yes
+	// is the scripted stand-in for the answer.
 	if *setupFlag {
-		if err := providers.InteractiveSetupWizard(in, out); err != nil {
+		err := setupWizardRunner(in, out, providers.WizardOptions{Yes: *yesFlag, Console: setupStdinIsConsole(in)})
+		if err != nil {
+			if errors.Is(err, providers.ErrWizardWriteRefused) {
+				// The gate already printed the refusal sentence naming --yes;
+				// this door only carries the code (nothing was written), exactly
+				// as the setup and add-interactive doors do.
+				return 1
+			}
 			fmt.Fprintf(errw, "Setup failed: %v\n", err)
 			return 1
 		}
 		return 0
+	}
+	// A lone --yes would be a silent no-op standing in for a consent this run
+	// never asks for, so it fails closed instead (before this change the flag
+	// was unknown, i.e. exit 2 either way - no caller loses anything).
+	if *yesFlag {
+		fmt.Fprintf(errw, "Error: --yes is only meaningful with --setup (it consents to that wizard's providers.json write); nothing was run\n")
+		return 2
 	}
 
 	// 2. Resolve Prompt

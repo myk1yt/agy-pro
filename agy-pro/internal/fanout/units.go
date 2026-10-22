@@ -4,10 +4,11 @@ package fanout
 //
 // A plan file is a JSON document: a top-level array of unit objects. Each unit
 // is one disjoint slice of work; partition mode runs one agent (seat) per unit
-// concurrently and merges the results afterwards (merge is a later work item).
-// The types here are the CONTRACT consumed by the per-unit prompt plumbing, so
-// the exported surface is deliberately small and stable: Unit, ParsePlan,
-// UnitBody.
+// concurrently and then merges the deliverables into one artifact through
+// MergePartition (merge.go), which the engine calls at the end of a --units run
+// (the merge is shipped, not pending). The types here are the CONTRACT consumed
+// by the per-unit prompt plumbing, so the exported surface is deliberately
+// small and stable: Unit, ParsePlan, UnitBody.
 
 import (
 	"encoding/json"

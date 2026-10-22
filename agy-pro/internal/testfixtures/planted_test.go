@@ -629,13 +629,20 @@ func TestClassificationRejectsNonSynthetic(t *testing.T) {
 	})
 }
 
-// providerPatternGate is the standing 14-alternative provider-key pattern the
+// providerPatternGate is the standing 15-alternative provider-key pattern the
 // repository greps over its tracked Go tree, recorded as section 10 of the F1
 // follow-up. This file is source like any other, so the reviewed values above
 // are split to satisfy it. The pattern text is safe against itself: every
 // alternative needs a run of trailing runes immediately after its head, and the
 // source text has a character class on the far side of that boundary.
-const providerPatternGate = `sk_live_[A-Za-z0-9]{6,}|pk_live_[A-Za-z0-9]{6,}|ghp_[A-Za-z0-9]{16,}|AKIA[A-Z0-9]{12,}|ASIA[A-Z0-9]{16}|AIza[A-Za-z0-9_-]{30,}|wJalr[A-Za-z0-9/+]{20,}|nvapi-[A-Za-z0-9-]{10,}|gsk_[A-Za-z0-9]{10,}|xox[baprs]-[A-Za-z0-9-]{10,}|sk-ant-api03-[A-Za-z0-9-]{10,}|eyJ[A-Za-z0-9_-]{10,}|sk-proj-[A-Za-z0-9]{12,}|Sk_Live_[A-Za-z0-9]{16}`
+//
+// The hyphen-family arm is composed as `sk-live` plus six-or-more body runes
+// rather than `sk-live-` plus six, so the one arm covers both live spellings: a
+// value that keeps a separator after the head and a value whose body continues
+// straight past "live". The narrow form admitted the second spelling with zero
+// hits, and two standing copies of this rule had already drifted apart by the
+// time it was measured, so the composed arm is the only one kept.
+const providerPatternGate = `sk_live_[A-Za-z0-9]{6,}|pk_live_[A-Za-z0-9]{6,}|ghp_[A-Za-z0-9]{16,}|AKIA[A-Z0-9]{12,}|ASIA[A-Z0-9]{16}|AIza[A-Za-z0-9_-]{30,}|wJalr[A-Za-z0-9/+]{20,}|nvapi-[A-Za-z0-9-]{10,}|gsk_[A-Za-z0-9]{10,}|xox[baprs]-[A-Za-z0-9-]{10,}|sk-ant-api03-[A-Za-z0-9-]{10,}|eyJ[A-Za-z0-9_-]{10,}|sk-proj-[A-Za-z0-9]{12,}|Sk_Live_[A-Za-z0-9]{16}|sk-live[A-Za-z0-9-]{6,}`
 
 // offsetPosition converts a byte offset in src to a 1-based line and column, so
 // a whole-file scan can report file:line:col for every match. The line is exact.
@@ -717,6 +724,39 @@ func TestReviewedFixturesSourceHasNoContiguousPattern(t *testing.T) {
 	probe := "ey" + "JhbGciOiJIUzI1NiJ9"
 	if !gate.MatchString(probe) {
 		t.Fatalf("the gate does not match its own probe %s: a pattern that matches nothing would clear every file vacuously", fixtureDigest(probe))
+	}
+
+	// Non-vacuity probes for the hyphen-family arm. Both values fold at compile
+	// time from fragments, so this file carries no contiguous spelling of
+	// either; what the gate sees is the runtime bytes. The first probe is the
+	// separator spelling, the second is the no-hyphen continuation that the
+	// narrow `sk-live-` form missed entirely. Both must be flagged, or the arm
+	// only looks like it covers the family.
+	for _, hyphen := range []string{
+		"sk-" + "live-" + "0123456789abcdefXYZ",
+		"sk-" + "livekey" + "1234567890abcd",
+	} {
+		if !gate.MatchString(hyphen) {
+			t.Fatalf("the gate does not match its own hyphen-family probe %s: the arm would report zero hits over a planted spelling of this family", fixtureDigest(hyphen))
+		}
+	}
+
+	// The other half of the same claim: the fragments that carry a hyphen-family
+	// value in tracked source must report zero matches, or the probe above would
+	// be satisfied by a pattern that also trips on every split fixture. The
+	// source is assembled at runtime, so this file stays free of the contiguous
+	// spelling it is asserting about.
+	hyphenParts := []string{"sk-", "live-", "0123456789abcdefXYZ"}
+	quotedParts := make([]string, 0, len(hyphenParts))
+	for _, part := range hyphenParts {
+		quotedParts = append(quotedParts, `"`+part+`"`)
+	}
+	fragmentedSrc := []byte("package probe\nconst Leak = " + strings.Join(quotedParts, " + ") + "\n")
+	if bytes.Contains(fragmentedSrc, []byte(strings.Join(hyphenParts, ""))) {
+		t.Fatalf("the fragmented control source still carries the contiguous hyphen-family spelling, so its zero-match result would be vacuous")
+	}
+	if got := len(scanProviderPattern(gate, fragmentedSrc)); got != 0 {
+		t.Fatalf("scan reported %d match(es) over a hyphen-family value joined with +, want 0: %+v", got, scanProviderPattern(gate, fragmentedSrc))
 	}
 
 	for _, path := range []string{"planted_test.go", plantedPath} {

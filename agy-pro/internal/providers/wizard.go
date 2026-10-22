@@ -12,17 +12,57 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
+	"reflect"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
 
+// WizardOptions carries the caller's consent context for the wizard's single
+// composed write gate (P5-1 U4, user decision F3(a)).
+//
+// One wizard run writes TWO persisted stores: the providers.json provider+model
+// upsert (W12) and the Windows user-environment key persist (W31). Until P5-1
+// neither had any approval; both are now presented as ONE exact diff, once,
+// after the last prompt and before the first write.
+//
+// Console reports that the caller's stdin can answer a y/N question. The CLI
+// doors pass their console probe, so a piped or scripted `agy pro setup`
+// prints the diff and refuses, naming --yes, with nothing written. Yes is that
+// documented --yes stand-in: it consents without reading an answer, after the
+// diff has printed.
+type WizardOptions struct {
+	Yes     bool
+	Console bool
+}
+
 // InteractiveSetupWizard guides the user through setting up or updating a provider
 // in ~/.agy-pro/providers.json in a friendly, conversational manner.
+//
+// The reader IS the wizard's dialog, so the library entry point treats it as
+// answerable (Console: true) and the gate asks y/N over the same reader. A
+// caller that knows its stdin is a pipe (the CLI doors, which probe the
+// handle) calls InteractiveSetupWizardWithGate with Console false.
+//
+// InteractiveSetupWizardWithGate is the production entry: every CLI door binds
+// it (cmd/agy/main.go, cmd/agy/pro_settings.go, internal/fanout). The hub's own
+// form is TUI-native (internal/tui/screen_providers.go, the "Add provider" row),
+// and a console host reaches this wizard as the documented terminal alternative
+// (internal/tui/screen_settings.go names `agy pro setup --wizard`). This
+// 2-argument form has no production caller left, so its reach is tests and
+// library parity (a caller that genuinely knows its reader is answerable); a new
+// production caller must pass its consent context explicitly instead of assuming
+// this function's Console: true.
 func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
+	return InteractiveSetupWizardWithGate(in, out, WizardOptions{Console: true})
+}
+
+// InteractiveSetupWizardWithGate is InteractiveSetupWizard with the caller's
+// consent context for the composed write gate.
+func InteractiveSetupWizardWithGate(in io.Reader, out io.Writer, opts WizardOptions) error {
 	reader := bufio.NewReader(in)
 	var console *os.File
 	if f, ok := in.(*os.File); ok {
@@ -177,18 +217,24 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 	// and be written back to the registry as a fresh polluted entry.
 	apiKeyEnv = normalizeEnvName(apiKeyEnv)
 
-	// Persist API key if provided
+	// Persist API key if provided.
+	//
+	// P5-1 U4 (F3(a)): the persistent user-environment write (W31) is persisted
+	// state, so it may not happen before the composed gate. The PROCESS
+	// environment write stays immediate and where it always was: it is not
+	// persisted, and the "is this a variable name instead of a key?" prompts
+	// below read the process block, so deferring it would change what the very
+	// next prompt resolves. The user-environment write is recorded and flushed
+	// after consent, under the same decision as the registry upsert.
+	var pendingKey wizardPendingKey
 	if keyValue != "" && apiKeyEnv != "" {
 		_ = os.Setenv(apiKeyEnv, keyValue)
-		if runtime.GOOS == "windows" && !isRunningTests() {
-			if err := persistWindowsUserEnv(apiKeyEnv, keyValue); err != nil {
-				fmt.Fprintf(out, "Warning: could not persist %s to Windows user environment: %v\n", envEcho(apiKeyEnv), err)
-			} else {
-				fmt.Fprintf(out, "✅ Saved %s to Windows User Environment.\n", envEcho(apiKeyEnv))
-			}
-		} else if runtime.GOOS == "windows" {
+		switch {
+		case wizardPersistsUserEnv():
+			pendingKey = wizardPendingKey{name: apiKeyEnv, value: keyValue, set: true}
+		case runtime.GOOS == "windows":
 			// In test environment, skip persisting to system registry
-		} else {
+		default:
 			fmt.Fprintf(out, "Set %s in current session. To persist across shells, add to ~/.bashrc or ~/.zshrc:\n", envEcho(apiKeyEnv))
 			fmt.Fprintf(out, "  export %s=\"...\"\n", envEcho(apiKeyEnv))
 		}
@@ -296,6 +342,16 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 
 		if !hasSelection {
 			customID, isEOF := promptLine(reader, out, "Model ID (e.g. gpt-4o, deepseek-chat)", "")
+			// A closed input cannot answer this loop again, and an EOF read
+			// returns instantly, so the "empty ID" branch below would re-prompt
+			// forever: 100% CPU for a piped or scripted run whose dialog ends
+			// before its first model (found by the P5-1 U4 gate work, where the
+			// gated tail made exactly that shape reachable in a test). The
+			// preset menu above already aborts on this EOF shape; this is the
+			// same rule for the custom-ID door.
+			if isEOF && len(models) == 0 {
+				return errors.New("input closed (EOF); setup aborted")
+			}
 			if (isEOF || customID == "") && len(models) > 0 {
 				break
 			}
@@ -394,17 +450,17 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 							keyValue = newKey
 							fmt.Fprintf(out, "API Key recorded: %s\n", MaskSecret(keyValue))
 							_ = os.Setenv(apiKeyEnv, keyValue)
-							if runtime.GOOS == "windows" && !isRunningTests() {
-								_ = persistWindowsUserEnv(apiKeyEnv, keyValue)
-							}
+							// P5-1 U4: the user-environment write is deferred to the
+							// composed gate; the last typed value wins, exactly as the
+							// last of the repeated immediate writes did before.
+							pendingKey.record(apiKeyEnv, keyValue)
 						}
 					} else {
 						keyValue = newKey
 						fmt.Fprintf(out, "API Key recorded: %s\n", MaskSecret(keyValue))
 						_ = os.Setenv(apiKeyEnv, keyValue)
-						if runtime.GOOS == "windows" && !isRunningTests() {
-							_ = persistWindowsUserEnv(apiKeyEnv, keyValue)
-						}
+						// P5-1 U4: deferred user-environment write (see above).
+						pendingKey.record(apiKeyEnv, keyValue)
 					}
 				}
 				continue probeLoop
@@ -438,7 +494,15 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 		return err
 	}
 
-	// Step 5: Save to registry
+	// Step 5: compose the plan, gate it, re-verify it, then write.
+	//
+	// P5-1 U4 (F3(a)): the wizard's two persisted writes (W12 the registry
+	// upsert, W31 the user-environment key persist) were ungated. Both now sit
+	// behind ONE decision: the composed exact diff prints after the last prompt
+	// and before the FIRST write, the caller consents (console y/N, or the
+	// documented --yes), and the plan is re-read and re-verified immediately
+	// before the write so an external edit under the prompt refuses instead of
+	// being overwritten under a diff that no longer describes the file.
 	prov := Provider{
 		Name:      provName,
 		BaseURL:   baseURL,
@@ -451,51 +515,25 @@ func InteractiveSetupWizard(in io.Reader, out io.Writer) error {
 		return err
 	}
 
-	reg, err := LoadFrom(targetPath)
+	plan, err := composeWizardWritePlan(targetPath, prov, pendingKey)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			reg = &Registry{
-				Defaults: Defaults{
-					N:              3,
-					TimeoutSeconds: 120,
-					MaxTurns:       10,
-					Tools:          "read,search",
-				},
-			}
-		} else {
-			return fmt.Errorf("failed to load existing registry: %w", err)
-		}
+		return fmt.Errorf("failed to load existing registry: %w", err)
 	}
 
-	// Upsert provider
-	updated := false
-	for i, p := range reg.Providers {
-		if strings.EqualFold(p.Name, prov.Name) {
-			reg.Providers[i] = prov
-			updated = true
-			break
-		}
+	proceed, gateErr := wizardConsent(reader, out, plan, opts)
+	if gateErr != nil {
+		return gateErr
 	}
-	if !updated {
-		reg.Providers = append(reg.Providers, prov)
+	if !proceed {
+		return nil
 	}
 
-	if err := reg.Validate(); err != nil {
-		return fmt.Errorf("validation error: %w", err)
-	}
-
-	data, err := json.MarshalIndent(reg, "", "  ")
+	verified, err := plan.reverify()
 	if err != nil {
 		return err
 	}
-	data = append(data, '\n')
-
-	dir := filepath.Dir(targetPath)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := plan.apply(verified, out, envEcho); err != nil {
 		return err
-	}
-	if err := WriteFileAtomic(targetPath, data, 0o600); err != nil {
-		return fmt.Errorf("failed to save registry to %s: %w", targetPath, err)
 	}
 
 	fmt.Fprintln(out)
@@ -670,6 +708,388 @@ func wizardModelFieldsRefused(models []Model) error {
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+// --- P5-1 U4: the composed-write gate (W12 upsert + W31 key persist) ---------
+//
+// User decision F3(a): every write path to persisted state is presented as an
+// exact diff before it happens. The wizard was the last ungated front door: it
+// wrote providers.json (W12) and the Windows user environment (W31) with only
+// per-prompt field guards, and on a piped host (where `agy pro setup` degrades
+// to this wizard by design) there was no approval of any kind.
+//
+// The gate is the CLI twin's mechanism (cmd/agy/pro_settings.go
+// confirmPersistedWrite), restated here because the wizard lives in the
+// providers package and the wizard owns its own presentation: one exact diff,
+// one y/N question, `--yes` for scripted callers, and a refusal that names
+// `--yes` when nothing can answer. Only the store half differs: the wizard
+// writes TWO stores in one run, so both are composed into the same diff and
+// decided by the same answer.
+
+// ErrWizardWriteRefused reports that the composed write was refused because no
+// human could consent to it (closed or piped stdin without --yes). The refusal
+// sentence itself is already in the transcript; this error carries the exit
+// code so the caller exits 1 with nothing written.
+var ErrWizardWriteRefused = errors.New("setup refused: nothing was written")
+
+const (
+	// wizardConsentBanner names the class of the wizard's composed decision.
+	wizardConsentBanner = "[agy-pro] Approve Setup Write"
+	// wizardRegistryWriteSentence mirrors modelWriteAtomicSentence (the CLI
+	// twin, cmd/agy/pro_settings.go) byte for byte, so the wizard and the CLI
+	// registry gate read the same and a grep for either finds both.
+	wizardRegistryWriteSentence = "providers.json will be written (0600, atomic) with this exact diff:"
+	// wizardCancelSentence and wizardRefusalSentence are the CLI twin's own
+	// lines (confirmPersistedWrite), with this door's noun, so the two gates
+	// cannot drift into two refusal stories.
+	wizardCancelSentence  = "[CANCELLED] nothing written"
+	wizardRefusalSentence = "[agy-pro] refusal: non-interactive stdin cannot consent to a setup write; re-run with --yes after reviewing the diff above (nothing written)"
+	// wizardPromptBytes bounds the consent read exactly as the twin does: a
+	// character device with no newline would otherwise buffer without limit
+	// (CWE-400), and 64 bytes is far past any y/N answer.
+	wizardPromptBytes = 64
+)
+
+// wizardRegistryReload re-reads the registry at write time (after consent,
+// immediately before the write), the G-C3 / CWE-367 rule the CLI registry
+// verbs follow. It is a seam so tests can interleave an external edit exactly
+// where production re-reads.
+var wizardRegistryReload = LoadFrom
+
+// wizardPersistUserEnv is the W31 write sink (presets.go persistWindowsUserEnv:
+// HKCU\Environment through the advapi32 registry API, never a command line). A
+// seam so tests can drive the composed gate without a registry write.
+var wizardPersistUserEnv = persistWindowsUserEnv
+
+// wizardPersistsUserEnv reports whether this host persists user environment
+// variables at all. The pre-P5-1 wizard used the same rule inline
+// (runtime.GOOS == "windows" && !isRunningTests()); it is a seam now so the
+// gate's environment half is reachable on every host and in tests.
+var wizardPersistsUserEnv = func() bool { return runtime.GOOS == "windows" && !isRunningTests() }
+
+// wizardEnvProbe reads the persistent user environment (HKCU only: that is the
+// root W31 writes) for the presented presence of one variable NAME. It never
+// reads a value. known reports whether the store could be read at all, so the
+// pre-consent state and the write-time state are only compared when both are
+// observable.
+var wizardEnvProbe = probeWizardUserEnv
+
+// wizardPendingKey is the deferred user-environment write: the wizard collects
+// it during the prompts and applies it after consent, under the same decision
+// as the registry upsert. Only the NAME is ever rendered.
+type wizardPendingKey struct {
+	name  string
+	value string
+	set   bool
+}
+
+// record queues (or replaces) the deferred write. A later typed key replaces an
+// earlier one, exactly as the last of the pre-P5-1 immediate writes won. A host
+// that does not persist user environment variables queues nothing.
+func (k *wizardPendingKey) record(name, value string) {
+	if !wizardPersistsUserEnv() {
+		return
+	}
+	*k = wizardPendingKey{name: name, value: value, set: true}
+}
+
+// wizardEnvState is the presented (and later re-read) presence of one variable
+// name in HKCU\Environment: whether the clean name exists, and which BOM
+// variants of it exist beside the clean name.
+type wizardEnvState struct {
+	known    bool
+	exact    bool
+	variants []string
+}
+
+// probeWizardUserEnv is the production body of wizardEnvProbe.
+func probeWizardUserEnv(name string) wizardEnvState {
+	name = strings.TrimSpace(name)
+	if name == "" || defaultEnvStore == nil {
+		return wizardEnvState{}
+	}
+	names, err := defaultEnvStore.Names(EnvRootUser)
+	if err != nil {
+		return wizardEnvState{}
+	}
+	st := wizardEnvState{known: true}
+	for _, n := range names {
+		if normalizeEnvName(n) != name {
+			continue
+		}
+		if n == name {
+			st.exact = true
+			continue
+		}
+		st.variants = append(st.variants, n)
+	}
+	sort.Strings(st.variants)
+	return st
+}
+
+// wizardEnvNameLabel renders one environment variable NAME for the diff: the
+// shared operand mask, with a U+FEFF rendered as a visible "<BOM>" marker
+// instead of an invisible byte (the same rendering the key repair gate uses, so
+// a polluted variant is legible and not a trap). A clean name is unprefixed.
+func wizardEnvNameLabel(name string) string {
+	masked := MaskOperand(StripSlotControls(strings.ReplaceAll(name, BOM, "")))
+	if strings.Contains(name, BOM) {
+		return "<BOM>" + masked
+	}
+	return masked
+}
+
+// wizardWritePlan is the composed, not-yet-applied plan: the registry it was
+// composed from (the signed base), the provider record to upsert, and the
+// deferred key persist with its pre-consent presence.
+type wizardWritePlan struct {
+	targetPath string
+	base       *Registry
+	present    bool
+	before     Provider
+	prov       Provider
+	key        wizardPendingKey
+	env        wizardEnvState
+}
+
+// composeWizardWritePlan reads the registry on disk and composes the plan. The
+// presented diff describes the write that apply() will perform, so nothing is
+// rendered from a guess.
+func composeWizardWritePlan(targetPath string, prov Provider, key wizardPendingKey) (*wizardWritePlan, error) {
+	reg, err := loadWizardRegistry(targetPath)
+	if err != nil {
+		return nil, err
+	}
+	plan := &wizardWritePlan{targetPath: targetPath, base: reg, prov: prov, key: key}
+	if p := wizardFindProvider(reg, prov.Name); p != nil {
+		plan.present = true
+		plan.before = *p
+	}
+	if key.set {
+		plan.env = wizardEnvProbe(key.name)
+	}
+	return plan, nil
+}
+
+// loadWizardRegistry reads the registry the plan is composed from, with the
+// empty-registry rule the CLI gate established: a missing file (os.ErrNotExist,
+// or ErrNotConfigured from a helper) is an empty registry carrying the wizard's
+// long-standing defaults; anything else is a real read error and refuses.
+func loadWizardRegistry(path string) (*Registry, error) {
+	reg, err := wizardRegistryReload(path)
+	if err == nil {
+		return reg, nil
+	}
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, ErrNotConfigured) {
+		return &Registry{
+			Defaults: Defaults{
+				N:              3,
+				TimeoutSeconds: 120,
+				MaxTurns:       10,
+				Tools:          "read,search",
+			},
+		}, nil
+	}
+	return nil, err
+}
+
+// wizardFindProvider resolves one provider by name (case-folded), the same
+// match the wizard's own upsert performs.
+func wizardFindProvider(reg *Registry, name string) *Provider {
+	if reg == nil {
+		return nil
+	}
+	for i := range reg.Providers {
+		if strings.EqualFold(reg.Providers[i].Name, name) {
+			return &reg.Providers[i]
+		}
+	}
+	return nil
+}
+
+// diff renders the composed write: the provider action sentence, the model
+// count before/after, the atomic-0600 sentence, the removed/added provider
+// lines (the shapes the CLI provider gate and the hub's M4 provider approvals
+// use), and the key-persist lines. Every operand is delegated to the shared
+// masking authorities (MaskSlot for registry slots, MaskBaseURL for the
+// endpoint, MaskOperand for an environment NAME); no value is ever rendered.
+func (p *wizardWritePlan) diff() []string {
+	lines := []string{}
+	name := wizardProvLabel(p.prov.Name)
+	after := len(p.prov.Models)
+	if !p.present {
+		lines = append(lines,
+			fmt.Sprintf("Adds provider %s to the registry. Key values are untouched.", name),
+			fmt.Sprintf("Model count: 0 -> %d", after))
+	} else {
+		lines = append(lines,
+			fmt.Sprintf("Replaces provider %s wholesale: the current entry and its whole model list are discarded.", name),
+			fmt.Sprintf("Model count: %d -> %d", len(p.before.Models), after))
+	}
+	lines = append(lines, wizardRegistryWriteSentence)
+	if p.present {
+		lines = append(lines, "- "+wizardProviderLine(p.before))
+	}
+	lines = append(lines, "+ "+wizardProviderLine(p.prov))
+	return append(lines, p.envLines()...)
+}
+
+// wizardProviderLine renders one registry entry for the diff: the masked name,
+// the layered URL mask, and the model count (the shape both twins use).
+func wizardProviderLine(p Provider) string {
+	return fmt.Sprintf("provider %s (%s, %s)", wizardProvLabel(p.Name), MaskBaseURL(p.BaseURL), wizardCountWord(len(p.Models)))
+}
+
+// wizardCountWord renders a model count in the twins' plural form.
+func wizardCountWord(n int) string {
+	if n == 1 {
+		return "1 model"
+	}
+	return strconv.Itoa(n) + " models"
+}
+
+// envLines renders the key-persist half of the plan: the variable NAME (never
+// its value), any BOM variant that already sits beside it, and an honest
+// statement when the store could not be read.
+func (p *wizardWritePlan) envLines() []string {
+	if !p.key.set {
+		return nil
+	}
+	lines := []string{fmt.Sprintf("Sets %s in HKCU\\Environment and in this process's environment (the value is never printed).", wizardEnvNameLabel(p.key.name))}
+	if len(p.env.variants) > 0 {
+		lines = append(lines, fmt.Sprintf("  A BOM variant %s already exists beside the clean name; this write leaves it untouched (`agy pro doctor --fix-keys` repairs it).", wizardEnvNameLabel(p.env.variants[0])))
+	}
+	if !p.env.known {
+		lines = append(lines, "  The user environment store could not be read, so the current presence of that name is unknown.")
+	}
+	return lines
+}
+
+// consentTarget names what the console prompt applies the write to.
+func (p *wizardWritePlan) consentTarget() string {
+	if p.key.set {
+		return "providers.json and HKCU\\Environment"
+	}
+	return "providers.json"
+}
+
+// wizardConsent prints the composed diff and takes the decision.
+//
+//   - opts.Yes is the documented --yes: consent, after the diff printed.
+//   - opts.Console false means nothing can answer (a pipe, or a host where
+//     stdin is not a console): the diff still prints and the door refuses,
+//     naming --yes, with nothing written. That is the refusal story this front
+//     end did not have.
+//   - a console answer of y consents; n, an empty line, or any other word
+//     cancels with exit code 0 ("[CANCELLED] nothing written"); an immediate
+//     EOF (zero bytes with a read error, e.g. /dev/null or NUL) takes the same
+//     refusal as a pipe instead of a silent cancel, because a seam cannot tell
+//     those character devices from a console.
+func wizardConsent(reader *bufio.Reader, out io.Writer, plan *wizardWritePlan, opts WizardOptions) (bool, error) {
+	fmt.Fprintln(out, wizardConsentBanner)
+	for _, line := range plan.diff() {
+		fmt.Fprintln(out, "  "+line)
+	}
+	if opts.Yes {
+		return true, nil
+	}
+	if !opts.Console {
+		fmt.Fprintln(out, wizardRefusalSentence)
+		return false, ErrWizardWriteRefused
+	}
+	fmt.Fprintf(out, "Apply this write to %s? [y/N]: ", plan.consentTarget())
+	answer, err := bufio.NewReader(io.LimitReader(reader, wizardPromptBytes)).ReadString('\n')
+	if err != nil && answer == "" {
+		fmt.Fprintln(out, wizardRefusalSentence)
+		return false, ErrWizardWriteRefused
+	}
+	if strings.EqualFold(strings.TrimSpace(answer), "y") {
+		return true, nil
+	}
+	fmt.Fprintln(out, wizardCancelSentence)
+	return false, nil
+}
+
+// reverify re-reads the presented state immediately before the write and
+// refuses on drift, returning the registry the write must use (so the write
+// applies to what was verified, never to the pre-consent copy):
+//
+//   - add: the name is still absent;
+//   - replace: the record is still the exact record the diff described;
+//   - key persist: the presented presence of the variable name (clean name and
+//     BOM variants) is unchanged, compared only when both reads are observable.
+func (p *wizardWritePlan) reverify() (*Registry, error) {
+	reg, err := loadWizardRegistry(p.targetPath)
+	if err != nil {
+		return nil, fmt.Errorf("re-reading providers.json before the write failed: %w (nothing written)", err)
+	}
+	name := wizardProvLabel(p.prov.Name)
+	cur := wizardFindProvider(reg, p.prov.Name)
+	switch {
+	case !p.present && cur != nil:
+		return nil, fmt.Errorf("provider %s appeared in providers.json between the presentation and the write, so the presented diff is stale; nothing written (re-run the setup wizard after reviewing the current registry)", name)
+	case p.present && cur == nil:
+		return nil, fmt.Errorf("provider %s disappeared from providers.json between the presentation and the write, so the presented diff is stale; nothing written (re-run the setup wizard after reviewing the current registry)", name)
+	case p.present && !reflect.DeepEqual(*cur, p.before):
+		return nil, fmt.Errorf("provider %s changed on disk between the presentation and the write, so the presented diff is stale; nothing written (re-run the setup wizard after reviewing the current record)", name)
+	}
+	if p.key.set {
+		fresh := wizardEnvProbe(p.key.name)
+		if p.env.known && fresh.known && (p.env.exact != fresh.exact || !equalWizardStrings(p.env.variants, fresh.variants)) {
+			return nil, fmt.Errorf("the user environment entry %s changed between the presentation and the write, so the presented diff is stale; nothing written (HKCU untouched; re-run the setup wizard after reviewing the variable)", wizardEnvNameLabel(p.key.name))
+		}
+	}
+	return reg, nil
+}
+
+// equalWizardStrings compares two name lists element by element.
+func equalWizardStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// apply performs the composed write, in the presented order: the user
+// environment persist first (a failure there is reported and does not abort the
+// registry write, the pre-P5-1 contract), then the provider upsert into the
+// re-verified registry, validated and written atomically.
+func (p *wizardWritePlan) apply(reg *Registry, out io.Writer, envEcho func(string) string) error {
+	if p.key.set {
+		if err := wizardPersistUserEnv(p.key.name, p.key.value); err != nil {
+			fmt.Fprintf(out, "Warning: could not persist %s to Windows user environment: %v\n", envEcho(p.key.name), err)
+		} else {
+			fmt.Fprintf(out, "✅ Saved %s to Windows User Environment.\n", envEcho(p.key.name))
+		}
+	}
+	updated := false
+	for i := range reg.Providers {
+		if strings.EqualFold(reg.Providers[i].Name, p.prov.Name) {
+			reg.Providers[i] = p.prov
+			updated = true
+			break
+		}
+	}
+	if !updated {
+		reg.Providers = append(reg.Providers, p.prov)
+	}
+	if err := reg.Validate(); err != nil {
+		return fmt.Errorf("validation error: %w", err)
+	}
+	data, err := json.MarshalIndent(reg, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	if err := WriteFileAtomic(p.targetPath, data, 0o600); err != nil {
+		return fmt.Errorf("failed to save registry to %s: %w", p.targetPath, err)
 	}
 	return nil
 }

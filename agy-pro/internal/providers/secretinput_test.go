@@ -123,7 +123,11 @@ func TestWizardTranscript_InterruptDoesNotKeepExistingKey(t *testing.T) {
 	t.Setenv("INTPROV_API_KEY", existing)
 
 	// Name + base URL lines are consumed; the key prompt then hits the
-	// console seam (buffer drained) and returns the interrupt.
+	// console seam (buffer drained) and returns the interrupt, so this run
+	// aborts BEFORE the P5-1 U4 composed gate and needs no consent line: an
+	// appended answer would sit in the buffer, promptSecret would read it as
+	// the KEY instead of taking the console seam, and the interrupt the test
+	// exists to pin would never be delivered.
 	input := "intprov\nhttp://127.0.0.1:9/v1\n"
 	out := &bytes.Buffer{}
 	err := InteractiveSetupWizard(strings.NewReader(input), out)
@@ -169,7 +173,9 @@ func TestWizardTranscript_MasksKeyEcho(t *testing.T) {
 	}, "\n") + "\n"
 
 	out := &bytes.Buffer{}
-	if err := InteractiveSetupWizard(strings.NewReader(input), out); err != nil {
+	// P5-1 U4: scripted --yes caller, so the composed gate consents without an
+	// answer line that would otherwise be read by a prompt above it.
+	if err := InteractiveSetupWizardWithGate(strings.NewReader(input), out, WizardOptions{Yes: true}); err != nil {
 		t.Fatalf("InteractiveSetupWizard returned error: %v\nOutput: %s", err, out.String())
 	}
 	transcript := out.String()
@@ -205,7 +211,7 @@ func TestWizardTranscript_KeyShapedNameRefusedAtPrompt(t *testing.T) {
 	}, "\n") + "\n"
 
 	out := &bytes.Buffer{}
-	err := InteractiveSetupWizard(strings.NewReader(input), out)
+	err := InteractiveSetupWizard(strings.NewReader(withWizardConsent(input)), out)
 	if err == nil {
 		t.Fatalf("the wizard accepted a key-shaped provider name:\n%s", out.String())
 	}
@@ -302,7 +308,8 @@ func TestWizardTranscript_BenignNameKeepsDerivedEnvReadable(t *testing.T) {
 	}, "\n") + "\n"
 
 	out := &bytes.Buffer{}
-	if err := InteractiveSetupWizard(strings.NewReader(input), out); err != nil {
+	// P5-1 U4: scripted --yes caller (see TestWizardTranscript_MasksKeyEcho).
+	if err := InteractiveSetupWizardWithGate(strings.NewReader(input), out, WizardOptions{Yes: true}); err != nil {
 		t.Fatalf("InteractiveSetupWizard returned error: %v\nOutput: %s", err, out.String())
 	}
 	transcript := out.String()

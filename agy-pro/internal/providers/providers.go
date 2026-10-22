@@ -394,6 +394,10 @@ func exclusionTokenMatches(id, token string) bool {
 // swarm seat list and `agy pro models --all` render this exact string, so it is
 // the one place the wording lives; it stays short because it renders as a row
 // suffix.
+//
+// Catalog boundary (S7-C7 convention, decisions.md 2026-10-22 S7-C7 entry):
+// the wording stays outside the twelve i18n catalogs on purpose. Revisit when
+// the P5 unified settings surface exists.
 func ExcludedMarker() string { return "excluded (exclusion list)" }
 
 // Registry is the parsed providers file.

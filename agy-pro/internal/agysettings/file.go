@@ -218,6 +218,13 @@ func (f *File) syncDocFromRaw() error {
 			return err
 		}
 	}
+	if v, ok := f.raw[KeyStatusLine]; ok {
+		sl, err := parseStatusLine(v)
+		if err != nil {
+			return fmt.Errorf("agysettings: %s: key %q is not a valid statusLine object: %w", maskedPath(f.path, "the settings file"), KeyStatusLine, err)
+		}
+		f.doc.StatusLine = sl
+	}
 	return nil
 }
 
@@ -239,9 +246,10 @@ func (f *File) Get(key string) (any, error) {
 }
 
 // Set writes a managed key. value must match the ledger's shape for that key:
-// a string for modelProvider, a map[string]CustomModelConfig for customModels.
-// The whole key is owned by this package, so Set replaces it rather than
-// merging. A zero value clears the key, exactly like Delete.
+// a string for modelProvider, a map[string]CustomModelConfig for customModels,
+// a StatusLineConfig or *StatusLineConfig for statusLine. The whole key is owned
+// by this package, so Set replaces it rather than merging. A zero value clears
+// the key, exactly like Delete.
 func (f *File) Set(key string, value any) error {
 	if !isManagedKey(key) {
 		return notManagedError(key)
@@ -262,6 +270,17 @@ func (f *File) Set(key string, value any) error {
 			return err
 		}
 		f.doc.CustomModels = m
+	case kindStatusLine:
+		sl, err := toStatusLine(value)
+		if err != nil {
+			return err
+		}
+		if sl != nil {
+			if err := sl.validate(); err != nil {
+				return fmt.Errorf("agysettings: key %q: %w", key, err)
+			}
+		}
+		f.doc.StatusLine = sl
 	}
 	return nil
 }
@@ -278,6 +297,8 @@ func (f *File) Delete(key string) error {
 		f.doc.ModelProvider = ""
 	case kindCustomModels:
 		f.doc.CustomModels = nil
+	case kindStatusLine:
+		f.doc.StatusLine = nil
 	}
 	return nil
 }
@@ -314,6 +335,14 @@ func (f *File) docValue(key string) (any, bool, error) {
 			return nil, false, err
 		}
 		return f.doc.CustomModels, true, nil
+	case KeyStatusLine:
+		if f.doc.StatusLine == nil {
+			return nil, false, nil
+		}
+		if err := f.doc.StatusLine.validate(); err != nil {
+			return nil, false, fmt.Errorf("agysettings: key %q: %w", KeyStatusLine, err)
+		}
+		return f.doc.StatusLine, true, nil
 	}
 	return nil, false, notManagedError(key)
 }
@@ -331,6 +360,21 @@ func toCustomModels(value any) (map[string]CustomModelConfig, error) {
 		return out, nil
 	default:
 		return nil, fmt.Errorf("agysettings: key %q expects map[string]CustomModelConfig, got %T", KeyCustomModels, value)
+	}
+}
+
+// toStatusLine coerces a Set value into the managed object shape. A nil value
+// (including a nil *StatusLineConfig) clears the key, exactly like Delete.
+func toStatusLine(value any) (*StatusLineConfig, error) {
+	switch v := value.(type) {
+	case nil:
+		return nil, nil
+	case StatusLineConfig:
+		return v.clone(), nil
+	case *StatusLineConfig:
+		return v.clone(), nil
+	default:
+		return nil, fmt.Errorf("agysettings: key %q expects agysettings.StatusLineConfig or *agysettings.StatusLineConfig, got %T", KeyStatusLine, value)
 	}
 }
 
@@ -475,6 +519,9 @@ func mergeManaged(intent, onDisk SettingsDoc) SettingsDoc {
 	}
 	if len(intent.CustomModels) > 0 {
 		out.CustomModels = intent.CustomModels
+	}
+	if intent.StatusLine != nil {
+		out.StatusLine = intent.StatusLine
 	}
 	return out
 }

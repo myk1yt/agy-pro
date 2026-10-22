@@ -11,7 +11,7 @@ import (
 
 func TestManagedKeysIsTheDeclaredLedger(t *testing.T) {
 	got := ManagedKeys()
-	want := []string{KeyCustomModels, KeyModelProvider}
+	want := []string{KeyCustomModels, KeyModelProvider, KeyStatusLine}
 	if len(got) != len(want) {
 		t.Fatalf("ManagedKeys() = %v; want %v", got, want)
 	}
@@ -80,6 +80,7 @@ func TestLedgerGuardAcceptsAMatchingLedger(t *testing.T) {
 	type same struct {
 		A string `json:"modelProvider,omitempty"`
 		B string `json:"customModels,omitempty"`
+		C string `json:"statusLine,omitempty"`
 	}
 	if err := assertLedgerMatches(reflect.TypeOf(same{}), ManagedKeys(), "settings"); err != nil {
 		t.Errorf("assertLedgerMatches refused a matching ledger: %v", err)

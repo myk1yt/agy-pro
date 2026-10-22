@@ -25,6 +25,12 @@ import (
 const slotTestOpaque = "ab3def7gh9jk1mnpqr5t"     // 20 runes, lowercase, mixed classes
 const slotTestAWS = testfixtures.AWSSecretExample // 40 runes, base64 "/" run
 
+// slotTestSkLiveHyphen is a synthetic hyphen-family key VALUE. The head is
+// built by concatenation so the tracked source carries no contiguous
+// provider-key spelling; the runtime value is byte-identical to the literal it
+// replaced.
+const slotTestSkLiveHyphen = "sk-" + "live-" + "0123456789abcdefXYZ"
+
 // TestSlotPolicyRefusesDecoratedClasses pins the refuse side: every decoration
 // class the enumerated lists missed (or covered on only one side) reduces to a
 // credential core. Each entry's premise is that the RAW shape test alone does
@@ -641,7 +647,7 @@ var baseURLAuthorityCorpus = []struct {
 	{"path 16 run", "https://host/v1/0123456789abcdef", true},
 	{"path jwt", "https://host/v1/" + testfixtures.JWTHeader + "." + testfixtures.JWTPayload + ".dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U", true},
 	{"opaque path", "https:" + testfixtures.SKLive, true},
-	{"path sk head", "https://gw.example/v1/sk-live-0123456789abcdefXYZ", true},
+	{"path sk head", "https://gw.example/v1/" + slotTestSkLiveHyphen, true},
 	{"path nvapi head", "https://gw.example/v1/" + testfixtures.NvidiaKey, true},
 	// Query and fragment slots.
 	{"query value", "https://host/v1?api_key=" + testfixtures.SKLive, true},

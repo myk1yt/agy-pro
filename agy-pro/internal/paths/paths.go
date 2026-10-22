@@ -30,6 +30,23 @@ const (
 	EnvGeminiConfigDir = "GEMINI_CONFIG_DIR"
 )
 
+// BackupDirPerm is the mode every agy-pro BACKUP tree is created with: the
+// backups root, one per-run snapshot directory, and the pre-restore directory.
+// A backup holds copies of the user's own configuration, so a second local
+// account has no reason to list it or read it; 0700 keeps the tree owner-only
+// on POSIX.
+//
+// On Windows this mode is ADVISORY: Go's os.MkdirAll hands it to the Win32
+// create call, which ignores the permission bits, and the new directory
+// inherits the ACL of its parent (normally the user's profile, where only that
+// user plus SYSTEM/Administrators may read). So 0700 is the POSIX control and
+// an honest no-op on Windows, never a Windows access control.
+//
+// Deployed content directories (the Gemini config tree, the shim directory on
+// PATH) stay 0755: they are meant to be read and executed by their owner's
+// tooling, and nothing here tightens them.
+const BackupDirPerm os.FileMode = 0o700
+
 // UserHome returns the current user's home directory.
 func UserHome() (string, error) {
 	home, err := os.UserHomeDir()
@@ -136,7 +153,7 @@ func EnsureBaseDirs() error {
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		return fmt.Errorf("failed to create bin directory %q: %w", binDir, err)
 	}
-	if err := os.MkdirAll(backupDir, 0o755); err != nil {
+	if err := os.MkdirAll(backupDir, BackupDirPerm); err != nil {
 		return fmt.Errorf("failed to create backup directory %q: %w", backupDir, err)
 	}
 	return nil
@@ -209,7 +226,7 @@ func MoveToBackup(sourcePath string, backupDir string) (string, error) {
 		return "", err
 	}
 
-	if err := os.MkdirAll(backupDir, 0o755); err != nil {
+	if err := os.MkdirAll(backupDir, BackupDirPerm); err != nil {
 		return "", fmt.Errorf("failed to create backup destination %q: %w", backupDir, err)
 	}
 

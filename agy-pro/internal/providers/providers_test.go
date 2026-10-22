@@ -297,7 +297,7 @@ func TestInteractiveSetupWizard(t *testing.T) {
 		"N",
 	}, "\n") + "\n"
 
-	in := strings.NewReader(input)
+	in := strings.NewReader(withWizardConsent(input))
 	out := &bytes.Buffer{}
 
 	if err := InteractiveSetupWizard(in, out); err != nil {
@@ -781,7 +781,7 @@ func TestInteractiveSetupWizard_DeepSeekPreset(t *testing.T) {
 		"N",
 	}, "\n") + "\n"
 
-	in := strings.NewReader(input)
+	in := strings.NewReader(withWizardConsent(input))
 	out := &bytes.Buffer{}
 
 	if err := InteractiveSetupWizard(in, out); err != nil {
@@ -836,7 +836,7 @@ func TestInteractiveSetupWizard_NWPreset(t *testing.T) {
 		"N",
 	}, "\n") + "\n"
 
-	in := strings.NewReader(input)
+	in := strings.NewReader(withWizardConsent(input))
 	out := &bytes.Buffer{}
 
 	if err := InteractiveSetupWizard(in, out); err != nil {
@@ -894,7 +894,9 @@ func TestInteractiveSetupWizard_UnknownProviderNoDefaultURL(t *testing.T) {
 	in := strings.NewReader(input)
 	out := &bytes.Buffer{}
 
-	if err := InteractiveSetupWizard(in, out); err != nil {
+	// P5-1 U4: scripted caller on the documented --yes path, so the composed
+	// gate consents without an answer line shifting this dialog's prompts.
+	if err := InteractiveSetupWizardWithGate(in, out, WizardOptions{Yes: true}); err != nil {
 		t.Fatalf("wizard returned error: %v\nOutput: %s", err, out.String())
 	}
 
@@ -949,7 +951,7 @@ func TestInteractiveSetupWizard_PastedRawKeyAbsorption(t *testing.T) {
 		"N",
 	}, "\n") + "\n"
 
-	in := strings.NewReader(input)
+	in := strings.NewReader(withWizardConsent(input))
 	out := &bytes.Buffer{}
 
 	if err := InteractiveSetupWizard(in, out); err != nil {
@@ -1008,7 +1010,7 @@ func TestInteractiveSetupWizard_RefusesKeyShapedFamily(t *testing.T) {
 	}, "\n") + "\n"
 
 	out := &bytes.Buffer{}
-	err := InteractiveSetupWizard(strings.NewReader(input), out)
+	err := InteractiveSetupWizard(strings.NewReader(withWizardConsent(input)), out)
 	if err == nil {
 		t.Fatalf("wizard accepted a key-shaped family: %s", out.String())
 	}
@@ -1034,7 +1036,8 @@ func TestInteractiveSetupWizard_RefusesKeyShapedFamily(t *testing.T) {
 		"", "", "N", "N", "N",
 		"N",
 	}, "\n") + "\n"
-	if err := InteractiveSetupWizard(strings.NewReader(benign), out); err != nil {
+	// P5-1 U4: scripted --yes caller (see wizardEditPromptRun).
+	if err := InteractiveSetupWizardWithGate(strings.NewReader(benign), out, WizardOptions{Yes: true}); err != nil {
 		t.Fatalf("benign family run returned error: %v\nOutput: %s", err, out.String())
 	}
 	if !strings.Contains(out.String(), "[family: gemini") {
@@ -1096,7 +1099,7 @@ func TestInteractiveSetupWizard_RefusesDecoratedModelFields(t *testing.T) {
 
 			input := strings.Join(append([]string{"mycustomvendor", server.URL + "/v1", "mock-dummy-key-789"}, tc.lines...), "\n") + "\n"
 			out := &bytes.Buffer{}
-			err := InteractiveSetupWizard(strings.NewReader(input), out)
+			err := InteractiveSetupWizard(strings.NewReader(withWizardConsent(input)), out)
 			if err == nil {
 				t.Fatalf("wizard accepted a decorated %s: %s", tc.wantField, out.String())
 			}
@@ -1128,7 +1131,8 @@ func TestInteractiveSetupWizard_RefusesDecoratedModelFields(t *testing.T) {
 			"N", "N", "N",
 		}, "\n") + "\n"
 		out := &bytes.Buffer{}
-		if err := InteractiveSetupWizard(strings.NewReader(input), out); err != nil {
+		// P5-1 U4: scripted --yes caller (see wizardEditPromptRun).
+		if err := InteractiveSetupWizardWithGate(strings.NewReader(withWizardConsent(input)), out, WizardOptions{Yes: true}); err != nil {
 			t.Fatalf("benign run returned error: %v\nOutput: %s", err, out.String())
 		}
 		reg, err := LoadFrom(provPath)
@@ -1221,7 +1225,7 @@ func TestInteractiveSetupWizard_ServerMaximumTokens(t *testing.T) {
 		"N",       // add another: N
 	}, "\n") + "\n"
 
-	in := strings.NewReader(input)
+	in := strings.NewReader(withWizardConsent(input))
 	out := &bytes.Buffer{}
 
 	if err := InteractiveSetupWizard(in, out); err != nil {
@@ -1337,7 +1341,7 @@ func TestInteractiveSetupWizard_ProbeFailure_SaveAnyway(t *testing.T) {
 		"N", // add another: N
 	}, "\n") + "\n"
 
-	in := strings.NewReader(input)
+	in := strings.NewReader(withWizardConsent(input))
 	out := &bytes.Buffer{}
 
 	if err := InteractiveSetupWizard(in, out); err != nil {
@@ -1396,7 +1400,7 @@ func TestInteractiveSetupWizard_ProbeFailure_RetryImmediately(t *testing.T) {
 		"N", // add another: N
 	}, "\n") + "\n"
 
-	in := strings.NewReader(input)
+	in := strings.NewReader(withWizardConsent(input))
 	out := &bytes.Buffer{}
 
 	if err := InteractiveSetupWizard(in, out); err != nil {
@@ -1452,7 +1456,7 @@ func TestInteractiveSetupWizard_ProbeFailure_EditAndRetry(t *testing.T) {
 		"N",             // add another: N
 	}, "\n") + "\n"
 
-	in := strings.NewReader(input)
+	in := strings.NewReader(withWizardConsent(input))
 	out := &bytes.Buffer{}
 
 	if err := InteractiveSetupWizard(in, out); err != nil {
@@ -1489,7 +1493,7 @@ func TestInteractiveSetupWizard_ProbeFailure_TimeoutNotice(t *testing.T) {
 		"N", // add another: N
 	}, "\n") + "\n"
 
-	in := strings.NewReader(input)
+	in := strings.NewReader(withWizardConsent(input))
 	out := &bytes.Buffer{}
 
 	if err := InteractiveSetupWizard(in, out); err != nil {
@@ -1532,7 +1536,7 @@ func TestInteractiveSetupWizard_MultipleModels_PreservesCredentials(t *testing.T
 		"N", // add another model: no
 	}, "\n") + "\n"
 
-	in := strings.NewReader(input)
+	in := strings.NewReader(withWizardConsent(input))
 	out := &bytes.Buffer{}
 
 	if err := InteractiveSetupWizard(in, out); err != nil {
@@ -1594,7 +1598,8 @@ func TestInteractiveSetupWizard_ReasoningEffortDefault(t *testing.T) {
 	in := strings.NewReader(input)
 	out := &bytes.Buffer{}
 
-	if err := InteractiveSetupWizard(in, out); err != nil {
+	// P5-1 U4: scripted --yes caller (see wizardEditPromptRun).
+	if err := InteractiveSetupWizardWithGate(in, out, WizardOptions{Yes: true}); err != nil {
 		t.Fatalf("wizard returned error: %v\nOutput: %s", err, out.String())
 	}
 
@@ -1647,7 +1652,8 @@ func TestInteractiveSetupWizard_ReasoningEffortExplicitHigh(t *testing.T) {
 	in := strings.NewReader(input)
 	out := &bytes.Buffer{}
 
-	if err := InteractiveSetupWizard(in, out); err != nil {
+	// P5-1 U4: scripted --yes caller (see wizardEditPromptRun).
+	if err := InteractiveSetupWizardWithGate(in, out, WizardOptions{Yes: true}); err != nil {
 		t.Fatalf("wizard returned error: %v\nOutput: %s", err, out.String())
 	}
 
@@ -2117,7 +2123,7 @@ func TestInteractiveSetupWizard_GoogleAIStudioPreset(t *testing.T) {
 		"N",
 	}, "\n") + "\n"
 
-	in := strings.NewReader(input)
+	in := strings.NewReader(withWizardConsent(input))
 	out := &bytes.Buffer{}
 
 	if err := InteractiveSetupWizard(in, out); err != nil {
@@ -2214,7 +2220,7 @@ func wizardBaseURLTranscript(t *testing.T, userinfo string) (transcript string, 
 	// URL, blank key, preset 1, no second model.
 	input := strings.Join([]string{"deepseek", rawURL, "", "1", "N"}, "\n") + "\n"
 	var out bytes.Buffer
-	if err := InteractiveSetupWizard(strings.NewReader(input), &out); err != nil {
+	if err := InteractiveSetupWizard(strings.NewReader(withWizardConsent(input)), &out); err != nil {
 		t.Fatalf("wizard returned error: %v\nOutput: %s", err, out.String())
 	}
 	reg, err := LoadFrom(provPath)
@@ -2343,7 +2349,11 @@ func wizardEditPromptRun(t *testing.T, userinfo, typedPath string) wizardEditRun
 	steps = append(steps, "N") // no second model
 
 	var out bytes.Buffer
-	if err := InteractiveSetupWizard(strings.NewReader(strings.Join(steps, "\n")+"\n"), &out); err != nil {
+	// P5-1 U4: the wizard's composed write gate. This scripted caller takes the
+	// documented --yes path rather than answering the gate prompt, so the dialog
+	// above keeps its exact shape and the extra consent line cannot displace a
+	// prompt answer.
+	if err := InteractiveSetupWizardWithGate(strings.NewReader(strings.Join(steps, "\n")+"\n"), &out, WizardOptions{Yes: true}); err != nil {
 		t.Fatalf("wizard returned error: %v\nOutput: %s", err, out.String())
 	}
 	run.transcript = out.String()
@@ -2729,7 +2739,7 @@ func TestInteractiveSetupWizard_RefusesUnderscoreModelFields(t *testing.T) {
 				"mycustomvendor", server.URL + "/v1", "mock-dummy-key-789", probe.value,
 			}, "\n") + "\n"
 			out := &bytes.Buffer{}
-			err := InteractiveSetupWizard(strings.NewReader(input), out)
+			err := InteractiveSetupWizard(strings.NewReader(withWizardConsent(input)), out)
 			if err == nil {
 				t.Fatalf("the wizard accepted %q as a model ID: %s", probe.value, out.String())
 			}
@@ -3133,7 +3143,8 @@ func TestInteractiveSetupWizard_TranscriptMasksDiscardedCredentialModelID(t *tes
 			// the benign row, save it anyway, and decline another model.
 			script := wizardDiscoveryScript(srv.URL, "1", discardChoice, "y", "2", "1", "n")
 			out := &bytes.Buffer{}
-			if err := InteractiveSetupWizard(strings.NewReader(script), out); err != nil {
+			// P5-1 U4: scripted --yes caller (see wizardEditPromptRun).
+			if err := InteractiveSetupWizardWithGate(strings.NewReader(script), out, WizardOptions{Yes: true}); err != nil {
 				t.Fatalf("the benign run failed: %v\n%s", err, out.String())
 			}
 
@@ -3195,7 +3206,8 @@ func TestWizardCapabilityDefaultsYTaken(t *testing.T) {
 		lines = append(lines, answers...)
 		lines = append(lines, "N") // add another: N
 		out := &bytes.Buffer{}
-		if err := InteractiveSetupWizard(strings.NewReader(strings.Join(lines, "\n")+"\n"), out); err != nil {
+		// P5-1 U4: scripted --yes caller (see wizardEditPromptRun).
+		if err := InteractiveSetupWizardWithGate(strings.NewReader(strings.Join(lines, "\n")+"\n"), out, WizardOptions{Yes: true}); err != nil {
 			t.Fatalf("InteractiveSetupWizard returned error: %v\nOutput: %s", err, out.String())
 		}
 		reg, err := LoadFrom(provPath)
