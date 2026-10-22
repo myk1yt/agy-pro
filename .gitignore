@@ -63,3 +63,8 @@ desktop.ini
 *.sln
 *.sw?
 *.swp
+
+# Retired nested clone of the same upstream (decision D6: one repo). Kept ignored
+# here so the rule ships with the repo instead of living in a machine-local
+# .git/info/exclude entry.
+agy-tools/
