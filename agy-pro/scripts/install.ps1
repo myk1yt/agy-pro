@@ -81,6 +81,65 @@ function Test-GoVersionSufficient {
     return $false
 }
 
+function Assert-ArchiveChecksum {
+    param(
+        [string]$ArchivePath,
+        [string[]]$ChecksumUrls,
+        [string]$Pin
+    )
+    # The downloaded archive is extracted and its go.exe is executed, so it has to
+    # be proven against the published digest before extraction.
+    # Fail-closed: no verifiable digest means no install, never an unverified one.
+    $publishedHash = ""
+    foreach ($checksumUrl in $ChecksumUrls) {
+        if ($publishedHash) { break }
+        $checksumText = ""
+        try {
+            if (Get-Command "curl.exe" -ErrorAction SilentlyContinue) {
+                $checksumText = (& curl.exe -L $checksumUrl --silent --show-error) -join "`n"
+                if ($LASTEXITCODE -ne 0) { $checksumText = "" }
+            } else {
+                $checksumResponse = Invoke-WebRequest -Uri $checksumUrl -UseBasicParsing
+                $checksumText = $checksumResponse.Content
+                if ($checksumText -is [byte[]]) {
+                    $checksumText = [System.Text.Encoding]::ASCII.GetString($checksumText)
+                }
+                $checksumText = [string]$checksumText
+            }
+        } catch {
+            $checksumText = ""
+        }
+        if ($checksumText -match '(?<hash>[0-9a-fA-F]{64})(?:\s|$)') {
+            $publishedHash = $Matches['hash'].ToLowerInvariant()
+        }
+    }
+    if (-not $publishedHash) {
+        Write-Failure "Could not fetch the official SHA256 checksum for $(Split-Path -Leaf $ArchivePath)."
+        throw "Refusing to install an unverified Go archive: the published checksum could not be retrieved from $($ChecksumUrls -join ', '). Download and install Go manually from https://go.dev/dl and run this installer again."
+    }
+    $expectedHash = $publishedHash
+    if ($Pin) {
+        # The digest and the archive travel the same channel, so a rewritten CDN
+        # response would re-authorize a tampered archive. The pin is the authority;
+        # the fetched file only has to agree with it.
+        $pinnedHash = $Pin.ToLowerInvariant()
+        if ($publishedHash -ne $pinnedHash) {
+            Write-Failure "Served SHA256 ($publishedHash) disagrees with the pinned digest ($pinnedHash)."
+            throw "Refusing to install: the checksum served for $(Split-Path -Leaf $ArchivePath) does not match the digest pinned in this installer (served $publishedHash, pinned $pinnedHash). Either the download was tampered with or the pin is stale. Download and install Go manually from https://go.dev/dl and run this installer again."
+        }
+        $expectedHash = $pinnedHash
+    }
+    $actualHash = (Get-FileHash -LiteralPath $ArchivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actualHash -ne $expectedHash) {
+        # Never discard the evidence: quarantine the rejected archive for inspection.
+        $quarantinePath = "$ArchivePath.BADHASH"
+        Move-Item -Path $ArchivePath -Destination $quarantinePath -Force
+        Write-Failure "SHA256 mismatch for $(Split-Path -Leaf $ArchivePath): expected $expectedHash, got $actualHash."
+        throw "Go archive failed SHA256 verification (expected $expectedHash, got $actualHash). The unverified archive was moved to $quarantinePath for inspection and will not be extracted. Download and install Go manually from https://go.dev/dl and run this installer again."
+    }
+    Write-Success "Go archive SHA256 verified: $actualHash"
+}
+
 function Show-TroubleshootingGuide {
     param([string]$errorMessage)
     Write-Host ""
@@ -189,6 +248,18 @@ try {
             } else {
                 Invoke-WebRequest -Uri $downloadUrl -OutFile $tempZip -UseBasicParsing
             }
+
+            if (-not (Test-Path $tempZip)) {
+                throw "Go archive download failed ($downloadUrl). Check your internet connection or install Go manually from https://go.dev"
+            }
+
+            # Verify the archive against the published SHA256 before extracting it.
+            # go.dev/dl/<zip>.sha256 is NOT the digest (it serves an HTML redirect
+            # page); the digest is published next to the archive on the same CDN and
+            # is pinned below, so a rewritten CDN response cannot re-authorize a
+            # tampered archive.
+            $pinnedZipSha256 = "53fec1586850b2cf5ad6438341ff7adc5f6700dd3ec1cfa3f5e8b141df190243"
+            Assert-ArchiveChecksum -ArchivePath $tempZip -ChecksumUrls @("$downloadUrl.sha256") -Pin $pinnedZipSha256
 
             Write-Notice "Extracting Go archive..."
             if (Get-Command "tar.exe" -ErrorAction SilentlyContinue) {

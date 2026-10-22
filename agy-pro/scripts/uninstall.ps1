@@ -1,12 +1,17 @@
 # agy-pro one-click uninstaller for Windows
 #
 # Removes exactly what agy-pro/scripts/install.ps1 installed:
-#   1. the ~/.agy-pro/bin entry from the Windows User PATH (that entry only,
+#   1. the integrations the engine deployed into the Gemini config tree (rules,
+#      skills, plugins, hooks and the settings.json statusLine slot) - retracted
+#      by the shim FIRST, while the shim still exists
+#   2. the ~/.agy-pro/bin entry from the Windows User PATH (that entry only,
 #      every other entry is kept verbatim, registry value kind preserved)
-#   2. the ~/.agy-pro folder, moved to the Recycle Bin (never deleted permanently)
+#   3. the ~/.agy-pro folder, moved to the Recycle Bin (never deleted permanently)
 #
 # Options:
 #   -KeepState    keep providers.json / state.json / backups; remove the shim only
+#                 (the integrations retract still runs: it owns the Gemini config
+#                 tree, not provider state, and its backups land in the kept home)
 #   -RestorePath  restore the newest path-*.json backup written by the installer
 #                 instead of deleting the PATH entry
 #   -DryRun       print the planned actions and change nothing
@@ -282,6 +287,14 @@ try {
     $binExists = Test-Path -LiteralPath $TargetBin
     $exePath = Join-Path $TargetBin "agy.exe"
     $exeExists = Test-Path -LiteralPath $exePath
+    # The retract runs through the shim and nothing else: the authentic
+    # Antigravity CLI is also named agy.exe, so a PATH lookup here could hand
+    # the retract to the wrong tool. No shim means no retract, and the plan
+    # below prints the command to run instead.
+    $agyShim = $null
+    if ($exeExists) {
+        $agyShim = $exePath
+    }
 
     $pathSnapshot = Read-UserPathRegistry
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
@@ -339,6 +352,15 @@ try {
     if ($KeepState) {
         Write-Notice "Mode: -KeepState (providers.json, state.json and backups are kept)"
     }
+    # First mutating step of the run, so it is previewed first: the retract needs
+    # the shim and the PATH entry that finds it, both of which this run removes.
+    if ($mockMode) {
+        Write-Notice "Integrations: mock mode - 'agy pro integrations retract --yes' is previewed, never executed"
+    } elseif ($agyShim) {
+        Write-Notice "Integrations: retract the deployed Gemini config tree (rules, skills, plugins, hooks + the settings.json statusLine slot) via 'agy pro integrations retract --yes' before the shim and PATH removal"
+    } else {
+        Write-Notice "Integrations: agy was not found, so the deployed Gemini config files stay where they are; run 'agy pro integrations retract --yes' from a working install BEFORE the next uninstall"
+    }
     if ($RestorePath) {
         if ($pathBackup) {
             Write-Notice "User PATH: restore the pre-install value from $($pathBackup.Name)"
@@ -395,6 +417,48 @@ try {
     # ------------------------------------------------------------ 3/4 action
     Write-Host ""
     Write-Step "3/4 Removing..."
+
+    # Order matters: the integrations retract owns files in the Gemini config
+    # tree and can only run while the shim is there to run it, so it goes before
+    # the PATH rewrite and before the folder moves below. -KeepState still
+    # retracts: the retract is about ~/.gemini deployments, not provider state,
+    # and its backups land under $TargetBackups, which -KeepState keeps.
+    $retractResult = "not run"
+    if ($mockMode) {
+        Write-Notice "[MOCK] Integrations: would run 'agy pro integrations retract --yes' via the shim (not executed)"
+        $retractResult = "mock (not executed)"
+    } elseif (-not $agyShim) {
+        Write-Notice "agy was not found: the integration files deployed in the Gemini config tree were NOT retracted."
+        Write-Notice "Run 'agy pro integrations retract --yes' from a working agy install BEFORE the next uninstall."
+        $retractResult = "not run (agy not found)"
+    } else {
+        Write-Step "Retracting the deployed integrations: agy pro integrations retract --yes"
+        Write-Notice ("Using: " + $agyShim)
+        $savedAgyProHome = $env:AGY_PRO_HOME
+        # Point the engine at the home this script removes, so the retract backups
+        # land in $TargetBackups instead of an unrelated AGY_PRO_HOME.
+        $env:AGY_PRO_HOME = $TargetHome
+        $retractExit = 1
+        try {
+            & $agyShim pro integrations retract --yes
+            $retractExit = $LASTEXITCODE
+        } finally {
+            if ($null -eq $savedAgyProHome) {
+                $env:AGY_PRO_HOME = ""
+            } else {
+                $env:AGY_PRO_HOME = $savedAgyProHome
+            }
+        }
+        if ($retractExit -eq 0) {
+            Write-Success "Integrations retracted (exit 0); the deployed files were moved into a <ts>_retract folder under $TargetBackups"
+            $retractResult = "retracted (exit 0)"
+        } else {
+            Write-Failure "agy pro integrations retract --yes exited $retractExit (0 ok, 1 runtime error or refusal, 2 usage error)."
+            Write-Failure "The integration files deployed in the Gemini config tree were NOT retracted."
+            Write-Notice "$TargetBin is removed by this run anyway; a later retract needs a working install or the folder restored from the Recycle Bin."
+            $retractResult = "failed (exit $retractExit)"
+        }
+    }
 
     $pathResult = "unchanged"
     $pathPlan = "nothing to change"
@@ -463,6 +527,13 @@ try {
     Write-Header "Uninstall Summary"
     Write-Host ""
     Write-Host "  * User PATH   : $pathResult" -ForegroundColor White
+    Write-Host "  * Integrations: $retractResult" -ForegroundColor White
+    if ($retractResult -eq "retracted (exit 0)" -and -not $KeepState) {
+        Write-Host "    (the <ts>_retract backups under $TargetBackups went to the Recycle Bin with the home)" -ForegroundColor Gray
+    }
+    if ($retractResult -like "failed*" -or $retractResult -eq "not run (agy not found)") {
+        Write-Host "    (the deployed Gemini config files are still in place; 'agy pro integrations retract --yes' needs a working install)" -ForegroundColor Red
+    }
     if ($KeepState) {
         Write-Host "  * Removed     : $TargetBin (Recycle Bin)" -ForegroundColor White
         Write-Host "  * Kept        : providers.json, state.json, backups ($TargetHome)" -ForegroundColor White

@@ -1491,6 +1491,163 @@ async function runAllTests() {
       fs.unlinkSync(tmpCachePath);
     });
 
+    await test('saveSyncedPricing should put the cache in place through a sibling temp file', () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pricing-atomic-ok-'));
+      const destPath = path.join(tmpDir, 'antigravity_pricing.json');
+      const originalRename = fs.renameSync;
+      const renameCalls = [];
+      fs.renameSync = (from, to) => {
+        renameCalls.push({ from, to });
+        return originalRename(from, to);
+      };
+
+      try {
+        assert.strictEqual(priceSyncer.saveSyncedPricing({
+          version: '3.1.4',
+          models: { 'atomic-model': { inputPerMillion: 1.5, outputPerMillion: 4.5 } }
+        }, destPath), true);
+      } finally {
+        fs.renameSync = originalRename;
+      }
+
+      try {
+        assert.strictEqual(renameCalls.length, 1, 'exactly one rename replaces the cache');
+        assert.strictEqual(renameCalls[0].to, destPath);
+        assert(renameCalls[0].from.endsWith('.tmp'), 'the rename source is the temp file');
+        assert.strictEqual(path.dirname(renameCalls[0].from), tmpDir, 'temp file sits next to the cache (same volume)');
+
+        assert.deepStrictEqual(fs.readdirSync(tmpDir).sort(), ['antigravity_pricing.json'], 'successful save leaves exactly one file');
+
+        const saved = JSON.parse(fs.readFileSync(destPath, 'utf8'));
+        assert.strictEqual(saved.version, '3.1.4');
+        assert(saved._meta && saved._meta.syncedAt);
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    await test('saveSyncedPricing should fail loudly, keep the previous cache, and clean up its temp file', () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pricing-atomic-fail-'));
+      const destPath = path.join(tmpDir, 'antigravity_pricing.json');
+
+      try {
+        assert.strictEqual(priceSyncer.saveSyncedPricing({
+          version: '1.0.0-old',
+          models: { 'old-model': { inputPerMillion: 1, outputPerMillion: 2 } }
+        }, destPath), true);
+        const before = fs.readFileSync(destPath, 'utf8');
+
+        const originalRename = fs.renameSync;
+        fs.renameSync = () => {
+          const err = new Error('EPERM: operation not permitted, rename');
+          err.code = 'EPERM';
+          throw err;
+        };
+
+        let thrown = null;
+        try {
+          priceSyncer.saveSyncedPricing({
+            version: '2.0.0-new',
+            models: { 'new-model': { inputPerMillion: 9, outputPerMillion: 9 } }
+          }, destPath);
+        } catch (err) {
+          thrown = err;
+        } finally {
+          fs.renameSync = originalRename;
+        }
+
+        assert(thrown, 'a failed write must not be swallowed');
+        assert(thrown instanceof priceSyncer.PricingSaveError, 'failure is a distinguishable typed error');
+        assert.strictEqual(thrown.code, 'PRICING_SAVE_FAILED');
+        assert.strictEqual(thrown.path, destPath);
+        assert(/EPERM/.test(thrown.message), 'the underlying fs error survives in the message');
+
+        assert.strictEqual(fs.readFileSync(destPath, 'utf8'), before, 'previous cache survives a failed save byte for byte');
+        assert.deepStrictEqual(fs.readdirSync(tmpDir), ['antigravity_pricing.json'], 'temp file is removed on failure');
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    await test('saveSyncedPricing should surface an unusable destination directory', () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pricing-atomic-blocked-'));
+      const blocker = path.join(tmpDir, 'not-a-directory');
+      const destPath = path.join(blocker, 'nested', 'antigravity_pricing.json');
+
+      try {
+        fs.writeFileSync(blocker, 'occupied', 'utf8');
+
+        let thrown = null;
+        try {
+          priceSyncer.saveSyncedPricing({ models: { 'm': { inputPerMillion: 1, outputPerMillion: 1 } } }, destPath);
+        } catch (err) {
+          thrown = err;
+        }
+
+        assert(thrown instanceof priceSyncer.PricingSaveError, 'unusable parent must surface as a typed error');
+        assert.strictEqual(thrown.path, destPath);
+        assert.strictEqual(fs.readFileSync(blocker, 'utf8'), 'occupied', 'the blocking file is left untouched');
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    await test('syncPricing should report a failed cache save instead of claiming success', async () => {
+      const mockServerPayload = {
+        schemaVersion: 1,
+        version: '2.1.0-mock',
+        lastUpdated: '2026-10-22',
+        models: {
+          'mock-atomic-model': {
+            id: 'mock-atomic-model',
+            inputPerMillion: 0.2,
+            outputPerMillion: 0.8
+          }
+        }
+      };
+
+      const server = http.createServer((req, res) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(mockServerPayload));
+      });
+      await new Promise(res => server.listen(0, '127.0.0.1', res));
+      const port = server.address().port;
+
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pricing-sync-savefail-'));
+      const destPath = path.join(tmpDir, 'antigravity_pricing.json');
+      const originalRename = fs.renameSync;
+      fs.renameSync = () => {
+        const err = new Error('EACCES: permission denied, rename');
+        err.code = 'EACCES';
+        throw err;
+      };
+
+      let syncResult = null;
+      try {
+        syncResult = await priceSyncer.syncPricing({
+          url: `http://127.0.0.1:${port}/pricing.json`,
+          destPath,
+          timeoutMs: 2000,
+          silent: true
+        });
+      } finally {
+        fs.renameSync = originalRename;
+        await new Promise(res => server.close(res));
+      }
+
+      try {
+        assert.strictEqual(syncResult.success, false, 'a fetch that cannot be persisted is not a saved sync');
+        assert.strictEqual(syncResult.source, 'bundled');
+        assert(/Cache write failed/.test(syncResult.error), 'the write failure is named in the error');
+        assert.strictEqual(syncResult.saveError.code, 'PRICING_SAVE_FAILED');
+        assert.strictEqual(syncResult.fetchedVersion, '2.1.0-mock', 'the fetched catalog is still reported');
+        assert.strictEqual(syncResult.fetchedModelCount, 1);
+        assert(!fs.existsSync(destPath), 'nothing is written when the rename cannot complete');
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
     await test('getSyncedPricing should fallback to bundled pricing when cache is absent', () => {
       const nonExistentPath = path.join(os.tmpdir(), `non_existent_${Date.now()}.json`);
       const pricing = priceSyncer.getSyncedPricing({ cachePath: nonExistentPath });
@@ -1563,6 +1720,190 @@ async function runAllTests() {
         if (fs.existsSync(testDestPath)) {
           try { fs.unlinkSync(testDestPath); } catch (_e) {}
         }
+      }
+    });
+
+    await test('fetchRemotePricing should refuse an http redirect that downgrades the transport', async () => {
+      let hits = 0;
+      const server = http.createServer((req, res) => {
+        hits++;
+        res.writeHead(302, { Location: 'http://pricing.example.invalid/data/pricing.json' });
+        res.end();
+      });
+      await new Promise(res => server.listen(0, '127.0.0.1', res));
+      const port = server.address().port;
+
+      let result = null;
+      try {
+        result = await priceSyncer.fetchRemotePricing(`http://127.0.0.1:${port}/pricing.json`, 2000);
+      } finally {
+        await new Promise(res => server.close(res));
+      }
+
+      assert.strictEqual(result.success, false, 'a downgrade redirect must not be followed');
+      assert(/refusing a redirect that downgrades/.test(result.error), `the refusal names the downgrade: ${result.error}`);
+      assert(/https is required/.test(result.error), 'the refusal states the https requirement');
+      assert.strictEqual(hits, 1, 'the refused hop is never requested');
+    });
+
+    await test('fetchRemotePricing should refuse a redirect that leaves the host', async () => {
+      let hits = 0;
+      const server = http.createServer((req, res) => {
+        hits++;
+        res.writeHead(302, { Location: 'https://pricing.example.invalid/data/pricing.json' });
+        res.end();
+      });
+      await new Promise(res => server.listen(0, '127.0.0.1', res));
+      const port = server.address().port;
+
+      let result = null;
+      try {
+        result = await priceSyncer.fetchRemotePricing(`http://127.0.0.1:${port}/pricing.json`, 2000);
+      } finally {
+        await new Promise(res => server.close(res));
+      }
+
+      assert.strictEqual(result.success, false, 'a cross-host redirect must not be followed');
+      assert(/different host/.test(result.error), `the refusal names the host change: ${result.error}`);
+      assert.strictEqual(hits, 1, 'the refused hop is never requested');
+    });
+
+    await test('fetchRemotePricing should follow a same-host redirect and report the body digest', async () => {
+      const payload = JSON.stringify({
+        version: '7.7.7-mock',
+        models: { 'redirect-model': { inputPerMillion: 1.1, outputPerMillion: 2.2 } }
+      });
+      const server = http.createServer((req, res) => {
+        if (req.url === '/moved') {
+          res.writeHead(302, { Location: '/pricing.json' });
+          res.end();
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(payload);
+      });
+      await new Promise(res => server.listen(0, '127.0.0.1', res));
+      const port = server.address().port;
+
+      let result = null;
+      try {
+        result = await priceSyncer.fetchRemotePricing(`http://127.0.0.1:${port}/moved`, 2000);
+      } finally {
+        await new Promise(res => server.close(res));
+      }
+
+      assert.strictEqual(result.success, true, `same-host redirect should be followed: ${result.error}`);
+      assert.strictEqual(result.data.version, '7.7.7-mock');
+      assert.strictEqual(
+        result.digest,
+        crypto.createHash('sha256').update(payload, 'utf8').digest('hex'),
+        'the digest covers exactly the accepted body bytes'
+      );
+    });
+
+    await test('fetchRemotePricing should refuse a body larger than the size cap', async () => {
+      const chunk = 'x'.repeat(64 * 1024);
+      const server = http.createServer((req, res) => {
+        // No Content-Length: the response is chunked, so the refusal has to come
+        // from the streaming byte counter rather than the declared-size check.
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        for (let i = 0; i < 20; i++) {
+          res.write(chunk);
+        }
+        res.end();
+      });
+      await new Promise(res => server.listen(0, '127.0.0.1', res));
+      const port = server.address().port;
+
+      let result = null;
+      try {
+        result = await priceSyncer.fetchRemotePricing(`http://127.0.0.1:${port}/pricing.json`, 5000);
+      } finally {
+        await new Promise(res => server.close(res));
+      }
+
+      assert.strictEqual(result.success, false, 'an oversized catalog must not be accepted');
+      assert(/exceeds the \d+-byte cap/.test(result.error), `the refusal names the cap: ${result.error}`);
+      assert(!/declared/.test(result.error), `the streaming counter fired, not the declared-size header check: ${result.error}`);
+    });
+
+    await test('syncPricing should refuse a catalog whose digest does not match the pin', async () => {
+      const payload = {
+        version: '4.4.4-mock',
+        models: { 'pinned-model': { inputPerMillion: 0.5, outputPerMillion: 2.5 } }
+      };
+      const server = http.createServer((req, res) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(payload));
+      });
+      await new Promise(res => server.listen(0, '127.0.0.1', res));
+      const port = server.address().port;
+
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pricing-digest-pin-'));
+      const destPath = path.join(tmpDir, 'antigravity_pricing.json');
+      const wrongPin = crypto.createHash('sha256').update('not-the-catalog').digest('hex');
+
+      let result = null;
+      try {
+        result = await priceSyncer.syncPricing({
+          url: `http://127.0.0.1:${port}/pricing.json`,
+          destPath,
+          timeoutMs: 2000,
+          silent: true,
+          expectedSha256: wrongPin
+        });
+      } finally {
+        await new Promise(res => server.close(res));
+      }
+
+      try {
+        assert.strictEqual(result.success, false, 'a pinned digest mismatch is not a successful sync');
+        assert(/digest mismatch/.test(result.error), `the refusal names the mismatch: ${result.error}`);
+        assert.strictEqual(result.source, 'bundled', 'the pin failure falls back like any other fetch failure');
+        assert(!fs.existsSync(destPath), 'nothing is cached when the pin does not match');
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    await test('syncPricing should accept a catalog that matches the pinned digest and record it in the cache', async () => {
+      const payload = {
+        version: '5.5.5-mock',
+        models: { 'pinned-ok-model': { inputPerMillion: 0.7, outputPerMillion: 3.1 } }
+      };
+      const body = JSON.stringify(payload);
+      const server = http.createServer((req, res) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(body);
+      });
+      await new Promise(res => server.listen(0, '127.0.0.1', res));
+      const port = server.address().port;
+
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pricing-digest-ok-'));
+      const destPath = path.join(tmpDir, 'antigravity_pricing.json');
+      const pin = crypto.createHash('sha256').update(body, 'utf8').digest('hex');
+
+      let result = null;
+      try {
+        result = await priceSyncer.syncPricing({
+          url: `http://127.0.0.1:${port}/pricing.json`,
+          destPath,
+          timeoutMs: 2000,
+          silent: true,
+          expectedSha256: pin
+        });
+      } finally {
+        await new Promise(res => server.close(res));
+      }
+
+      try {
+        assert.strictEqual(result.success, true, `a matching pin should be accepted: ${result.error}`);
+        assert.strictEqual(result.digest, pin);
+        const cached = JSON.parse(fs.readFileSync(destPath, 'utf8'));
+        assert.strictEqual(cached._meta.remoteSha256, pin, 'the cache records the digest of the bytes it came from');
+        assert.strictEqual(cached.models['pinned-ok-model'].outputPerMillion, 3.1);
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
       }
     });
   });
@@ -2481,18 +2822,49 @@ async function runAllTests() {
     const osc8 = require('../src/osc8');
 
     await test('formatOsc8Link should wrap label with OSC 8 escape pairs', () => {
-      const linked = osc8.formatOsc8Link('file:///C:/test/dashboard.html', 'Dashboard');
-      assert(linked.includes('\x1b]8;;file:///C:/test/dashboard.html\x07'));
-      assert(linked.includes('Dashboard'));
-      assert(linked.endsWith('\x1b]8;;\x07'));
+      // F-W1-18: the OSC8 decision reads NO_COLOR/TERM from the ambient
+      // environment, so the test pins both while it asserts.
+      const prevNoColor = process.env.NO_COLOR;
+      const prevTerm = process.env.TERM;
+      delete process.env.NO_COLOR;
+      delete process.env.TERM;
+      try {
+        const linked = osc8.formatOsc8Link('file:///C:/test/dashboard.html', 'Dashboard');
+        assert(linked.includes('\x1b]8;;file:///C:/test/dashboard.html\x07'));
+        assert(linked.includes('Dashboard'));
+        assert(linked.endsWith('\x1b]8;;\x07'));
+      } finally {
+        if (prevNoColor === undefined) delete process.env.NO_COLOR; else process.env.NO_COLOR = prevNoColor;
+        if (prevTerm === undefined) delete process.env.TERM; else process.env.TERM = prevTerm;
+      }
     });
 
     await test('formatOsc8Link should degrade to plain label when unsupported', () => {
       const prevNoColor = process.env.NO_COLOR;
+      const prevTerm = process.env.TERM;
+      delete process.env.TERM;
       process.env.NO_COLOR = '1';
-      const plain = osc8.formatOsc8Link('file:///C:/test/dashboard.html', 'Dashboard');
-      assert.strictEqual(plain, 'Dashboard');
-      if (prevNoColor === undefined) delete process.env.NO_COLOR; else process.env.NO_COLOR = prevNoColor;
+      try {
+        const plain = osc8.formatOsc8Link('file:///C:/test/dashboard.html', 'Dashboard');
+        assert.strictEqual(plain, 'Dashboard');
+      } finally {
+        if (prevNoColor === undefined) delete process.env.NO_COLOR; else process.env.NO_COLOR = prevNoColor;
+        if (prevTerm === undefined) delete process.env.TERM; else process.env.TERM = prevTerm;
+      }
+    });
+
+    await test('formatOsc8Link should degrade to plain label when TERM=dumb (F-W1-18 env pin)', () => {
+      const prevNoColor = process.env.NO_COLOR;
+      const prevTerm = process.env.TERM;
+      delete process.env.NO_COLOR;
+      process.env.TERM = 'dumb';
+      try {
+        assert.strictEqual(osc8.isOsc8Supported(), false);
+        assert.strictEqual(osc8.formatOsc8Link('file:///C:/test/dashboard.html', 'Dashboard'), 'Dashboard');
+      } finally {
+        if (prevNoColor === undefined) delete process.env.NO_COLOR; else process.env.NO_COLOR = prevNoColor;
+        if (prevTerm === undefined) delete process.env.TERM; else process.env.TERM = prevTerm;
+      }
     });
 
     await test('dashboardFileUrl should return a file:// URL of dashboard.html', () => {
@@ -5225,16 +5597,19 @@ agy      1234 user    5u  IPv4 0xbaadf00d      0t0  TCP 127.0.0.1:54457 (LISTEN)
     const batPath = path.join(rootDir, 'scripts', 'install.bat');
     const shPath = path.join(rootDir, 'scripts', 'install.sh');
     const configScriptPath = path.join(rootDir, 'scripts', 'lib', 'configure-statusline.js');
+    const statuslineModule = require(configScriptPath);
     const {
       configureStatusline,
+      inspectStatusline,
       getSettingsPath,
-      getTimestamp,
       parseArgs,
-      writeAtomic,
-      DEFAULT_COMMAND
-    } = require(configScriptPath);
+      DEFAULT_COMMAND,
+      DEPRECATED_EXIT_CODE,
+      DEPRECATION_MESSAGE,
+      DeprecatedWriterError
+    } = statuslineModule;
 
-    await test('scripts/install.bat should exist with CRLF line endings, shims, and configure-statusline invocation', () => {
+    await test('scripts/install.bat should exist with CRLF line endings, shims, and the agy pro integrations door', () => {
       assert(fs.existsSync(batPath), 'scripts/install.bat must exist');
       const rawBat = fs.readFileSync(batPath, 'utf8');
 
@@ -5256,14 +5631,102 @@ agy      1234 user    5u  IPv4 0xbaadf00d      0t0  TCP 127.0.0.1:54457 (LISTEN)
       assert(rawBat.includes('agy-dashboard.bat'), 'install.bat must generate agy-dashboard.bat shim');
       assert(rawBat.includes('mkdir'), 'install.bat must create fallback bin directory if missing');
 
-      // Automated configure-statusline invocation
-      assert(rawBat.includes('configure-statusline.js'), 'install.bat must invoke configure-statusline.js');
-      assert(rawBat.includes('configure-customizations.js'), 'install.bat must invoke configure-customizations.js');
-      assert(rawBat.includes('"type": "command"'), 'install.bat statusLine snippet must include "type": "command"');
-      assert(rawBat.includes('!STATUSLINE_CMD!'), 'install.bat must reference statusline command variable');
+      // Self-healing launchers: generation delegated, root marker refreshed, no frozen path
+      assert(rawBat.includes('make-launchers.js'), 'install.bat must delegate shim generation to scripts/lib/make-launchers.js');
+      assert(rawBat.includes('marker --root'), 'install.bat must refresh the agy-tools root marker');
+      assert(!rawBat.includes('echo node "%ROOT_DIR%'), 'install.bat must not bake ROOT_DIR into a generated shim body');
+
+      // The Go engine owns the deployment: ONE gated call replaces the two retired
+      // Node writers (T5 §10.2 final form, T8 §13.2 verb spellings).
+      assert(!rawBat.includes('configure-statusline.js'), 'install.bat must not invoke the retired configure-statusline.js writer');
+      assert(!rawBat.includes('configure-customizations.js'), 'install.bat must not invoke configure-customizations.js; the Go engine deploys rules/plugins/skills/hooks');
+      assert(rawBat.includes('agy pro integrations apply tools --yes'), 'install.bat must deploy through the Go integrations door');
+      // FIX-6C (security MED-1, CWE-426): the door is invoked through an
+      // absolute-path-preferring variable, never as a bare `agy` PATH lookup.
+      assert(rawBat.includes('call "%AGY_DOOR%" pro integrations apply tools --yes'), 'install.bat must `call` the Go door through AGY_DOOR so a .bat/.cmd agy shim returns control (cmd control-transfer rule)');
+      assert(!rawBat.includes('call agy pro integrations apply tools --yes'), 'install.bat must never invoke the Go door as a bare `agy`: a PATH-earlier binary would run attacker code with --yes (CWE-426, FIX-6C MED-1)');
+      assert(rawBat.includes('set "AGY_DOOR=%USERPROFILE%\\.agy-pro\\bin\\agy.exe"'), 'install.bat must prefer the agy-pro shim at its fixed absolute path (%USERPROFILE%\\.agy-pro\\bin\\agy.exe, the path agy-pro/scripts/install.ps1 deploys to)');
+      assert(rawBat.includes('if exist "%AGY_DOOR%" goto agy_door_ready'), 'install.bat must test the absolute shim before any PATH lookup');
+      assert(rawBat.includes(':agy_door_ready'), 'install.bat must have one shared door label reached by both the shim branch and the PATH fallback');
+      assert(rawBat.includes('where agy >nul 2>nul'), 'install.bat must keep the where agy PATH fallback for machines without the agy-pro shim');
+      assert(rawBat.includes('set "AGY_DOOR=agy"'), 'install.bat PATH fallback must set AGY_DOOR=agy so the single call site still runs');
+      assert(rawBat.includes(':agy_no_engine'), 'install.bat must carry the no-engine branch that prints the manual command');
+      assert(rawBat.includes('After agy is installed, run this exact command once:'), 'the no-engine branch must name the command the user has to run');
+      const batApplyRefs = rawBat.split('pro integrations apply tools --yes').length - 1;
+      assert(batApplyRefs >= 2, 'install.bat must both run the Go door and print it as the manual step');
+
+      // F-W1-06: delayed expansion would mangle '!' in every path it touches
+      assert(rawBat.includes('setlocal disabledelayedexpansion'), 'install.bat must disable delayed expansion (F-W1-06)');
+      assert(!rawBat.includes('setlocal enabledelayedexpansion'), 'install.bat must not enable delayed expansion (F-W1-06)');
+
+      // F-W1-07: marker failure is fatal, and the Go door's exit code is checked
+      assert(!rawBat.includes('|| true'), 'install.bat must not swallow failures with `|| true` (F-W1-07)');
+      assert(!rawBat.includes('[WARN] Could not refresh the agy-tools root marker'), 'install.bat must not degrade a marker failure to a WARN (F-W1-07)');
+      assert(rawBat.includes('[ERROR] Could not write the agy-tools root marker.'), 'install.bat must fail loudly when the marker cannot be written (F-W1-07)');
+      const batGuardIdx = rawBat.indexOf('where agy >nul 2>nul');
+      // FIX-6C: the door reference is the AGY_DOOR call site, not a bare `agy`
+      // chain (the only remaining bare spelling is the manual print line).
+      const batApplyIdx = rawBat.indexOf('call "%AGY_DOOR%" pro integrations apply tools --yes');
+      const batNoEngineIdx = rawBat.indexOf(':agy_no_engine');
+      assert(batGuardIdx > 0 && batApplyIdx > batGuardIdx, 'install.bat must resolve agy before invoking the Go door');
+      assert(batNoEngineIdx > batApplyIdx, 'the no-engine branch must follow the guarded invocation');
+      const batDoorBlock = rawBat.slice(batApplyIdx, batNoEngineIdx);
+      assert(batDoorBlock.includes('if errorlevel 1'), 'install.bat must check the exit code of the Go door (F-W1-07)');
+      assert(batDoorBlock.includes('exit /b 1'), 'install.bat must abort the install when the Go door fails (F-W1-07)');
+      assert(rawBat.includes('[ERROR] agy pro integrations apply tools failed'), 'install.bat must fail loudly at the Go door (F-W1-07)');
+
+      // FIX-6C MED-1 (CWE-426): preference ORDER is the control. The fixed
+      // absolute shim is tested first, the PATH lookup is the fallback only, and
+      // the one call site sits after both so neither branch can skip the gate.
+      const batShimIdx = rawBat.indexOf('set "AGY_DOOR=%USERPROFILE%\\.agy-pro\\bin\\agy.exe"');
+      const batShimTestIdx = rawBat.indexOf('if exist "%AGY_DOOR%" goto agy_door_ready');
+      const batDoorCallIdx = rawBat.indexOf('call "%AGY_DOOR%" pro integrations apply tools --yes');
+      assert(batShimIdx > 0 && batShimTestIdx > batShimIdx, 'install.bat must set AGY_DOOR to the absolute shim and then test it');
+      assert(batShimTestIdx < batGuardIdx, 'install.bat must test the absolute shim BEFORE the where agy PATH lookup (trusted path preference, FIX-6C MED-1)');
+      assert(batDoorCallIdx > batGuardIdx, 'install.bat must reach the single door call after both the shim test and the PATH fallback');
+
+      // F-S9C-01: the fallback mkdir's errorlevel test must live INSIDE the
+      // `if not exist` branch. On a re-run the directory already exists, so the
+      // one-line form (`if not exist X mkdir X` then `if errorlevel 1`) reads the
+      // stale ERRORLEVEL that the failed `call npm link` left behind and false-fails
+      // with "[ERROR] Could not create the launcher directory" on a healthy install.
+      const batFallbackIdx = rawBat.indexOf(':agy_npm_fallback');
+      const batLauncherGenIdx = rawBat.indexOf('node "%LAUNCHER_GEN%" bat');
+      assert(batFallbackIdx > 0 && batLauncherGenIdx > batFallbackIdx, 'install.bat must keep the :agy_npm_fallback branch before the launcher generation');
+      const batFallbackBlock = rawBat.slice(batFallbackIdx, batLauncherGenIdx);
+      assert(
+        !/if not exist "%USER_BIN%"\s+mkdir/.test(rawBat),
+        'install.bat must not run mkdir on the same line as the `if not exist` test: the next `if errorlevel 1` would then inherit the stale ERRORLEVEL from the failed npm link (F-S9C-01)'
+      );
+      assert(
+        /if not exist "%USER_BIN%" \(\r?\n\s+mkdir "%USER_BIN%"\r?\n\s+if errorlevel 1 \(/.test(batFallbackBlock),
+        'install.bat must test the mkdir exit code INSIDE the `if not exist "%USER_BIN%" (` block, so a skipped mkdir cannot abort a re-run (F-S9C-01)'
+      );
+
+      // F-S9C-04: the exit-code contract. `where agy` leaves ERRORLEVEL 1 on the
+      // no-engine branch, so the trailer states success explicitly; the Go-door
+      // failure keeps its explicit 1.
+      assert(
+        /endlocal\r?\nexit \/b 0$/.test(rawBat.trimEnd()),
+        'install.bat must end with an explicit `exit /b 0`: a `call`-context parent would otherwise inherit the sticky ERRORLEVEL 1 from the `where agy` guard (F-S9C-04)'
+      );
+      assert(!batDoorBlock.includes('exit /b 0'), 'the Go-door failure must keep exiting 1, never 0 (F-W1-07 / F-S9C-04)');
+      const batNoEngineBlock = rawBat.slice(batNoEngineIdx, rawBat.indexOf(':agy_integrations_done'));
+      assert(batNoEngineBlock.includes('[WARN] The agy CLI is not in your PATH'), 'the no-engine branch must stay a WARN, not an error');
+      assert(!/exit \/b 1/.test(batNoEngineBlock), 'an absent agy CLI is a warning, not a failure: the no-engine branch must not exit 1 (F-S9C-04)');
+
+      // F-S9C-06: the marker is repairable, so the message must not deny that the
+      // launchers can run without one (they rescan and rewrite it).
+      assert(!rawBat.includes('cannot run without it'), 'install.bat must not claim the launchers cannot run without the marker: they rescan and repair it (F-S9C-06)');
+      assert(rawBat.includes('must rescan your profile on every run'), 'the marker failure must state the real cost (a rescan on every run), matching scripts/install.sh (F-S9C-06)');
+
+      // The retired snippet and its false claim must stay gone.
+      assert(!rawBat.includes('%STATUSLINE_CMD%'), 'install.bat must not carry the retired statusline command variable');
+      assert(!rawBat.includes('"type": "command"'), 'install.bat must not reprint a settings snippet it no longer writes');
+      assert(!rawBat.includes('statusLine is now automatically configured'), 'install.bat must not claim the statusLine was configured');
     });
 
-    await test('scripts/install.sh should exist with LF line endings, POSIX redirects, symlinks, and configure-statusline invocation', () => {
+    await test('scripts/install.sh should exist with LF line endings, POSIX redirects, self-healing wrappers, and the agy pro integrations door', () => {
       assert(fs.existsSync(shPath), 'scripts/install.sh must exist');
       const rawSh = fs.readFileSync(shPath, 'utf8');
 
@@ -5281,41 +5744,221 @@ agy      1234 user    5u  IPv4 0xbaadf00d      0t0  TCP 127.0.0.1:54457 (LISTEN)
       // POSIX redirects
       assert(rawSh.includes('>/dev/null 2>&1'), 'install.sh must use POSIX redirects');
 
-      // Fallback symlinks for all 4 binaries matching package.json bin
-      assert(rawSh.includes('ln -sf "$ROOT_DIR/bin/agy-tools.js" "$USER_BIN/agy-tools"'), 'install.sh must link agy-tools');
-      assert(rawSh.includes('ln -sf "$ROOT_DIR/bin/agy-tools.js" "$USER_BIN/antigravity-tools"'), 'install.sh must link antigravity-tools');
-      assert(rawSh.includes('ln -sf "$ROOT_DIR/bin/agy-tokens.js" "$USER_BIN/agy-tokens"'), 'install.sh must link agy-tokens');
-      assert(rawSh.includes('ln -sf "$ROOT_DIR/bin/agy-dashboard.js" "$USER_BIN/agy-dashboard"'), 'install.sh must link agy-dashboard');
+      // Self-healing wrappers instead of install-time absolute symlinks
+      assert(!rawSh.includes('ln -sf'), 'install.sh must not create install-time absolute symlinks');
+      assert(rawSh.includes('write_wrapper "$USER_BIN/agy-tools" "agy-tools.js"'), 'install.sh must write the agy-tools wrapper');
+      assert(rawSh.includes('write_wrapper "$USER_BIN/antigravity-tools" "agy-tools.js"'), 'install.sh must write the antigravity-tools wrapper');
+      assert(rawSh.includes('write_wrapper "$USER_BIN/agy-tokens" "agy-tokens.js"'), 'install.sh must write the agy-tokens wrapper');
+      assert(rawSh.includes('write_wrapper "$USER_BIN/agy-dashboard" "agy-dashboard.js"'), 'install.sh must write the agy-dashboard wrapper');
+      assert(rawSh.includes('agy-tools-root'), 'install.sh wrappers must resolve the root through the marker');
+      assert(rawSh.includes('re-run the installer'), 'install.sh wrappers must fail loudly with the reinstall hint');
+      assert(!rawSh.includes('exec node "$ROOT_DIR/bin/'), 'install.sh wrappers must not bake ROOT_DIR into the wrapper body');
 
-      // Automated configure-statusline invocation
-      assert(rawSh.includes('configure-statusline.js'), 'install.sh must invoke configure-statusline.js');
-      assert(rawSh.includes('configure-customizations.js'), 'install.sh must invoke configure-customizations.js');
-      assert(rawSh.includes('"type": "command"'), 'install.sh statusLine snippet must include "type": "command"');
-      assert(rawSh.includes('$STATUSLINE_CMD'), 'install.sh must reference statusline command variable');
+      // The Go engine owns the deployment: ONE gated call replaces the two retired
+      // Node writers (T5 §10.2 final form, T8 §13.2 verb spellings).
+      assert(!rawSh.includes('configure-statusline.js'), 'install.sh must not invoke the retired configure-statusline.js writer');
+      assert(!rawSh.includes('configure-customizations.js'), 'install.sh must not invoke configure-customizations.js; the Go engine deploys rules/plugins/skills/hooks');
+      assert(rawSh.includes('agy pro integrations apply tools --yes'), 'install.sh must deploy through the Go integrations door');
+      // FIX-6C (security MED-1, CWE-426): same trusted-path preference as the .bat
+      // twin: the fixed absolute agy-pro shim first, the PATH lookup only as fallback.
+      assert(rawSh.includes('command -v agy'), 'install.sh must keep the command -v agy PATH fallback for machines without the agy-pro shim');
+      assert(rawSh.includes('for _agy_shim in "$HOME/.agy-pro/bin/agy" "$HOME/.agy-pro/bin/agy.exe"'), 'install.sh must prefer the agy-pro shim at its absolute path ($HOME/.agy-pro/bin/agy, the ~/.agy-pro/bin directory agy-pro deploys its shim into; the .exe twin is the Windows shim name Git Bash sees)');
+      assert(rawSh.includes('if ! "$AGY_DOOR" pro integrations apply tools --yes; then'), 'install.sh must test the exit code of the Go door invoked through AGY_DOOR (F-W1-07)');
+      assert(!rawSh.includes('if ! agy pro integrations apply tools --yes'), 'install.sh must never invoke the Go door as a bare `agy`: a PATH-earlier binary would run attacker code with --yes (CWE-426, FIX-6C MED-1)');
+      assert(rawSh.includes('[ERROR] agy pro integrations apply tools failed'), 'install.sh must fail loudly at the Go door (F-W1-07)');
+      // Preference ORDER is the control: the absolute shim probe comes first, the
+      // PATH fallback second, and one call site follows both.
+      const shShimIdx = rawSh.indexOf('"$HOME/.agy-pro/bin/agy" "$HOME/.agy-pro/bin/agy.exe"');
+      const shPathFallbackIdx = rawSh.indexOf('command -v agy');
+      const shDoorCallIdx = rawSh.indexOf('if ! "$AGY_DOOR" pro integrations apply tools --yes; then');
+      assert(shShimIdx > 0 && shPathFallbackIdx > shShimIdx, 'install.sh must probe the absolute agy-pro shim BEFORE the command -v agy PATH lookup (trusted path preference, FIX-6C MED-1)');
+      assert(shDoorCallIdx > shPathFallbackIdx, 'install.sh must reach the single door call after both the shim probe and the PATH fallback');
+      const shApplyRefs = rawSh.split('pro integrations apply tools --yes').length - 1;
+      assert(shApplyRefs >= 2, 'install.sh must both run the Go door and print it as the manual step');
+      assert(rawSh.includes('After agy is installed, run this exact command once:'), 'the no-engine branch must name the command the user has to run');
+
+      // F-S9C-04 parity: the no-engine branch is a warning on both installers, so
+      // neither may exit non-zero there (the .bat twin ends with `exit /b 0`).
+      const shNoEngineIdx = rawSh.indexOf('The agy CLI is not in your PATH');
+      const shTrailerIdx = rawSh.indexOf('echo "Try running:"');
+      assert(shNoEngineIdx > 0 && shTrailerIdx > shNoEngineIdx, 'install.sh must keep the no-engine branch before the trailer');
+      const shNoEngineBlock = rawSh.slice(shNoEngineIdx, shTrailerIdx);
+      assert(!/exit 1/.test(shNoEngineBlock), 'an absent agy CLI is a warning, not a failure: the install.sh no-engine branch must not exit 1 (F-S9C-04 parity)');
+
+      // The retired snippet and its false claim must stay gone.
+      assert(!rawSh.includes('$STATUSLINE_CMD'), 'install.sh must not carry the retired statusline command variable');
+      assert(!rawSh.includes('"type": "command"'), 'install.sh must not reprint a settings snippet it no longer writes');
+      assert(!rawSh.includes('statusLine is now automatically configured'), 'install.sh must not claim the statusLine was configured');
+
+      // F-W1-03: unpredictable, private scan temp (no /tmp/agy-tools-scan.$$)
+      assert(!rawSh.includes('agy-tools-scan.$$'), 'install.sh must not use a predictable $$ temp path (F-W1-03)');
+      assert(rawSh.includes('mktemp'), 'install.sh wrappers must use mktemp for temp files (F-W1-03)');
+
+      // F-W1-13: no GNU-only find flag anywhere
+      assert(!rawSh.includes('-maxdepth'), 'install.sh must not rely on GNU-only find -maxdepth (F-W1-13)');
+
+      // F-W1-02: identity match before adoption, no guessing on ambiguity
+      assert(rawSh.includes('agy_tools_identity_ok'), 'install.sh wrappers must run an identity check before adopting (F-W1-02)');
+      assert(rawSh.includes("name==='agy-tools'"), 'install.sh identity check must compare the package.json name (F-W1-02)');
+      assert(rawSh.includes('candidate agy-tools roots found'), 'install.sh must fail loudly on ambiguous candidates (F-W1-02)');
+      assert(rawSh.includes('root marker left untouched'), 'install.sh must not rewrite the marker on ambiguity (F-W1-02)');
+      assert(rawSh.includes('agy-tools.js agy-tokens.js agy-dashboard.js'), 'install.sh identity check must cover every wired entry script (F-W1-09)');
+
+      // F-W1-05: atomic marker write, and the marker comes before the wrappers
+      const shMarkerFn = rawSh.indexOf('write_root_marker()');
+      const shNpmLink = rawSh.indexOf('npm link >/dev/null');
+      const shWriteWrapper = rawSh.indexOf('write_wrapper "$USER_BIN/agy-tools"');
+      assert(shMarkerFn > 0 && shNpmLink > shMarkerFn, 'install.sh must define write_root_marker before the install flow');
+      assert(shWriteWrapper > 0, 'install.sh must write the agy-tools wrapper');
+      const shFallback = rawSh.indexOf('Installing self-healing wrappers');
+      assert(
+        rawSh.indexOf('write_root_marker "$ROOT_DIR"', shFallback) < shWriteWrapper,
+        'install.sh must write the marker BEFORE the wrappers (F-W1-07)'
+      );
+      assert(rawSh.includes('mv -f "$_marker_tmp" "$ROOT_MARKER"'), 'install.sh marker write must be atomic (F-W1-05)');
+      assert(!rawSh.includes('printf \'%s\\n\' "$1" > "$ROOT_MARKER"'), 'install.sh must not truncate the marker in place (F-W1-05)');
     });
 
-    await test('scripts/lib/configure-statusline.js should create new settings.json when absent (REQ-403)', () => {
+    await test('scripts/lib/make-launchers.js should generate 4 path-free shims, the resolver, and the root marker', () => {
+      const genPath = path.join(rootDir, 'scripts', 'lib', 'make-launchers.js');
+      assert(fs.existsSync(genPath), 'scripts/lib/make-launchers.js must exist');
+      const { writeLaunchers, renderShim, isRepoRoot, renderRootResolver, RESOLVER_FILE, SCAN_MAX_DEPTH } = require(genPath);
+      const tmpHome = path.join(os.tmpdir(), `agy-test-launchers-${Date.now()}`);
+      const markerDir = path.join(tmpHome, '.gemini', 'antigravity-cli');
+      const binDir = path.join(markerDir, 'bin');
+      const markerPath = path.join(markerDir, 'agy-root.txt');
+      try {
+        assert(isRepoRoot(rootDir), 'the repository root must be recognized by the locator check');
+        const result = writeLaunchers({ binDir, root: rootDir, markerPath, home: tmpHome, profile: tmpHome });
+        assert.strictEqual(result.written.length, 4, 'must write 4 launchers');
+        assert.strictEqual(result.marker, markerPath, 'writeLaunchers must report the marker path');
+        assert(fs.existsSync(result.resolver), 'writeLaunchers must write the companion resolver');
+        assert.strictEqual(path.basename(result.resolver), RESOLVER_FILE, 'the resolver keeps its documented file name');
+        assert.strictEqual(fs.readFileSync(markerPath, 'utf8').trim(), rootDir, 'marker must record the repository root');
+        for (const name of ['agy-tools.bat', 'antigravity-tools.bat', 'agy-tokens.bat', 'agy-dashboard.bat']) {
+          const body = fs.readFileSync(path.join(binDir, name), 'utf8');
+          assert(body.includes('\r\n'), `${name} must use CRLF line endings`);
+          assert(body.includes('%USERPROFILE%'), `${name} must resolve paths relative to %USERPROFILE% when home IS the profile`);
+          assert(!body.includes(rootDir), `${name} must not contain the install-time absolute path`);
+          // F-W1-01: the old body ran an unbounded `dir /s /b` scan on the
+          // statusline hot path and followed junctions; it must be gone.
+          assert(!body.includes('dir /s /b'), `${name} must not self-heal with an unbounded dir /s scan (F-W1-01)`);
+          assert(body.includes('disabledelayedexpansion'), `${name} must disable delayed expansion so '!' survives (F-W1-06)`);
+          assert(!body.includes('enabledelayedexpansion\r\n') && !body.includes('setlocal enabledelayedexpansion'), `${name} must not enable delayed expansion (F-W1-06)`);
+          assert(body.includes(RESOLVER_FILE), `${name} must delegate the rescan to the companion resolver (F-W1-01)`);
+          assert(body.includes(`depth-${SCAN_MAX_DEPTH}`), `${name} header must state the real depth bound (F-W1-01)`);
+          assert(body.includes('--home'), `${name} must pass the scan root to the resolver`);
+          assert(body.includes('scripts\\install.bat'), `${name} must name the reinstall fix`);
+        }
+        const resolverSrc = renderRootResolver();
+        assert(resolverSrc.includes(`DEFAULT_DEPTH = ${SCAN_MAX_DEPTH}`), 'the resolver must carry the same depth bound as the sh twin (F-W1-01)');
+        assert(resolverSrc.includes('isSymbolicLink'), 'the resolver must refuse to enter reparse points (F-W1-01)');
+        assert(resolverSrc.includes("pkg.name !== PKG_NAME"), 'the resolver must require the product package name (F-W1-02)');
+        assert(resolverSrc.includes('EXIT_AMBIGUOUS'), 'the resolver must fail loudly on ambiguous candidates (F-W1-02)');
+        assert(!renderShim({ script: 'agy-tokens.js', home: tmpHome, profile: tmpHome }).includes(tmpHome), 'rendered shim must not embed the install home path when home is the profile');
+      } finally {
+        fs.rmSync(tmpHome, { recursive: true, force: true });
+      }
+    });
+
+    await test('make-launchers isRepoRoot adopts only THIS product root and validates every wired entry script (F-W1-02, F-W1-09)', () => {
+      const { isRepoRoot, ENTRY_SCRIPTS, PACKAGE_NAME } = require(path.join(rootDir, 'scripts', 'lib', 'make-launchers.js'));
+      const sandbox = path.join(os.tmpdir(), `agy-test-identity-${Date.now()}`);
+      const plant = (dir, name, scripts) => {
+        fs.mkdirSync(path.join(dir, 'bin'), { recursive: true });
+        for (const script of scripts) fs.writeFileSync(path.join(dir, 'bin', script), '// stub\n', 'utf8');
+        fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name }), 'utf8');
+      };
+      try {
+        assert.deepStrictEqual(ENTRY_SCRIPTS, ['agy-tools.js', 'agy-tokens.js', 'agy-dashboard.js'], 'every distinct wired script is validated');
+
+        const full = path.join(sandbox, 'full');
+        plant(full, PACKAGE_NAME, ENTRY_SCRIPTS);
+        assert(isRepoRoot(full), 'a full product root must pass');
+
+        const decoy = path.join(sandbox, 'decoy');
+        plant(decoy, 'some-other-tool', ENTRY_SCRIPTS);
+        assert(!isRepoRoot(decoy), 'the right layout with a foreign package.json name must be rejected (F-W1-02)');
+
+        const missingDashboard = path.join(sandbox, 'missing-dashboard');
+        plant(missingDashboard, PACKAGE_NAME, ['agy-tools.js', 'agy-tokens.js']);
+        assert(!isRepoRoot(missingDashboard), 'a root missing bin/agy-dashboard.js must be rejected (F-W1-09)');
+
+        const brokenPkg = path.join(sandbox, 'broken-pkg');
+        plant(brokenPkg, PACKAGE_NAME, ENTRY_SCRIPTS);
+        fs.writeFileSync(path.join(brokenPkg, 'package.json'), '{ not json', 'utf8');
+        assert(!isRepoRoot(brokenPkg), 'an unparsable package.json must be rejected');
+
+        assert(!isRepoRoot('\\\\server\\share\\agy-tools'), 'a UNC path must never be adopted (F-W1-02)');
+        assert(!isRepoRoot(path.join(sandbox, 'does-not-exist')), 'a missing directory must be rejected');
+      } finally {
+        fs.rmSync(sandbox, { recursive: true, force: true });
+      }
+    });
+
+    await test('relativizeToHome emits %USERPROFILE% only when home really is the profile (F-W1-08)', () => {
+      const { relativizeToHome } = require(path.join(rootDir, 'scripts', 'lib', 'make-launchers.js'));
+      const profile = 'C:\\Users\\example';
+      const marker = 'C:\\Users\\example\\.gemini\\antigravity-cli\\agy-root.txt';
+      assert.strictEqual(
+        relativizeToHome(marker, profile, profile),
+        '%USERPROFILE%\\.gemini\\antigravity-cli\\agy-root.txt',
+        'the profile form is emitted when home IS USERPROFILE'
+      );
+      assert.strictEqual(
+        relativizeToHome(marker, 'C:\\Other\\Home', profile),
+        'C:\\Users\\example\\.gemini\\antigravity-cli\\agy-root.txt',
+        'the absolute form is emitted when home is NOT USERPROFILE (F-W1-08)'
+      );
+      assert.strictEqual(
+        relativizeToHome(marker, profile, undefined),
+        'C:\\Users\\example\\.gemini\\antigravity-cli\\agy-root.txt',
+        'without a USERPROFILE value the absolute form is emitted (F-W1-08)'
+      );
+      assert.strictEqual(relativizeToHome(profile, profile, profile), '%USERPROFILE%', 'the home itself collapses to %USERPROFILE%');
+    });
+
+    await test('writeLaunchers writes the marker before it writes any launcher (F-W1-05, F-W1-07)', () => {
+      const { writeLaunchers } = require(path.join(rootDir, 'scripts', 'lib', 'make-launchers.js'));
+      const sandbox = path.join(os.tmpdir(), `agy-test-marker-first-${Date.now()}`);
+      const binDir = path.join(sandbox, 'bin');
+      const blocker = path.join(sandbox, 'blocker');
+      fs.mkdirSync(sandbox, { recursive: true });
+      fs.writeFileSync(blocker, 'a file where a directory is needed', 'utf8');
+      const markerPath = path.join(blocker, 'agy-root.txt');
+      try {
+        assert.throws(
+          () => writeLaunchers({ binDir, root: rootDir, markerPath, home: sandbox, profile: sandbox }),
+          /ENOTDIR|EEXIST|ENOENT|not a directory/i,
+          'a marker that cannot be written must abort the run'
+        );
+        assert(!fs.existsSync(binDir), 'no launcher may exist when the marker write failed (F-W1-07: marker first)');
+      } finally {
+        fs.rmSync(sandbox, { recursive: true, force: true });
+      }
+    });
+
+    await test('scripts/lib/configure-statusline.js refuses the retired write instead of creating settings.json (REQ-403 superseded by D5)', () => {
       const testDir = path.join(os.tmpdir(), `agy-test-statusline-new-${Date.now()}`);
-      fs.mkdirSync(testDir, { recursive: true });
       const testSettingsPath = path.join(testDir, 'settings.json');
 
       try {
-        const result = configureStatusline({ settingsPath: testSettingsPath });
-        assert.strictEqual(result.action, 'created');
-        assert(fs.existsSync(testSettingsPath), 'settings.json should be created');
-
-        const parsed = JSON.parse(fs.readFileSync(testSettingsPath, 'utf8'));
-        assert.strictEqual(parsed.statusLine.type, 'command');
-        assert.strictEqual(parsed.statusLine.command, DEFAULT_COMMAND);
-        assert.strictEqual(parsed.statusLine.enabled, true);
-        assert.strictEqual(parsed.statusLine.stack_with_default, true);
-        assert(Array.isArray(parsed.trustedWorkspaces));
+        // The retired branch used to create the directory and a template file.
+        assert.throws(
+          () => configureStatusline({ settingsPath: testSettingsPath }),
+          (err) => err instanceof DeprecatedWriterError
+            && err.deprecated === true
+            && err.exitCode === DEPRECATED_EXIT_CODE,
+          'the retired create path must throw the typed refusal'
+        );
+        assert(!fs.existsSync(testDir), 'the refusal must not even create the settings directory');
+        assert.strictEqual(inspectStatusline({ settingsPath: testSettingsPath }).status, 'absent');
       } finally {
         fs.rmSync(testDir, { recursive: true, force: true });
       }
     });
 
-    await test('scripts/lib/configure-statusline.js should merge statusLine into existing settings and create backup (REQ-401)', () => {
+    await test('scripts/lib/configure-statusline.js leaves an existing settings.json byte-for-byte untouched (REQ-401 superseded by D5)', () => {
       const testDir = path.join(os.tmpdir(), `agy-test-statusline-merge-${Date.now()}`);
       fs.mkdirSync(testDir, { recursive: true });
       const testSettingsPath = path.join(testDir, 'settings.json');
@@ -5325,33 +5968,30 @@ agy      1234 user    5u  IPv4 0xbaadf00d      0t0  TCP 127.0.0.1:54457 (LISTEN)
         telemetry: false,
         trustedWorkspaces: ['/test/project']
       };
-      fs.writeFileSync(testSettingsPath, JSON.stringify(initialSettings, null, 2), 'utf8');
+      const originalBytes = JSON.stringify(initialSettings, null, 2);
+      fs.writeFileSync(testSettingsPath, originalBytes, 'utf8');
 
       try {
-        const result = configureStatusline({ settingsPath: testSettingsPath });
-        assert.strictEqual(result.action, 'updated');
-        assert(result.backupPath && fs.existsSync(result.backupPath), 'Backup file must exist');
+        assert.throws(
+          () => configureStatusline({ settingsPath: testSettingsPath }),
+          (err) => err instanceof DeprecatedWriterError && err.exitCode === DEPRECATED_EXIT_CODE,
+          'the retired merge path must throw the typed refusal'
+        );
+        assert.strictEqual(fs.readFileSync(testSettingsPath, 'utf8'), originalBytes, 'settings.json must not change');
+        const leftovers = fs.readdirSync(testDir).filter((name) => name !== 'settings.json');
+        assert.deepStrictEqual(leftovers, [], 'the refusal must not create a backup or a temp file');
 
-        // Verify backup preserves original content
-        const backupContent = JSON.parse(fs.readFileSync(result.backupPath, 'utf8'));
-        assert.strictEqual(backupContent.colorScheme, 'dark');
-        assert.strictEqual(backupContent.statusLine, undefined);
-
-        // Verify updated settings contains existing properties + statusLine
-        const updated = JSON.parse(fs.readFileSync(testSettingsPath, 'utf8'));
-        assert.strictEqual(updated.colorScheme, 'dark');
-        assert.strictEqual(updated.telemetry, false);
-        assert.deepStrictEqual(updated.trustedWorkspaces, ['/test/project']);
-        assert.strictEqual(updated.statusLine.type, 'command');
-        assert.strictEqual(updated.statusLine.command, DEFAULT_COMMAND);
-        assert.strictEqual(updated.statusLine.enabled, true);
-        assert.strictEqual(updated.statusLine.stack_with_default, true);
+        // The read-only view still reports what is there.
+        const inspected = inspectStatusline({ settingsPath: testSettingsPath });
+        assert.strictEqual(inspected.status, 'missing');
+        assert.strictEqual(inspected.command, null);
+        assert(inspected.message.includes('has no statusLine slot'), 'inspect must say the slot is missing');
       } finally {
         fs.rmSync(testDir, { recursive: true, force: true });
       }
     });
 
-    await test('scripts/lib/configure-statusline.js should be idempotent when statusLine already exists (REQ-404)', () => {
+    await test('scripts/lib/configure-statusline.js keeps an existing statusLine configuration untouched (REQ-404 superseded by D5)', () => {
       const testDir = path.join(os.tmpdir(), `agy-test-statusline-idempotent-${Date.now()}`);
       fs.mkdirSync(testDir, { recursive: true });
       const testSettingsPath = path.join(testDir, 'settings.json');
@@ -5364,22 +6004,27 @@ agy      1234 user    5u  IPv4 0xbaadf00d      0t0  TCP 127.0.0.1:54457 (LISTEN)
           enabled: false
         }
       };
-      fs.writeFileSync(testSettingsPath, JSON.stringify(initialSettings, null, 2), 'utf8');
+      const originalBytes = JSON.stringify(initialSettings, null, 2);
+      fs.writeFileSync(testSettingsPath, originalBytes, 'utf8');
 
       try {
-        const result = configureStatusline({ settingsPath: testSettingsPath });
-        assert.strictEqual(result.action, 'already_configured');
-        assert.strictEqual(result.backupPath, null);
+        assert.throws(
+          () => configureStatusline({ settingsPath: testSettingsPath }),
+          (err) => err instanceof DeprecatedWriterError && err.exitCode === DEPRECATED_EXIT_CODE,
+          'an existing statusLine must be refused, not silently skipped'
+        );
+        assert.strictEqual(fs.readFileSync(testSettingsPath, 'utf8'), originalBytes, 'settings.json must not change');
 
-        const current = JSON.parse(fs.readFileSync(testSettingsPath, 'utf8'));
-        assert.strictEqual(current.statusLine.command, 'my-custom-statusline-cmd', 'Must not overwrite existing command');
-        assert.strictEqual(current.statusLine.enabled, false, 'Must not overwrite existing properties');
+        const inspected = inspectStatusline({ settingsPath: testSettingsPath });
+        assert.strictEqual(inspected.status, 'configured');
+        assert.strictEqual(inspected.command, 'my-custom-statusline-cmd', 'the read-only view must report the live command');
+        assert.strictEqual(inspected.matchesDefault, false);
       } finally {
         fs.rmSync(testDir, { recursive: true, force: true });
       }
     });
 
-    await test('scripts/lib/configure-statusline.js should recover from corrupt JSON with backup (REQ-403)', () => {
+    await test('scripts/lib/configure-statusline.js leaves a corrupt settings.json untouched instead of recovering it (REQ-403 superseded by D5)', () => {
       const testDir = path.join(os.tmpdir(), `agy-test-statusline-corrupt-${Date.now()}`);
       fs.mkdirSync(testDir, { recursive: true });
       const testSettingsPath = path.join(testDir, 'settings.json');
@@ -5388,22 +6033,67 @@ agy      1234 user    5u  IPv4 0xbaadf00d      0t0  TCP 127.0.0.1:54457 (LISTEN)
       fs.writeFileSync(testSettingsPath, corruptContent, 'utf8');
 
       try {
-        const result = configureStatusline({ settingsPath: testSettingsPath });
-        assert.strictEqual(result.action, 'recovered_corrupt');
-        assert(result.backupPath && fs.existsSync(result.backupPath), 'Corrupt backup must be created');
-        assert.strictEqual(fs.readFileSync(result.backupPath, 'utf8'), corruptContent);
-
-        const fresh = JSON.parse(fs.readFileSync(testSettingsPath, 'utf8'));
-        assert.strictEqual(fresh.statusLine.command, DEFAULT_COMMAND);
-        assert.strictEqual(fresh.statusLine.enabled, true);
+        assert.throws(
+          () => configureStatusline({ settingsPath: testSettingsPath }),
+          (err) => err instanceof DeprecatedWriterError && err.exitCode === DEPRECATED_EXIT_CODE,
+          'the retired corrupt-recovery path must throw the typed refusal'
+        );
+        assert.strictEqual(fs.readFileSync(testSettingsPath, 'utf8'), corruptContent, 'the corrupt bytes must survive');
+        const leftovers = fs.readdirSync(testDir).filter((name) => name !== 'settings.json');
+        assert.deepStrictEqual(leftovers, [], 'no settings.corrupt.*.json may be written any more');
+        assert.strictEqual(inspectStatusline({ settingsPath: testSettingsPath }).status, 'corrupt');
       } finally {
         fs.rmSync(testDir, { recursive: true, force: true });
       }
     });
 
-    await test('scripts/lib/configure-statusline.js should support custom fallback commands and CLI arg parsing (REQ-405)', () => {
+    await test('scripts/lib/configure-statusline.js CLI exits with the deprecation contract and names the replacing verb', () => {
+      const testDir = path.join(os.tmpdir(), `agy-test-statusline-cli-${Date.now()}`);
+      fs.mkdirSync(testDir, { recursive: true });
+      const testSettingsPath = path.join(testDir, 'settings.json');
+      const { spawnSync } = require('child_process');
+
+      try {
+        const retired = spawnSync(process.execPath, [configScriptPath, '--settings', testSettingsPath], {
+          encoding: 'utf8',
+          env: Object.assign({}, process.env, { AGY_SETTINGS_PATH: '' })
+        });
+        assert.strictEqual(retired.status, DEPRECATED_EXIT_CODE, `the retired write must exit ${DEPRECATED_EXIT_CODE}`);
+        assert(
+          retired.stderr.includes(DEPRECATION_MESSAGE),
+          'the refusal must print the deprecation sentence verbatim: ' + retired.stderr
+        );
+        assert(
+          retired.stderr.includes('agy pro integrations apply statusline --yes'),
+          'the refusal must name the replacing verb in a spelling the shipped CLI accepts: ' + retired.stderr
+        );
+        assert(
+          !retired.stderr.includes('--feature'),
+          'the refusal must not name the retired --feature flag: the door takes one operand (F-S9C-03)'
+        );
+        assert(!fs.existsSync(testSettingsPath), 'the CLI must not write settings.json');
+
+        // --check is the surviving mode: read-only, exit 0.
+        const checked = spawnSync(process.execPath, [configScriptPath, '--check', '--settings', testSettingsPath], {
+          encoding: 'utf8'
+        });
+        assert.strictEqual(checked.status, 0, '--check must exit 0: ' + checked.stderr);
+        assert(checked.stdout.includes('does not exist'), '--check must report the absent file: ' + checked.stdout);
+        assert(!fs.existsSync(testSettingsPath), '--check must not write settings.json');
+      } finally {
+        fs.rmSync(testDir, { recursive: true, force: true });
+      }
+    });
+
+    await test('scripts/lib/configure-statusline.js keeps the historical constants, arg parsing and read-only export surface (REQ-405 superseded by D5)', () => {
+      // The installer's statusline command string stays what it was; T9 reuses it
+      // when it rewires the step to the Go verb.
+      assert.strictEqual(DEFAULT_COMMAND, 'agy-tokens --hook --raw --write-dashboard');
+      assert.strictEqual(typeof getSettingsPath, 'function');
+
       const parsed1 = parseArgs(['--command', 'node "/custom/path/agy-tokens.js" --hook']);
       assert.strictEqual(parsed1.command, 'node "/custom/path/agy-tokens.js" --hook');
+      assert.strictEqual(parsed1.check, false);
 
       const parsed2 = parseArgs(['--command=custom-cmd', '--settings=/tmp/test.json', '--force']);
       assert.strictEqual(parsed2.command, 'custom-cmd');
@@ -5412,6 +6102,27 @@ agy      1234 user    5u  IPv4 0xbaadf00d      0t0  TCP 127.0.0.1:54457 (LISTEN)
 
       const parsed3 = parseArgs(['custom-positional-cmd']);
       assert.strictEqual(parsed3.command, 'custom-positional-cmd');
+
+      assert.strictEqual(parseArgs(['--check']).check, true);
+      assert.strictEqual(parseArgs(['--dry-read']).check, true);
+
+      // The export surface is the contract: the write primitives are gone.
+      assert.deepStrictEqual(
+        Object.keys(statuslineModule).sort(),
+        [
+          'DEFAULT_COMMAND',
+          'DEPRECATED_EXIT_CODE',
+          'DEPRECATION_MESSAGE',
+          'DeprecatedWriterError',
+          'configureStatusline',
+          'getSettingsPath',
+          'inspectStatusline',
+          'parseArgs'
+        ],
+        'the module must export the refusal contract and no write helper'
+      );
+      assert(!('writeAtomic' in statuslineModule), 'the atomic writer must not be exported any more');
+      assert(!('getTimestamp' in statuslineModule), 'the backup timestamp helper must not be exported any more');
     });
 
     await test('scripts/lib/configure-rules.js should deploy rules and handle idempotency, backups, and CLI args', () => {
@@ -5510,6 +6221,378 @@ agy      1234 user    5u  IPv4 0xbaadf00d      0t0  TCP 127.0.0.1:54457 (LISTEN)
       } finally {
         fs.rmSync(tmpRepo, { recursive: true, force: true });
         fs.rmSync(tmpConfig, { recursive: true, force: true });
+      }
+    });
+  });
+
+  // --- Suite 32: Installer self-heal root resolution (behavioral, both families) ---
+  await describe('32. Installer self-heal root resolution (behavioral: .bat shims + sh wrappers)', async () => {
+    const { spawnSync } = require('child_process');
+    const rootDir = path.resolve(__dirname, '..');
+    const launchers = require(path.join(rootDir, 'scripts', 'lib', 'make-launchers.js'));
+    const installShPath = path.join(rootDir, 'scripts', 'install.sh');
+
+    // A repo root that would pass a naive "layout looks right" check.
+    const plantRepo = (dir, pkgName = 'agy-tools', scripts = ['agy-tools.js', 'agy-tokens.js', 'agy-dashboard.js']) => {
+      fs.mkdirSync(path.join(dir, 'bin'), { recursive: true });
+      for (const script of scripts) {
+        fs.writeFileSync(
+          path.join(dir, 'bin', script),
+          `console.log('STUB ${script} ' + process.argv.slice(2).join(','));\n`,
+          'utf8'
+        );
+      }
+      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: pkgName, version: '0.0.0' }), 'utf8');
+    };
+
+    const readMarker = (markerPath) => (fs.existsSync(markerPath) ? fs.readFileSync(markerPath, 'utf8') : null);
+
+    // --- .bat family: the exact shims install.bat generates, driven by cmd.exe ---
+    const batHarness = (sandbox) => {
+      const home = path.join(sandbox, 'home');
+      const markerPath = path.join(home, '.gemini', 'antigravity-cli', 'agy-root.txt');
+      const binDir = path.join(home, '.gemini', 'antigravity-cli', 'bin');
+      return {
+        home,
+        markerPath,
+        binDir,
+        generate(installedRoot) {
+          return launchers.writeLaunchers({ binDir, root: installedRoot, home, markerPath, profile: home });
+        },
+        run(args = []) {
+          const command = `"${path.join(binDir, 'agy-tokens.bat')}" ${args.join(' ')}`.trim();
+          return spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `"${command}"`], {
+            encoding: 'utf8',
+            windowsVerbatimArguments: true,
+            env: Object.assign({}, process.env, { USERPROFILE: home, HOME: home })
+          });
+        }
+      };
+    };
+
+    // --- sh family: the exact wrapper body install.sh's heredoc writes ---
+    const extractWrapper = (script) => {
+      const raw = fs.readFileSync(installShPath, 'utf8');
+      const lines = raw.split('\n');
+      const start = lines.findIndex((line) => line.includes("<<'AGY_TOOLS_WRAPPER'"));
+      assert(start > 0, 'install.sh must embed the wrapper body as a quoted heredoc');
+      const end = lines.indexOf('AGY_TOOLS_WRAPPER', start + 1);
+      assert(end > start, 'install.sh must terminate the wrapper heredoc');
+      return lines.slice(start + 1, end).join('\n').split('__AGY_SCRIPT__').join(script) + '\n';
+    };
+    const bashAvailable = spawnSync('bash', ['-c', 'exit 0'], { encoding: 'utf8' }).status === 0;
+
+    // Git Bash reports the temp tree as /tmp/... while Node reports the Windows
+    // path; ask bash for its own view so the marker bytes can be compared.
+    const toBashPath = (dir) => {
+      const res = spawnSync('bash', ['-c', 'cd "$1" 2>/dev/null && pwd', 'bash', dir], { encoding: 'utf8' });
+      const resolved = (res.stdout || '').trim();
+      return res.status === 0 && resolved ? resolved : dir;
+    };
+
+    const shHarness = (sandbox) => {
+      const home = path.join(sandbox, 'home');
+      const tmpDir = path.join(sandbox, 'tmp');
+      const markerPath = path.join(home, '.local', 'share', 'agy-tools-root');
+      const wrapperPath = path.join(sandbox, 'agy-tokens-wrapper');
+      fs.mkdirSync(home, { recursive: true });
+      fs.mkdirSync(tmpDir, { recursive: true });
+      fs.writeFileSync(wrapperPath, extractWrapper('agy-tokens.js'), 'utf8');
+      fs.chmodSync(wrapperPath, 0o755);
+      return {
+        home,
+        markerPath,
+        run(args = []) {
+          return spawnSync('bash', [wrapperPath].concat(args), {
+            encoding: 'utf8',
+            env: Object.assign({}, process.env, {
+              HOME: home,
+              USERPROFILE: home,
+              TMPDIR: tmpDir
+            })
+          });
+        }
+      };
+    };
+
+    // 1. Valid marker: no rescan, no marker rewrite, the stub is executed with the args.
+    await test('[bat] a valid marker resolves the root without rescanning (F-W1-15)', () => {
+      const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-heal-bat-ok-'));
+      try {
+        const h = batHarness(sandbox);
+        const installed = path.join(h.home, 'work', 'agy-tools');
+        plantRepo(installed);
+        h.generate(installed);
+        const before = readMarker(h.markerPath);
+        const res = h.run(['--hook', '--raw']);
+        assert.strictEqual(res.status, 0, `expected exit 0, got ${res.status}: ${res.stderr}`);
+        assert(res.stdout.includes('STUB agy-tokens.js --hook,--raw'), `stub must run with the forwarded args, got: ${JSON.stringify(res.stdout)}`);
+        assert.strictEqual(readMarker(h.markerPath), before, 'a valid marker must not be rewritten');
+        assert(!res.stderr.includes('rescanning'), 'a valid marker must not trigger a rescan');
+      } finally {
+        fs.rmSync(sandbox, { recursive: true, force: true });
+      }
+    });
+
+    // 2. Stale marker + exactly one identity-passing candidate: adopt + rewrite.
+    await test('[bat] a stale marker adopts the single identity-passing candidate and rewrites the marker (F-W1-15)', () => {
+      const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-heal-bat-adopt-'));
+      try {
+        const h = batHarness(sandbox);
+        const installed = path.join(h.home, 'work', 'agy-tools');
+        plantRepo(installed);
+        h.generate(installed);
+        fs.mkdirSync(path.dirname(h.markerPath), { recursive: true });
+        fs.writeFileSync(h.markerPath, path.join(sandbox, 'moved-away', 'agy-tools') + '\r\n', 'utf8');
+        const res = h.run(['--hook']);
+        assert.strictEqual(res.status, 0, `expected exit 0, got ${res.status}: ${res.stderr}`);
+        assert(res.stderr.includes('repaired root marker'), `expected the repair notice, got: ${JSON.stringify(res.stderr)}`);
+        assert.strictEqual(fs.readFileSync(h.markerPath, 'utf8').trim(), installed, 'the marker must point at the adopted root');
+        assert(res.stdout.includes('STUB agy-tokens.js'), 'the launcher must run the adopted root');
+      } finally {
+        fs.rmSync(sandbox, { recursive: true, force: true });
+      }
+    });
+
+    // 3. Stale marker + two identity-passing candidates: loud failure, marker untouched.
+    await test('[bat] ambiguous candidates fail loudly and leave the marker untouched (F-W1-02, F-W1-15)', () => {
+      const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-heal-bat-ambig-'));
+      try {
+        const h = batHarness(sandbox);
+        const installed = path.join(h.home, 'work', 'agy-tools');
+        const second = path.join(h.home, 'stale-clone', 'agy-tools');
+        plantRepo(installed);
+        plantRepo(second);
+        h.generate(installed);
+        fs.writeFileSync(h.markerPath, path.join(sandbox, 'moved-away', 'agy-tools') + '\r\n', 'utf8');
+        const before = readMarker(h.markerPath);
+        const res = h.run();
+        assert.notStrictEqual(res.status, 0, 'an ambiguous rescan must exit nonzero');
+        assert(res.stderr.includes('2 candidate agy-tools roots found'), `expected the ambiguity error, got: ${JSON.stringify(res.stderr)}`);
+        const stderrLower = res.stderr.toLowerCase();
+        assert(
+          stderrLower.includes(installed.toLowerCase()) && stderrLower.includes(second.toLowerCase()),
+          `both candidates must be listed on stderr, got: ${res.stderr}`
+        );
+        assert(!res.stdout.includes('STUB'), 'no candidate may be executed on ambiguity');
+        assert.strictEqual(readMarker(h.markerPath), before, 'the marker must stay UNTOUCHED on ambiguity');
+      } finally {
+        fs.rmSync(sandbox, { recursive: true, force: true });
+      }
+    });
+
+    // 4. Stale marker + zero candidates: loud failure naming reinstall.
+    await test('[bat] an empty rescan fails loudly with the reinstall hint (F-W1-15)', () => {
+      const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-heal-bat-none-'));
+      try {
+        const h = batHarness(sandbox);
+        const installed = path.join(h.home, 'work', 'agy-tools');
+        plantRepo(installed);
+        h.generate(installed);
+        fs.rmSync(installed, { recursive: true, force: true });
+        fs.writeFileSync(h.markerPath, path.join(sandbox, 'moved-away', 'agy-tools') + '\r\n', 'utf8');
+        const res = h.run();
+        assert.notStrictEqual(res.status, 0, 'a repo that is gone must exit nonzero');
+        assert(res.stderr.includes('could not be found'), `expected the not-found error, got: ${JSON.stringify(res.stderr)}`);
+        assert(res.stderr.includes('install.bat'), 'the failure must name the reinstall path');
+      } finally {
+        fs.rmSync(sandbox, { recursive: true, force: true });
+      }
+    });
+
+    // 5. Decoy tree (right layout, wrong package.json name) must never be adopted.
+    await test('[bat] a decoy tree with the right layout but a foreign package name is never adopted (F-W1-02)', () => {
+      const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-heal-bat-decoy-'));
+      try {
+        const h = batHarness(sandbox);
+        const installed = path.join(h.home, 'work', 'agy-tools');
+        plantRepo(installed);
+        h.generate(installed);
+        // Replace the real clone with a decoy that has bin/*.js but the wrong name.
+        fs.rmSync(installed, { recursive: true, force: true });
+        plantRepo(installed, 'totally-other-tool');
+        fs.writeFileSync(h.markerPath, installed + '\r\n', 'utf8');
+        const before = readMarker(h.markerPath);
+        const res = h.run();
+        assert.notStrictEqual(res.status, 0, 'a foreign package name must never be adopted');
+        assert(!res.stdout.includes('STUB'), 'the decoy must not be executed');
+        assert.strictEqual(readMarker(h.markerPath), before, 'the decoy must not be written into the marker');
+        assert(res.stderr.includes('could not be found'), `expected the not-found error, got: ${JSON.stringify(res.stderr)}`);
+      } finally {
+        fs.rmSync(sandbox, { recursive: true, force: true });
+      }
+    });
+
+    // 6. '!' in the scan root AND in the adopted root path.
+    await test("[bat] a repository path containing '!' survives the marker read and the launch (F-W1-06)", () => {
+      const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-heal-bat-bang-'));
+      try {
+        const h = batHarness(sandbox);
+        const installed = path.join(h.home, 'work!', 'repo!x');
+        plantRepo(installed);
+        h.generate(installed);
+        fs.writeFileSync(h.markerPath, installed + '\r\n', 'utf8');
+        const res = h.run(['--check']);
+        assert.strictEqual(res.status, 0, `expected exit 0, got ${res.status}: ${res.stderr}`);
+        assert(res.stdout.includes('STUB agy-tokens.js --check'), `the stub must run from the '!' path, got: ${JSON.stringify(res.stdout)}`);
+        assert(!res.stderr.includes('rescanning'), "a marker holding '!' must still validate without a rescan");
+      } finally {
+        fs.rmSync(sandbox, { recursive: true, force: true });
+      }
+    });
+
+    // 7. Depth bound: a candidate seven levels down is invisible, six is found.
+    await test('[bat] the rescan is depth-bounded at 6 and does not follow reparse points (F-W1-01)', () => {
+      const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-heal-bat-depth-'));
+      try {
+        const h = batHarness(sandbox);
+        const installed = path.join(h.home, 'work', 'agy-tools');
+        plantRepo(installed);
+        h.generate(installed);
+        const deep = path.join(h.home, 'a', 'b', 'c', 'd', 'e', 'deep7', 'agy-tools');
+        const shallow = path.join(h.home, 'a', 'b', 'c', 'd', 'shallow6', 'agy-tools');
+        plantRepo(deep);
+        fs.writeFileSync(h.markerPath, path.join(sandbox, 'gone', 'agy-tools') + '\r\n', 'utf8');
+        fs.rmSync(installed, { recursive: true, force: true });
+        const tooDeep = h.run();
+        assert.notStrictEqual(tooDeep.status, 0, 'a candidate at depth 7 must not be found');
+        assert(!tooDeep.stdout.includes('STUB'), 'the depth-7 candidate must not run');
+
+        plantRepo(shallow);
+        const inBound = h.run();
+        assert.strictEqual(inBound.status, 0, `a candidate at depth 6 must be adopted: ${inBound.stderr}`);
+        assert.strictEqual(fs.readFileSync(h.markerPath, 'utf8').trim(), shallow, 'the depth-6 candidate becomes the root');
+
+        // A linked copy of a full repo must not be entered at all. The target
+        // lives OUTSIDE the scan root, so finding it would prove the walk
+        // followed the reparse point.
+        const linkedRoot = path.join(sandbox, 'outside-repo');
+        plantRepo(linkedRoot);
+        fs.rmSync(shallow, { recursive: true, force: true });
+        const linkPath = path.join(h.home, 'a', 'b', 'c', 'd', 'shallow6', 'agy-tools');
+        try {
+          fs.symlinkSync(linkedRoot, linkPath, process.platform === 'win32' ? 'junction' : 'dir');
+        } catch (_err) {
+          return; // linking not permitted on this host: the depth assertions still ran
+        }
+        fs.writeFileSync(h.markerPath, path.join(sandbox, 'gone', 'agy-tools') + '\r\n', 'utf8');
+        const throughLink = h.run();
+        assert.notStrictEqual(throughLink.status, 0, 'a repo reachable only through a reparse point must not be adopted');
+        assert(!throughLink.stdout.includes('STUB'), 'the linked repo must not run');
+      } finally {
+        fs.rmSync(sandbox, { recursive: true, force: true });
+      }
+    });
+
+    // --- sh family ---
+    await test('[sh] valid marker, stale-adopt, ambiguity, and empty rescan (skipped without bash)', () => {
+      if (!bashAvailable) {
+        console.log('    (skipped: bash not on PATH — sh wrapper behavior unverified on this host)');
+        return;
+      }
+      const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-heal-sh-'));
+      try {
+        const h = shHarness(sandbox);
+        const installed = path.join(h.home, 'work', 'agy-tools');
+        plantRepo(installed);
+        fs.mkdirSync(path.dirname(h.markerPath), { recursive: true });
+
+        // valid marker
+        fs.writeFileSync(h.markerPath, installed + '\n', 'utf8');
+        const ok = h.run(['--hook']);
+        assert.strictEqual(ok.status, 0, `expected exit 0, got ${ok.status}: ${ok.stderr}`);
+        assert(ok.stdout.includes('STUB agy-tokens.js --hook'), `the stub must run, got: ${JSON.stringify(ok.stdout)}`);
+
+        // stale + single candidate -> adopt + rewrite
+        fs.writeFileSync(h.markerPath, path.join(sandbox, 'gone', 'agy-tools') + '\n', 'utf8');
+        const adopt = h.run(['--hook']);
+        assert.strictEqual(adopt.status, 0, `expected exit 0, got ${adopt.status}: ${adopt.stderr}`);
+        assert.strictEqual(fs.readFileSync(h.markerPath, 'utf8').trim(), toBashPath(installed), 'the marker must be repaired');
+        assert(adopt.stderr.includes('repaired root marker'), 'the repair must be announced on stderr');
+
+        // ambiguous -> loud, marker untouched
+        const second = path.join(h.home, 'stale-clone', 'agy-tools');
+        plantRepo(second);
+        fs.writeFileSync(h.markerPath, path.join(sandbox, 'gone', 'agy-tools') + '\n', 'utf8');
+        const ambigBefore = fs.readFileSync(h.markerPath);
+        const ambig = h.run();
+        assert.notStrictEqual(ambig.status, 0, 'ambiguity must exit nonzero');
+        assert(ambig.stderr.includes('2 candidate agy-tools roots found'), `expected the ambiguity error, got: ${JSON.stringify(ambig.stderr)}`);
+        assert(ambig.stderr.includes('root marker left untouched'), 'the error must state that the marker was left alone');
+        assert(Buffer.compare(fs.readFileSync(h.markerPath), ambigBefore) === 0, 'the marker bytes must be unchanged (no trim, no rewrite)');
+        fs.rmSync(second, { recursive: true, force: true });
+
+        // empty -> loud + hint
+        fs.rmSync(installed, { recursive: true, force: true });
+        const none = h.run();
+        assert.notStrictEqual(none.status, 0, 'a missing repo must exit nonzero');
+        assert(none.stderr.includes('could not be found'), `expected the not-found error, got: ${JSON.stringify(none.stderr)}`);
+        assert(none.stderr.includes('scripts/install.sh'), 'the failure must name the reinstall path');
+      } finally {
+        fs.rmSync(sandbox, { recursive: true, force: true });
+      }
+    });
+
+    await test('[sh] decoy name, depth bound, symlink barrier, and a "!" path (skipped without bash)', () => {
+      if (!bashAvailable) {
+        console.log('    (skipped: bash not on PATH — sh wrapper behavior unverified on this host)');
+        return;
+      }
+      const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-heal-sh2-'));
+      try {
+        const h = shHarness(sandbox);
+        fs.mkdirSync(path.dirname(h.markerPath), { recursive: true });
+
+        // decoy: right layout, foreign package name
+        const decoy = path.join(h.home, 'decoy', 'agy-tools');
+        plantRepo(decoy, 'totally-other-tool');
+        fs.writeFileSync(h.markerPath, decoy + '\n', 'utf8');
+        const decoyBefore = fs.readFileSync(h.markerPath, 'utf8');
+        const decoyRun = h.run();
+        assert.notStrictEqual(decoyRun.status, 0, 'a foreign package name must never be adopted');
+        assert(!decoyRun.stdout.includes('STUB'), 'the decoy must not be executed');
+        assert.strictEqual(fs.readFileSync(h.markerPath, 'utf8'), decoyBefore, 'the decoy must not be written into the marker');
+
+        // depth bound: seven levels down is invisible, six is visible
+        const deep = path.join(h.home, 'a', 'b', 'c', 'd', 'e', 'deep7', 'agy-tools');
+        plantRepo(deep);
+        const tooDeep = h.run();
+        assert.notStrictEqual(tooDeep.status, 0, 'a candidate at depth 7 must not be found');
+        const shallow = path.join(h.home, 'a', 'b', 'c', 'd', 'shallow6', 'agy-tools');
+        plantRepo(shallow);
+        const inBound = h.run();
+        assert.strictEqual(inBound.status, 0, `a candidate at depth 6 must be adopted: ${inBound.stderr}`);
+        assert.strictEqual(fs.readFileSync(h.markerPath, 'utf8').trim(), toBashPath(shallow), 'the depth-6 candidate becomes the root');
+
+        // symlink barrier: a linked repo outside the walk must not be entered
+        fs.rmSync(shallow, { recursive: true, force: true });
+        fs.rmSync(deep, { recursive: true, force: true });
+        const outside = path.join(sandbox, 'outside-repo');
+        plantRepo(outside);
+        try {
+          fs.symlinkSync(outside, path.join(h.home, 'a', 'b', 'c', 'd', 'linked'), 'dir');
+        } catch (_err) {
+          return; // symlink creation not permitted: the earlier assertions still ran
+        }
+        fs.writeFileSync(h.markerPath, path.join(sandbox, 'gone', 'agy-tools') + '\n', 'utf8');
+        const throughLink = h.run();
+        assert.notStrictEqual(throughLink.status, 0, 'a repo behind a symlink must not be adopted');
+        assert(!throughLink.stdout.includes('STUB'), 'the linked repo must not run');
+
+        // '!' in every path: the wrapper body carries no absolute path, so it is
+        // simply re-run with a HOME whose own path contains '!'.
+        const bangHome = path.join(sandbox, 'home!bang');
+        fs.mkdirSync(bangHome, { recursive: true });
+        const bangRepo = path.join(bangHome, 'work!', 'repo!x');
+        plantRepo(bangRepo);
+        const bangRun = spawnSync('bash', [path.join(sandbox, 'agy-tokens-wrapper'), '--check'], {
+          encoding: 'utf8',
+          env: Object.assign({}, process.env, { HOME: bangHome, USERPROFILE: bangHome, TMPDIR: path.join(sandbox, 'tmp') })
+        });
+        assert.strictEqual(bangRun.status, 0, `expected exit 0 from the '!' home, got ${bangRun.status}: ${bangRun.stderr}`);
+        assert(bangRun.stdout.includes('STUB agy-tokens.js --check'), `the stub must run from the '!' path, got: ${JSON.stringify(bangRun.stdout)}`);
+      } finally {
+        fs.rmSync(sandbox, { recursive: true, force: true });
       }
     });
   });
