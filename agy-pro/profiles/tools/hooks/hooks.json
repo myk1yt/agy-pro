@@ -1,0 +1,16 @@
+{
+  "$schema": "https://raw.githubusercontent.com/google-gemini/antigravity/main/schemas/hooks.schema.json",
+  "name": "antigravity-lifecycle-hooks",
+  "version": "1.0.0",
+  "description": "Antigravity lifecycle hooks for real-time turn analytics, cost badges, and quality gates",
+  "hooks": {
+    "PostInvocation": {
+      "enabled": true,
+      "command": "agy-tokens",
+      "args": [
+        "--hook"
+      ],
+      "description": "Outputs a 1-line real-time token and cost badge after every turn invocation"
+    }
+  }
+}

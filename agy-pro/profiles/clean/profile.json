@@ -4,7 +4,6 @@
   "description": "Minimal baseline Antigravity CLI profile with pure native configuration and only the mode switcher skill",
   "version": "1.0.0",
   "managed": [
-    "skills/mode/SKILL.md",
     "profile.json"
   ]
 }
