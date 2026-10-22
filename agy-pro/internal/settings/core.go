@@ -446,6 +446,187 @@ func ResolveProviderEditTarget(reg *providers.Registry, name string) (int, error
 	return idx, nil
 }
 
+// ExcludeModelsBuiltinRule is the one spelling every surface gives the built-in
+// default policy: the built-in rule is a PREDICATE (family "k3" or a
+// boundary-safe "k3" id token, providers.IsK3Family), and "family:k3" is that
+// predicate written in the exclusion grammar's own family form, so it is the
+// exact reproduction of the rule as a list entry. The settings row shows it when
+// defaults.excludeModels is absent, the editor seeds it, and saving the seeded
+// list unchanged therefore keeps the same pool.
+//
+// The bare spelling "k3" is NOT that reproduction: a user-list entry that names
+// no family matches only a provider or a model literally named k3, which drops
+// the family-declared and id-token rows from the exclusion (the first-save
+// policy-weakening trap).
+const ExcludeModelsBuiltinRule = "family:k3"
+
+// ExcludeModelsSeed is the editor's starting list: the stored entries when the
+// user owns the list, and the built-in default rule in its exact list spelling
+// (ExcludeModelsBuiltinRule) when the key is absent, so a first save writes an
+// explicit list that keeps the policy instead of starting empty or weakening it.
+// The returned slice is always a copy, so an editor can mutate its draft freely.
+func ExcludeModelsSeed(d providers.Defaults) []string {
+	if d.ExcludeModels == nil {
+		return []string{ExcludeModelsBuiltinRule}
+	}
+	return append([]string{}, d.ExcludeModels...)
+}
+
+// Exclusion-list write door (D1=(a): the list is providers.json
+// defaults.excludeModels). Errors are named classes so a front-end branches on
+// the reason without parsing text.
+var (
+	// ErrExcludeModelsInvalid reports a list or an entry the shared authority
+	// (providers.ValidateExcludeModels) refuses: an entry empty after the trim, a
+	// Cc or Cf rune, interior whitespace, a family: entry with no name, or a
+	// non-nil list whose every entry is blank. One sentinel for the whole class,
+	// so a front-end that branches on it cannot mis-classify the family and
+	// all-blank refusals as some other failure. The wrapped detail names the
+	// field class only and never the offending entry (a misdirected paste may be
+	// a key).
+	ErrExcludeModelsInvalid = errors.New("exclusion list: entry refused")
+	// ErrExcludeModelsStale reports that defaults.excludeModels no longer
+	// matches the at-open snapshot the approval diff was signed against.
+	ErrExcludeModelsStale = errors.New("exclusion list: changed on disk since it was read")
+)
+
+// ExcludeModelsBase is the at-open snapshot of defaults.excludeModels: the base
+// a write must still find on disk. Owned carries the nil-vs-empty distinction
+// (false = the key was absent, so the built-in default policy applies; true
+// with no Entries = the user owned an empty list), because the two mean
+// different things and a write that cannot tell them apart would silently
+// resurrect the built-in default.
+type ExcludeModelsBase struct {
+	Owned   bool
+	Entries []string
+}
+
+// ExcludeModelsBaseFromDefaults snapshots a loaded defaults block. The entries
+// are copied, so later mutation of the caller's registry cannot move the base.
+func ExcludeModelsBaseFromDefaults(d providers.Defaults) ExcludeModelsBase {
+	base := ExcludeModelsBase{Owned: d.ExcludeModels != nil}
+	if base.Owned {
+		base.Entries = append([]string(nil), d.ExcludeModels...)
+	}
+	return base
+}
+
+// Matches reports whether d still carries the snapshot's shape and entries, in
+// order. A nil base (the zero value: the key was absent) matches only an
+// absent key.
+func (b ExcludeModelsBase) Matches(d providers.Defaults) bool {
+	if (d.ExcludeModels != nil) != b.Owned {
+		return false
+	}
+	if len(d.ExcludeModels) != len(b.Entries) {
+		return false
+	}
+	for i := range b.Entries {
+		if d.ExcludeModels[i] != b.Entries[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// ParseExcludeModels validates and normalises a proposed list through the ONE
+// exclusion-entry authority both doors share: providers.ValidateExcludeModels,
+// which is the write-door half of the same code the registry loader runs
+// (providers.NormalizeExcludeModels, called by Registry.Validate). Delegating
+// instead of re-implementing is the point: a front-end and the next load can no
+// longer disagree about which entries are legal, which is what let `family:`
+// (no name), a Cf-decorated entry, or an all-blank list through this door while
+// the loader refused them (S7-C2, S7-C3, S7-C9).
+//
+// Per entry, in the authority's order: a Cc or Cf rune anywhere in the raw entry
+// is refused (U+0085 NEL is both a control and a space, so a trim-first order
+// would erase it instead of refusing it), then the entry is trimmed, an empty
+// result is refused, an interior whitespace rune is refused (an entry names one
+// provider, one model id, provider/model, or family:<name>, all single tokens, so
+// interior space can never match), and a family: entry with no name after the
+// colon is refused. A non-nil list whose EVERY entry is blank is refused as a
+// list, and a nil or explicit-empty list passes through with its shape intact
+// (nil stays nil, `[]` stays a non-nil empty list), because the caller's
+// ownership decision rides on that distinction.
+//
+// Nothing else is normalised: entries stay case-sensitive and keep their order.
+// Every refusal wraps ErrExcludeModelsInvalid and names the field class only,
+// never the offending entry (a misdirected paste may be a key).
+func ParseExcludeModels(entries []string) ([]string, error) {
+	out, err := providers.ValidateExcludeModels(entries)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrExcludeModelsInvalid, err)
+	}
+	return out, nil
+}
+
+// sameExcludeEntries compares two entry lists in order. Order is part of the
+// stored shape, so a reorder counts as a change.
+func sameExcludeEntries(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// SetExcludeModels replaces providers.json defaults.excludeModels with entries.
+// It is the ONE write door for the list: the hub editor opens the M4 approval
+// modal over the exact before/after diff and calls this only after y, and no
+// front-end writes the field directly.
+//
+// Ownership: this method always writes the USER-OWNED shape. An empty (or nil)
+// entries slice persists as an explicit empty list ([]), never as the absent
+// key, because the caller has decided to own the list; the built-in k3 default
+// therefore does NOT come back on the next load. That is the whole point of the
+// D1=(a) nil-vs-empty contract and the reason Defaults.ExcludeModels carries no
+// omitempty.
+//
+// Stale base (the model form's write-time re-verify, F-M3/CWE-367): the
+// registry is loaded FRESH here and compared against base, the snapshot the
+// approval diff was composed from. A list that moved while the operator was
+// reading the diff fails with ErrExcludeModelsStale before any write, so an
+// external edit is refused instead of silently reverted. A matched base that
+// already holds exactly the requested entries performs NO write at all
+// (SaveReg is not called, so the file's bytes and mtime are untouched), which
+// keeps an idempotent re-approval from rewriting the file for nothing.
+//
+// Every other field of the registry is untouched: the mutation is one field of
+// the defaults block, validated through Registry.Validate (the loader's own
+// authority) and written whole-file 0600 atomic through deps.SaveReg.
+func (c *Core) SetExcludeModels(entries []string, base ExcludeModelsBase) error {
+	next, err := ParseExcludeModels(entries)
+	if err != nil {
+		return err
+	}
+	reg, err := c.loadRegistry()
+	if err != nil {
+		return err
+	}
+	if !base.Matches(reg.Defaults) {
+		return fmt.Errorf("%w: providers.json defaults.excludeModels no longer holds the list this write was approved against", ErrExcludeModelsStale)
+	}
+	if base.Owned && sameExcludeEntries(base.Entries, next) {
+		// The approved list is exactly what is already stored: no write at all,
+		// so the file's bytes and mtime stay untouched (the ProviderEdit
+		// idempotence rule).
+		return nil
+	}
+	// A non-nil empty slice is the user-owned empty list; append into a fresh
+	// zero-length slice so len(next)==0 still serialises as [].
+	owned := make([]string, 0, len(next))
+	owned = append(owned, next...)
+	reg.Defaults.ExcludeModels = owned
+	if err := reg.Validate(); err != nil {
+		return err
+	}
+	return c.deps.SaveReg(reg)
+}
+
 // RunWizard runs the interactive secret-entry wizard (the only path that
 // accepts raw key material — masked on echo per §2.11).
 func (c *Core) RunWizard(in io.Reader, out io.Writer) error {

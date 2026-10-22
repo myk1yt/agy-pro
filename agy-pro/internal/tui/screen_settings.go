@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"agypro/internal/cellwidth"
 	"agypro/internal/i18n"
@@ -105,13 +106,12 @@ const (
 	settingsApprovalRollbackDelete = "- {{name}}: delete (recorded as absent)"
 	// catalog-resolved, fallback kept: settings.presets.selectability
 	//
-	// P3-7 route decision (D2, refusal variant): saved preset names are
-	// stored and listed but NOT selectable yet. Selection by name needs the
-	// swarm-side grammar wrapper (internal/swarm/select.go), the builder
-	// prompt, the --seats flag path, and the launcher picker (all outside
-	// this unit's file boundary), so the management screen states what works
-	// instead: retype the preset's numbers.
-	settingsPresetsSelectability = "not selectable by name yet: the swarm builder and --seats accept seat numbers, ranges, and p1/p2/p3 only; retype a preset's numbers to use it."
+	// F04 decision (a), selectable variant: saved preset names ARE selectable.
+	// The swarm-side grammar wrapper (internal/swarm/select.go resolves a name
+	// to its stored Numbers), the builder seat prompt, the --seats flag path,
+	// and the launcher model picker all accept the name, so the management
+	// screen states that instead of the old refusal note.
+	settingsPresetsSelectability = "selectable by name: the swarm builder, the launcher model picker, and --seats accept a saved preset name."
 	// catalog-resolved, fallback kept: settings.presets.edit
 	settingsPresetsEdit = "Edit preset"
 	// catalog-resolved, fallback kept: settings.presets.delete
@@ -148,6 +148,67 @@ const (
 	// gates must read the same, so the strings are shared by key, not copied.
 	// catalog-resolved, fallback kept: settings.approval.preset_delete
 	settingsApprovalPresetDelete = "Delete saved seat preset {{name}}."
+	// catalog-resolved, fallback kept: settings.exclude.builtin_absent
+	//
+	// The exclusion editor's two state sentences. The built-in default is a
+	// PREDICATE (family "k3" or a k3 id token), and since the family:<name> entry
+	// form landed the seeded draft is that predicate written as one entry, so
+	// this sentence says saving the untouched draft KEEPS the rule instead of
+	// warning that it replaces it.
+	//
+	// This sentence fires on a nil list, and nil has TWO spellings on disk: an
+	// absent excludeModels key and an explicit "excludeModels": null (an
+	// unrelated registry write marshals a nil slice that way). Both leave the
+	// built-in default in force, so the sentence names both; an explicit empty
+	// list [] is the third shape and means the user owns an empty list.
+	settingsExcludeBuiltinAbsent = "the excludeModels key is absent or null, so the built-in default applies: the k3 family rule (family k3 or a k3 id token). An explicit empty list excludes nothing. The list below is that same rule written as the single entry family:k3, so saving it unchanged keeps the rule; add or remove entries to change it."
+	// catalog-resolved, fallback kept: settings.exclude.owned
+	settingsExcludeOwned = "this list is user-owned: it replaces the built-in k3 default entirely."
+	// catalog-resolved, fallback kept: settings.exclude.entries_empty
+	settingsExcludeEntriesEmpty = "(no entries: nothing is excluded while the list stays user-owned)"
+	// catalog-resolved, fallback kept: settings.exclude.add
+	settingsExcludeAdd = "Add entry"
+	// catalog-resolved, fallback kept: settings.exclude.remove
+	settingsExcludeRemove = "Remove entry"
+	// catalog-resolved, fallback kept: settings.exclude.save
+	settingsExcludeSave = "Save list"
+	// catalog-resolved, fallback kept: settings.exclude.armed
+	settingsExcludeArmed = "(armed)"
+	// catalog-resolved, fallback kept: settings.exclude.hint
+	settingsExcludeHint = "Enter on an entry arms it. Enter on Add, Remove, or Save acts on the list. Esc returns."
+	// catalog-resolved, fallback kept: settings.prompt.exclude_entry
+	settingsPromptExcludeEntry = "Exclusion entry (provider name, model id, provider/model, or family:<name>)"
+	// catalog-resolved, fallback kept: settings.msg.exclude_invalid
+	settingsMsgExcludeInvalid = "invalid exclusion entry"
+	// catalog-resolved, fallback kept: settings.msg.exclude_none_armed
+	settingsMsgExcludeNoneArmed = "no entry selected: press Enter on an entry row first, then Remove entry."
+	// catalog-resolved, fallback kept: settings.msg.exclude_unchanged
+	settingsMsgExcludeUnchanged = "providers.json defaults.excludeModels already holds this list, so nothing was written."
+	// catalog-resolved, fallback kept: settings.approval.exclude_models
+	settingsApprovalExcludeModels = "Write the model exclusion list to providers.json defaults.excludeModels; auto-seating and failover read it on the next run."
+	// catalog-resolved, fallback kept: settings.approval.exclude_counts
+	//
+	// A dedicated counts line: the shared modal.approval.counts sentence counts
+	// MODELS, and reusing it here would label an entry count as a model count.
+	settingsApprovalExcludeCounts = "Entries before: {{before}}, after: {{after}}"
+	// catalog-resolved, fallback kept: settings.approval.exclude_absent
+	//
+	// The approval modal's nil-list line. Like settings.exclude.builtin_absent it
+	// names both nil spellings, because "excludeModels": null on disk means the
+	// same thing as a missing key: the built-in default governs until this write
+	// replaces the slot with the drafted list.
+	settingsApprovalExcludeAbsent = "(the excludeModels key is absent or null today, so the built-in default applies and this write replaces it with the list below: the draft is the rule that applies from then on, and the entry family:k3 reproduces the built-in k3 rule)"
+	// catalog-resolved, fallback kept: settings.exclude.stale_base
+	settingsExcludeStaleBase = "providers.json defaults.excludeModels changed on disk since this editor opened. Nothing was written; the list was reloaded, so review it and save again."
+	// catalog-resolved, fallback kept: settings.exclude.disk_check_failed
+	settingsExcludeDiskCheckFailed = "providers.json could not be re-read, so the on-disk check did not run. Nothing was written; retry."
+	// excludeModelsHubRoute is the one route sentence every surface that cannot
+	// edit the list points at (P1-7=(a): the hub is the maintained surface). It
+	// is Chrome English on purpose: the route is a command, and a translated
+	// command would not run. The hub row's own note carries the localized
+	// sentence; this const is what the providers form's read-only defaults row
+	// prints beside excludeModels.
+	excludeModelsHubRoute = "edit in the hub: agy pro setup"
 )
 
 // localizeItem resolves the catalog strings for one settings row. The label
@@ -473,6 +534,13 @@ func (s *settingsScreen) activate(it settings.Item, a *App) {
 		})
 	case it.ID == "swarm.presets":
 		s.managePresets(a, label)
+	case it.ID == "swarm.exclude_models":
+		// D2=(b)/P1-7=(a): the model exclusion list is edited here and only
+		// here. The arm sits above the generic ReadOnly arm because the row is
+		// editable in the hub (ReadOnly false) while the legacy panel and
+		// `show` render it read-only; the write itself is the M4 gate inside
+		// the editor (approveExcludeModels), never this arm.
+		s.openExcludeModels(a, label)
 	case it.ID == "swarm.save_preset":
 		s.prompt(a, missingOr(s.bundle, "settings.prompt.preset_name", settingsPromptPresetName), "", func(name string, a *App) {
 			s.savePreset(label, name, a)
@@ -1105,14 +1173,42 @@ func (s *settingsScreen) savePreset(label, name string, a *App) {
 	})
 }
 
-// validPresetName reports whether name can join the saved-preset namespace.
-// A name containing a selection separator (space, comma, semicolon) could
-// never be one token in the §2.7 grammar a later name-selection phase must
-// stay compatible with, and a bare number or p1/p2/p3 already means
-// something in that grammar; both are refused at the input surface instead
-// of planting a name the listing shows next to p1/p2/p3 but can never be
-// typed. Hyphenated names stay allowed (exact-name lookup precedes range
-// parsing in any compatible extension).
+// containsControlRunes reports whether s carries a control (Cc) or format (Cf)
+// rune. The preset-name input surface needs the wider class: a name is stored in
+// swarm-state.json and printed on several surfaces, and the final painter already
+// drops Cc plus Cf, so a name carrying either could be saved, listed, and never
+// typed back. (The registry boundary rules on Cc only; this is the input gate,
+// not a boundary rule.)
+func containsControlRunes(s string) bool {
+	return strings.IndexFunc(s, func(r rune) bool {
+		return unicode.IsControl(r) || unicode.Is(unicode.Cf, r)
+	}) >= 0
+}
+
+// validPresetName reports whether name can join the saved-preset namespace AND
+// can later be selected by that name.
+//
+// The namespace rules (unchanged): a name containing a selection separator
+// (space, comma, semicolon) could never be one token in the §2.7 grammar, and a
+// bare number or p1/p2/p3 already means something in that grammar, so both are
+// refused at the input surface instead of planting a name the listing shows next
+// to p1/p2/p3 but can never be typed.
+//
+// The selectability rules (P4-5 fold-in, the warmup unit's residual): the
+// selection grammar resolves a saved name ONLY when the token is not already
+// selection syntax (swarm.savedPresetNameShape -> isSelectionSyntaxToken). A
+// token that STARTS WITH A DIGIT is a number or a range, so a saved name such as
+// "3fast" could be stored and listed yet never resolve; the same holds for a
+// name carrying ':' or '/', which the grammar reads as a seat spec
+// ("native:id", "prov/model"). Those spellings are refused here now, so every
+// name this path accepts is a name the selection path can reach. Control runes
+// are refused as well: a name is stored in swarm-state.json and printed on
+// several surfaces, none of which should carry a terminal control byte.
+//
+// Pre-existing saved presets are NOT re-validated or deleted anywhere: this
+// function only gates NEW input, so a store written before this rule keeps
+// listing its old-shape names (the management screen shows them and the delete
+// verb stays available).
 func validPresetName(name string) bool {
 	if name == "" {
 		return false
@@ -1120,8 +1216,16 @@ func validPresetName(name string) bool {
 	if strings.ContainsAny(name, " \t\r\n,;") {
 		return false
 	}
+	if containsControlRunes(name) || strings.ContainsAny(name, ":/") {
+		return false
+	}
 	switch strings.ToLower(name) {
 	case "p1", "p2", "p3":
+		return false
+	}
+	if name[0] >= '0' && name[0] <= '9' {
+		// Numbers, ranges, and any other digit-leading token are selection
+		// syntax before they are ever a name, so such a name is unselectable.
 		return false
 	}
 	if _, err := strconv.Atoi(name); err == nil {
@@ -1409,6 +1513,368 @@ func (s *settingsPresetsScreen) deleteArmed(a *App) {
 // Ctrl+S/Esc contract.
 func promptPresetValue(a *App, bundle *i18n.Bundle, title, seed string, onSubmit func(text string, a *App)) {
 	a.Push(newSettingsPromptScreen(bundle, title, seed, onSubmit))
+}
+
+// openExcludeModels pushes the model exclusion list editor (D1=(a): the list is
+// providers.json defaults.excludeModels; D2=(b): one rule for every exclusion).
+// onChange reloads the settings rows underneath after a save, so the
+// swarm.exclude_models row value never goes stale (the managePresets
+// precedent). The editor holds the child of the only write path: nothing here
+// writes, and the M4 gate inside the editor is the single door.
+func (s *settingsScreen) openExcludeModels(a *App, label string) {
+	a.Push(newExcludeModelsScreen(s.bundle, s.core, label, s.reload))
+}
+
+// excludeModelsScreen is the editable model exclusion list behind the
+// swarm.exclude_models row. It lists the EFFECTIVE list: the user's entries
+// verbatim, or, when the key is absent, the built-in default rule in its list
+// spelling (settings.ExcludeModelsBuiltinRule) so that a first save writes the
+// SAME policy out explicitly instead of starting from nothing or weakening it. It
+// lets the operator add and remove entries, and writes only through the M4
+// approval modal (approveExcludeModels -> Core.SetExcludeModels). Esc pops back
+// through the plain App precedence.
+//
+// entries is the draft the write is composed from; base is the at-open snapshot
+// of the on-disk defaults.excludeModels, which the approval diff is signed
+// against and the write re-checks (stale-base, the model form's F-M3 pattern).
+type excludeModelsScreen struct {
+	title    string
+	bundle   *i18n.Bundle
+	core     *settings.Core
+	onChange func()
+	list     *stepList
+	rows     []Row
+	entries  []string
+	base     settings.ExcludeModelsBase
+	armed    int
+	loadErr  string
+	app      *App
+}
+
+func newExcludeModelsScreen(b *i18n.Bundle, core *settings.Core, title string, onChange func()) *excludeModelsScreen {
+	s := &excludeModelsScreen{title: title, bundle: b, core: core, onChange: onChange, armed: -1}
+	s.list = newStepList(s.pick)
+	s.reload()
+	return s
+}
+
+// Title returns the originating row's label.
+func (s *excludeModelsScreen) Title() string { return s.title }
+
+// Mode is ModeNav: the stepList drives arming and the three action rows.
+func (s *excludeModelsScreen) Mode() Mode { return ModeNav }
+
+// reload re-reads the live providers.json (the same source Core.SetExcludeModels
+// writes) and reseeds the draft from the effective list. It runs at open and on
+// every path that ends in a refusal-after-reload (stale base), so the screen
+// never shows a list the next save would silently replace.
+func (s *excludeModelsScreen) reload() {
+	s.loadErr = ""
+	s.base = settings.ExcludeModelsBase{}
+	defaults := providers.Defaults{}
+	reg, err := providers.Load()
+	switch {
+	case err == nil && reg != nil:
+		defaults = reg.Defaults
+	case err != nil && !errors.Is(err, os.ErrNotExist) && !errors.Is(err, providers.ErrNotConfigured):
+		s.loadErr = providers.MaskOperand(err.Error())
+	}
+	s.base = settings.ExcludeModelsBaseFromDefaults(defaults)
+	// settings.ExcludeModelsSeed is the one seed source (no local copy of the
+	// seed spelling lives here): it returns the stored entries verbatim, or, when
+	// the key is absent, the single entry settings.ExcludeModelsBuiltinRule
+	// ("family:k3"), the exact list spelling of the built-in predicate
+	// (providers.IsK3Family). The pre-fix bare "k3" is NOT that reproduction: it
+	// matched only a provider or a model literally named k3, so a first save of it
+	// dropped the family-declared and id-token rows from the excluded pool.
+	s.entries = settings.ExcludeModelsSeed(defaults)
+	s.armed = -1
+	s.rebuild()
+}
+
+// excludeModelsRowPrefix namespaces an entry row ID. Row IDs are never
+// rendered; they exist so rebuild can restore the cursor by identity when the
+// list is rebuilt after arming (the settingsSavedPresetRowPrefix convention).
+// FIX-G F4 (round-2 LOW): the ID carries the row's POSITION as well as its
+// entry text. A list may legitimately hold the same entry twice (the loader and
+// the save door keep order and duplicates exactly as the user typed them), and
+// an entry-text-only ID made the restore below land on the FIRST row carrying
+// that text: arming row 2 of ["a","a"] rebuilt the list with the cursor on row
+// 1 while the "(armed)" suffix stayed on row 2. The position qualifier makes
+// every row unique, so the cursor and the armed marker cannot diverge.
+const excludeModelsRowPrefix = "exclude-entry:"
+
+// rebuild composes the entry rows plus the three action rows and restores the
+// cursor by row identity, so arming a row does not scroll it away (code review
+// C6).
+func (s *excludeModelsScreen) rebuild() {
+	oldCursor := s.list.Cursor()
+	oldID := ""
+	if oldCursor >= 0 && oldCursor < len(s.rows) {
+		oldID = s.rows[oldCursor].ID
+	}
+	rows := make([]Row, 0, len(s.entries)+3)
+	for i, entry := range s.entries {
+		// The entries are user-set operands naming registry slots (a provider
+		// name, a model id, or provider/model), so each renders through
+		// providers.MaskSlot, the one registry-slot display authority the
+		// sibling preset rows and the view row's value use. Benign entries
+		// render byte-identically.
+		label := providers.MaskSlot(entry)
+		if i == s.armed {
+			label += " " + missingOr(s.bundle, "settings.exclude.armed", settingsExcludeArmed)
+		}
+		rows = append(rows, Row{ID: excludeModelsRowPrefix + strconv.Itoa(i) + ":" + entry, Label: label})
+	}
+	rows = append(rows,
+		Row{ID: "add", Label: missingOr(s.bundle, "settings.exclude.add", settingsExcludeAdd)},
+		Row{ID: "remove", Label: missingOr(s.bundle, "settings.exclude.remove", settingsExcludeRemove)},
+		Row{ID: "save", Label: missingOr(s.bundle, "settings.exclude.save", settingsExcludeSave)},
+	)
+	s.rows = rows
+	s.list.SetRows(rows)
+	cursor := oldCursor
+	for i, r := range rows {
+		if r.ID == oldID {
+			cursor = i
+			break
+		}
+	}
+	s.list.SetCursor(cursor)
+}
+
+// stateLine is the ownership sentence above the list: whether the stored key is
+// absent (the built-in k3 rule is in force and the seeded list is that same rule
+// in list form, so saving it changes nothing about the pool) or the list is
+// already user-owned, which decides what the operator is changing.
+func (s *excludeModelsScreen) stateLine() string {
+	if s.base.Owned {
+		return missingOr(s.bundle, "settings.exclude.owned", settingsExcludeOwned)
+	}
+	return missingOr(s.bundle, "settings.exclude.builtin_absent", settingsExcludeBuiltinAbsent)
+}
+
+// Draw renders the ownership line, the entry window (or the honest empty state),
+// and the action hint. The window is sized through pageSizeFor against the frame
+// height, so a long list pages inside the frame instead of pushing the action
+// rows or the hint off the tail.
+func (s *excludeModelsScreen) Draw(a *App) []string {
+	s.app = a
+	w := a.Width()
+	if s.loadErr != "" {
+		return []string{cellwidth.Truncate(s.bundle.Tf("err.load_failed", map[string]string{"err": s.loadErr}), w)}
+	}
+	lines := []string{cellwidth.Truncate(s.stateLine(), w)}
+	if len(s.entries) == 0 {
+		lines = append(lines, "", cellwidth.Truncate(missingOr(s.bundle, "settings.exclude.entries_empty", settingsExcludeEntriesEmpty), w))
+		s.list.SetPageSize(pageSizeFor(a.Height(), 10))
+		lines = append(lines, s.list.Render(w)...)
+	} else {
+		s.list.SetPageSize(pageSizeFor(a.Height(), 10))
+		lines = append(lines, s.list.Render(w)...)
+	}
+	return append(lines, "", cellwidth.Truncate(missingOr(s.bundle, "settings.exclude.hint", settingsExcludeHint), w))
+}
+
+// HandleKey routes one key to the stepList.
+func (s *excludeModelsScreen) HandleKey(k Key, a *App) {
+	s.app = a
+	s.list.HandleKey(k)
+}
+
+// pick arms an entry row or runs one of the three action rows.
+func (s *excludeModelsScreen) pick(idx int) {
+	a := s.app
+	if a == nil {
+		return
+	}
+	n := len(s.entries)
+	switch {
+	case idx >= 0 && idx < n:
+		s.armed = idx
+		s.rebuild()
+	case idx == n:
+		s.addEntry(a)
+	case idx == n+1:
+		s.removeArmed(a)
+	case idx == n+2:
+		s.saveList(a)
+	}
+}
+
+// addEntry appends one entry after the registry loader's own per-entry rule
+// (providers.ValidateExcludeEntry): the same control-rune, trim, empty,
+// interior-whitespace and family:-remainder rules the loader applies to
+// defaults.excludeModels, so the editor cannot compose a list the loader would
+// refuse. The loader's authority is called directly here rather than mirrored,
+// because the grammar now carries a form (family:<name>) whose refusal depends on
+// the shape of the entry, not only on its character class. A refusal names the
+// reason and writes nothing.
+func (s *excludeModelsScreen) addEntry(a *App) {
+	s.prompt(a, missingOr(s.bundle, "settings.prompt.exclude_entry", settingsPromptExcludeEntry), "", func(text string, a *App) {
+		entry, err := providers.ValidateExcludeEntry(text)
+		if err != nil {
+			a.SetMessage(providers.MaskSentence(
+				missingOr(s.bundle, "settings.msg.exclude_invalid", settingsMsgExcludeInvalid)+": "+err.Error(),
+				providers.FlagSeedOperands(text)...))
+			return
+		}
+		s.entries = append(s.entries, entry)
+		s.armed = len(s.entries) - 1
+		s.rebuild()
+	})
+}
+
+// removeArmed drops the armed entry from the draft. Nothing on disk changes
+// until the save gate is approved.
+func (s *excludeModelsScreen) removeArmed(a *App) {
+	if s.armed < 0 || s.armed >= len(s.entries) {
+		a.SetMessage(missingOr(s.bundle, "settings.msg.exclude_none_armed", settingsMsgExcludeNoneArmed))
+		return
+	}
+	s.entries = append(s.entries[:s.armed], s.entries[s.armed+1:]...)
+	s.armed = -1
+	s.rebuild()
+}
+
+// sameExcludeList compares two entry lists in order. Order is part of the stored
+// shape (the file keeps it), so a reorder is a change even when the membership is
+// identical.
+func sameExcludeList(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// saveList opens the M4 approval modal over the exact write: the action
+// sentence, the entry counts before/after, and one diff line per entry that
+// leaves or joins the list (each masked). The diff is bounded to the frame
+// budget through capApprovalEntries, so a long list still shows the gate legend
+// and an exact "N more entries NOT shown" tail. y is the only path to
+// Core.SetExcludeModels; n/Esc writes nothing.
+func (s *excludeModelsScreen) saveList(a *App) {
+	if s.base.Owned && sameExcludeList(s.entries, s.base.Entries) {
+		a.SetMessage(missingOr(s.bundle, "settings.msg.exclude_unchanged", settingsMsgExcludeUnchanged))
+		return
+	}
+	next := append([]string(nil), s.entries...)
+	summary := s.approvalSummary(next, a)
+	a.ShowModal(NewApproval(s.title, summary, func(approved bool) {
+		if !approved {
+			a.SetMessage(missingOr(s.bundle, "settings.msg.cancelled", settingsMsgCancelled))
+			return
+		}
+		s.commit(next, a)
+	}))
+}
+
+// approvalSummary composes the M4 gate body: the action, the counts, the shared
+// approval body line, the honest absent-key note (when this write creates the
+// key), and the membership diff.
+func (s *excludeModelsScreen) approvalSummary(next []string, a *App) []string {
+	summary := []string{
+		missingOr(s.bundle, "settings.approval.exclude_models", settingsApprovalExcludeModels),
+		fillHubSlots(missingOr(s.bundle, "settings.approval.exclude_counts", settingsApprovalExcludeCounts),
+			map[string]string{"before": strconv.Itoa(len(s.base.Entries)), "after": strconv.Itoa(len(next))}),
+		s.bundle.T("modal.approval.body"),
+	}
+	if !s.base.Owned {
+		summary = append(summary, missingOr(s.bundle, "settings.approval.exclude_absent", settingsApprovalExcludeAbsent))
+	}
+	entries := make([]string, 0, len(next)+len(s.base.Entries))
+	for _, old := range s.base.Entries {
+		if !containsExcludeEntry(next, old) {
+			entries = append(entries, s.bundle.Tf("modal.approval.diff_removed", map[string]string{
+				"line": providers.MaskSlot(old),
+			}))
+		}
+	}
+	for _, neu := range next {
+		if !containsExcludeEntry(s.base.Entries, neu) {
+			entries = append(entries, s.bundle.Tf("modal.approval.diff_added", map[string]string{
+				"line": providers.MaskSlot(neu),
+			}))
+		}
+	}
+	return append(summary, capApprovalEntries(entries, len(summary), approvalBodyBudget(a))...)
+}
+
+// containsExcludeEntry reports whether list holds entry (exact match, the
+// comparison the policy itself makes).
+func containsExcludeEntry(list []string, entry string) bool {
+	for _, e := range list {
+		if e == entry {
+			return true
+		}
+	}
+	return false
+}
+
+// commit runs the approved write. The base is re-verified against a FRESH read
+// before Core.SetExcludeModels runs (the model form's F-M3 stale-base gate, and
+// Core re-checks the same base again): a list that moved while the diff was on
+// screen is refused and the editor reloads, so an external edit is never
+// silently reverted. A read failure refuses too, because the write would
+// otherwise run without the check. Every error echo is masked, seeded with the
+// entry operands.
+func (s *excludeModelsScreen) commit(next []string, a *App) {
+	seeds := s.seedOperands()
+	defaults := providers.Defaults{}
+	reg, err := providers.Load()
+	switch {
+	case err == nil && reg != nil:
+		defaults = reg.Defaults
+	case err != nil && !errors.Is(err, os.ErrNotExist) && !errors.Is(err, providers.ErrNotConfigured):
+		a.SetMessage(providers.MaskSentence("error: "+missingOr(s.bundle, "settings.exclude.disk_check_failed", settingsExcludeDiskCheckFailed), seeds...))
+		return
+	}
+	if !s.base.Matches(defaults) {
+		s.reload()
+		a.SetMessage(missingOr(s.bundle, "settings.exclude.stale_base", settingsExcludeStaleBase))
+		if s.onChange != nil {
+			s.onChange()
+		}
+		return
+	}
+	if err := s.core.SetExcludeModels(next, s.base); err != nil {
+		if errors.Is(err, settings.ErrExcludeModelsStale) {
+			s.reload()
+			if s.onChange != nil {
+				s.onChange()
+			}
+			a.SetMessage(missingOr(s.bundle, "settings.exclude.stale_base", settingsExcludeStaleBase))
+			return
+		}
+		a.SetMessage(providers.MaskSentence("error: "+err.Error(), seeds...))
+		return
+	}
+	s.reload()
+	if s.onChange != nil {
+		s.onChange()
+	}
+	a.SetMessage("[SUCCESS] " + s.title)
+}
+
+// seedOperands returns the draft entries as mask seeds for error echoes (the
+// per-token composition the sibling prompt tails use).
+func (s *excludeModelsScreen) seedOperands() []string {
+	var seeds []string
+	for _, e := range s.entries {
+		seeds = append(seeds, providers.FlagSeedOperands(e)...)
+	}
+	return seeds
+}
+
+// prompt pushes the inline editor for one draft entry (the settingsScreen.prompt
+// twin, resolved inside this screen so the callback keeps its own draft state).
+func (s *excludeModelsScreen) prompt(a *App, title, seed string, onSubmit func(text string, a *App)) {
+	a.Push(newSettingsPromptScreen(s.bundle, title, seed, onSubmit))
 }
 
 // runDiagnose runs the doctor report into a buffer and pushes it as a

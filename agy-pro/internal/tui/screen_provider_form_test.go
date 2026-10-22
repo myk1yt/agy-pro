@@ -2230,3 +2230,73 @@ func TestProviderFormBenignUserinfoAccepted(t *testing.T) {
 		}
 	}
 }
+
+// TestProviderFormDefaultsExcludeModelsRow pins the P4-5 read-only row in the
+// defaults block: excludeModels renders beside excludeFamilies with the hub
+// route in its note, the block stays read-only (Enter moves on to Save and never
+// opens a gate), and nothing is written.
+func TestProviderFormDefaultsExcludeModelsRow(t *testing.T) {
+	app, path := newProviderFormTestApp(t, providerFormFixtureReg(), "add", "")
+	scr := providerFormScreenOf(t, app)
+
+	last := scr.defList.Row(scr.defList.Len() - 1)
+	if last.Label != "excludeModels" {
+		t.Fatalf("last defaults row = %q; want excludeModels", last.Label)
+	}
+	if !strings.Contains(last.Note, "(absent: the built-in k3 default applies)") {
+		t.Fatalf("absent-key note = %q; want the built-in default named", last.Note)
+	}
+	if !strings.Contains(last.Note, "edit in the hub: agy pro setup") {
+		t.Fatalf("note = %q; want the hub route", last.Note)
+	}
+	if prev := scr.defList.Row(scr.defList.Len() - 2); prev.Label != "excludeFamilies" {
+		t.Fatalf("row before excludeModels = %q; want excludeFamilies (the fields stay adjacent)", prev.Label)
+	}
+
+	before := providerFormDisk(t, path)
+	app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyTab, KeyTab, KeyTab}}) // grid -> defaults
+	app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyEnd, KeyEnter, KeyEnter}})
+	if app.Modal() != nil {
+		t.Fatalf("the read-only defaults block opened %T", app.Modal())
+	}
+	if got := providerFormDisk(t, path); string(got) != string(before) {
+		t.Fatal("the read-only excludeModels row wrote providers.json")
+	}
+	out := app.Frame().String()
+	for _, want := range []string{"excludeModels", "edit in the hub: agy pro setup"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("frame missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestProviderFormDefaultsExcludeModelsShapes pins the two stored shapes the
+// block must not collapse: a user-owned empty list and a populated list.
+func TestProviderFormDefaultsExcludeModelsShapes(t *testing.T) {
+	cases := []struct {
+		name    string
+		entries []string
+		want    string
+	}{
+		{"owned empty list", []string{}, "(empty list: nothing is excluded)"},
+		{"populated list", []string{"nw", "glm-5"}, "nw, glm-5"},
+	}
+	got := map[string]bool{}
+	for _, tc := range cases {
+		reg := providerFormFixtureReg()
+		reg.Defaults.ExcludeModels = tc.entries
+		app, _ := newProviderFormTestApp(t, reg, "add", "")
+		scr := providerFormScreenOf(t, app)
+		note := scr.defList.Row(scr.defList.Len() - 1).Note
+		if !strings.Contains(note, tc.want) {
+			t.Errorf("%s: note = %q; want %q", tc.name, note, tc.want)
+		}
+		if !strings.Contains(note, "edit in the hub: agy pro setup") {
+			t.Errorf("%s: note = %q; want the hub route", tc.name, note)
+		}
+		got[tc.want] = true
+	}
+	if len(got) != 2 {
+		t.Fatalf("the two stored shapes rendered %d distinct notes; the row collapses them", len(got))
+	}
+}

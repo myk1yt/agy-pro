@@ -74,6 +74,82 @@ func TestTUIFrameLayout(t *testing.T) {
 	}
 }
 
+// TestTUILegacyPanelDeprecationNotice (P1-7=(a)): the legacy panel names itself
+// deprecated AND hands the reader the command that opens the maintained surface,
+// on the frame every entry path renders. The notice is honest about the panel
+// still working, so the pin asserts all three claims rather than the word
+// "deprecated" alone: without the notice every string below is absent and the
+// test fails (it is not vacuous against the pre-change frame).
+func TestTUILegacyPanelDeprecationNotice(t *testing.T) {
+	tui, _, out := newTestTUI(t)
+	s := tui.Frame()
+	for _, want := range []string{
+		"DEPRECATED",
+		"still works exactly as today",
+		"deprecated",
+		"new setting work lands in the setup hub",
+	} {
+		if !strings.Contains(s.Notice, want) {
+			t.Errorf("frame notice missing %q:\n%s", want, s.Notice)
+		}
+	}
+	// (b) routing: the notice carries the exact hub command, on the notice line
+	// itself, not a pointer the reader has to resolve elsewhere.
+	if !strings.Contains(s.Notice, "agy pro setup") {
+		t.Errorf("frame notice does not name the hub command:\n%s", s.Notice)
+	}
+	if !strings.Contains(s.Notice, "Open the hub: "+legacyHubCommand) {
+		t.Errorf("frame notice missing the hub routing line %q:\n%s", "Open the hub: "+legacyHubCommand, s.Notice)
+	}
+
+	// The notice is RENDERED, not just captured in the frame: a line-mode
+	// reader (and the interactive frame) sees it above the section list.
+	tui.Render(false)
+	rendered := out.String()
+	if !strings.Contains(rendered, LegacyPanelNotice) {
+		t.Errorf("Render output missing the deprecation notice:\n%s", rendered)
+	}
+	if i, j := strings.Index(rendered, "agy-pro Settings - full-screen panel"), strings.Index(rendered, "Open the hub: "+legacyHubCommand); i < 0 || j < 0 || j < i {
+		t.Errorf("the notice does not ride directly under the banner (banner=%d, notice=%d):\n%s", i, j, rendered)
+	}
+
+	// (c) behaviour is unchanged: the notice is presentation only. A press still
+	// moves the cursor and the deep-link still selects its section.
+	tui.Step(KeyDown)
+	if tui.row != 1 {
+		t.Errorf("the notice changed row navigation: row = %d; want 1", tui.row)
+	}
+	tui.SelectSection(4)
+	if s := tui.Frame(); s.Notice != LegacyPanelNotice {
+		t.Errorf("deep-linked frame lost the notice: %q", s.Notice)
+	}
+}
+
+// legacyHubCommand is the hub command the notice routes to, spelled exactly as
+// cmd/agy/main.go dispatches it (`case "setup":` under `agy pro <sub>`).
+const legacyHubCommand = "agy pro setup"
+
+// TestLegacyPanelNoticeRoutesToARealCommand: the notice names a command, so the
+// command has to exist. This pins the wiring the notice advertises against the
+// CLI dispatch itself, so renaming or dropping `agy pro setup` fails here
+// instead of leaving the deprecated panel pointing at a dead surface.
+func TestLegacyPanelNoticeRoutesToARealCommand(t *testing.T) {
+	if !strings.Contains(LegacyPanelNotice, legacyHubCommand) {
+		t.Fatalf("notice does not carry %q: %q", legacyHubCommand, LegacyPanelNotice)
+	}
+	src, err := os.ReadFile(filepath.Join("..", "..", "cmd", "agy", "main.go"))
+	if err != nil {
+		t.Fatalf("read cmd/agy/main.go: %v", err)
+	}
+	main := string(src)
+	if !strings.Contains(main, `case "setup":`) {
+		t.Error("`agy pro setup` is no longer dispatched by cmd/agy/main.go; the notice routes to a dead command")
+	}
+	if !strings.Contains(main, "runSetup(subArgs)") {
+		t.Error("cmd/agy/main.go no longer routes setup to runSetup; the notice routes to a dead command")
+	}
+}
+
 // TestTUINavigation drives the keybinding seam: ↑↓ move, ←→ section switch,
 // Esc back, digit jump (contract §2.9 keybindings).
 func TestTUINavigation(t *testing.T) {
@@ -447,5 +523,73 @@ func TestTUISwarmSavePresetHealthyStoreSkipsGate(t *testing.T) {
 	tui.Step(KeyEnter)
 	if tui.pending != nil {
 		t.Fatalf("the second save over a now-healthy file was gated: %+v", tui.pending)
+	}
+}
+
+// panelRow returns the frame line of the right pane that renders itemID's row.
+func panelRow(t *testing.T, tui *TUI, itemID string) string {
+	t.Helper()
+	label := ""
+	for _, sec := range tui.view.Sections {
+		for _, it := range sec.Items {
+			if it.ID == itemID {
+				label = it.Label
+			}
+		}
+	}
+	if label == "" {
+		t.Fatalf("item %q missing from the panel view", itemID)
+	}
+	for _, ln := range strings.Split(tui.Frame().Right, "\n") {
+		if strings.Contains(ln, label) {
+			return ln
+		}
+	}
+	t.Fatalf("panel renders no row for %q:\n%s", itemID, tui.Frame().Right)
+	return ""
+}
+
+// TestLegacyPanelMarksHubOnlyExclusionRowReadOnly is S7-C6 on the deprecated
+// line-mode panel: the panel has no activation arm for the model exclusion row
+// (its only write surface is the hub), so the row must carry the shared
+// read-only dot instead of the bare ● of an editable row, and pressing it must
+// answer with the hub route rather than leaving the operator at a dead end.
+func TestLegacyPanelMarksHubOnlyExclusionRowReadOnly(t *testing.T) {
+	tui, f, _ := newTestTUI(t)
+	selectItemRow(t, tui, "swarm.exclude_models")
+
+	row := panelRow(t, tui, "swarm.exclude_models")
+	if !strings.HasSuffix(strings.TrimRight(row, " "), "● "+ReadOnlyMarker) {
+		t.Fatalf("panel row does not end with the shared read-only dot: %q", row)
+	}
+	// Non-vacuity: an editable row on the same frame carries the bare dot, so
+	// the marker above is not printed for every row.
+	if ctrl := panelRow(t, tui, "native_seat_concurrency"); strings.Contains(ctrl, ReadOnlyMarker) {
+		t.Fatalf("an editable row also carries the read-only dot: %q", ctrl)
+	}
+
+	// Pressing the row is read-only in fact: no write arm, no confirm gate, and
+	// the message names the one surface that can edit it.
+	before := f.saved
+	tui.Step(KeyEnter)
+	if f.saved != before {
+		t.Fatal("the panel activation wrote to a Core seam")
+	}
+	if tui.pending != nil || tui.choices != nil {
+		t.Fatalf("the row armed a write surface: pending %v, choices %v", tui.pending, tui.choices)
+	}
+	if !strings.HasPrefix(tui.message, "read-only: ") {
+		t.Fatalf("panel message = %q; want the read-only answer", tui.message)
+	}
+	if !strings.Contains(tui.message, "edit in the hub: agy pro setup") {
+		t.Fatalf("panel message = %q; want the hub route", tui.message)
+	}
+	if strings.Contains(tui.message, "[SUCCESS]") {
+		t.Fatalf("panel message claims a write: %q", tui.message)
+	}
+
+	// The detail pane carries the same route before any press.
+	if !strings.Contains(tui.Frame().Right, "edit in the hub: agy pro setup") {
+		t.Fatalf("detail pane lost the hub route:\n%s", tui.Frame().Right)
 	}
 }

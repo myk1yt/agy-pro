@@ -227,7 +227,7 @@ func TestEnCatalogCoversViewItems(t *testing.T) {
 		"fanout.max_turns": true, "fanout.tools": true, "fanout.task": true,
 		"fanout.flags": true, "fanout.registry_defaults": true,
 		"fanout.consensus": true, "fanout.failover": true,
-		"swarm.k3_exclusion": true, "swarm.templates": true,
+		"swarm.exclude_models": true, "swarm.templates": true,
 		"swarm.presets": true, "swarm.save_preset": true,
 		// sectionDiagnostics (p5)
 		"doctor.diagnose": true, "doctor.fix_keys": true,
@@ -258,7 +258,7 @@ func TestEnCatalogCoversViewItems(t *testing.T) {
 		"fanout.max_turns": true, "fanout.tools": true, "fanout.task": true,
 		"fanout.flags": true, "fanout.registry_defaults": true,
 		"fanout.consensus": true, "fanout.failover": true,
-		"swarm.k3_exclusion": true, "swarm.templates": true,
+		"swarm.exclude_models": true, "swarm.templates": true,
 		"swarm.presets": true, "swarm.save_preset": true,
 		"doctor.diagnose": true, "doctor.fix_keys": true,
 		"doctor.rollback_keys": true, "doctor.exit_semantics": true,
@@ -299,5 +299,74 @@ func TestSectionTitlesCarryNoIndex(t *testing.T) {
 				t.Errorf("%s.json: %s = %q carries its own bracketed index; the hub is the only numbered surface", code, key, val)
 			}
 		}
+	}
+}
+
+// TestExclusionListCatalogCoverage (P4-5) pins the exclusion-list key set: the
+// retired read-only k3 row's keys are gone from EVERY catalog, the new editor
+// keys exist in all twelve, and the two facts a translation must never lose
+// survive: the hub route command (untranslated, because a translated command
+// would not run) and the k3 name of the built-in default.
+func TestExclusionListCatalogCoverage(t *testing.T) {
+	catalogs := readAllCatalogs(t)
+	required := []string{
+		"view.swarm.exclude_models.label",
+		"view.swarm.exclude_models.note",
+		"view.fanout.failover.note",
+		"settings.exclude.builtin_absent",
+		"settings.exclude.owned",
+		"settings.exclude.entries_empty",
+		"settings.exclude.add",
+		"settings.exclude.remove",
+		"settings.exclude.save",
+		"settings.exclude.armed",
+		"settings.exclude.hint",
+		"settings.exclude.stale_base",
+		"settings.exclude.disk_check_failed",
+		"settings.prompt.exclude_entry",
+		"settings.msg.exclude_invalid",
+		"settings.msg.exclude_none_armed",
+		"settings.msg.exclude_unchanged",
+		"settings.approval.exclude_models",
+		"settings.approval.exclude_counts",
+		"settings.approval.exclude_absent",
+	}
+	retired := []string{
+		"view.swarm.k3_exclusion.label",
+		"view.swarm.k3_exclusion.note",
+	}
+	locales := 0
+	for code, cat := range catalogs {
+		locales++
+		for _, k := range required {
+			if _, ok := cat[k]; !ok {
+				t.Errorf("%s.json missing the exclusion key %s", code, k)
+			}
+		}
+		for _, k := range retired {
+			if _, ok := cat[k]; ok {
+				t.Errorf("%s.json still carries the retired key %s", code, k)
+			}
+		}
+		note := cat["view.swarm.exclude_models.note"]
+		if !strings.Contains(note, "agy pro setup") {
+			t.Errorf("%s.json: the exclusion note lost the hub route command: %q", code, note)
+		}
+		if !strings.Contains(note, "k3") {
+			t.Errorf("%s.json: the exclusion note lost the k3 name of the built-in default: %q", code, note)
+		}
+		// The built-in default is reproduced by the FAMILY form of the grammar,
+		// so the note must name family:k3 (the entry the row shows and the editor
+		// seeds), not leave each locale to paraphrase a bare k3 entry: a bare
+		// entry does not reproduce the built-in predicate.
+		if !strings.Contains(note, "family:k3") {
+			t.Errorf("%s.json: the exclusion note does not name family:k3 (the exact list spelling of the built-in default): %q", code, note)
+		}
+		if strings.Contains(cat["settings.approval.exclude_counts"], "Models before") {
+			t.Errorf("%s.json: the entry counts line reuses the model counts sentence", code)
+		}
+	}
+	if locales != 12 {
+		t.Fatalf("catalogs read = %d; want the closed 12-locale set", locales)
 	}
 }

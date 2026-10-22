@@ -1996,10 +1996,10 @@ func TestSettingsScreenPresetsNoneArmedRefused(t *testing.T) {
 	}
 }
 
-// TestSettingsScreenPresetsEmptyStateAndRefusalNote covers the no-presets
-// state (the honest "(no saved presets...)" line, no action rows) and pins
-// the D2 refusal note: the management screen states that names are not
-// selectable yet and what works instead.
+// TestSettingsScreenPresetsEmptyStateAndSelectabilityNote covers the no-presets
+// state (the honest "(no saved presets...)" line, no action rows) and pins the
+// F04 selectability note: the management screen states that names ARE
+// selectable, on which surfaces (swarm builder, launcher model picker, --seats).
 func TestSettingsScreenPresetsEmptyStateAndRefusalNote(t *testing.T) {
 	h := newSettingsTestCore(t)
 	app := newSettingsApp(h)
@@ -2007,8 +2007,8 @@ func TestSettingsScreenPresetsEmptyStateAndRefusalNote(t *testing.T) {
 
 	frame := app.Frame().String()
 	for _, want := range []string{
-		"not selectable by name yet",
-		"seat numbers, ranges, and p1/p2/p3 only",
+		"selectable by name",
+		"the swarm builder, the launcher model picker, and --seats",
 		"(no saved presets; p1/p2/p3 defaults always available)",
 	} {
 		if !strings.Contains(frame, want) {
@@ -2313,5 +2313,717 @@ func TestSettingsScreenPresetsArmingKeepsCursorOnRow(t *testing.T) {
 	app.Step(Digit(4)) // Edit row
 	if app.Top().Mode() != ModeEdit {
 		t.Fatalf("Edit row did not open the prompt; top = %T", app.Top())
+	}
+}
+
+// openExcludeEditor opens the model exclusion list editor through the
+// swarm.exclude_models row and returns it (the row is the only door).
+func openExcludeEditor(t *testing.T, app *App) *excludeModelsScreen {
+	t.Helper()
+	openSettingsRow(t, app, "swarm.exclude_models")
+	ed, ok := app.Top().(*excludeModelsScreen)
+	if !ok {
+		t.Fatalf("top screen is %T; want *excludeModelsScreen", app.Top())
+	}
+	return ed
+}
+
+// settingsScreenOf returns the settings screen below the current top screen.
+func settingsScreenOf(t *testing.T, app *App) *settingsScreen {
+	t.Helper()
+	for i := len(app.stack) - 1; i >= 0; i-- {
+		if scr, ok := app.stack[i].(*settingsScreen); ok {
+			return scr
+		}
+	}
+	t.Fatal("no *settingsScreen on the stack")
+	return nil
+}
+
+// TestSettingsScreenExcludeEditorSeedsBuiltinEntry pins the editor's open state:
+// with the key absent the draft starts from the built-in default entry in its
+// list spelling (so a first save writes the SAME policy out explicitly instead
+// of weakening it), the ownership sentence says which rule is in force and that
+// saving the seeded list keeps it, and merely opening the editor writes
+// nothing.
+func TestSettingsScreenExcludeEditorSeedsBuiltinEntry(t *testing.T) {
+	SetLanguage("en")
+	h := newSettingsTestCore(t)
+	app := newSettingsApp(h)
+	before := regFileBytes(t)
+
+	ed := openExcludeEditor(t, app)
+	if len(ed.entries) != 1 || ed.entries[0] != settings.ExcludeModelsBuiltinRule {
+		t.Fatalf("draft seed = %v; want exactly the shipped built-in default entry in its list spelling (%s)", ed.entries, settings.ExcludeModelsBuiltinRule)
+	}
+	if got := ed.entries[0]; got != "family:k3" {
+		t.Fatalf("seeded entry = %q; want family:k3 (the form that reproduces the built-in family predicate)", got)
+	}
+	if ed.base.Owned {
+		t.Fatal("base reports an owned list; the harness registry has no excludeModels key")
+	}
+	if !strings.Contains(ed.stateLine(), "k3 family rule") {
+		t.Fatalf("ownership line = %q; want the built-in rule named", ed.stateLine())
+	}
+	if !strings.Contains(ed.stateLine(), "saving it unchanged keeps the rule") {
+		t.Fatalf("ownership line = %q; want the sentence that saving the seeded list keeps the rule", ed.stateLine())
+	}
+	if len(ed.rows) != 4 {
+		t.Fatalf("rows = %d; want 1 entry + add + remove + save", len(ed.rows))
+	}
+	out := app.Frame().String()
+	for _, want := range []string{
+		settings.ExcludeModelsBuiltinRule,
+		"Add entry",
+		"Remove entry",
+		"Save list",
+		"Esc returns",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("editor frame missing %q:\n%s", want, out)
+		}
+	}
+	if got := regFileBytes(t); string(got) != string(before) {
+		t.Fatal("opening the exclusion editor wrote providers.json")
+	}
+}
+
+// TestSettingsScreenExcludeEditorGateIsTheOnlyWritePath pins D2=(b)/M4: adding
+// an entry is a DRAFT change, the only write path is the approval modal, a
+// non-answer key leaves the gate armed, a decline writes nothing, and y writes
+// exactly the draft and refreshes the parent row.
+func TestSettingsScreenExcludeEditorGateIsTheOnlyWritePath(t *testing.T) {
+	SetLanguage("en")
+	h := newSettingsTestCore(t)
+	app := newSettingsApp(h)
+	before := regFileBytes(t)
+	ed := openExcludeEditor(t, app)
+
+	// Add is a draft change: nothing on disk moves.
+	ed.list.SetCursor(len(ed.entries)) // Add row
+	app.Step(KeyEnter)
+	if _, ok := app.Top().(*settingsPromptScreen); !ok {
+		t.Fatalf("Add row opened %T; want the entry prompt", app.Top())
+	}
+	for _, k := range append(typeKeys("nw/glm-5"), KeyCtrlS) {
+		app.Step(k)
+	}
+	if len(ed.entries) != 2 || ed.entries[1] != "nw/glm-5" {
+		t.Fatalf("draft after Add = %v", ed.entries)
+	}
+	if got := regFileBytes(t); string(got) != string(before) {
+		t.Fatal("a draft edit wrote providers.json")
+	}
+
+	// Save opens the M4 gate with the exact diff.
+	ed.list.SetCursor(len(ed.entries) + 2) // Save row
+	app.Step(KeyEnter)
+	m := app.Modal()
+	if m == nil {
+		t.Fatal("Save row did not open the M4 gate")
+	}
+	if _, ok := m.(*Approval); !ok {
+		t.Fatalf("gate = %T; want *Approval", m)
+	}
+	body := strings.Join(m.Body(app.Width()), "\n")
+	for _, want := range []string{
+		"+ nw/glm-5",
+		"Entries before: 0, after: 2",
+		"the excludeModels key is absent or null today",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("gate body missing %q:\n%s", want, body)
+		}
+	}
+
+	// A non-answer key leaves the gate armed and writes nothing.
+	app.Step(RuneKey('x'))
+	if app.Modal() == nil {
+		t.Fatal("a non-answer key closed the gate")
+	}
+	if got := regFileBytes(t); string(got) != string(before) {
+		t.Fatal("a non-answer key wrote providers.json")
+	}
+
+	// n/Esc declines: nothing is written.
+	app.Step(KeyNo)
+	if app.Modal() != nil {
+		t.Fatal("the gate survived a decline")
+	}
+	if got := regFileBytes(t); string(got) != string(before) {
+		t.Fatal("a declined gate wrote providers.json")
+	}
+
+	// y is the only path that writes.
+	ed.list.SetCursor(len(ed.entries) + 2)
+	app.Step(KeyEnter)
+	app.Step(KeyYes)
+	reg, err := providers.Load()
+	if err != nil {
+		t.Fatalf("reload providers.json: %v", err)
+	}
+	if got := strings.Join(reg.Defaults.ExcludeModels, ","); got != "family:k3,nw/glm-5" {
+		t.Fatalf("stored list = %q; want the approved draft", got)
+	}
+	if !strings.Contains(app.Message(), "[SUCCESS]") {
+		t.Fatalf("success message = %q", app.Message())
+	}
+	// The parent row refreshed through onChange, so it never shows a stale list.
+	it, ok := settingsScreenOf(t, app).view.FindItem("swarm.exclude_models")
+	if !ok {
+		t.Fatal("row missing from the parent view")
+	}
+	if it.Value != "family:k3, nw/glm-5" {
+		t.Fatalf("parent row value = %q; want the stored list", it.Value)
+	}
+}
+
+// TestSettingsScreenExcludeEditorEmptyListPersistsEmptyShape is the
+// nil-vs-empty round trip through the UI: removing the seeded entry and saving
+// persists an explicit [], the user-owned empty policy survives a reload, and
+// the built-in k3 default does NOT come back.
+func TestSettingsScreenExcludeEditorEmptyListPersistsEmptyShape(t *testing.T) {
+	SetLanguage("en")
+	h := newSettingsTestCore(t)
+	app := newSettingsApp(h)
+	ed := openExcludeEditor(t, app)
+
+	ed.list.SetCursor(0)
+	app.Step(KeyEnter) // arm the seeded built-in entry
+	if ed.armed != 0 {
+		t.Fatalf("armed = %d; want 0 after Enter on the first entry row", ed.armed)
+	}
+	ed.list.SetCursor(len(ed.entries) + 1) // Remove row
+	app.Step(KeyEnter)
+	if len(ed.entries) != 0 {
+		t.Fatalf("draft after Remove = %v; want empty", ed.entries)
+	}
+	ed.list.SetCursor(len(ed.entries) + 2) // Save row
+	app.Step(KeyEnter)
+	app.Step(KeyYes)
+
+	raw := string(regFileBytes(t))
+	if !strings.Contains(raw, `"excludeModels": []`) {
+		t.Fatalf("providers.json does not carry an explicit empty list:\n%s", raw)
+	}
+	reg, err := providers.Load()
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if reg.Defaults.ExcludeModels == nil {
+		t.Fatal("the absent shape came back: the built-in k3 default would govern again")
+	}
+	policy := providers.ExclusionPolicyFromDefaults(reg.Defaults)
+	if !policy.UserOwned() {
+		t.Fatal("the reloaded policy is not user-owned")
+	}
+	if policy.Excludes("alpha", "kimi-k3", "kimi") {
+		t.Fatal("the built-in k3 default returned after the user saved an empty list")
+	}
+	// The editor reloaded onto the stored shape, not the built-in seed.
+	if !ed.base.Owned || len(ed.entries) != 0 {
+		t.Fatalf("editor after save: base.Owned=%v entries=%v", ed.base.Owned, ed.entries)
+	}
+	if !strings.Contains(ed.stateLine(), "user-owned") {
+		t.Fatalf("ownership line = %q; want the user-owned sentence", ed.stateLine())
+	}
+	// The hub row reports the user-owned empty list honestly.
+	view, err := h.core.View()
+	if err != nil {
+		t.Fatalf("View: %v", err)
+	}
+	it, ok := view.FindItem("swarm.exclude_models")
+	if !ok || it.Value != "(empty list: nothing is excluded)" {
+		t.Fatalf("row value = %q (found %v)", it.Value, ok)
+	}
+}
+
+// TestSettingsScreenExcludeEditorStaleBaseRefused pins the write-time re-verify
+// (the model form's F-M3 pattern): a list that moved on disk while the diff was
+// on screen is refused, the external edit survives, and the editor reloads onto
+// what the file actually holds.
+func TestSettingsScreenExcludeEditorStaleBaseRefused(t *testing.T) {
+	SetLanguage("en")
+	h := newSettingsTestCore(t)
+	app := newSettingsApp(h)
+	ed := openExcludeEditor(t, app)
+
+	ed.entries = append(ed.entries, "charm") // draft a change
+	ed.rebuild()
+	// Another writer changes the same key while the editor is open.
+	external := &providers.Registry{
+		Providers: h.reg.Providers,
+		Defaults:  providers.Defaults{ExcludeModels: []string{"external"}},
+	}
+	if err := h.persistReg(external); err != nil {
+		t.Fatalf("external write: %v", err)
+	}
+
+	ed.list.SetCursor(len(ed.entries) + 2) // Save row
+	app.Step(KeyEnter)
+	app.Step(KeyYes)
+
+	if !strings.Contains(app.Message(), "changed on disk") {
+		t.Fatalf("message = %q; want the stale-base refusal", app.Message())
+	}
+	raw := string(regFileBytes(t))
+	if !strings.Contains(raw, "external") {
+		t.Fatalf("the refused write overwrote the external edit:\n%s", raw)
+	}
+	if strings.Contains(raw, "charm") {
+		t.Fatalf("the refused draft landed:\n%s", raw)
+	}
+	if len(ed.entries) != 1 || ed.entries[0] != "external" {
+		t.Fatalf("editor did not reload the on-disk list: %v", ed.entries)
+	}
+	if !ed.base.Owned {
+		t.Fatal("the reloaded base still reports an absent key")
+	}
+}
+
+// TestSettingsScreenExcludeEditorInvalidEntryRefused pins the input validation:
+// an entry the registry loader would refuse is refused here by name, is never
+// planted in the draft, and nothing is written.
+func TestSettingsScreenExcludeEditorInvalidEntryRefused(t *testing.T) {
+	SetLanguage("en")
+	h := newSettingsTestCore(t)
+	app := newSettingsApp(h)
+	before := regFileBytes(t)
+	ed := openExcludeEditor(t, app)
+
+	ed.list.SetCursor(len(ed.entries)) // Add row
+	app.Step(KeyEnter)
+	for _, k := range append(typeKeys("nw glm-5"), KeyCtrlS) {
+		app.Step(k)
+	}
+	if len(ed.entries) != 1 {
+		t.Fatalf("an invalid entry joined the draft: %v", ed.entries)
+	}
+	if !strings.Contains(app.Message(), "invalid exclusion entry") {
+		t.Fatalf("refusal message = %q; want the named refusal", app.Message())
+	}
+	if !strings.Contains(app.Message(), "whitespace") {
+		t.Fatalf("refusal message = %q; want the reason named", app.Message())
+	}
+	if got := regFileBytes(t); string(got) != string(before) {
+		t.Fatal("a refused entry wrote providers.json")
+	}
+}
+
+// TestSettingsScreenExcludeEditorRemoveNeedsArmedEntry pins the Remove refusal:
+// no armed entry means a named message, not a silent no-op or a wrong removal.
+func TestSettingsScreenExcludeEditorRemoveNeedsArmedEntry(t *testing.T) {
+	SetLanguage("en")
+	h := newSettingsTestCore(t)
+	app := newSettingsApp(h)
+	ed := openExcludeEditor(t, app)
+
+	ed.list.SetCursor(len(ed.entries) + 1) // Remove row, nothing armed
+	app.Step(KeyEnter)
+	if len(ed.entries) != 1 {
+		t.Fatalf("Remove fired without an armed entry: %v", ed.entries)
+	}
+	if !strings.Contains(app.Message(), "no entry selected") {
+		t.Fatalf("message = %q; want the armed-entry refusal", app.Message())
+	}
+}
+
+// TestSettingsScreenExcludeEditorMasksStoredEntries pins the display contract:
+// the stored entries are registry-derived text, so a credential-shaped entry
+// renders masked in the editor rows and no raw fragment reaches the frame.
+func TestSettingsScreenExcludeEditorMasksStoredEntries(t *testing.T) {
+	SetLanguage("en")
+	h := newSettingsTestCore(t)
+	h.reg.Defaults = providers.Defaults{ExcludeModels: []string{settingsPresetNamePlant}}
+	if err := h.persistReg(h.reg); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+	app := newSettingsApp(h)
+
+	ed := openExcludeEditor(t, app)
+	if len(ed.entries) != 1 {
+		t.Fatalf("entries = %v", ed.entries)
+	}
+	if !strings.Contains(ed.rows[0].Label, "****") {
+		t.Fatalf("entry row = %q; want a masked label", ed.rows[0].Label)
+	}
+	out := app.Frame().String()
+	if strings.Contains(out, settingsPresetNamePlant) {
+		t.Fatalf("the raw entry rendered in the frame:\n%s", out)
+	}
+}
+
+// TestSettingsScreenExcludeEditorFitsFrame pins the frame budget: a long list
+// pages inside the frame instead of pushing the action rows or the hint off the
+// tail, and the Save row renders once the cursor reaches it.
+func TestSettingsScreenExcludeEditorFitsFrame(t *testing.T) {
+	SetLanguage("en")
+	h := newSettingsTestCore(t)
+	entries := make([]string, 0, 25)
+	for i := 1; i <= 25; i++ {
+		entries = append(entries, fmt.Sprintf("model-%02d", i))
+	}
+	h.reg.Defaults = providers.Defaults{ExcludeModels: entries}
+	if err := h.persistReg(h.reg); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+
+	app := newSettingsAppSized(h, 80, 24)
+	ed := openExcludeEditor(t, app)
+
+	if got := len(app.Frame().Lines); got > app.Height() {
+		t.Fatalf("editor frame = %d rows at 80x24; want at most %d", got, app.Height())
+	}
+	if ed.list.PageSize() >= ed.list.Len() {
+		t.Fatalf("window = %d rows for %d rows; the long list did not page", ed.list.PageSize(), ed.list.Len())
+	}
+	out := app.Frame().String()
+	// The hint row survives the long list (the line is clamped to the 80-column
+	// frame by cellwidth, so only its stem is asserted here).
+	if !strings.Contains(out, "Enter on an entry arms it") {
+		t.Fatalf("the hint was cut off the frame:\n%s", out)
+	}
+
+	ed.list.SetCursor(len(ed.entries) + 2) // Save row
+	if got := len(app.Frame().Lines); got > app.Height() {
+		t.Fatalf("editor frame at the Save row = %d rows; want at most %d", got, app.Height())
+	}
+	if !strings.Contains(app.Frame().String(), "Save list") {
+		t.Fatalf("the Save row does not render at the bottom of a long list:\n%s", app.Frame().String())
+	}
+}
+
+// TestSettingsScreenExcludeEditorUnchangedIsNotGated pins the no-op path: a Save
+// with a draft identical to the stored list reports that nothing was written and
+// opens no gate.
+func TestSettingsScreenExcludeEditorUnchangedIsNotGated(t *testing.T) {
+	SetLanguage("en")
+	h := newSettingsTestCore(t)
+	h.reg.Defaults = providers.Defaults{ExcludeModels: []string{"nw"}}
+	if err := h.persistReg(h.reg); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+	before := regFileBytes(t)
+	app := newSettingsApp(h)
+	ed := openExcludeEditor(t, app)
+
+	ed.list.SetCursor(len(ed.entries) + 2) // Save row
+	app.Step(KeyEnter)
+	if app.Modal() != nil {
+		t.Fatalf("an unchanged Save opened %T; want no gate", app.Modal())
+	}
+	if !strings.Contains(app.Message(), "nothing was written") {
+		t.Fatalf("message = %q; want the unchanged sentence", app.Message())
+	}
+	if got := regFileBytes(t); string(got) != string(before) {
+		t.Fatal("an unchanged Save rewrote providers.json")
+	}
+}
+
+// TestSettingsValidPresetNameRejectsUnselectableShapes is the P4-5 fold-in: a
+// saved name must be a name the selection grammar can resolve, so digit-leading
+// names and spec-shaped names (':' or '/') are refused at the input surface.
+func TestSettingsValidPresetNameRejectsUnselectableShapes(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{name: "plain name", in: "deep", want: true},
+		{name: "hyphen and underscore", in: "deep-seat_2", want: true},
+		{name: "letters then digits", in: "seat2", want: true},
+		{name: "digit-leading name", in: "3fast", want: false},
+		{name: "digit-leading run", in: "1,3", want: false},
+		{name: "bare number", in: "12", want: false},
+		{name: "frozen preset id", in: "p2", want: false},
+		{name: "spec shape colon", in: "native:x", want: false},
+		{name: "spec shape slash", in: "nw/glm-5", want: false},
+		{name: "separator space", in: "two words", want: false},
+		{name: "empty", in: "", want: false},
+		{name: "control rune", in: "bad\x1bname", want: false},
+	}
+	accepted, refused := 0, 0
+	for _, tc := range cases {
+		got := validPresetName(tc.in)
+		if got != tc.want {
+			t.Errorf("%s (%q): validPresetName = %v; want %v", tc.name, tc.in, got, tc.want)
+		}
+		if got {
+			accepted++
+		} else {
+			refused++
+		}
+	}
+	if accepted == 0 || refused == 0 {
+		t.Fatalf("table is vacuous: %d accepted, %d refused", accepted, refused)
+	}
+}
+
+// TestSettingsScreenOldShapePresetStaysListedAndIsNeverDeleted pins the
+// compatibility half of the fold-in: a store written before the tightening keeps
+// listing its old-shape names, and the append path never drops them.
+func TestSettingsScreenOldShapePresetStaysListedAndIsNeverDeleted(t *testing.T) {
+	SetLanguage("en")
+	h := newSettingsTestCore(t)
+	h.presets = []swarm.SavedPreset{
+		{Name: "3fast", Numbers: "1"},    // digit-leading: unselectable, still listed
+		{Name: "native:x", Numbers: "2"}, // spec-shaped: unselectable, still listed
+		{Name: "deep", Numbers: "1,3"},
+	}
+	app := newSettingsApp(h)
+
+	openSettingsRow(t, app, "swarm.presets")
+	if _, ok := app.Top().(*settingsPresetsScreen); !ok {
+		t.Fatalf("top screen is %T", app.Top())
+	}
+	out := app.Frame().String()
+	for _, want := range []string{"3fast", "native:x", "deep"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("the old-shape preset %q is not listed:\n%s", want, out)
+		}
+	}
+
+	// Append a new preset through the parent row and prove the old rows survive
+	// the whole-file rewrite.
+	app.Pop()
+	openSettingsRow(t, app, "swarm.save_preset")
+	for _, k := range append(typeKeys("fresh"), KeyCtrlS) {
+		app.Step(k)
+	}
+	for _, k := range append(typeKeys("4,5"), KeyCtrlS) {
+		app.Step(k)
+	}
+	if len(h.presets) != 4 {
+		t.Fatalf("store after append = %+v; want the three old rows plus the new one", h.presets)
+	}
+	names := []string{h.presets[0].Name, h.presets[1].Name, h.presets[2].Name, h.presets[3].Name}
+	if strings.Join(names, "|") != "3fast|native:x|deep|fresh" {
+		t.Fatalf("store order/names = %v; an old-shape row was dropped or reordered", names)
+	}
+}
+
+// --- SESSION7 P4-9: the seeded exclusion entry is the built-in rule itself.
+
+// TestSettingsScreenExcludeEditorPresentKeySeedsStoredEntries pins the other half
+// of the seeding rule: when the user already owns defaults.excludeModels the
+// editor seeds exactly the stored entries, in order, with no built-in entry
+// added and no rewriting of the family form.
+func TestSettingsScreenExcludeEditorPresentKeySeedsStoredEntries(t *testing.T) {
+	SetLanguage("en")
+	h := newSettingsTestCore(t)
+	stored := []string{"glm-5", "family:k3", "nw"}
+	h.reg.Defaults = providers.Defaults{ExcludeModels: stored}
+	if err := h.persistReg(h.reg); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+	app := newSettingsApp(h)
+
+	ed := openExcludeEditor(t, app)
+	if !ed.base.Owned {
+		t.Fatal("base reports an absent key; the registry stores the list")
+	}
+	if got := strings.Join(ed.entries, ","); got != strings.Join(stored, ",") {
+		t.Fatalf("draft seed = %v; want the stored entries verbatim", ed.entries)
+	}
+	// The draft is a copy: mutating it cannot reach the loaded registry.
+	ed.entries[0] = "mutated"
+	if h.reg.Defaults.ExcludeModels[0] != "glm-5" {
+		t.Fatal("the draft aliased the stored slice")
+	}
+}
+
+// TestSettingsScreenExcludeEditorSaveSeededListKeepsPolicy is the trap closing
+// through the UI: open the editor on a registry with no excludeModels key, save
+// the untouched seeded draft, and the family-declared row plus the k3 id rows
+// must STILL be excluded afterwards. The same check against the old seed ("k3")
+// loses the family-declared row, so the test fails if the seed regresses.
+func TestSettingsScreenExcludeEditorSaveSeededListKeepsPolicy(t *testing.T) {
+	SetLanguage("en")
+	h := newSettingsTestCore(t)
+	app := newSettingsApp(h)
+	ed := openExcludeEditor(t, app)
+
+	ed.list.SetCursor(len(ed.entries) + 2) // Save row, draft untouched
+	app.Step(KeyEnter)
+	if app.Modal() == nil {
+		t.Fatal("Save on the seeded draft opened no gate")
+	}
+	app.Step(KeyYes)
+
+	reg, err := providers.Load()
+	if err != nil {
+		t.Fatalf("reload providers.json: %v", err)
+	}
+	if got := strings.Join(reg.Defaults.ExcludeModels, ","); got != "family:k3" {
+		t.Fatalf("stored list = %q; want the seeded family entry", got)
+	}
+	policy := providers.ExclusionPolicyFromDefaults(reg.Defaults)
+	if !policy.UserOwned() {
+		t.Fatal("the saved list is not user-owned")
+	}
+	for _, row := range []struct{ model, family string }{
+		{model: "kimi-latest", family: "k3"},
+		{model: "kimi-k3", family: "kimi"},
+		{model: "k3-agent-swarm", family: "k"},
+	} {
+		if !policy.Excludes("nw", row.model, row.family) {
+			t.Errorf("after saving the seeded list, %s (family %q) is no longer excluded", row.model, row.family)
+		}
+	}
+	for _, row := range []struct{ model, family string }{
+		{model: "k3000", family: "k"},
+		{model: "glm-k3x", family: "glm"},
+	} {
+		if policy.Excludes("nw", row.model, row.family) {
+			t.Errorf("after saving the seeded list, %s (family %q) is excluded; the built-in rule kept it", row.model, row.family)
+		}
+	}
+	// Non-vacuity: the pre-fix seed does not survive the same check. The literal
+	// "k3" below is the pre-family-form spelling, kept here as the negative
+	// control: it must still fail to exclude the family-declared row, so this pin
+	// fires if the seeded family form ever regresses to the bare name.
+	old := providers.ExclusionPolicy{User: []string{"k3"}}
+	if old.Excludes("nw", "kimi-latest", "k3") {
+		t.Fatal("the old bare seed already kept the family-declared row; the trap would not exist")
+	}
+}
+
+// TestSettingsScreenExcludeEditorFamilyEntryValidation pins the family form at the
+// input surface: a nameless "family:" entry is refused by name and never joins
+// the draft (the loader would refuse the file, so the editor must not compose
+// it), while a named family entry joins the draft trimmed.
+func TestSettingsScreenExcludeEditorFamilyEntryValidation(t *testing.T) {
+	SetLanguage("en")
+	h := newSettingsTestCore(t)
+	app := newSettingsApp(h)
+	before := regFileBytes(t)
+	ed := openExcludeEditor(t, app)
+	seed := strings.Join(ed.entries, ",")
+
+	ed.list.SetCursor(len(ed.entries)) // Add row
+	app.Step(KeyEnter)
+	for _, k := range append(typeKeys("family:"), KeyCtrlS) {
+		app.Step(k)
+	}
+	if got := strings.Join(ed.entries, ","); got != seed {
+		t.Fatalf("a nameless family entry joined the draft: %v", ed.entries)
+	}
+	if !strings.Contains(app.Message(), "invalid exclusion entry") {
+		t.Fatalf("refusal message = %q; want the named refusal", app.Message())
+	}
+	if !strings.Contains(app.Message(), "family entry needs a name") {
+		t.Fatalf("refusal message = %q; want the family reason named", app.Message())
+	}
+	if got := regFileBytes(t); string(got) != string(before) {
+		t.Fatal("a refused entry wrote providers.json")
+	}
+
+	ed.list.SetCursor(len(ed.entries)) // Add row
+	app.Step(KeyEnter)
+	for _, k := range append(typeKeys("  family:glm  "), KeyCtrlS) {
+		app.Step(k)
+	}
+	if ed.entries[len(ed.entries)-1] != "family:glm" {
+		t.Fatalf("draft after adding a named family entry = %v; want it stored trimmed", ed.entries)
+	}
+	if ed.armed != len(ed.entries)-1 {
+		t.Fatalf("armed = %d; want the new entry armed", ed.armed)
+	}
+}
+
+// TestSettingsScreenExcludeEditorDuplicateRowKeepsCursorOnArmedRow pins FIX-G
+// F4 (round-2 LOW): the editor's row identity used to key on the ENTRY TEXT
+// alone, so a list holding the same entry twice gave two rows the same ID and
+// rebuild's ID restore landed on the FIRST of them. Arming the second duplicate
+// therefore left the "(armed)" suffix on row 2 while the cursor jumped back to
+// row 1. Row identity is now index-qualified, so the cursor and the armed marker
+// cannot diverge. Nothing about the loader or the write door changes: the
+// duplicate entry still loads and saves exactly as the user typed it.
+func TestSettingsScreenExcludeEditorDuplicateRowKeepsCursorOnArmedRow(t *testing.T) {
+	SetLanguage("en")
+	h := newSettingsTestCore(t)
+	dup := []string{"glm-5", "glm-5", "nw"}
+	h.reg.Defaults = providers.Defaults{ExcludeModels: dup}
+	if err := h.persistReg(h.reg); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+	before := regFileBytes(t)
+	app := newSettingsApp(h)
+
+	ed := openExcludeEditor(t, app)
+	if got := strings.Join(ed.entries, ","); got != "glm-5,glm-5,nw" {
+		t.Fatalf("draft seed = %q; want the stored order AND the duplicate preserved", got)
+	}
+	if len(ed.rows) != 6 {
+		t.Fatalf("rows = %d; want 3 entries + add + remove + save", len(ed.rows))
+	}
+
+	// Non-vacuity: the pre-fix ID scheme was the prefix plus the entry text, so
+	// both duplicate rows carried this exact ID. The first assertion fires if the
+	// fix ever regresses to it, and the second states the same thing positionally.
+	oldSchemeID := excludeModelsRowPrefix + ed.entries[0]
+	if ed.rows[0].ID == oldSchemeID || ed.rows[1].ID == oldSchemeID {
+		t.Fatalf("row ID still keys on the entry text alone (%q); the cursor restore would land on the first duplicate", oldSchemeID)
+	}
+	if ed.rows[0].ID == ed.rows[1].ID {
+		t.Fatalf("duplicate entries share a row ID (%q); the armed marker and the cursor can diverge", ed.rows[0].ID)
+	}
+
+	// Arm the SECOND duplicate and prove the cursor stayed on it.
+	ed.list.SetCursor(1)
+	app.Step(KeyEnter)
+	if ed.armed != 1 {
+		t.Fatalf("armed index = %d; want 1", ed.armed)
+	}
+	if got := ed.list.Cursor(); got != 1 {
+		t.Fatalf("cursor = %d after arming row 1 of the duplicate pair; want 1 (the armed row)", got)
+	}
+	if !strings.Contains(ed.rows[1].Label, settingsExcludeArmed) {
+		t.Errorf("row 1 label = %q; want the armed marker", ed.rows[1].Label)
+	}
+	if strings.Contains(ed.rows[0].Label, settingsExcludeArmed) {
+		t.Errorf("row 0 label = %q; the marker belongs on row 1 only", ed.rows[0].Label)
+	}
+	if strings.Contains(ed.rows[2].Label, settingsExcludeArmed) {
+		t.Errorf("row 2 label = %q; the marker belongs on row 1 only", ed.rows[2].Label)
+	}
+
+	// Frame-level proof: stepList.Render draws the cursor marker from l.cursor and
+	// the label from rows[i].Label, so the rendered line is where an operator sees
+	// the divergence. The armed suffix and the cursor marker must be on ONE line.
+	frame := app.Frame().String()
+	var armedLine string
+	for _, line := range strings.Split(frame, "\n") {
+		if strings.Contains(line, settingsExcludeArmed) {
+			armedLine = line
+		}
+	}
+	if strings.TrimSpace(armedLine) == "" {
+		t.Fatalf("no rendered line carries the armed marker:\n%s", frame)
+	}
+	if !strings.HasPrefix(armedLine, "▶ ") {
+		t.Errorf("the armed line has no cursor marker: %q\nframe:\n%s", armedLine, frame)
+	}
+	if n := strings.Count(frame, "▶ "); n != 1 {
+		t.Errorf("cursor markers rendered = %d; want 1 (the armed row):\n%s", n, frame)
+	}
+
+	// The duplicate stays semantically harmless through the write door: arming a
+	// duplicate and saving the untouched-by-membership list is a no-op gate, not
+	// a rewrite, and no draft edit has touched the disk.
+	if got := regFileBytes(t); string(got) != string(before) {
+		t.Fatal("arming a row wrote providers.json")
+	}
+	if ed.base.Owned && sameExcludeList(ed.entries, ed.base.Entries) {
+		ed.list.SetCursor(len(ed.entries) + 2) // Save row
+		app.Step(KeyEnter)
+		if app.Modal() != nil {
+			t.Fatal("an unchanged list opened the write gate; a duplicate is not a change")
+		}
+		if app.Message() == "" {
+			t.Error("the unchanged list must say so")
+		}
+	} else {
+		t.Fatal("draft no longer matches the stored list after arming a row")
 	}
 }

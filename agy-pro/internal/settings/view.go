@@ -29,7 +29,18 @@ type Item struct {
 	Choices  []string `json:"choices,omitempty"` // empty = free value
 	Danger   bool     `json:"danger,omitempty"`  // destructive op → y/n confirmation
 	ReadOnly bool     `json:"readOnly,omitempty"`
-	Note     string   `json:"note,omitempty"` // precedence/override text
+	// HubOnly marks a row whose write arm exists ONLY in the full-screen setup
+	// hub (P1-7=(a)). The legacy line-mode panel and `agy pro settings show`
+	// render this same view but have no activation arm for such a row, so on
+	// those two surfaces the row is read-only in fact; both renderers print the
+	// shared read-only marker ([ro] / "● ro") for it, which is what the row
+	// does. The hub screen ignores this flag: its badge is driven by ReadOnly
+	// alone and its own activation arm still opens the editor. ReadOnly=true
+	// would be a lie on the hub surface (the row IS editable there), and
+	// omitting the flag would print a row that looks pressable while pressing
+	// it changes nothing (P1-3, the fake-actionable class).
+	HubOnly bool   `json:"hubOnly,omitempty"`
+	Note    string `json:"note,omitempty"` // precedence/override text
 	// MsgID joins the row to the i18n catalog: renderers resolve
 	// view.<MsgID>.label / view.<MsgID>.note at paint time and fall back to
 	// the compiled English Label/Note. View() sets it to the Item ID
@@ -118,7 +129,7 @@ func (c *Core) View() (SettingsView, error) {
 	view.Sections = append(view.Sections, c.sectionLaunch(st))
 	view.Sections = append(view.Sections, c.sectionProviders(reg, regErr))
 	view.Sections = append(view.Sections, c.sectionBridge(st))
-	view.Sections = append(view.Sections, c.sectionSwarm(st))
+	view.Sections = append(view.Sections, c.sectionSwarm(st, reg))
 	view.Sections = append(view.Sections, sectionDiagnostics())
 	view.Sections = append(view.Sections, c.sectionMaintenance())
 	view.Sections = append(view.Sections, sectionEnvDocs(st))
@@ -287,7 +298,7 @@ func (c *Core) sectionBridge(st *mode.State) Section {
 }
 
 // P4 Swarm (research §2.4 rows 21-30; §2.3 concurrency; §U3 presets).
-func (c *Core) sectionSwarm(st *mode.State) Section {
+func (c *Core) sectionSwarm(st *mode.State, reg *providers.Registry) Section {
 	items := []Item{
 		{
 			ID: "native_seat_concurrency", Label: "Native Seat Concurrency",
@@ -312,9 +323,18 @@ func (c *Core) sectionSwarm(st *mode.State) Section {
 		{ID: "fanout.consensus", Label: "Reconciliation Consensus", Value: ">= 2 models agreed = CONFIRMED", Source: "constant", ReadOnly: true,
 			Note: "fanout reconcile threshold"},
 		{ID: "fanout.failover", Label: "Failover Policy", Value: "3-step (same model/other provider → other family → degraded seat)", Source: "constant", ReadOnly: true,
-			Note: "k3 family is excluded from AUTO-seating (pool policy)"},
-		{ID: "swarm.k3_exclusion", Label: "k3 Pool Exclusion", Value: "active (k3 models never auto-seated)", Source: "constant", ReadOnly: true,
-			Note: "explicit --models/--seats picks are exempt; rotation and failover skip k3 (§2.5b)"},
+			Note: "auto-seating and failover skip a model on the model exclusion list; an explicit pick is honored with a warning"},
+		// D1=(a)/D2=(b): the one exclusion list (providers.json
+		// defaults.excludeModels) replaces the old read-only k3 row. It is
+		// EDITABLE in the hub and only there (P1-7=(a): the hub is the
+		// maintained surface), so ReadOnly stays false and the hub activation
+		// arm owns the write. HubOnly is the honest flag for the other two
+		// surfaces: the legacy line-mode panel and `agy pro settings show` share
+		// this view with no activation arm for this ID, so both print the shared
+		// read-only marker instead of a row that looks pressable (S7-C6). The
+		// note names the same split plus the hub route.
+		{ID: "swarm.exclude_models", Label: "Model Exclusion List", Value: excludeModelsValue(reg.Defaults), Source: "registry", HubOnly: true,
+			Note: "one rule for every exclusion: auto-seating and failover skip an excluded entry, an explicit --models/--seats pick is honored with the warning that it is excluded, and nothing is ever rejected. Stored in providers.json defaults.excludeModels; when the key is absent or null the built-in default applies, shown here as the single entry family:k3, so saving that seeded list unchanged keeps the same rule, while an explicit empty list means you own an empty list and nothing is excluded. Read-only outside the hub; edit in the hub: agy pro setup."},
 		{ID: "swarm.templates", Label: "Swarm Templates", Value: templateCatalog(), Source: "constant", ReadOnly: true,
 			Note: "code-review / security-audit / custom (swarm.Templates)"},
 	}
@@ -450,6 +470,39 @@ func formatTime(t time.Time) string {
 		return "(never)"
 	}
 	return t.Format("2006-01-02 15:04:05 MST")
+}
+
+// excludeModelsValue renders the effective exclusion list for the
+// swarm.exclude_models row. The three shapes are distinct and stay distinct
+// (Defaults.ExcludeModels nil-vs-empty): an absent key OR an explicit null both
+// load back as a nil list, so both mean the built-in default policy governs the
+// pool (S7-C5: the registry writes `"excludeModels": null` for an unset list,
+// and the wording has to name that spelling too, not only "absent"); a non-nil
+// EMPTY list means the user owns an empty list that excludes nothing; and a
+// populated list renders its entries.
+// When the built-in default governs, the rule is shown in its exact list
+// spelling (ExcludeModelsBuiltinRule, "family:k3", the one spelling the editor
+// seeds from too) and named as such, so the row never reads as "nothing is
+// excluded" while the family predicate is in force and never shows a bare "k3"
+// that the list grammar would not reproduce it with.
+//
+// The entries are user-set operands that name registry slots (a provider name,
+// a model id, or provider/model), so each one renders through providers.MaskSlot,
+// the one registry-slot display authority the sibling rows and the preset value
+// renderer use. A benign entry renders byte-identically.
+func excludeModelsValue(d providers.Defaults) string {
+	policy := providers.ExclusionPolicyFromDefaults(d)
+	if !policy.UserOwned() {
+		return ExcludeModelsBuiltinRule + " (built-in default entry; the excludeModels key is absent or null)"
+	}
+	if len(policy.User) == 0 {
+		return "(empty list: nothing is excluded)"
+	}
+	parts := make([]string, 0, len(policy.User))
+	for _, entry := range policy.User {
+		parts = append(parts, providers.MaskSlot(entry))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // languageNativeNames returns the native display name of every UI language

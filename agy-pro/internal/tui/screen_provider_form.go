@@ -400,6 +400,15 @@ func (s *providerFormScreen) renderGrid(w int) []string {
 // carries nothing. Free-text values (tools, excludeFamilies) are disk-borne, so
 // each item routes through the registry-slot masker; the numeric values are
 // literals.
+//
+// The last row is always the model exclusion list (D1=(a):
+// defaults.excludeModels). It is read-only HERE (this block has no activation
+// callback, and the field is edited in the setup hub), it sits directly after
+// excludeFamilies whenever that field is set, and its note carries the hub route
+// so the reader is never left with an uneditable row and no pointer. The three
+// shapes stay distinct, exactly as the file does: an absent key (the built-in k3
+// default governs the pool), an explicit empty list (the user owns "exclude
+// nothing"), and a populated list.
 func (s *providerFormScreen) defaultsRows() []Row {
 	def := s.reg.Defaults
 	var rows []Row
@@ -424,7 +433,29 @@ func (s *providerFormScreen) defaultsRows() []Row {
 	if len(rows) == 0 {
 		rows = append(rows, Row{Label: missingOr(s.b, "providers.form.defaults.empty", missingProviderFormDefaultsEmpty)})
 	}
-	return rows
+	return append(rows, Row{Label: "excludeModels", Note: excludeModelsFormNote(def.ExcludeModels)})
+}
+
+// excludeModelsFormNote renders the read-only excludeModels row: the hub route
+// FIRST, then the stored shape. The order is deliberate: the defaults window is
+// clamped to the frame width, and at 80 columns a long note loses its tail, so
+// the one actionable part (where the list can be edited) must come first. The
+// shape half stays exact and distinct for the three stored forms: absent (the
+// built-in k3 default governs), owned empty (nothing is excluded), populated
+// (the masked entries). Entries name registry slots, so each routes through
+// providers.MaskSlot (maskJoined's authority) and a benign entry renders
+// byte-identically.
+func excludeModelsFormNote(entries []string) string {
+	value := ""
+	switch {
+	case entries == nil:
+		value = "(absent: the built-in k3 default applies)"
+	case len(entries) == 0:
+		value = "(empty list: nothing is excluded)"
+	default:
+		value = maskJoined(entries, ", ")
+	}
+	return excludeModelsHubRoute + "  " + value
 }
 
 // chrome counts the rows one composed frame spends outside the defaults window:

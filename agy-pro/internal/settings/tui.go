@@ -99,12 +99,29 @@ func (t *TUI) SelectSection(n int) {
 
 // Snapshot is one captured frame (headless capture test source).
 type Snapshot struct {
-	Banner  string
+	Banner string
+	// Notice is the deprecation banner of the legacy panel (P1-7=(a)); it rides
+	// above the section list so the first frame of every entry path carries it.
+	Notice  string
 	Left    string
 	Right   string
 	Footer  string
 	Message string
 }
+
+// LegacyPanelNotice is the one notice the legacy `agy pro settings` panel
+// renders (P1-7=(a), user decision "deprecate the legacy panel and route to the
+// hub"). Three claims, all true today: the panel still works exactly as before,
+// it is deprecated, and new setting work lands in the setup hub. The second line
+// carries the EXACT command that opens the hub, so the notice is actionable
+// where it appears instead of pointing at a surface the reader has to find.
+//
+// The wording is a package const rather than an i18n catalog entry on purpose:
+// the twelve catalogs describe the hub's own surfaces, and a key added here
+// would need every catalog to follow in lockstep. Nothing in this text is
+// registry- or remote-derived, so no masker applies (nothing to mask).
+const LegacyPanelNotice = "  DEPRECATED: this legacy panel still works exactly as today, but it is deprecated; new setting work lands in the setup hub.\n" +
+	"  Open the hub: agy pro setup   (full-screen setup TUI; `agy pro setup --wizard` runs the line wizard)"
 
 // Frame renders the current state as one full-screen frame.
 func (t *TUI) Frame() Snapshot {
@@ -114,6 +131,7 @@ func (t *TUI) Frame() Snapshot {
 		"  agy-pro Settings - full-screen panel (M2, native-style)",
 		"===========================================================",
 	}, "\n")
+	s.Notice = LegacyPanelNotice
 
 	var left []string
 	for i, sec := range t.view.Sections {
@@ -187,7 +205,10 @@ func (t *TUI) Frame() Snapshot {
 }
 
 func statusDot(it Item) string {
-	if it.ReadOnly {
+	// HubOnly rows have no activation arm on this panel (their write arm lives
+	// in the setup hub), so the panel marks them with the same read-only dot it
+	// prints for a hard ReadOnly row: what the marker says is true here.
+	if it.ReadOnly || it.HubOnly {
 		return "● " + ReadOnlyMarker
 	}
 	return "●"
@@ -201,6 +222,7 @@ func (t *TUI) Render(clear bool) {
 	}
 	s := t.Frame()
 	fmt.Fprintln(t.out, s.Banner)
+	fmt.Fprintln(t.out, s.Notice)
 	fmt.Fprintln(t.out, s.Left)
 	fmt.Fprintln(t.out, "  ----")
 	fmt.Fprintln(t.out, s.Right)
@@ -484,7 +506,10 @@ func (t *TUI) activate(it Item) {
 			})
 			return err
 		})
-	case it.ReadOnly:
+	case it.ReadOnly, it.HubOnly:
+		// HubOnly rows land here for the same reason the dot says "ro": this
+		// panel has no write arm for them (S7-C6). The note carries the hub
+		// route, so the answer is a direction, not a dead end.
 		t.message = "read-only: " + it.Note
 	default:
 		t.message = it.Label + ": " + it.Note

@@ -137,7 +137,7 @@ func WriteSnapshot(out io.Writer, core *Core, asJSON bool) error {
 		for i, it := range sec.Items {
 			num := fmt.Sprintf("%d", i+1)
 			flags := ""
-			if it.ReadOnly {
+			if it.ReadOnly || it.HubOnly {
 				flags += " [" + ReadOnlyMarker + "]"
 			}
 			if it.Danger {
