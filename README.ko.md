@@ -26,7 +26,7 @@
 **Antigravity 개발자 툴킷 (`agy-tools`)**은 **Antigravity CLI** 환경에 최적화된 고정밀 무의존성 CLI 및 웹 대시보드 스위트입니다. 핵심 명령어인 **`agy-tokens`** (`agy-tools`, `agy-dashboard` 별칭 지원)는 초경량 상태줄 뱃지, 실시간 1:1 레이트 리밋 쿼터 풀 추적, 브라우저 기반 실시간 웹 대시보드를 제공합니다.
 
 ### 왜 `agy-tools`인가요?
-- **Antigravity 코드 수정 0%**: `~/.gemini/antigravity-cli/settings.json`의 `statusLine` 설정 한 줄이 **유일한 연동 포인트**입니다.
+- **Antigravity 코드 수정 0%**: 이 툴킷이 필요한 것은 `~/.gemini/antigravity-cli/settings.json`의 `statusLine` 설정 한 줄이고, Antigravity 소스는 손대지 않습니다. 선택 사항인 `agy pro` Go 셔틀은 여기서 한 걸음 더 나아가 요청 시 규칙·플러그인·스킬 폴더와 턴 전 훅까지 배포하며, `agy pro integrations status`가 셔틀이 소유한 모든 대상을 나열합니다. 그 전부가 같은 동의 게이트 하나를 지납니다.
 - **1:1 실시간 Gemini 쿼터 풀 연동**: 로컬 Language Server와 HTTPS/HTTP RPC로 직접 통신하여 **5시간(5h)** 및 **7일(7d)** 롤링 쿼터 잔여량과 리셋 카운트다운을 표시합니다.
 - **실시간 SSE 웹 대시보드**: `http://127.0.0.1:8787`에서 Server-Sent Events(SSE)와 동적 SVG 벡터 차트 기반의 반응형 대시보드를 제공합니다.
 - **2026 최신 플래그십 모델 완벽 지원**: **Gemini 3.7 Flash**, **Gemini 3.6 Flash**, **Gemini 3.5 Flash**, **Claude Opus 4.6**, **Claude Sonnet 4.6** 등 최신 모델을 완벽하게 인식하고 단가를 계산합니다.
@@ -92,13 +92,13 @@ flowchart TD
 
 | 브랜치 | 설명 | 주요 기능 | 원큐 설치 (**명령 프롬프트**에 붙여넣기) | 원큐 설치 (**PowerShell**에 붙여넣기) | 원큐 설치 (**macOS / Linux 터미널**에 붙여넣기) |
 |---|---|---|---|---|---|
-| [`main`](https://github.com/myk1yt/agy-tools/tree/main) | **코어 엔진 & 개발자 툴킷 + agy-pro Go 셔틀** | 상태줄 배지, SSE 웹 대시보드, 1:1 Gemini 쿼터 풀 RPC, 동적 단가 계산, 21개 언어, agy-pro 스위트 (투명 `agy` 셔틀, 멀티모델 스웜, 파티션 모드 팬아웃, 프로바이더 쓰기/URL/검색 도구) | `git clone https://github.com/myk1yt/agy-tools.git && cd agy-tools && scripts\install.bat && install.cmd` | `cmd /c "git clone https://github.com/myk1yt/agy-tools.git && cd agy-tools && scripts\install.bat && install.cmd"` | `git clone https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install.sh` |
-| [`Agent/designer`](https://github.com/myk1yt/agy-tools/tree/Agent/designer) | **Zero-MCP 디자인 전문가** | `@designer` 에이전트, 5개 모듈형 스킬 (SVG, 3D 캔버스, 사이버펑크, 샌드박스, QA 하네스) | `git clone -b Agent/designer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-designer.ps1` | `cmd /c "git clone -b Agent/designer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-designer.ps1"` | `git clone -b Agent/designer https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install-designer.sh` |
-| [`Agent/security-reviewer`](https://github.com/myk1yt/agy-tools/tree/Agent/security-reviewer) | **엔터프라이즈 멀티 에이전트 보안 감사** | `@security-reviewer` 오케스트레이터 + 4개 도메인 인스펙터 (OWASP, IAM, 자격 증명, 공급망) | `git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-security-reviewer.ps1` | `cmd /c "git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-security-reviewer.ps1"` | `git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install-security-reviewer.sh` |
-| [`Agent/code-reviewer`](https://github.com/myk1yt/agy-tools/tree/Agent/code-reviewer) | **Pre-Merge 코드 리뷰 & 퀄리티 게이트** | `@code-reviewer` 에이전트, 4단계 파이프라인, 8개 텍사노미, P0-P3 무관용 판정 게이트 | `git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-code-reviewer.ps1` | `cmd /c "git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-code-reviewer.ps1"` | `git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install-code-reviewer.sh` |
-| [`gemini-config`](https://github.com/myk1yt/agy-tools/tree/gemini-config) | **자율 멀티 에이전트 거버넌스** | 7단계 라이프사이클 프로토콜, Master Zero-Source-Edit 불변성, 오케스트레이터 스킬 | `git clone -b gemini-config https://github.com/myk1yt/agy-tools.git && cd agy-tools && scripts\install.bat` | `cmd /c "git clone -b gemini-config https://github.com/myk1yt/agy-tools.git && cd agy-tools && scripts\install.bat"` | `git clone -b gemini-config https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install.sh` |
-| [`feature/agy-pro`](https://github.com/myk1yt/agy-tools/tree/feature/agy-pro) | **Go 셔틀 & 멀티모델 스웜 (`agy-pro`)** | 투명 `agy` 셔틀, 네이티브+외부 통합 모델 목록을 보여주는 옵트인 2초 런처(`AGY_LAUNCHER=1`), 외부 모델 브릿지, 하이브리드 네이티브 좌석을 번호로 고르는 스웜 빌더, `agy pro` 스위트 (setup / mode / models / swarm / settings / fanout / doctor), 원큐 Windows 설치·설치 제거 (Windows 전용) | `git clone -b feature/agy-pro https://github.com/myk1yt/agy-tools.git && cd agy-tools && install.cmd` | `cmd /c "git clone -b feature/agy-pro https://github.com/myk1yt/agy-tools.git && cd agy-tools && install.cmd"` | — |
-| [`dashboard`](https://github.com/myk1yt/agy-tools/tree/dashboard) | **히스토리컬 프로토타입** | 최초 토큰 추적기 기반 (현재 `main`에 완전 병합됨) | — | — | — |
+| [`main`](https://github.com/myk1yt/agy-pro/tree/main) | **코어 엔진 & 개발자 툴킷 + agy-pro Go 셔틀** | 상태줄 배지, SSE 웹 대시보드, 1:1 Gemini 쿼터 풀 RPC, 동적 단가 계산, 21개 언어, agy-pro 스위트 (투명 `agy` 셔틀, 멀티모델 스웜, 파티션 모드 팬아웃, 프로바이더 쓰기/URL/검색 도구) | `git clone https://github.com/myk1yt/agy-pro.git && cd agy-pro && scripts\install.bat && install.cmd` | `cmd /c "git clone https://github.com/myk1yt/agy-pro.git && cd agy-pro && scripts\install.bat && install.cmd"` | `git clone https://github.com/myk1yt/agy-pro.git && cd agy-pro && bash scripts/install.sh` |
+| [`Agent/designer`](https://github.com/myk1yt/agy-pro/tree/Agent/designer) | **Zero-MCP 디자인 전문가** | `@designer` 에이전트, 5개 모듈형 스킬 (SVG, 3D 캔버스, 사이버펑크, 샌드박스, QA 하네스) | `git clone -b Agent/designer https://github.com/myk1yt/agy-pro.git && cd agy-pro && powershell -ExecutionPolicy Bypass -File scripts\install-designer.ps1` | `cmd /c "git clone -b Agent/designer https://github.com/myk1yt/agy-pro.git && cd agy-pro && powershell -ExecutionPolicy Bypass -File scripts\install-designer.ps1"` | `git clone -b Agent/designer https://github.com/myk1yt/agy-pro.git && cd agy-pro && bash scripts/install-designer.sh` |
+| [`Agent/security-reviewer`](https://github.com/myk1yt/agy-pro/tree/Agent/security-reviewer) | **엔터프라이즈 멀티 에이전트 보안 감사** | `@security-reviewer` 오케스트레이터 + 4개 도메인 인스펙터 (OWASP, IAM, 자격 증명, 공급망) | `git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-pro.git && cd agy-pro && powershell -ExecutionPolicy Bypass -File scripts\install-security-reviewer.ps1` | `cmd /c "git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-pro.git && cd agy-pro && powershell -ExecutionPolicy Bypass -File scripts\install-security-reviewer.ps1"` | `git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-pro.git && cd agy-pro && bash scripts/install-security-reviewer.sh` |
+| [`Agent/code-reviewer`](https://github.com/myk1yt/agy-pro/tree/Agent/code-reviewer) | **Pre-Merge 코드 리뷰 & 퀄리티 게이트** | `@code-reviewer` 에이전트, 4단계 파이프라인, 8개 텍사노미, P0-P3 무관용 판정 게이트 | `git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-pro.git && cd agy-pro && powershell -ExecutionPolicy Bypass -File scripts\install-code-reviewer.ps1` | `cmd /c "git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-pro.git && cd agy-pro && powershell -ExecutionPolicy Bypass -File scripts\install-code-reviewer.ps1"` | `git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-pro.git && cd agy-pro && bash scripts/install-code-reviewer.sh` |
+| [`gemini-config`](https://github.com/myk1yt/agy-pro/tree/gemini-config) | **자율 멀티 에이전트 거버넌스** | 7단계 라이프사이클 프로토콜, Master Zero-Source-Edit 불변성, 오케스트레이터 스킬 | `git clone -b gemini-config https://github.com/myk1yt/agy-pro.git && cd agy-pro && scripts\install.bat` | `cmd /c "git clone -b gemini-config https://github.com/myk1yt/agy-pro.git && cd agy-pro && scripts\install.bat"` | `git clone -b gemini-config https://github.com/myk1yt/agy-pro.git && cd agy-pro && bash scripts/install.sh` |
+| [`feature/agy-pro`](https://github.com/myk1yt/agy-pro/tree/feature/agy-pro) | **Go 셔틀 & 멀티모델 스웜 (`agy-pro`)** | 투명 `agy` 셔틀, 네이티브+외부 통합 모델 목록을 보여주는 옵트인 2초 런처(`AGY_LAUNCHER=1`), 외부 모델 브릿지, 하이브리드 네이티브 좌석을 번호로 고르는 스웜 빌더, `agy pro` 스위트 (setup / mode / models / swarm / settings / fanout / doctor), 원큐 Windows 설치·설치 제거 (Windows 전용) | `git clone -b feature/agy-pro https://github.com/myk1yt/agy-pro.git && cd agy-pro && install.cmd` | `cmd /c "git clone -b feature/agy-pro https://github.com/myk1yt/agy-pro.git && cd agy-pro && install.cmd"` | - |
+| [`dashboard`](https://github.com/myk1yt/agy-pro/tree/dashboard) | **히스토리컬 프로토타입** | 최초 토큰 추적기 기반 (현재 `main`에 완전 병합됨) | - | - | - |
 
 > [!TIP]
 > 위 표의 각 줄은 **새 컴퓨터에서 한 번에 끝나는 완전한 설치 명령어**입니다. `git clone -b <브랜치>`는 클론하는 동안 해당 브랜치로 체크아웃이 자동으로 되므로, 별도로 `git checkout`을 치다가 빠뜨려 "plugin.json not found"가 나는 함정이 원천 차단됩니다. `&&` 연결은 명령 프롬프트와 macOS/Linux bash에서는 그대로 동작하지만, 기본 설치된 **Windows PowerShell 5.1은 `&&`을 구문 오류로 거부**합니다 — 그래서 PowerShell 열용례를 위해 `cmd /c "..."`로 감싼 버전을 함께 실었습니다. PowerShell 창에 해당 한 줄만 붙여넣으면 끝까지 실행됩니다.
@@ -131,7 +131,7 @@ winget으로 설치한 후에는 반드시 **새 터미널 창을 열고** 설�
 
 ### `@designer` — Zero-MCP 자급형 디자인 전문가
 
-> **브랜치**: [`Agent/designer`](https://github.com/myk1yt/agy-tools/tree/Agent/designer) · **작성자**: myk1yt · **버전**: 1.0.0
+> **브랜치**: [`Agent/designer`](https://github.com/myk1yt/agy-pro/tree/Agent/designer) · **작성자**: myk1yt · **버전**: 1.0.0
 
 Figma, Blender, 외부 MCP 도구 없이 순수 웹 표준(HTML5, CSS3, SVG, WebGL/GLSL)만으로 수학적으로 검증된 UI/UX 디자인, 인터랙티브 위젯, 3D 그래픽을 Antigravity 채팅 카드에 직접 생성하는 자율 디자인 에이전트입니다.
 
@@ -148,12 +148,12 @@ Figma, Blender, 외부 MCP 도구 없이 순수 웹 표준(HTML5, CSS3, SVG, Web
 **설치 및 사용법:**
 ```bash
 # 새 컴퓨터 — 원큐 설치 (macOS / Linux 터미널; 클론 중에 브랜치 전환이 자동으로 됨):
-git clone -b Agent/designer https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install-designer.sh
+git clone -b Agent/designer https://github.com/myk1yt/agy-pro.git && cd agy-pro && bash scripts/install-designer.sh
 ```
 
 ```powershell
 # 새 컴퓨터 — 원큐 설치 (Windows, PowerShell 또는 명령 프롬프트에 붙여넣기):
-cmd /c "git clone -b Agent/designer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-designer.ps1"
+cmd /c "git clone -b Agent/designer https://github.com/myk1yt/agy-pro.git && cd agy-pro && powershell -ExecutionPolicy Bypass -File scripts\install-designer.ps1"
 ```
 
 ```bash
@@ -169,7 +169,7 @@ Antigravity CLI에서 호출: `/agent` → `designer` 선택, 또는 `@designer`
 
 ### `@security-reviewer` — 엔터프라이즈 멀티 에이전트 보안 감사 스위트
 
-> **브랜치**: [`Agent/security-reviewer`](https://github.com/myk1yt/agy-tools/tree/Agent/security-reviewer) · **작성자**: myk1yt · **버전**: 1.0.0
+> **브랜치**: [`Agent/security-reviewer`](https://github.com/myk1yt/agy-pro/tree/Agent/security-reviewer) · **작성자**: myk1yt · **버전**: 1.0.0
 
 OWASP Top 10, CWE Top 25, Google Cloud `roles/iam.securityReviewer` 최소 권한 원칙을 기반으로 한 엔터프라이즈급 보안 감사 스위트입니다. 리드 오케스트레이터가 4개의 전문 도메인 인스펙터를 동시에 디스패치하여 종합적인 보안 감사를 수행합니다.
 
@@ -187,12 +187,12 @@ OWASP Top 10, CWE Top 25, Google Cloud `roles/iam.securityReviewer` 최소 권�
 **설치 및 사용법:**
 ```bash
 # 새 컴퓨터 — 원큐 설치 (macOS / Linux 터미널; 클론 중에 브랜치 전환이 자동으로 됨):
-git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install-security-reviewer.sh
+git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-pro.git && cd agy-pro && bash scripts/install-security-reviewer.sh
 ```
 
 ```powershell
 # 새 컴퓨터 — 원큐 설치 (Windows, PowerShell 또는 명령 프롬프트에 붙여넣기):
-cmd /c "git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-security-reviewer.ps1"
+cmd /c "git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-pro.git && cd agy-pro && powershell -ExecutionPolicy Bypass -File scripts\install-security-reviewer.ps1"
 ```
 
 ```bash
@@ -208,7 +208,7 @@ Antigravity CLI에서 호출: `/agent` → `security-reviewer` 선택, 또는 `@
 
 ### `@code-reviewer` — Pre-Merge 코드 리뷰 & 퀄리티 게이트
 
-> **브랜치**: [`Agent/code-reviewer`](https://github.com/myk1yt/agy-tools/tree/Agent/code-reviewer) · **작성자**: myk1yt · **버전**: 1.0.0
+> **브랜치**: [`Agent/code-reviewer`](https://github.com/myk1yt/agy-pro/tree/Agent/code-reviewer) · **작성자**: myk1yt · **버전**: 1.0.0
 
 Google Antigravity CLI를 위한 자율 사전 병합(Pre-Merge) diff 리뷰어 및 결정론적 퀄리티 게이트 플러그인입니다. 엄격한 **하드웨어 읽기 전용 제약조건**(코드 쓰기/수정 도구 완전 배제)으로 설계되어, PR이나 작업 중인 변경 사항(diff)을 4단계 파이프라인으로 정밀 감사하고, 버그, 보안 취약점, 안정성 결함, 포맷 문제를 프로덕션 병합 전에 원천 차단합니다.
 
@@ -222,12 +222,12 @@ Google Antigravity CLI를 위한 자율 사전 병합(Pre-Merge) diff 리뷰어 
 **설치 및 사용법:**
 ```bash
 # 새 컴퓨터 — 원큐 설치 (macOS / Linux 터미널; 클론 중에 브랜치 전환이 자동으로 됨):
-git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install-code-reviewer.sh
+git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-pro.git && cd agy-pro && bash scripts/install-code-reviewer.sh
 ```
 
 ```powershell
 # 새 컴퓨터 — 원큐 설치 (Windows, PowerShell 또는 명령 프롬프트에 붙여넣기):
-cmd /c "git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-code-reviewer.ps1"
+cmd /c "git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-pro.git && cd agy-pro && powershell -ExecutionPolicy Bypass -File scripts\install-code-reviewer.ps1"
 ```
 
 ```bash
@@ -243,7 +243,7 @@ Antigravity CLI에서 호출: `/agent` → `code-reviewer` 선택, 또는 `@code
 
 ## 📜 자율 멀티 에이전트 거버넌스 (`gemini-config`)
 
-> **브랜치**: [`gemini-config`](https://github.com/myk1yt/agy-tools/tree/gemini-config)
+> **브랜치**: [`gemini-config`](https://github.com/myk1yt/agy-pro/tree/gemini-config)
 
 **7단계 멀티 에이전트 라이프사이클 프로토콜**과 엔지니어링 거버넌스 규칙을 `~/.gemini` 디렉터리에 직접 프로비저닝하는 공유 가능한 글로벌 설정 번들입니다.
 
@@ -257,12 +257,12 @@ Antigravity CLI에서 호출: `/agent` → `code-reviewer` 선택, 또는 `@code
 **설치:**
 ```bash
 # 새 컴퓨터 — 원큐 설치 (macOS / Linux 터미널; 클론 중에 브랜치 전환이 자동으로 됨):
-git clone -b gemini-config https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install.sh
+git clone -b gemini-config https://github.com/myk1yt/agy-pro.git && cd agy-pro && bash scripts/install.sh
 ```
 
 ```powershell
 # 새 컴퓨터 — 원큐 설치 (Windows, PowerShell 또는 명령 프롬프트에 붙여넣기):
-cmd /c "git clone -b gemini-config https://github.com/myk1yt/agy-tools.git && cd agy-tools && scripts\install.bat"
+cmd /c "git clone -b gemini-config https://github.com/myk1yt/agy-pro.git && cd agy-pro && scripts\install.bat"
 ```
 
 ```bash
@@ -280,28 +280,30 @@ chmod +x scripts/install.sh && ./scripts/install.sh   # Linux / macOS
 
 ### 1️⃣ 원클릭 설치 (가장 추천)
 
-터미널에서 아래 **한 줄**만 실행하면 (본인 셸에 맞는 열 선택) **전역 명령어 등록 + 상태줄(`statusLine`) 자동 연동**까지 한 번에 완료됩니다.
+터미널에서 아래 **한 줄**만 실행하면 (본인 셸에 맞는 열 선택) **전역 명령어 등록 + Antigravity 통합 배포(상태줄 `statusLine` 포함)**까지 한 번에 완료됩니다. 배포는 Go 엔진이 맡습니다(`agy pro integrations apply tools --yes`). `agy-tokens` 런처가 없는 컴퓨터에서는 상태줄 단계를 건너뛰고 그 사유를 한 줄로 알려 주며, 호출 자체는 종료 코드 0으로 끝납니다. `agy pro integrations status`가 그 상태를 보여 주고, 런처가 생기면 `agy pro integrations repair`가 이 단계를 마저 완료합니다.
 
 **Windows — 명령 프롬프트:**
 ```cmd
-git clone https://github.com/myk1yt/agy-tools.git && cd agy-tools && scripts\install.bat
+git clone https://github.com/myk1yt/agy-pro.git && cd agy-pro && scripts\install.bat
 ```
 
 **Windows — PowerShell (5.1은 맨 `&&`을 받지 않으므로 `cmd /c`로 감쌈):**
 ```powershell
-cmd /c "git clone https://github.com/myk1yt/agy-tools.git && cd agy-tools && scripts\install.bat"
+cmd /c "git clone https://github.com/myk1yt/agy-pro.git && cd agy-pro && scripts\install.bat"
 ```
 
 **Linux / macOS:**
 ```bash
-git clone https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install.sh
+git clone https://github.com/myk1yt/agy-pro.git && cd agy-pro && bash scripts/install.sh
 ```
 
-설치 스크립트가 `npm link`로 전역 명령어를 등록하므로, 새 컴퓨터에서는 별도 `npm install -g .` 단계가 필요 없습니다. 나중에 `git pull`로 코드를 갱신한 후에는 `agy-tools` 폴더에서 `npm install -g .`를 한 번 실행해 전역 사본을 최신화하세요 (런타임은 클론 폴더가 아니라 npm 전역 사본에서 실행됩니다).
+설치 스크립트가 `npm link`로 전역 명령어를 등록하므로, 새 컴퓨터에서는 별도 `npm install -g .` 단계가 필요 없습니다. 나중에 `git pull`로 코드를 갱신한 후에는 `agy-pro` 폴더에서 `npm install -g .`를 한 번 실행해 전역 사본을 최신화하세요 (런타임은 클론 폴더가 아니라 npm 전역 사본에서 실행됩니다).
+
+설치 스크립트(`install.bat` / `install.sh`)는 더 이상 자체 설정 기록기를 쓰지 않습니다. `agy`가 `PATH`에서 잡히면 Go 엔진에 배포를 한 번에 넘깁니다. 그 호출이 `agy pro integrations apply tools --yes`이고, `settings.json`의 `statusLine` 항목과 규칙·플러그인·스킬·훅을 함께 배포합니다. `agy-tokens` 런처가 없는 컴퓨터에서는 상태줄 단계를 건너뛰고 그 사유를 한 줄로 알려 주며, 호출 자체는 종료 코드 0으로 끝납니다. `agy pro integrations status`가 그 상태를 보여 주고, 런처가 생기면 `agy pro integrations repair`가 이 단계를 마저 완료합니다. `agy`가 아직 `PATH`에 없으면 설치 스크립트가 위 명령을 그대로 화면에 출력하고 계속 진행하며, 호출이 실패하면 `[ERROR]`를 출력하고 0이 아닌 종료 코드로 멈춥니다. 반쯤 배포된 상태를 성공으로 보고하지 않습니다.
 
 ### 2️⃣ 설치 후 바로 시작하기
 1. 실행 중인 **Antigravity CLI (`agy`)를 종료 후 다시 시작**합니다.
-2. 터미널 상태줄에 실시간 토큰 사용량 및 Gemini 쿼터가 즉시 표시됩니다!
+2. 터미널 상태줄에 실시간 토큰 사용량 및 Gemini 쿼터가 즉시 표시됩니다! (`agy-tokens` 런처가 있어야 합니다. 런처가 없으면 상태줄 단계를 건너뛰고 그 사유를 한 줄로 알려 주며, `agy pro integrations status`가 그 상태를 보여 줍니다)
 3. 브라우저 대시보드를 열려면 터미널의 `📊 대시보드`를 클릭하거나 아래 명령어를 실행하세요:
 ```bash
 agy-tokens --html --open
@@ -318,12 +320,12 @@ agy-tokens --html --open
 PowerShell 창(Windows PowerShell 5.1 또는 PowerShell 7)에 아래 **한 줄**을 그대로 붙여넣으세요. git이 있으면 `feature/agy-pro` 브랜치를 클론해 `install.cmd`를 실행하고, git이 없으면 브랜치 ZIP을 `%TEMP%`에 내려받아 `install.ps1`을 실행하는 경로로 자동 분기합니다.
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "if (Get-Command git -ErrorAction SilentlyContinue) { cmd /c 'git clone -b feature/agy-pro https://github.com/myk1yt/agy-tools.git && cd agy-tools && install.cmd' } else { iwr 'https://codeload.github.com/myk1yt/agy-tools/zip/refs/heads/feature/agy-pro' -OutFile '$env:TEMP\agy-tools-agy-pro.zip' -UseBasicParsing; Expand-Archive -Path '$env:TEMP\agy-tools-agy-pro.zip' -DestinationPath '$env:TEMP\agy-tools-agy-pro' -Force; & (Resolve-Path '$env:TEMP\agy-tools-agy-pro\*\install.ps1').Path }"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "if (Get-Command git -ErrorAction SilentlyContinue) { cmd /c 'git clone -b feature/agy-pro https://github.com/myk1yt/agy-pro.git && cd agy-pro && install.cmd' } else { iwr 'https://codeload.github.com/myk1yt/agy-pro/zip/refs/heads/feature/agy-pro' -OutFile '$env:TEMP\agy-pro-src.zip' -UseBasicParsing; Expand-Archive -Path '$env:TEMP\agy-pro-src.zip' -DestinationPath '$env:TEMP\agy-pro-src' -Force; & (Resolve-Path '$env:TEMP\agy-pro-src\*\install.ps1').Path }"
 ```
 
 > 이 문서의 모든 원라인 명령은 GitHub의 `feature/agy-pro` 브랜치 **현재 상태**를 내려받습니다. 아직 push하지 않은 로컬 커밋은 내려받는 내용에 포함되지 않습니다.
 
-명령 프롬프트에서는 감싸는 부분 없이 클론 한 줄만 실행하면 됩니다: `git clone -b feature/agy-pro https://github.com/myk1yt/agy-tools.git && cd agy-tools && install.cmd`. 이미 클론해 둔 경우에는 저장소 루트에서 `install.cmd`를 실행하거나, `powershell -NoProfile -ExecutionPolicy Bypass -File agy-pro\scripts\install.ps1`로 설치 스크립트를 직접 호출하면 됩니다.
+명령 프롬프트에서는 감싸는 부분 없이 클론 한 줄만 실행하면 됩니다: `git clone -b feature/agy-pro https://github.com/myk1yt/agy-pro.git && cd agy-pro && install.cmd`. 이미 클론해 둔 경우에는 저장소 루트에서 `install.cmd`를 실행하거나, `powershell -NoProfile -ExecutionPolicy Bypass -File agy-pro\scripts\install.ps1`로 설치 스크립트를 직접 호출하면 됩니다.
 
 설치 스크립트는 Go 툴체인이 없으면 설치하고, `agy.exe`를 `~/.agy-pro/bin/`에 빌드하고, 그 디렉터리를 사용자 `PATH` 맨 앞에 추가한 뒤 `agy pro doctor`를 실행합니다. 설치 후에는 새 터미널을 열어야 PATH 변경이 반영됩니다.
 
@@ -332,13 +334,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "if (Get-Command git -Err
 PowerShell 창에 아래 **한 줄**을 붙여넣으세요. 설치 제거 스크립트를 내려받아 실행하고, 무엇을 지울지 먼저 보여준 뒤 `y/N` 확인을 기다립니다:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr 'https://raw.githubusercontent.com/myk1yt/agy-tools/feature/agy-pro/agy-pro/scripts/uninstall.ps1' -OutFile '$env:TEMP\agy-pro-uninstall.ps1' -UseBasicParsing; & '$env:TEMP\agy-pro-uninstall.ps1'"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr 'https://raw.githubusercontent.com/myk1yt/agy-pro/feature/agy-pro/agy-pro/scripts/uninstall.ps1' -OutFile '$env:TEMP\agy-pro-uninstall.ps1' -UseBasicParsing; & '$env:TEMP\agy-pro-uninstall.ps1'"
 ```
 
 설치기가 추가한 것만 정확히 되돌립니다:
 
 1. 사용자 `PATH`에서 `~/.agy-pro/bin` 항목만 제거 (다른 항목과 레지스트리 값 종류는 그대로 유지)
 2. `~/.agy-pro` 폴더 전체를 **휴지통**으로 이동 (영구 삭제하지 않음)
+
+두 단계 전에 배포된 통합을 먼저 되돌립니다. 그 파일들을 소유한 것은 shim뿐이므로, 설치 제거 스크립트는 `agy`가 아직 남아 있는 동안 `agy pro integrations retract --yes`를 실행합니다. 그러면 엔진이 Gemini 설정 트리에 배포한 규칙·플러그인·스킬·훅·statusLine 항목이 고아 파일로 남지 않고 `<AGY_PRO_HOME>/backups/<ts>_retract/`로 옮겨집니다. `-KeepState`를 줘도 이 되돌리기는 그대로 실행됩니다(배포 파일에 대한 단계이고 프로바이더 상태와는 무관합니다). `agy`를 찾지 못하면 설치 제거 스크립트가 그 사실을 알리고, 다음 제거 전에 정상 설치본에서 `agy pro integrations retract --yes`를 먼저 실행하라고 안내합니다.
 
 같은 줄 뒤에 붙이거나 클론 폴더에서 실행할 수 있는 옵션: `-KeepState`는 shim만 지우고 `providers.json`, `state.json`, 백업을 남깁니다. `-DryRun`은 계획만 출력하고 아무것도 바꾸지 않습니다. `-RestorePath`는 설치 전에 저장해 둔 사용자 `PATH`(가장 최근 `~/.agy-pro/backups/path-*.json`)를 되돌립니다. `-Force`는 스크립트용으로 `y/N` 확인을 건너뜁니다. 이미 클론해 둔 경우에는 저장소 루트의 `uninstall.cmd`를 더블클릭하거나 `.\uninstall.cmd`를 실행하세요. `agy pro mode`로 프로필을 바꿨다면 지우기 **전에** `agy pro mode restore`를 실행하세요(프로필 백업이 있으면 설치 제거 스크립트가 이 안내를 출력합니다). 콘솔이 없는 실행(파이프 입력, 예약 작업)에서는 `y/N`이 자동으로 `no`가 되므로 실수로 설치가 지워지지 않습니다.
 
@@ -365,6 +369,8 @@ agy pro mode full                        # full-stack 오케스트레이터 프�
 agy pro status                           # 현재 모드, 프로바이더, 실제 agy 경로
 ```
 
+쓰기를 하는 명령(`agy pro config ...`, `agy pro mode ...`, `agy pro doctor --fix-keys`, 그리고 설정 허브의 프로바이더·모델 편집)은 바꿀 내용을 먼저 정확히 출력하고 `y/N` 확인을 받습니다. 스크립트에서는 `--yes`를 붙여 프롬프트 없이 동의할 수 있습니다.
+
 일상적으로 쓰는 화면:
 
 ```bash
@@ -373,6 +379,26 @@ agy pro swarm                            # 번호로 템플릿·좌석을 고르
 agy pro fanout --seats "native:gemini-3.8-flash-high,nw/glm-5.3-flash"   # 하이브리드 스웜
 agy pro settings                         # 전체 화면 설정 패널 (TUI)
 ```
+
+### 통합 배포: 무엇이 배포되는지를 한 곳에서 관리
+
+```bash
+agy pro integrations status              # 읽기 전용: 의도와 디스크 상태를 나란히 표시, 게이트 없음
+agy pro integrations apply tools         # 프리셋 전체: statusLine 항목, 규칙, 플러그인, 스킬, 훅 (agy-tokens 런처가 없으면 상태줄 단계는 사유와 함께 건너뜀)
+agy pro integrations apply rules         # 기능 하나; 인자를 빼면 대기 중인 것만 배포
+agy pro integrations retract             # 배포한 것 제거; 인자를 빼면 전부 제거
+agy pro integrations preset native|tools # 그 프리셋 상태로 맞추고 기록
+agy pro integrations adopt               # 이미 디스크에 있는 것을 기록 (파일 쓰기 없음)
+agy pro integrations rollback            # settings.json 최신 스냅샷 복원
+agy pro integrations rollback rules      # 기능 하나를 설치 전 배포 트리로 되돌림
+agy pro integrations repair              # 드리프트·누락된 대상 재배포
+```
+
+기능은 `statusline`, `hook`, `rules`, `plugins`, `skills` 다섯 개이고, 프리셋은 `native`와 `tools`입니다(`custom`은 기능 토글에서 파생되는 값이라 인자로 받지 않습니다). 쓰기 동사는 계획 하나를 만들어 정확한 diff를 출력한 뒤 한 번만 묻습니다. 그래서 프리셋 배포는 파일 배포, `settings.json` 항목, `state.json` 의도 행을 합쳐 `y/N` 한 번입니다. 파이프나 CI처럼 콘솔이 없는 입력은 `--yes`를 붙여야 하고, 없으면 아무것도 쓰지 않고 거부합니다. 종료 코드는 0(성공), 1(실행 오류·거부), 2(사용법 오류)입니다. 제거 전에 `retract`를 실행하면 배포 파일이 고아로 남지 않고 `<AGY_PRO_HOME>/backups/<ts>_retract/`로 옮겨집니다.
+
+`rollback`은 인자를 하나 받거나 아예 받지 않습니다. 인자가 없으면 `settings.json`을 스냅샷 체인에서 되돌리고, `rollback <기능>`은 그 기능 하나의 배포 트리를 설치 전 상태로 되돌립니다. 둘 다 동의는 한 번이고, 트리 되돌리기는 의도 행을 기록하지 않습니다(되돌린 바이트는 사용자가 선언한 상태가 아니기 때문입니다). `rollback statusline`은 종료 코드 2로 인자 없는 settings.json 문을 안내하고, 프리셋 인자(`native`, `tools`, `custom`)는 프리셋 전체에는 단일한 설치 전 트리가 없으므로 거부되며, 인자를 두 개 주면 사용법 오류입니다.
+
+프리셋은 **무엇이 배포되는지**(규칙·스킬·플러그인·훅·statusLine 내용)만 바꾸고, 어떤 바이너리가 실행되는지는 바꾸지 않습니다. `agy pro mode full|clean`도 같은 종류의 스위치입니다. 배포 내용만 바뀌고, 실행되는 agy 바이너리는 하나입니다.
 
 ### 하이브리드 스웜: 네이티브 모델과 외부 프로바이더 모델을 한 번에
 
@@ -459,6 +485,7 @@ agy pro hybrid check     # wirecheck 리포트 출력; 효과 프로필이 NOGO�
 | 번호로 고르는 스웜 빌더 (네이티브+외부 하이브리드 좌석) | `agy pro swarm`, `agy pro fanout --seats "native:<모델>,<프로바이더>/<모델>"` |
 | 멀티 모델 팬아웃 스웜 | `agy pro fanout -task=security -n=3` |
 | 설정 패널 / 세션 내 설정 | `agy pro settings`(TUI), `/setting_agypro`(플러그인 명령) |
+| 배포된 통합 (statusLine 항목, 규칙, 플러그인, 스킬, 훅) | `agy pro integrations status`, `agy pro integrations apply tools`, `agy pro integrations retract` |
 | 채팅 안에서 스웜 실행 | `/agypro_swarm:swarm`(플러그인 슬래시 명령; 번호 좌석 선택, 드라이런 echo + 비용 확인, 산출물 요약을 채팅에) |
 | 진단 | `agy pro doctor`, `agy pro status`, `agy pro models` |
 
@@ -486,7 +513,7 @@ agy pro hybrid check     # wirecheck 리포트 출력; 효과 프로필이 NOGO�
 
 `agy-tokens`는 터미널 상태줄을 통해 실시간 토큰 사용량과 쿼터 상태를 표시합니다. **Antigravity 내부 코드를 전혀 수정할 필요가 없습니다.**
 
-설치 스크립트(`install.bat` / `install.sh`)를 실행하면 `~/.gemini/antigravity-cli/settings.json`에 `statusLine` 설정이 자동으로 안전하게 병합됩니다 (기존 설정 보존 및 자동 백업 생성).
+설치 스크립트(`install.bat` / `install.sh`)는 이 항목의 기록을 Go 엔진에 넘깁니다. `agy pro integrations apply tools --yes`가 기존 설정을 보존한 채 `~/.gemini/antigravity-cli/settings.json`에 `statusLine` 객체를 쓰고, 원자적 쓰기 전에 원장이 `settings.json.bak.<ts>`로 파일을 스냅샷해 둡니다. `agy-tokens` 런처가 없는 컴퓨터에서는 상태줄 단계를 건너뛰고 그 사유를 한 줄로 알려 주며, 호출 자체는 종료 코드 0으로 끝납니다. `agy pro integrations status`가 그 상태를 보여 주고, 런처가 생기면 `agy pro integrations repair`가 이 단계를 마저 완료합니다. 같은 명령을 언제든 직접 실행할 수 있고, `agy pro integrations status`로 항목이 아직 일치하는지 확인하고, `agy pro integrations rollback`으로 최신 스냅샷을 되돌립니다. 설치 전 상태로 되돌리는 일도 이제 수동 편집이 아닙니다. `agy pro integrations retract`가 항목을 제거하고 덮어쓴 바이트를 보관합니다.
 
 ### 간결하고 직관적인 상태줄 형식
 불필요한 접두어를 제거하여 깔끔하고 정보 밀도가 높은 상태줄을 제공합니다:
@@ -522,7 +549,7 @@ agy pro hybrid check     # wirecheck 리포트 출력; 효과 프로필이 NOGO�
 }
 ```
 
-- **직접 Node 경로 지정 시**: `"command": "node /경로/agy-tools/bin/agy-tokens.js --hook --raw --write-dashboard"`
+- **직접 Node 경로 지정 시**: `"command": "node /경로/agy-pro/bin/agy-tokens.js --hook --raw --write-dashboard"`
 - **Windows 8.3 축약 경로 (PATH가 자식 프로세스에 상속되지 않는 경우)**:
   `"command": "C:\\PROGRA~1\\nodejs\\node.exe %APPDATA%\\npm\\NODE_M~1\\AGY-TO~1\\bin\\AGY-TO~1.JS --hook --raw --write-dashboard"` (역슬래시는 `\\`로 이스케이프)
 

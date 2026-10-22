@@ -416,3 +416,111 @@ Consequences for sequencing: F3(a) and P1-7(a) are prerequisites for P5; P4 (28 
 - **Version miss found and fixed.** The unification pass grepped for `0.10.x` and missed the Go product's own constant: cmd/agy/main.go `const Version` was "0.1.0" and rendered in six banner and print sites. It is now "0.10.0" and the installed shim reports `agy-pro version 0.10.0`.
 - **Verification after all of the above.** Full suite in the factory-reset state (no live providers.json): 23 packages ok, 0 FAIL. Standalone checkout (agy-pro/ alone in a clean temp dir): build OK, and internal/settings, internal/mode, internal/providers and cmd/agy all ok, with the sibling-tree tests SKIPping with the missing path named instead of failing. gofmt content-clean on every changed file, line-ending classes preserved, live providers.json/state.json still absent by design (the reset), and the retired backups verified present.
 - **Nothing from this pass is committed yet.** The pending set is the portability and hermeticity fixes plus the .gitignore rule and this record; the commit proposal is in the SESSION8 handoff.
+
+## 2026-10-22 - S7-C7 catalog-boundary convention codified
+
+- **Decision.** A user-display string that lives OUTSIDE the twelve i18n catalogs stays a package const (or a single-wording accessor) in the package that owns it. Codified by the user in the residual-decision pass recorded above; this entry makes the rule explicit rather than an implicit precedent.
+- **The convention.** The twelve catalogs (internal/i18n/locales/*.json) describe the localized surfaces. A string that is none of the following stays in Go: (1) chrome whose wording must be byte-stable across locales because a test pins it or a command must run verbatim, (2) text that names a CLI command (`agy pro setup`) and would stop working if translated, (3) a one-token row suffix that renders inside fixed-width row frames. Each such string gets exactly ONE site, so no surface invents a second spelling.
+- **Precedent.** `settings.ReadOnlyLegend` (internal/settings/marker.go) established the pattern before the rule was written down: the legacy panel prints it verbatim while the setup TUI resolves the same sentence through `settings.legend.readonly`, and the `show` snapshot composes its own flag line from the same text. One const, three surfaces, no catalog key required for the panel footer.
+- **The three string families now covered.** (1) `settings.LegacyPanelNotice`, the legacy `agy pro settings` panel deprecation notice (internal/settings/tui.go) - P1-7=(a) notice naming the hub command, byte-stable by design. (2) The exclusion warning chrome, the "skipped seat N (spec): marker" and "warning: seat N (spec) is marker; explicit pick honored (...)" sentences composed in internal/swarm/select.go, whose wording tests pin verbatim across the swarm, inventory and CLI surfaces. (3) `providers.ExcludedMarker()`, the one-token `excluded (exclusion list)` row suffix (internal/providers/providers.go) rendered by `agy pro models --all` and the swarm seat list.
+- **Annotated sites.** The convention is now recorded as a short doc comment at the three const/accessor sites that carry it: internal/settings/marker.go (ReadOnlyLegend), internal/settings/tui.go (LegacyPanelNotice), internal/providers/providers.go (ExcludedMarker). The exclusion warning chrome is composed inside two functions rather than declared as a const, so it carries no comment site and is named here instead.
+- **Revisit trigger.** When the P5 unified settings surface exists, every one of these strings must be re-examined: a unified surface that owns the whole settings vocabulary may make catalog entries cheap enough that the byte-stability argument no longer holds. Until then the consts stay, and a new user-display string outside the catalogs must justify itself against the three criteria above.
+- **No behavior change.** Comments and this record only. No exported symbol added, no string value edited, no test changed.
+
+## 2026-10-22 - SESSION8 mid-flight checkpoint (provisional, append-only; final record to follow)
+
+- Landed and verified (all UNCOMMITTED except the two early commits): commits 909aea7 (portability/hermeticity) and 1b572ce (gitignore+record) are in; on top of them wave-1 (B-P2-1 manual rewrite, sk-live 20-instance concatenation sweep + 15-arm gate codified in agy-pro/docs/provider-pattern-gate.md, S7-C7 convention comments, installer self-heal launchers) converged through its code+security quartets: fix-list-session8-r1.md closed F-W1-01..15/18 (W1a 12/12, W1b all), disputed F-W1-02 graded MED by verification seat (fix-side CLOSED, named same-tier residual recorded). Node suite 289/0.
+- P5-1: U1 (CLI provider verbs), U2 (CLI state writers), U3 (repair doors), U4 (wizard composed gate; the crash root cause was the pre-gate custom-model-ID EOF SPIN, fixed+pin-test landed; 28 dialog scripts wrapped; fourth door fanout --setup being patched as R1), U5a+U5b (legacy panel: all 9 write verbs gated) - green with host-safety policy (providers.test.exe unfiltered runs BANNED machine-wide; orchestrator owns the definitive full-suite at the final gate under a 2GB watchdog).
+- P5-2: S1 internal/dashboard contract loader, S2 hub row + read-only screen, S3 27-key x 12-catalog pass, S4 bounded refresh exec, S5 spawn (detached, intent-guarded, no-orphan proven) + loopback-whitelist browser open. Mechanism pick recorded in pick-record-p52-p51.md (B = Go client of the existing Node contract; Go re-aggregation rejected unanimously by the 3-seat swarm).
+- P5-3: 3-seat architecture swarm reconciled into pick-record-p53.md = destination partition (mode keeps agents/references/profile.json/config.json; integrations owns rules/skills/plugins/hooks + settings.json statusLine via agysettings managed key, guard KEPT with deliberate override), intent in state.json additive Core.Set keys, manifest in ~/.agy-pro/integrations.json, Go walk engine, adopt-with-provenance migration, wrapper-absolute commands, launch never writes. T1/T2 dispatched; T5/T7/T9 + live migration GATED on the 7 CEO decision items in that record.
+- P5-5 (LICENSE story resolved: agy-pro/LICENSE = root bytes; manifests single; gitignore clean), P5-6 (rename sweep: 66 operational refs -> 0, one-liners clone+cd fixed, price-syncer URL + non-silent fallback warning, historical records preserved), P6-1/4/5/6/7 hygiene landed or in flight.
+- Machine incidents this session, all disclosed: factory-reset state.json recreated by a stale-binary probe (moved to ~/.agy-pro/backups/probe-artifact-20261022/, absence restored); an SH-only-redirect smoke run wrote 54 files under the real ~/.gemini/config (12 overwritten, unrecoverable; recovery = user decision: re-run real installer or mode restore - surfaced, not acted); npm global link twice momentarily repointed and restored (verified: -> repo, v0.10.0).
+- Seat-rule corrections applied after user direction: default SYSTEM.md mechanics over handoff carve-outs; NO seat may ride the author-of-record brand (deepseek family after gateway-strip) or duplicate a brand within a set; the wave-1 code quartet's NW/deepseek seat and the P5-3 double-glm set were violations, now disclosed in fix-list-session8-r1.md and avoided in all later draws.
+
+## 2026-10-23 - SESSION9 close: T9 landed, dead seam removed, dual-quartets converged, final gate green (pre-commit record)
+
+- T9 (installer/uninstaller close-out + T8 hand-ins) landed COMPLETE, clearing the interim exit-3
+  installer state: scripts/install.bat + scripts/install.sh retired the Node statusline/customizations
+  writers and now hand deployment to `agy pro integrations apply tools --yes` behind a trusted-path
+  preference (absolute shim %USERPROFILE%/.agy-pro/bin/agy.exe first - the security quartet's CWE-426
+  finding - then PATH fallback, else a printed instruction, exit-0 contract pinned);
+  agy-pro/scripts/uninstall.ps1 runs `agy pro integrations retract --yes` after consent and BEFORE any
+  shim/PATH/home removal (-KeepState still retracts; dry-run previews it); mode restore copy-back
+  narrowed to the managed register with the guard test flipped (legacy rules/ no longer overwrites
+  engine files; plan preview now signs exactly what the write covers, case-fold EqualFold included);
+  the deploy-tree rollback verb landed engine-first (RollbackFeature/PendingRollback, backup_ref-sourced,
+  post-retract = named empty state) plus CLI `rollback <feature>` + the hub screen's row-10 picker;
+  the composed-diff composer moved into internal/integrations/compose.go, deleting both private copies
+  (pro_integrations.go -255 lines, screen_integrations.go -193); the launcher Route switches got an
+  exhaustive-parse pin (no default: arm needed: SESSION9 added no Route value); internal/settings
+  Core.RunWizard dead seam deleted (0 production callers; survey proved the doors bind WithGate
+  directly); the P5-4 deferred doc sentence ("the preset changes what is DEPLOYED, never which binary
+  runs") is in manual.txt both halves + MANUAL.ko.md.
+- CEO-ratified ruling (delegated): the degraded preset apply KEEPS integration_statusline=on - intent
+  records the REQUESTED posture (pick-record-p53 item 3), the loud note names the skip, repair completes
+  the slot once a launcher exists. The launcher-missing preset abort (T8 §2 rule 5 was never code-true,
+  verification seat proved) is closed as a defect against that ratified design.
+- Independent verification: wave-3 smoke blind-qa 14/14 PASS on a fresh binary (full lifecycle
+  apply/drift/repair/rollback/retract/restore/installer-shape + real-home guard); code quartet round-1
+  (Stepfun/MiMo-pro/NW-glm-5.3-flex/Charm-glm; 21 findings: P1x3, all closed) -> fix round FIX-1/3/4/5
+  -> confirmation seats round-2 (k3/MiMo-pro/Stepfun/Charm-glm; 1 NEW P1 docs-drift from FIX-5, closed
+  by FIX-6A's 22-site pass) -> security quartet (k3/MiMo-flash/kimi-for-coding PASS, 1 seat lost to
+  provider truncation x2 - disclosed; 0 CRITICAL/0 HIGH; mediums closed by FIX-6B/C: price-syncer
+  https+host+cap+digest policy, BackupDirPerm 0700, LastBackup containment, reverify comment truth).
+  fix-list-session9-r1.md: every row CLOSED or DEFERRED-with-reason.
+- Final gate: build/vet exit 0; GOOS=linux/darwin cross-builds + cross-vets exit 0; node suite 296/0
+  (+6 new pins); provider-pattern gate 0 hits in BOTH forms (tracked and working-tree) AFTER staging;
+  the providers full-package RE-VERDICT under the 2GB watchdog ran ONCE, exit 0, no memory event (the
+  spin fix's first definitive full run); real ~/.gemini/config 136-file md5 snapshot byte-unchanged;
+  ~/.agy-pro top-level providers.json/state.json still absent (factory posture preserved);
+  zero-byte/conflict-marker scans clean on the staged surface; EOL classes per git ls-files --eol all
+  preserved (install.bat CRLF, install.sh LF, catalogs LF, ps1 CRLF-class etc.).
+- Deferred with reasons (nothing parked silently): F-S9A-4 two-process manifest race (CEO call:
+  lockfile vs documented single-writer posture); F-R2-02 TUI approval-modal note position above a
+  100-line diff (frame-budget design choice); price-syncer constant digest pin (would break freshness;
+  3 alternatives costed in impl-fix-s9r1-security.md §4); decisions.md mixed EOL (bulk conversion is a
+  dedicated decision); ~/.agy-pro root dir mode + CopyRecursive mode inheritance (routed, POSIX-side);
+  install.ps1 Go-toolchain download hash verification (MITM residual, same-user-plus-network tier);
+  macOS self-heal never executed; pre-existing -shuffle=on flake (T8 §10.2, gate stays -count=1);
+  dead catalog keys (dashboard.reason.start/.refresh) cleanup candidate; package.json name=agy-tools
+  product identity (distribution decision); DeepSeek key rotation (USER-OWNED - value remains in pushed
+  history since 2026-10-14; rotate out-of-band).
+- Seat/config record: user added NW/glm-5.3-flex to the pool on 2026-10-23 and it was seated in the
+  code quartet (brand-distinct sets held; no deepseek-brand seat anywhere; minimax confined to a scoped
+  seat and it still truncated twice - its ban-from-long-dispatches stance stands). Author of record for
+  all fixes = zoogateway/deepseek-v4.1-flash-1017 (builder); bound seat 1 = kimi-gw/k3-agent.
+
+## 2026-10-23 - DeepSeek key file-presence question answered; registry state disclosed (append to the SESSION9 record)
+
+- The CEO asked whether a real DeepSeek key still lives in ANY file. Sweep run (masked fingerprints,
+  values never re-echoed): every working-tree file (tracked + untracked, scratch and gitignored
+  dumps included) for the sk-<64hex> shape and for the two live registry values by content match:
+  zero occurrences. Full git history (`git log --all -S` on both values): zero commits. The
+  earlier note "value remains in pushed history since 2026-10-14" predates the 2026-10-22
+  secret-hygiene waves and the sweep could not reproduce any such value now - the historical commit
+  that carried the original key was from the pre-rotation era and its value does not match the two
+  live registry keys checked; if the CEO rotated after 2026-10-14 the pushed value is already dead
+  (rotation remains the only true fix for history, user-owned).
+- No file deletion was required or performed. What DOES exist is in HKCU\Environment (the user's
+  own registry, not the repo): DEEPSEEK_API_KEY currently holds the test-mock string
+  "mock-test-key-123" (test pollution residue), and NW_API_KEY holds a real sk-64hex key plus one
+  BOM-prefixed duplicate name (invisible-character artifact from a test that wrote the variable
+  with a mangled name). Registry cleanup/deletion is an irreversible user-environment action and
+  was NOT taken; the two commands (delete the BOM duplicate, optionally clear the mock) are
+  proposed to the CEO. The registry dump also exposed the CEO's GitHub/HF tokens into this
+  session transcript - disclosed here as a process defect of the check itself; rotation is the
+  CEO's call.
+
+## 2026-10-23 - CEO approvals received and executed (SESSION9 convergence close)
+
+- Approvals (this session): commit the 9 groups then PUSH; F-S9A-4 resolved as option B
+  (documented single-writer posture, no lockfile) - landed as FIX-8; F-R2-02 approved with the
+  hoist recommendation - landed as FIX-9 (notes render FIRST in the shared composer, both doors);
+  price-syncer constant digest pin: stay as-is (recorded); install.ps1 Go-download verification:
+  ADD - landed as FIX-10 (pinned sha256 + published .sha256, fail-closed, BADHASH quarantine);
+  F-V1 (hooks bare command) stays with the carried same-user prereq; reports/ stays untracked;
+  decisions.md EOL stays mixed; registry cleanup of the BOM-prefixed NW_API_KEY duplicate and the
+  mock DEEPSEEK_API_KEY residue: EXECUTED by the orchestrator (live NW key untouched);
+  shim rebuild + install: APPROVED and executed after the commits; the real-home
+  apply -> preset native -> preset tools round trip + uninstall dry-run: APPROVED and executed
+  after the shim install; macOS self-heal: CEO ruled to leave it (no hardware).

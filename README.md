@@ -26,7 +26,7 @@
 **Antigravity Developer Toolkit (`agy-tools`)** is a high-precision, zero-dependency CLI and dashboard suite designed specifically for **Antigravity CLI**. Its flagship command **`agy-tokens`** (also aliased as `agy-tools` and `agy-dashboard`) delivers instant statusline analytics, live 1:1 rate limit quota tracking, and an interactive real-time web dashboard.
 
 ### Why `agy-tools`?
-- **Zero Antigravity Code Modifications**: A single `statusLine` command entry in `~/.gemini/antigravity-cli/settings.json` is the **ONLY** integration point needed.
+- **Zero Antigravity Code Modifications**: this toolkit needs one `statusLine` command entry in `~/.gemini/antigravity-cli/settings.json`, and no Antigravity source change. The optional `agy pro` Go shim goes further: on request it also deploys the rules, plugins and capability folders plus the pre-turn hook, and `agy pro integrations status` lists every destination it owns. Each of them moves through the same single consent modal.
 - **1:1 Gemini Quota Pool Tracking**: Connects directly to the local Language Server via HTTPS/HTTP RPC to display exact **5-Hour (5h)** and **7-Day (7d)** rolling quota buckets with live countdown timers.
 - **Real-Time SSE Web Dashboard**: Opens an interactive single-page dashboard on `http://127.0.0.1:8787` powered by Server-Sent Events (SSE) and responsive pure-SVG vector charts.
 - **2026 Flagship Model Support**: Full out-of-the-box attribution for **Gemini 3.7 Flash**, **Gemini 3.6 Flash**, **Gemini 3.5 Flash**, **Claude Opus 4.6**, **Claude Sonnet 4.6**, and more.
@@ -92,13 +92,13 @@ flowchart TD
 
 | Branch | Description | Key Capabilities | One-Shot Install (paste into **Command Prompt**) | One-Shot Install (paste into **PowerShell**) | One-Shot Install (paste into **macOS / Linux terminal**) |
 |---|---|---|---|---|---|
-| [`main`](https://github.com/myk1yt/agy-tools/tree/main) | **Core Engine, Developer Toolkit & agy-pro Go Shim** | Statusline badge, SSE Web Dashboard, 1:1 Gemini Quota Pool RPC, Dynamic Pricing, 21 languages, plus the agy-pro suite (transparent `agy` shim, multi-model swarm, fanout with partition mode, provider write/URL/search tools) | `git clone https://github.com/myk1yt/agy-tools.git && cd agy-tools && scripts\install.bat && install.cmd` | `cmd /c "git clone https://github.com/myk1yt/agy-tools.git && cd agy-tools && scripts\install.bat && install.cmd"` | `git clone https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install.sh` |
-| [`Agent/designer`](https://github.com/myk1yt/agy-tools/tree/Agent/designer) | **Zero-MCP Design Specialist** | `@designer` agent, 5 modular add-on modules (SVG, 3D Canvas, Cyberpunk, Sandbox, QA Harness) | `git clone -b Agent/designer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-designer.ps1` | `cmd /c "git clone -b Agent/designer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-designer.ps1"` | `git clone -b Agent/designer https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install-designer.sh` |
-| [`Agent/security-reviewer`](https://github.com/myk1yt/agy-tools/tree/Agent/security-reviewer) | **Enterprise Multi-Agent Security Audit** | `@security-reviewer` orchestrator + 4 domain inspectors (OWASP, IAM, Credentials, Supply Chain) | `git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-security-reviewer.ps1` | `cmd /c "git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-security-reviewer.ps1"` | `git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install-security-reviewer.sh` |
-| [`Agent/code-reviewer`](https://github.com/myk1yt/agy-tools/tree/Agent/code-reviewer) | **Pre-Merge Code Review & Quality Gate** | `@code-reviewer` agent, 4-stage pipeline, 8-category taxonomy, zero-tolerance P0-P3 gate | `git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-code-reviewer.ps1` | `cmd /c "git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-code-reviewer.ps1"` | `git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install-code-reviewer.sh` |
-| [`gemini-config`](https://github.com/myk1yt/agy-tools/tree/gemini-config) | **Autonomous Multi-Agent Governance** | 7-Stage Lifecycle Protocol, Master Zero-Source-Edit Invariant, orchestrator governance | `git clone -b gemini-config https://github.com/myk1yt/agy-tools.git && cd agy-tools && scripts\install.bat` | `cmd /c "git clone -b gemini-config https://github.com/myk1yt/agy-tools.git && cd agy-tools && scripts\install.bat"` | `git clone -b gemini-config https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install.sh` |
-| [`feature/agy-pro`](https://github.com/myk1yt/agy-tools/tree/feature/agy-pro) | **Go Shim & Multi-Model Swarm (`agy-pro`)** | Transparent `agy` shim, opt-in 2-second model launcher (`AGY_LAUNCHER=1`) with a combined native + external model list, external-model bridge, numbered swarm builder with hybrid native seats, `agy pro` suite (setup / mode / models / swarm / settings / fanout / doctor), one-click Windows install & uninstall (Windows only) | `git clone -b feature/agy-pro https://github.com/myk1yt/agy-tools.git && cd agy-tools && install.cmd` | `cmd /c "git clone -b feature/agy-pro https://github.com/myk1yt/agy-tools.git && cd agy-tools && install.cmd"` | — |
-| [`dashboard`](https://github.com/myk1yt/agy-tools/tree/dashboard) | **Historical Prototype** | Original token tracker foundation (fully merged into `main`) | — | — | — |
+| [`main`](https://github.com/myk1yt/agy-pro/tree/main) | **Core Engine, Developer Toolkit & agy-pro Go Shim** | Statusline badge, SSE Web Dashboard, 1:1 Gemini Quota Pool RPC, Dynamic Pricing, 21 languages, plus the agy-pro suite (transparent `agy` shim, multi-model swarm, fanout with partition mode, provider write/URL/search tools) | `git clone https://github.com/myk1yt/agy-pro.git && cd agy-pro && scripts\install.bat && install.cmd` | `cmd /c "git clone https://github.com/myk1yt/agy-pro.git && cd agy-pro && scripts\install.bat && install.cmd"` | `git clone https://github.com/myk1yt/agy-pro.git && cd agy-pro && bash scripts/install.sh` |
+| [`Agent/designer`](https://github.com/myk1yt/agy-pro/tree/Agent/designer) | **Zero-MCP Design Specialist** | `@designer` agent, 5 modular add-on modules (SVG, 3D Canvas, Cyberpunk, Sandbox, QA Harness) | `git clone -b Agent/designer https://github.com/myk1yt/agy-pro.git && cd agy-pro && powershell -ExecutionPolicy Bypass -File scripts\install-designer.ps1` | `cmd /c "git clone -b Agent/designer https://github.com/myk1yt/agy-pro.git && cd agy-pro && powershell -ExecutionPolicy Bypass -File scripts\install-designer.ps1"` | `git clone -b Agent/designer https://github.com/myk1yt/agy-pro.git && cd agy-pro && bash scripts/install-designer.sh` |
+| [`Agent/security-reviewer`](https://github.com/myk1yt/agy-pro/tree/Agent/security-reviewer) | **Enterprise Multi-Agent Security Audit** | `@security-reviewer` orchestrator + 4 domain inspectors (OWASP, IAM, Credentials, Supply Chain) | `git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-pro.git && cd agy-pro && powershell -ExecutionPolicy Bypass -File scripts\install-security-reviewer.ps1` | `cmd /c "git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-pro.git && cd agy-pro && powershell -ExecutionPolicy Bypass -File scripts\install-security-reviewer.ps1"` | `git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-pro.git && cd agy-pro && bash scripts/install-security-reviewer.sh` |
+| [`Agent/code-reviewer`](https://github.com/myk1yt/agy-pro/tree/Agent/code-reviewer) | **Pre-Merge Code Review & Quality Gate** | `@code-reviewer` agent, 4-stage pipeline, 8-category taxonomy, zero-tolerance P0-P3 gate | `git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-pro.git && cd agy-pro && powershell -ExecutionPolicy Bypass -File scripts\install-code-reviewer.ps1` | `cmd /c "git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-pro.git && cd agy-pro && powershell -ExecutionPolicy Bypass -File scripts\install-code-reviewer.ps1"` | `git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-pro.git && cd agy-pro && bash scripts/install-code-reviewer.sh` |
+| [`gemini-config`](https://github.com/myk1yt/agy-pro/tree/gemini-config) | **Autonomous Multi-Agent Governance** | 7-Stage Lifecycle Protocol, Master Zero-Source-Edit Invariant, orchestrator governance | `git clone -b gemini-config https://github.com/myk1yt/agy-pro.git && cd agy-pro && scripts\install.bat` | `cmd /c "git clone -b gemini-config https://github.com/myk1yt/agy-pro.git && cd agy-pro && scripts\install.bat"` | `git clone -b gemini-config https://github.com/myk1yt/agy-pro.git && cd agy-pro && bash scripts/install.sh` |
+| [`feature/agy-pro`](https://github.com/myk1yt/agy-pro/tree/feature/agy-pro) | **Go Shim & Multi-Model Swarm (`agy-pro`)** | Transparent `agy` shim, opt-in 2-second model launcher (`AGY_LAUNCHER=1`) with a combined native + external model list, external-model bridge, numbered swarm builder with hybrid native seats, `agy pro` suite (setup / mode / models / swarm / settings / fanout / doctor), one-click Windows install & uninstall (Windows only) | `git clone -b feature/agy-pro https://github.com/myk1yt/agy-pro.git && cd agy-pro && install.cmd` | `cmd /c "git clone -b feature/agy-pro https://github.com/myk1yt/agy-pro.git && cd agy-pro && install.cmd"` | - |
+| [`dashboard`](https://github.com/myk1yt/agy-pro/tree/dashboard) | **Historical Prototype** | Original token tracker foundation (fully merged into `main`) | - | - | - |
 
 > [!TIP]
 > Each row is a **complete, one-shot command for a fresh machine**: `git clone -b <branch>` checks the branch out *during* the clone, so there is no manual `git checkout` step left to forget (the classic "plugin.json not found" trap). The clone+checkout+installer chain is plain `&&`, which works in Command Prompt, bash (macOS/Linux) and PowerShell 7+. In the default **Windows PowerShell 5.1**, `&&` is not a valid separator — that is why every row also ships a `cmd /c "..."` wrapped version: paste *that one line* into a PowerShell window and it still runs end to end.
@@ -137,15 +137,15 @@ This repository keeps each add-on in a **separate git branch** (like a separate 
 
 ### Step-by-step (Windows, no terminal experience required)
 
-1. **Open a terminal in any folder** (it does not matter where — the command creates its own `agy-tools` folder)
+1. **Open a terminal in any folder** (it does not matter where: the command creates its own `agy-pro` folder)
    - Press **Win + R**, type `powershell`, press Enter. (Or use Command Prompt — both work, see step 2.)
 
 2. **Paste ONE line for the branch you want** — the branch checkout is already built into the command:
    - **In PowerShell (the blue window):** paste the **`cmd /c "..."` column** version from the branch table above. PowerShell 5.1 does not understand bare `&&`, so the `cmd /c` wrapper is what makes a single paste work.
    - **In Command Prompt:** paste the **Command Prompt column** version.
-   - What each one-shot line does, in order: ① clones the repo **already switched to the right branch** (`git clone -b <branch>`) → ② `cd agy-tools` → ③ runs that branch's installer. Example (designer, PowerShell):
+   - What each one-shot line does, in order: ① clones the repo **already switched to the right branch** (`git clone -b <branch>`) → ② `cd agy-pro` → ③ runs that branch's installer. Example (designer, PowerShell):
    ```powershell
-   cmd /c "git clone -b Agent/designer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-designer.ps1"
+   cmd /c "git clone -b Agent/designer https://github.com/myk1yt/agy-pro.git && cd agy-pro && powershell -ExecutionPolicy Bypass -File scripts\install-designer.ps1"
    ```
 
 3. **Verify it worked**
@@ -165,15 +165,15 @@ This repository keeps each add-on in a **separate git branch** (like a separate 
    - **Code Reviewer**: In the Antigravity chat input type `@code-reviewer` plus the diff or PR you want audited, for example:
      - `@code-reviewer review all uncommitted changes against main before I create a PR`
      - `@code-reviewer perform a pre-merge audit on HEAD~3..HEAD with focus on data-integrity and security`
-   - **gemini-config**: Nothing to type — after installing, Antigravity automatically loads the governance rules and orchestrator governance modules; the statusline badge (via the `statusLine` in settings.json) shows live token analytics every turn.
+   - **gemini-config**: Nothing to type, and after installing Antigravity automatically loads the governance rules and orchestrator governance modules; the statusline badge (via the `statusLine` in settings.json) shows live token analytics every turn. It needs the `agy-tokens` launcher: without it the statusline step is skipped with a note, `agy pro integrations status` shows that posture, and `agy pro integrations repair` completes the step once the launcher exists.
 
 5. **Uninstall (when you no longer want it)**
    - **agy-pro shim** (installed by `install.cmd` / `agy-pro/scripts/install.ps1` on the `feature/agy-pro` branch): one command removes it — double-click `uninstall.cmd` in the repository root, or use the one-liner from the 🧹 Uninstall section above when you no longer have the clone. It deletes the `.agy-pro\bin` entry from your User `PATH` and moves `%USERPROFILE%\.agy-pro` to the Recycle Bin, so a mistaken run can be undone from Explorer. Add `-KeepState` to keep `providers.json`, `state.json` and the backups, or `-RestorePath` to put back the User `PATH` that was saved before the install. If you switched profiles, run `agy pro mode restore` first. No uninstaller at hand? Delete the `%USERPROFILE%\.agy-pro` folder manually and remove the `C:\Users\<you>\.agy-pro\bin` entry via System Properties → Environment Variables.
-   - **statusline hook (`main` / `gemini-config` installers)**: remove the `statusLine` block from `~/.gemini/antigravity-cli/settings.json` — that single entry is the only integration point.
+   - **statusline hook and the engine's deployed content**: run `agy pro integrations retract --yes`; it removes the `statusLine` slot from `~/.gemini/antigravity-cli/settings.json` and moves every content tree the engine deployed into `<AGY_PRO_HOME>/backups/<ts>_retract/`. Without an `agy` on `PATH`, remove the `statusLine` block from `~/.gemini/antigravity-cli/settings.json` by hand. That block is the only `settings.json` edit you make by hand; the content trees the engine deployed are left orphaned unless `agy pro integrations retract --yes` runs from a working install.
    - **Plugin branches (`Agent/designer`, `Agent/security-reviewer`, `Agent/code-reviewer`)**: their installers register a plugin via `agy plugin install` and copy the plugin's capability folders into the Antigravity config directory. Delete those capability folders, and check `agy plugin --help` for the removal command your Antigravity build supports.
    - Run `agy agents` afterwards: the agent name should be gone.
 
-> Already cloned the repo before? You do not need to clone again — open a terminal inside the existing `agy-tools` folder, run `git checkout <branch>` (e.g. `git checkout Agent/designer`; the folder contents swap to that branch — nothing is deleted), and then run only the installer part of the one-liner.
+> Already cloned the repo before? You do not need to clone again. Open a terminal inside the existing `agy-pro` folder, run `git checkout <branch>` (e.g. `git checkout Agent/designer`; the folder contents swap to that branch and nothing is deleted), and then run only the installer part of the one-liner.
 
 ### Frequent errors and the surest fix right now
 
@@ -182,7 +182,7 @@ This repository keeps each add-on in a **separate git branch** (like a separate 
 | PowerShell prints `<path>-File : 잘못된 인수` / `-File` value is cut short, e.g. only `...install-` then stops | The command was pasted from a webpage with a line break or smart quotes inside the path | Type the command by hand OR paste into Notepad first, fix broken lines/quotes, then run. Avoid quotes containing pasted spaces at the end |
 | Endless repeated yellow/red `TLS ... handshake` / network flood in the terminal right after install | The statusline quota probe hammers the local Language Server when Antigravity is not running (pre-fix builds) | Update to the newest `main` (it contains a TLS probe cooldown guard), or remove the `statusLine` entry from `~/.gemini/antigravity-cli/settings.json` (the statusline hook ships no uninstaller script — see the Uninstall section above; `uninstall.cmd` on the `feature/agy-pro` branch removes the shim) |
 | `agy` is not recognized | The Antigravity CLI is not installed, or PATH does not include it | Install Antigravity CLI first; reopen the PowerShell window (a fresh window re-reads PATH) |
-| `plugin.json not found` when running an installer | You cloned without `-b` and ran the installer on the wrong branch | Re-run the full one-shot line from the branch table (it clones with `-b <branch>`), or `git checkout <branch>` inside the existing `agy-tools` folder first, then run the installer again |
+| `plugin.json not found` when running an installer | You cloned without `-b` and ran the installer on the wrong branch | Re-run the full one-shot line from the branch table (it clones with `-b <branch>`), or `git checkout <branch>` inside the existing `agy-pro` folder first, then run the installer again |
 | PowerShell says script execution is disabled | Windows default policy blocks .ps1 files | Always launch through: `powershell -ExecutionPolicy Bypass -File scripts\...ps1` exactly as written in this README |
 
 > Each branch also has its own `README.md` with details specific to that branch (open it after checking out that branch).
@@ -193,7 +193,7 @@ This repository keeps each add-on in a **separate git branch** (like a separate 
 
 ### `@designer` — Zero-MCP Self-Contained Design Specialist
 
-> **Branch**: [`Agent/designer`](https://github.com/myk1yt/agy-tools/tree/Agent/designer) · **Author**: myk1yt · **Version**: 1.0.0
+> **Branch**: [`Agent/designer`](https://github.com/myk1yt/agy-pro/tree/Agent/designer) · **Author**: myk1yt · **Version**: 1.0.0
 
 Autonomous design agent generating mathematically verified UI/UX designs, interactive widgets, and 3D graphics directly inside Antigravity chat — without Figma, Blender, or any external MCP tools.
 
@@ -210,12 +210,12 @@ Autonomous design agent generating mathematically verified UI/UX designs, intera
 **Installation & Usage:**
 ```bash
 # Fresh machine — one shot (macOS / Linux terminal; checkout happens inside the clone):
-git clone -b Agent/designer https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install-designer.sh
+git clone -b Agent/designer https://github.com/myk1yt/agy-pro.git && cd agy-pro && bash scripts/install-designer.sh
 ```
 
 ```powershell
 # Fresh machine — one shot (Windows, paste into PowerShell or Command Prompt):
-cmd /c "git clone -b Agent/designer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-designer.ps1"
+cmd /c "git clone -b Agent/designer https://github.com/myk1yt/agy-pro.git && cd agy-pro && powershell -ExecutionPolicy Bypass -File scripts\install-designer.ps1"
 ```
 
 ```bash
@@ -231,7 +231,7 @@ Invoke in Antigravity CLI: `/agent` → select `designer`, or mention `@designer
 
 ### `@security-reviewer` — Enterprise Multi-Agent Security Audit Suite
 
-> **Branch**: [`Agent/security-reviewer`](https://github.com/myk1yt/agy-tools/tree/Agent/security-reviewer) · **Author**: myk1yt · **Version**: 1.0.0
+> **Branch**: [`Agent/security-reviewer`](https://github.com/myk1yt/agy-pro/tree/Agent/security-reviewer) · **Author**: myk1yt · **Version**: 1.0.0
 
 Enterprise-grade security audit suite based on OWASP Top 10, CWE Top 25, and Google Cloud `roles/iam.securityReviewer` least-privilege principles. The lead orchestrator dispatches 4 specialized domain inspectors for comprehensive coverage.
 
@@ -249,12 +249,12 @@ Enterprise-grade security audit suite based on OWASP Top 10, CWE Top 25, and Goo
 **Installation & Usage:**
 ```bash
 # Fresh machine — one shot (macOS / Linux terminal; checkout happens inside the clone):
-git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install-security-reviewer.sh
+git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-pro.git && cd agy-pro && bash scripts/install-security-reviewer.sh
 ```
 
 ```powershell
 # Fresh machine — one shot (Windows, paste into PowerShell or Command Prompt):
-cmd /c "git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-security-reviewer.ps1"
+cmd /c "git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-pro.git && cd agy-pro && powershell -ExecutionPolicy Bypass -File scripts\install-security-reviewer.ps1"
 ```
 
 ```bash
@@ -268,7 +268,7 @@ Invoke in Antigravity CLI: `/agent` → select `security-reviewer`, or mention `
 
 ### `@code-reviewer` — Pre-Merge Diff Reviewer & Deterministic Quality Gate
 
-> **Branch**: [`Agent/code-reviewer`](https://github.com/myk1yt/agy-tools/tree/Agent/code-reviewer) · **Author**: myk1yt · **Version**: 1.0.0
+> **Branch**: [`Agent/code-reviewer`](https://github.com/myk1yt/agy-pro/tree/Agent/code-reviewer) · **Author**: myk1yt · **Version**: 1.0.0
 
 Autonomous pre-merge diff reviewer and deterministic quality gate plugin for Google Antigravity. Built with a strict **read-only hardware constraint** (excluding all file write/edit tools), Code Reviewer audits pull requests and uncommitted working diffs through a robust 4-stage pipeline, catching bugs, security risks, stability flaws, and formatting issues before code merges into production.
 
@@ -282,12 +282,12 @@ Autonomous pre-merge diff reviewer and deterministic quality gate plugin for Goo
 **Installation & Usage:**
 ```bash
 # Fresh machine — one shot (macOS / Linux terminal; checkout happens inside the clone):
-git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install-code-reviewer.sh
+git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-pro.git && cd agy-pro && bash scripts/install-code-reviewer.sh
 ```
 
 ```powershell
 # Fresh machine — one shot (Windows, paste into PowerShell or Command Prompt):
-cmd /c "git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-tools.git && cd agy-tools && powershell -ExecutionPolicy Bypass -File scripts\install-code-reviewer.ps1"
+cmd /c "git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-pro.git && cd agy-pro && powershell -ExecutionPolicy Bypass -File scripts\install-code-reviewer.ps1"
 ```
 
 ```bash
@@ -303,7 +303,7 @@ Invoke in Antigravity CLI: `/agent` → select `code-reviewer`, or mention `@cod
 
 ## 📜 Autonomous Multi-Agent Governance (`gemini-config`)
 
-> **Branch**: [`gemini-config`](https://github.com/myk1yt/agy-tools/tree/gemini-config)
+> **Branch**: [`gemini-config`](https://github.com/myk1yt/agy-pro/tree/gemini-config)
 
 Shareable global configuration bundle that provisions the **7-Stage Multi-Agent Lifecycle Protocol** and engineering governance rules directly into your `~/.gemini` directory.
 
@@ -316,12 +316,12 @@ Shareable global configuration bundle that provisions the **7-Stage Multi-Agent 
 **Installation:**
 ```bash
 # Fresh machine — one shot (macOS / Linux terminal; checkout happens inside the clone):
-git clone -b gemini-config https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install.sh
+git clone -b gemini-config https://github.com/myk1yt/agy-pro.git && cd agy-pro && bash scripts/install.sh
 ```
 
 ```powershell
 # Fresh machine — one shot (Windows, paste into PowerShell or Command Prompt):
-cmd /c "git clone -b gemini-config https://github.com/myk1yt/agy-tools.git && cd agy-tools && scripts\install.bat"
+cmd /c "git clone -b gemini-config https://github.com/myk1yt/agy-pro.git && cd agy-pro && scripts\install.bat"
 ```
 
 ```bash
@@ -339,28 +339,28 @@ Prerequisites: **Node.js 16+** ([nodejs.org](https://nodejs.org)) and **Antigrav
 
 ### 1️⃣ One-Click Installation (Recommended)
 
-Run ONE line in your terminal (pick the column matching your shell below). This registers global commands **AND automatically configures the statusline (`statusLine`) hook in `settings.json`**:
+Run ONE line in your terminal (pick the column matching your shell below). This registers the global commands **and deploys the Antigravity integrations, including the statusline (`statusLine`) hook in `settings.json`**, through the Go engine (`agy pro integrations apply tools --yes`). On a machine without the `agy-tokens` launcher the statusline step is skipped with a note and the call still exits 0; `agy pro integrations status` reports that posture and `agy pro integrations repair` completes the step once the launcher exists:
 
 **Windows — Command Prompt:**
 ```cmd
-git clone https://github.com/myk1yt/agy-tools.git && cd agy-tools && scripts\install.bat
+git clone https://github.com/myk1yt/agy-pro.git && cd agy-pro && scripts\install.bat
 ```
 
 **Windows — PowerShell (5.1 does not accept bare `&&`, hence the `cmd /c` wrapper):**
 ```powershell
-cmd /c "git clone https://github.com/myk1yt/agy-tools.git && cd agy-tools && scripts\install.bat"
+cmd /c "git clone https://github.com/myk1yt/agy-pro.git && cd agy-pro && scripts\install.bat"
 ```
 
 **Linux / macOS:**
 ```bash
-git clone https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install.sh
+git clone https://github.com/myk1yt/agy-pro.git && cd agy-pro && bash scripts/install.sh
 ```
 
 The installer registers the global commands via `npm link`, so no separate `npm install -g .` step is needed on a fresh machine (see section 3️⃣ below for later updates).
 
 ### 2️⃣ Getting Started
 1. **Restart Antigravity CLI (`agy`)**.
-2. Your terminal statusline will immediately display real-time token metrics and live Gemini quota pools!
+2. Your terminal statusline will immediately display real-time token metrics and live Gemini quota pools! (It needs the `agy-tokens` launcher; without it the statusline step is skipped with a note and `agy pro integrations status` shows that posture.)
 3. To open the real-time browser dashboard, click `📊 Dashboard` in your terminal statusline or run:
 ```bash
 agy-tokens --html --open
@@ -372,7 +372,7 @@ The statusline and `agy-tokens` commands run from the **npm global installation*
 
 **Install fresh globally from this repo (Windows):**
 ```cmd
-cd agy-tools
+cd agy-pro
 npm install -g .
 ```
 
@@ -396,27 +396,31 @@ If the `where` output does not point at `AppData\Roaming\npm`, the old copy is s
 Paste ONE line into a PowerShell window (Windows PowerShell 5.1 or PowerShell 7). It picks the route on its own: with `git` it clones the `feature/agy-pro` branch and runs `install.cmd`; without `git` it downloads the branch ZIP into `%TEMP%` and runs `install.ps1`.
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "if (Get-Command git -ErrorAction SilentlyContinue) { cmd /c 'git clone -b feature/agy-pro https://github.com/myk1yt/agy-tools.git && cd agy-tools && install.cmd' } else { iwr 'https://codeload.github.com/myk1yt/agy-tools/zip/refs/heads/feature/agy-pro' -OutFile '$env:TEMP\agy-tools-agy-pro.zip' -UseBasicParsing; Expand-Archive -Path '$env:TEMP\agy-tools-agy-pro.zip' -DestinationPath '$env:TEMP\agy-tools-agy-pro' -Force; & (Resolve-Path '$env:TEMP\agy-tools-agy-pro\*\install.ps1').Path }"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "if (Get-Command git -ErrorAction SilentlyContinue) { cmd /c 'git clone -b feature/agy-pro https://github.com/myk1yt/agy-pro.git && cd agy-pro && install.cmd' } else { iwr 'https://codeload.github.com/myk1yt/agy-pro/zip/refs/heads/feature/agy-pro' -OutFile '$env:TEMP\agy-pro-src.zip' -UseBasicParsing; Expand-Archive -Path '$env:TEMP\agy-pro-src.zip' -DestinationPath '$env:TEMP\agy-pro-src' -Force; & (Resolve-Path '$env:TEMP\agy-pro-src\*\install.ps1').Path }"
 ```
 
 > Every one-liner in this README installs from the **current state of the `feature/agy-pro` branch on GitHub**, so local commits that have not been pushed yet are not part of what you download.
 
-Command Prompt users can skip the wrapper and run the clone line directly: `git clone -b feature/agy-pro https://github.com/myk1yt/agy-tools.git && cd agy-tools && install.cmd`. Already cloned? Run `install.cmd` from the repository root, or call the installer directly with `powershell -NoProfile -ExecutionPolicy Bypass -File agy-pro\scripts\install.ps1`.
+Command Prompt users can skip the wrapper and run the clone line directly: `git clone -b feature/agy-pro https://github.com/myk1yt/agy-pro.git && cd agy-pro && install.cmd`. Already cloned? Run `install.cmd` from the repository root, or call the installer directly with `powershell -NoProfile -ExecutionPolicy Bypass -File agy-pro\scripts\install.ps1`.
 
 The installer provisions the Go toolchain if missing, builds `agy.exe` into `~/.agy-pro/bin/`, prepends that directory to your User `PATH`, and runs `agy pro doctor`. Open a new terminal afterwards so the PATH change is picked up.
+
+The Node installers (`scripts/install.bat` / `scripts/install.sh`) no longer carry their own settings writers. Once `agy` resolves on `PATH` they hand the Antigravity deployment to the Go engine with one call, `agy pro integrations apply tools --yes`, which writes the `statusLine` slot in `settings.json` and deploys the rest of the managed content trees. On a machine without the `agy-tokens` launcher the statusline step is skipped with a note and the call still exits 0; `agy pro integrations status` reports that posture and `agy pro integrations repair` completes the step once the launcher exists. If `agy` is not on `PATH` yet, the installer prints that exact command and continues; if the call fails it stops with `[ERROR]` and exits non-zero, so a half-deployed machine is never reported as success.
 
 ### 🧹 Uninstall (Windows, one line)
 
 Paste ONE line into a PowerShell window. It downloads the uninstaller, shows what it is about to do, and waits for your `y/N` confirmation:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr 'https://raw.githubusercontent.com/myk1yt/agy-tools/feature/agy-pro/agy-pro/scripts/uninstall.ps1' -OutFile '$env:TEMP\agy-pro-uninstall.ps1' -UseBasicParsing; & '$env:TEMP\agy-pro-uninstall.ps1'"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr 'https://raw.githubusercontent.com/myk1yt/agy-pro/feature/agy-pro/agy-pro/scripts/uninstall.ps1' -OutFile '$env:TEMP\agy-pro-uninstall.ps1' -UseBasicParsing; & '$env:TEMP\agy-pro-uninstall.ps1'"
 ```
 
 It removes exactly what the installer added, and nothing else:
 
 1. the `~/.agy-pro/bin` entry from your User `PATH` (that entry only; every other entry and the registry value kind are preserved),
 2. the whole `~/.agy-pro` folder, moved to the **Recycle Bin** (never deleted permanently).
+
+Before either step it retracts the deployed integrations, because only the shim can own those files: the uninstaller runs `agy pro integrations retract --yes` through `agy` while `agy` still exists, so every content tree and the statusLine slot the engine wrote into the Gemini config tree move into `<AGY_PRO_HOME>/backups/<ts>_retract/` instead of being orphaned. `-KeepState` still retracts (that step is about the deployed files, not provider state). If `agy` cannot be found, the uninstaller says so and tells you to run `agy pro integrations retract --yes` from a working install before the next uninstall.
 
 Variants, appended to the same line or run from a clone: `-KeepState` removes the shim but keeps `providers.json`, `state.json` and the backups; `-DryRun` prints the plan and changes nothing; `-RestorePath` restores the User PATH saved before the install (the newest `~/.agy-pro/backups/path-*.json`); `-Force` skips the confirmation prompt for scripted use. Cloned the repository earlier? Double-click `uninstall.cmd` in the repository root instead, or run `.\uninstall.cmd`. If you switched profiles with `agy pro mode`, run `agy pro mode restore` **before** uninstalling (the uninstaller prints that reminder whenever profile backups exist). A run without an interactive console (piped input, scheduled task) answers `no` automatically, so it cannot wipe the installation by accident.
 
@@ -441,6 +445,8 @@ agy pro mode full                        # switch to the full-stack orchestrator
 agy pro status                           # active mode, providers, real agy path
 ```
 
+Every command that writes (`agy pro config ...`, `agy pro mode ...`, `agy pro doctor --fix-keys`, and each setup-hub provider or model edit) prints exactly what it will change first and needs a `y/N` answer; scripted callers add `--yes` to consent without a prompt.
+
 Everyday surfaces:
 
 ```bash
@@ -449,6 +455,26 @@ agy pro swarm                            # numbered builder: template + seats by
 agy pro fanout --seats "native:gemini-3.8-flash-high,nw/glm-5.3-flash"   # hybrid swarm
 agy pro settings                         # full-screen settings panel (TUI)
 ```
+
+### Integrations: one owner for what gets deployed
+
+```bash
+agy pro integrations status              # read-only: intent next to what is on disk, no gate
+agy pro integrations apply tools         # the whole preset: statusLine slot + every managed content tree (statusline step skipped with a note when the `agy-tokens` launcher is absent)
+agy pro integrations apply rules         # one feature; no operand applies whatever is pending
+agy pro integrations retract             # remove what the engine deployed; no operand removes everything
+agy pro integrations preset native|tools # reach that preset and record it
+agy pro integrations adopt               # record what is already on disk (writes no file)
+agy pro integrations rollback            # restore the newest settings.json snapshot
+agy pro integrations rollback rules      # roll one content feature back to its pre-install tree
+agy pro integrations repair              # re-deploy drifted and missing destinations
+```
+
+`status` prints one row per managed feature, so the feature list is never second-hand: each row carries the recorded intent next to the engine's posture on disk. The presets are `native` and `tools`; `custom` is derived from the feature toggles and refused as an operand. Every writing verb composes one plan, prints the exact diff, and asks once, so a preset apply is a single `y/N` for the file deployment, the `settings.json` slot and the `state.json` intent rows together. On a machine without the `agy-tokens` launcher a preset apply is still one consent, but the statusline step is skipped with a note and the call exits 0; `agy pro integrations status` reports that posture and `agy pro integrations repair` completes the step once the launcher exists. A non-interactive stdin (installer, CI, pipe) must pass `--yes`, otherwise the verb refuses and writes nothing. Exit codes: 0 ok, 1 runtime error or refusal, 2 usage error. Run `retract` before uninstalling so the deployed files reach `<AGY_PRO_HOME>/backups/<ts>_retract/` instead of being orphaned.
+
+`rollback` takes one operand or none. No operand restores `settings.json` from its snapshot chain; `rollback <feature>` restores that one content feature's pre-install tree behind the same single consent and records no intent row (the restored bytes are not a posture you stated). `status` lists the feature words; `rollback statusline` exits 2 and points at the no-operand door, a preset operand (`native`, `tools`, `custom`) exits 2 because a whole posture has no single pre-install tree, and two operands is a usage error.
+
+The preset changes what is DEPLOYED (the engine's content trees and the statusLine slot); it never changes which binary runs. `agy pro mode full|clean` is the same kind of switch: deployed content only, one `agy` binary.
 
 ### Hybrid swarm: native and external models in one run
 
@@ -498,6 +524,7 @@ The XOR boundary is unchanged and stated plainly: this is a command/tool action 
 | Numbered swarm builder (hybrid native + external seats) | `agy pro swarm`, `agy pro fanout --seats "native:<model>,<provider>/<model>"` |
 | Multi-model fanout swarm | `agy pro fanout -task=security -n=3` |
 | Settings panel / in-session settings | `agy pro settings` (TUI), `/setting_agypro` (plugin command) |
+| Deployed integrations (statusLine slot + the engine's managed content trees) | `agy pro integrations status`, `agy pro integrations apply tools`, `agy pro integrations retract` |
 | Swarm from inside the chat | `/agypro_swarm:swarm` (plugin slash command; numbered seats, dry-run echo + cost confirm, artifact findings in chat) |
 | Diagnostics | `agy pro doctor`, `agy pro status`, `agy pro models` |
 
@@ -513,7 +540,7 @@ Full details: [`agy-pro/README.md`](agy-pro/README.md), [`agy-pro/docs/bridge-ar
 
 `agy-tokens` operates as a statusline-powered real-time token monitor. **No modification of Antigravity core files is required.**
 
-The installer script (`install.bat` / `install.sh`) automatically and safely merges the `statusLine` configuration into `~/.gemini/antigravity-cli/settings.json` (preserving your existing settings and creating automatic backups).
+The installer script (`install.bat` / `install.sh`) hands that slot to the Go engine: `agy pro integrations apply tools --yes` writes the `statusLine` object into `~/.gemini/antigravity-cli/settings.json` while preserving your existing settings, and the ledger snapshots the file as `settings.json.bak.<ts>` before the atomic write. On a machine without the `agy-tokens` launcher the statusline step is skipped with a note and the call still exits 0; `agy pro integrations status` reports that posture and `agy pro integrations repair` completes the step once the launcher exists. You can run the same command by hand at any time, `agy pro integrations status` shows whether the slot still matches, and `agy pro integrations rollback` restores the newest snapshot. A pre-install removal is no longer a manual edit either: `agy pro integrations retract` takes the slot out and archives the bytes it replaced.
 
 ### Clean Statusline Format
 The statusline badge renders without redundant prefixes, keeping terminal output clean, dense, and informative:
@@ -549,7 +576,7 @@ Add the `statusLine` hook to `~/.gemini/antigravity-cli/settings.json`:
 }
 ```
 
-- **Direct Node path**: `"command": "node /path/to/agy-tools/bin/agy-tokens.js --hook --raw --write-dashboard"`
+- **Direct Node path**: `"command": "node /path/to/agy-pro/bin/agy-tokens.js --hook --raw --write-dashboard"`
 - **Windows 8.3 short paths (if PATH is not inherited by subprocesses)**:
   `"command": "C:\\PROGRA~1\\nodejs\\node.exe %APPDATA%\\npm\\NODE_M~1\\AGY-TO~1\\bin\\AGY-TO~1.JS --hook --raw --write-dashboard"` (ensure backslashes are escaped as `\\`)
 

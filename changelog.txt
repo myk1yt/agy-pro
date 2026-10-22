@@ -85,6 +85,29 @@ marker instead of naming a family to avoid.
 - Seat presets by name: a saved swarm seat preset is selectable by name in the
   seat-selection grammar, alongside numbers, ranges, and p1/p2/p3. An unknown
   name-shaped token is refused by name at the interactive seat step.
+- The integrations command surface: `agy pro integrations
+  status|apply|retract|preset|adopt|rollback|repair` owns the rules, skills,
+  plugins, hooks and statusLine slot the engine deploys. Every writing verb
+  composes one plan, prints its exact diff and asks once (`y/N`); a
+  non-interactive stdin must pass `--yes`, and the exit codes are 0 ok, 1
+  runtime error or refusal, 2 usage error. Features are `statusline`, `hook`,
+  `rules`, `plugins`, `skills`; presets are `native` and `tools` (`custom` is
+  derived from the toggles and refused as an operand).
+- The hub's Integrations screen and its hub row: per-feature intent plus engine
+  posture, the preset picker, apply pending, retract all, adopt, rollback and
+  repair, each behind the same single approval modal. The Integrations row lands
+  at 9 and Exit moves to 10, so the footer advertises the list's `0`-prefix
+  compose gesture.
+- The rollback operand grammar: `agy pro integrations rollback` still restores
+  `settings.json` from its snapshot chain, and `rollback <feature>`
+  (`hook`, `rules`, `plugins`, `skills`) now restores that one content feature's
+  pre-install deploy tree behind the same single consent while recording no
+  `state.json` intent row, because restored bytes are not a posture the user
+  stated. `rollback statusline` exits 2 and names the no-operand settings door,
+  `rollback native|tools` (and `custom`) is refused because a whole posture has
+  no single pre-install tree, and two operands is a usage error. The hub's
+  Rollback row opens the same choice as a picker: `settings.json` plus the four
+  content features.
 
 [Changed]
 - `agy pro setup` opens the TUI only when both stdin and stdout are consoles. A
@@ -123,6 +146,26 @@ marker instead of naming a family to avoid.
 - Product docs describe the shipped behavior: agy-pro/docs/fanout.md,
   agy-pro/docs/swarm-hybrid.md, agy-pro/README.md, manual.txt, and MANUAL.ko.md
   carry the corrected sentences, and the doc-claim tests pin them.
+- The root installers hand the Antigravity deployment to the Go engine. The
+  `configure-statusline.js` and `configure-customizations.js` steps and the
+  banner that claimed the statusLine is "automatically configured" are gone;
+  one guarded call replaces them, `agy pro integrations apply tools --yes`. On
+  a machine without the `agy-tokens` launcher the statusline step is skipped
+  with a note and the call still exits 0; `agy pro integrations status` reports
+  that posture and `agy pro integrations repair` completes the step once the
+  launcher exists. A machine without `agy` on `PATH` gets that exact command
+  printed and the install continues; a failing call stops the install with
+  exit 1.
+- `agy pro mode restore` copies back only the mode-managed register (`agents`,
+  `references`, `profile.json`, `config.json`). Legacy `rules/`, `skills/` and
+  `plugins/` entries inside an old backup are left in place with a transcript
+  line naming `agy pro integrations` as their owner.
+- `uninstall.ps1` retracts the deployed integrations first, while the shim still
+  exists, so the files in the Gemini config tree reach
+  `<AGY_PRO_HOME>/backups/<ts>_retract/` instead of being orphaned.
+- Dead seam removed: `settings.Core.RunWizard`, `Deps.RunWizard` and the
+  `NewCore` nil-defaulting are gone. Every live wizard door already binds the
+  gated entry point directly, so the seam had zero production callers.
 
 [Fixed]
 - Arrow keys dead on a real console: the reader returned "consume 0" forever

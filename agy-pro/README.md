@@ -8,14 +8,15 @@ It provides:
 2. **Interactive Launcher (opt-in)**: A bare `agy` (no arguments) goes straight to the native session, zero menu and zero delay. Set `AGY_LAUNCHER=1` to opt in: when external models are registered and you run a bare `agy` in a terminal, a 2-second picker then offers Native Gemini, External Models (a numbered native + external model list), or the Swarm. Pressing `Enter` (or waiting) starts native Gemini with no delay. The launcher also prints the community banner line once at startup.
 3. **Native Coexistence (`agy pro hybrid`)**: Run registered external providers inside agy's OWN native session, with no agent mediation. Profile P1 ("picker coexistence") lists externals in agy's own `/model` catalog on agy's own 11-tool engine with zero settings writes; profile P2 ("subagent profile") attaches the full 13-tool set including the subagent family and runs a subagent `inherit` on the external session model. You pick one profile per session (one session is one client path). See the Native Coexistence section below for the honest limits.
 4. **Native Bridge**: A local OpenAI-compatible reverse proxy on `127.0.0.1` that exposes every registered external model inside the authentic `agy` `/model` picker, with a per-session random bearer key. This stays the XOR gateway escape hatch; the M4 hardening work below makes its local tool loop more robust.
-5. **Profile / Mode Switcher (`agy pro mode`)**: Effortlessly switch between `full-stack` (VP of Engineering orchestration, specialized agent skills, and plugins) and `clean` (minimal baseline environment) profiles with atomic swaps and non-destructive backups.
+5. **Profile / Mode Switcher (`agy pro mode`)**: Effortlessly switch between `full-stack` (VP of Engineering orchestration: the agent roster and references) and `clean` (minimal baseline environment) profiles with atomic swaps and non-destructive backups. `full-stack` deploys the agent roster, references and the two root manifests; `rules/`, `skills/` and `plugins/` are owned by the integrations engine (`internal/integrations`), which deploys them from its embedded content snapshot.
 6. **Default Profile Config (`agy pro config`)**: Lock `agy` into `native` or `gateway` startup behavior; `prompt` is the neutral profile that leaves a bare `agy` native and allows the opt-in launcher.
-7. **Conversational Setup Wizard (`agy pro setup`)**: Step-by-step interactive CLI to configure external OpenAI-compatible LLM providers (OpenRouter, DeepSeek, Groq, Google AI Studio, etc.), model capabilities (Vision, Thinking, Function Calling), and live endpoint testing.
+7. **Setup Hub (`agy pro setup`)**: A full-screen setup TUI to configure external OpenAI-compatible LLM providers (OpenRouter, DeepSeek, Groq, Google AI Studio, etc.), model capabilities (Vision, Thinking, Function Calling), and live endpoint testing; `agy pro setup --wizard` runs the classic step-by-step line wizard on any host.
 8. **Multi-Model Swarm (`agy pro fanout`)**: Concurrent multi-model orchestration across diverse LLM families for double-blind security audits, code reviews, and architecture analysis. `--seats` mixes real `agy` (native Gemini) subprocess seats with external provider seats in ONE swarm.
 9. **Numbered Swarm Builder (`agy pro swarm`)**: Presents the combined native + external inventory as a numbered list (presets `p1`..`p3`, `1,3,5`, ranges `2-4`), previews the exact `agy pro fanout` command, and runs it. Flags stay as the power-user/CI fallback.
 10. **One Combined Model List (`agy pro models --all`)**: The native `agy models` catalog plus every registered provider model, numbered and group-tagged, as the single source of truth for the launcher picker, the swarm builder, and the settings panel.
 11. **One Settings Surface (`agy pro settings` + `/setting_agypro`)**: A full-screen, keybinding-driven settings panel covering every agy-pro setting, plus the `agypro_settings` plugin whose `/setting_agypro` slash command drives the same settings through numbered menus inside an `agy` session.
 12. **One-Click Install & Uninstall**: Zero-prerequisite setup on Windows (`install.cmd`) with automated Go toolchain provisioning and user PATH registration, plus one-command removal (`uninstall.cmd`) that restores the User `PATH` and moves `~/.agy-pro` to the Recycle Bin.
+13. **Integrations Engine (`agy pro integrations`)**: One owner for everything deployed into the Gemini config tree: the `statusLine` slot in `settings.json`, plus the rules, plugins, skills and lifecycle hook content. `status` reports intent next to what is on disk, the writing verbs deploy or retract behind exactly one consent, `rollback` restores the newest `settings.json` snapshot, and `repair` reconciles drift.
 
 ---
 
@@ -26,12 +27,12 @@ It provides:
 Paste ONE line into a PowerShell window (Windows PowerShell 5.1 or PowerShell 7). It picks the route on its own: with `git` it clones the `feature/agy-pro` branch and runs `install.cmd`; without `git` it downloads the branch ZIP into `%TEMP%` and runs `install.ps1`.
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "if (Get-Command git -ErrorAction SilentlyContinue) { cmd /c 'git clone -b feature/agy-pro https://github.com/myk1yt/agy-tools.git && cd agy-tools && install.cmd' } else { iwr 'https://codeload.github.com/myk1yt/agy-tools/zip/refs/heads/feature/agy-pro' -OutFile '$env:TEMP\agy-tools-agy-pro.zip' -UseBasicParsing; Expand-Archive -Path '$env:TEMP\agy-tools-agy-pro.zip' -DestinationPath '$env:TEMP\agy-tools-agy-pro' -Force; & (Resolve-Path '$env:TEMP\agy-tools-agy-pro\*\install.ps1').Path }"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "if (Get-Command git -ErrorAction SilentlyContinue) { cmd /c 'git clone -b feature/agy-pro https://github.com/myk1yt/agy-pro.git && cd agy-pro && install.cmd' } else { iwr 'https://codeload.github.com/myk1yt/agy-pro/zip/refs/heads/feature/agy-pro' -OutFile '$env:TEMP\agy-pro-src.zip' -UseBasicParsing; Expand-Archive -Path '$env:TEMP\agy-pro-src.zip' -DestinationPath '$env:TEMP\agy-pro-src' -Force; & (Resolve-Path '$env:TEMP\agy-pro-src\*\install.ps1').Path }"
 ```
 
 > Every one-liner in this README installs from the **current state of the `feature/agy-pro` branch on GitHub**, so local commits that have not been pushed yet are not part of what you download.
 
-Command Prompt users can run the clone line directly: `git clone -b feature/agy-pro https://github.com/myk1yt/agy-tools.git && cd agy-tools && install.cmd`. Already cloned? Run `.\install.cmd` from the repository root, or call the installer directly with `powershell -NoProfile -ExecutionPolicy Bypass -File agy-pro\scripts\install.ps1`.
+Command Prompt users can run the clone line directly: `git clone -b feature/agy-pro https://github.com/myk1yt/agy-pro.git && cd agy-pro && install.cmd`. Already cloned? Run `.\install.cmd` from the repository root, or call the installer directly with `powershell -NoProfile -ExecutionPolicy Bypass -File agy-pro\scripts\install.ps1`.
 
 The installer will:
 1. Automatically detect or install the Go toolchain via `winget` (or download official portable Go if winget is busy).
@@ -39,12 +40,14 @@ The installer will:
 3. Prepend `~/.agy-pro/bin` to the top of your Windows User `PATH`.
 4. Run diagnostics (`agy pro doctor`) to verify system health.
 
+The Node installers (`scripts/install.bat` / `scripts/install.sh`) do not write the Gemini config tree themselves. Once `agy` resolves on `PATH` they run one call, `agy pro integrations apply tools --yes`, which writes the `statusLine` slot in `settings.json` and deploys the rules, plugins, skills and lifecycle hook. On a machine without the `agy-tokens` launcher the statusline step is skipped with a note and the call still exits 0; `agy pro integrations status` reports that posture and `agy pro integrations repair` completes the step once the launcher exists. A failing call stops the install with exit 1, and a machine without `agy` gets that exact command printed instead.
+
 ### 🧹 Uninstall (Windows, one line)
 
 Paste ONE line into a PowerShell window. It downloads the uninstaller, shows what it is about to do, and waits for your `y/N` confirmation:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr 'https://raw.githubusercontent.com/myk1yt/agy-tools/feature/agy-pro/agy-pro/scripts/uninstall.ps1' -OutFile '$env:TEMP\agy-pro-uninstall.ps1' -UseBasicParsing; & '$env:TEMP\agy-pro-uninstall.ps1'"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr 'https://raw.githubusercontent.com/myk1yt/agy-pro/feature/agy-pro/agy-pro/scripts/uninstall.ps1' -OutFile '$env:TEMP\agy-pro-uninstall.ps1' -UseBasicParsing; & '$env:TEMP\agy-pro-uninstall.ps1'"
 ```
 
 It removes exactly what the installer added, and nothing else:
@@ -165,7 +168,7 @@ Stated plainly, not hidden:
 - **G4** (P1 sandbox e2e), **G5** (P2 sandbox e2e), **G6** (one real-provider print-mode run per profile — both live providers, NW and Charm, HTTP 200 on all four profile×provider cells), and **G10** (error classes + retry-storm detector): **PASS**, with live evidence against real `agy` v1.3.5.
 - **G11** (auto-update restart): **NOT-TESTED with reason** — no update was available to trigger. The mechanism (env + settings only, zero binary patching) was re-proven with the updater enabled, and the drift branch was proven via a clearly-labeled version stand-in.
 - **G8** (live TUI): **시각 미검증 (UNVERIFIED)** pending the manual test script.
-- Full suite: `go build ./...`, `go vet ./...`, `go test ./... -count=1 -p 1` → 19 test packages ok, 0 FAIL (plus `profiles`, which has no test files). `go test -race` is not runnable here (no C compiler).
+- Full suite: `go build ./...`, `go vet ./...`, `go test ./... -count=1 -p 1` → every package with tests ok, 0 FAIL (`profiles` included: it carries the content-snapshot sync gate). `go test -race` is not runnable here (no C compiler).
 
 ---
 
@@ -271,10 +274,12 @@ agy pro config show                            # prints Default Launch Profile, 
 
 The value is stored under the `bridge_tools` key in `~/.agy-pro/state.json` (additive: older state files keep loading unchanged). At run time the precedence is `AGY_PRO_BRIDGE_TOOLS` environment variable > stored value > default `read,search`; an unknown token is rejected at set time and disables the loop at run time rather than widening it.
 
-### 5. Conversational Setup Wizard
+### 5. Setup Hub (`agy pro setup`)
 ```bash
-agy pro setup
+agy pro setup          # full-screen setup TUI (both handles must be consoles)
+agy pro setup --wizard # the classic line wizard, on any host
 ```
+`agy pro setup` opens the full-screen hub; a piped or scripted host degrades to the same line wizard, and `--wizard` forces it anywhere.
 - Configures provider name, Base URL, API key environment variable, and model IDs.
 - Offers curated presets for known providers, including **Google AI Studio** (`gemini-2.5-flash`, `gemini-2.5-pro`, `GEMINI_API_KEY`, `https://generativelanguage.googleapis.com/v1beta/openai/`).
 - Configures token limits: Context Length (e.g., 128k) and Max Output Tokens (e.g., 4096).
@@ -379,12 +384,12 @@ agy pro swarm --template security-audit --seats "native:gemini-3.8-flash-high,nw
 agy pro settings             # full-screen, keybinding-driven panel (TUI) - run it in your terminal
 agy pro settings --panel p4  # deep-link one panel
 agy pro settings show [--json]        # snapshot
-agy pro settings set <key> <value>    # default-profile | bridge-tools | native-seat-concurrency
+agy pro settings set <key> <value>    # eleven keys: default-profile | bridge-tools | native-seat-concurrency | language | launcher_menu | integration-preset | integration-statusline | integration-hook | integration-rules | integration-plugins | integration-skills
 agy pro settings providers list | add-json <file|-> | add-interactive | test <name> | rename <old> <new> | delete <name>
 agy pro settings mode switch <full|clean> | restore | list | status
 agy pro settings doctor diagnose [--strict] | fix-keys [targets] | rollback-keys <dir>
 ```
-Panels: Launch & Profile, Models & Providers, Bridge Tools & Budgets, Swarm & Fanout, Diagnostics & Keys, Install & Update, Environment Variables. Choices are numbered lists, destructive operations need a `y`/`n` confirmation, and the bridge-tool budgets are compile-time constants shown read-only.
+Panels: Launch & Profile, Models & Providers, Bridge Tools & Budgets, Swarm & Fanout, Diagnostics & Keys, Install & Update, Environment Variables, Appearance. Choices are numbered lists, destructive operations need a `y`/`n` confirmation, and the bridge-tool budgets are compile-time constants shown read-only. Every write in this section (`set`, the provider add/rename/delete and model twins, `mode switch`/`restore`, `doctor fix-keys`/`rollback-keys`) prints exactly what it will change first and needs a `y/N` answer, and scripted callers pass `--yes`.
 
 Inside an `agy` session, `/setting_agypro` is a **plugin slash command** (install with `agy plugin install plugins/agypro_settings`; the slash name comes from the file name, same class as `/agy_help`). It is an agent-mediated workflow that runs the non-interactive `agy pro settings ...` verbs behind numbered menus. It does **not** contain, embed, or launch the TUI: for the full-screen panel, run `agy pro settings` in your own terminal. Restart `agy` after installing the plugin so the slash command is discovered.
 
@@ -402,6 +407,28 @@ agy pro hybrid check     # render the wirecheck report; exit 1 when the effectiv
 - `status` and `check` run the `wirecheck` drift gate against the resolved real-agy binary. A NOGO profile fails closed: `check` exits 1, and a launch falls back to a true native session with a clear notice (never a half-configured session). A GO with version drift proceeds and surfaces the drift notice.
 - The two profiles are mutually exclusive per session (one session is one client path). Full mechanism, per-profile costs, credential safety, and the honest limits: the Native Coexistence section above and [`docs/bridge-architecture.md`](docs/bridge-architecture.md).
 
+### 13. Integrations (`agy pro integrations`)
+
+```bash
+agy pro integrations status              # read-only: intent next to what is on disk (no gate)
+agy pro integrations apply tools         # the whole preset: statusLine slot, rules, plugins, skills, hook (statusline step skipped with a note when the `agy-tokens` launcher is absent)
+agy pro integrations apply rules         # one feature; no operand applies whatever is pending
+agy pro integrations retract             # remove what the engine deployed; no operand removes everything
+agy pro integrations preset native|tools # reach that preset and record it
+agy pro integrations adopt               # record what is already on disk (writes no file)
+agy pro integrations rollback            # restore the newest settings.json snapshot
+agy pro integrations rollback rules      # roll one content feature back to its pre-install tree
+agy pro integrations repair              # re-deploy drifted and missing destinations
+```
+
+- Features are `statusline`, `hook`, `rules`, `plugins`, `skills`. Presets are `native` and `tools`; `custom` is derived from the feature toggles and is refused as an operand.
+- Every writing verb composes ONE plan (deployments, the settings door and the `state.json` intent rows together), prints the exact diff, and asks once. A non-interactive stdin must pass `--yes`, otherwise the verb refuses and writes nothing. Exit codes: 0 ok, 1 runtime error or refusal, 2 usage error.
+- `retract` moves the deployed files into `<AGY_PRO_HOME>/backups/<ts>_retract/` and leaves foreign files alone. Run it before uninstalling (the Windows uninstaller does that for you).
+- `rollback` with no operand restores `settings.json` only, from the two documented snapshot chains (`settings.bak.<ts>.json`, `settings.json.bak.<ts>`); a machine with no snapshot is a named empty state with exit 0 and no gate.
+- `rollback hook|rules|plugins|skills` restores that one content feature's pre-install deploy tree behind the same single consent, and records no `state.json` intent row: the restored bytes are not a posture the user stated. `rollback statusline` exits 2 and points at the no-operand settings door, `rollback native|tools` (and `custom`) exits 2 because a posture has no single pre-install tree, and two operands is a usage error. A feature with nothing recorded prints `Nothing to roll back:` and exits 0 without a gate. The hub's Rollback row opens the same choice as a picker (`settings.json` plus the four content features).
+- The preset changes what is DEPLOYED, never which binary runs. `agy pro mode full|clean` is the same kind of switch: it changes deployed content (the agent roster and references), not the launch target.
+- Run one integrations command at a time per machine. Concurrent runs are not serialized: the manifest is last-writer-wins, so the later command's entry set replaces the earlier one's and the files the earlier command deployed drop out of the record (Status then calls them foreign). `repair` reconciles drift for what the record still claims; `adopt` takes the orphaned files back.
+
 ---
 
 ## Development & Testing
@@ -415,7 +442,7 @@ go vet ./...
 go test ./... -count=1 -p 1
 ```
 
-Test packages: `cmd/agy`, `internal/agenttools`, `internal/agysettings`, `internal/bridge`, `internal/fanout`, `internal/geminiwire`, `internal/hybrid`, `internal/inventory`, `internal/launcher`, `internal/mesh`, `internal/mode`, `internal/openaiup`, `internal/paths`, `internal/providers`, `internal/realagy`, `internal/settings`, `internal/swarm`, `internal/wireadp`, `internal/wirecheck`; `profiles` has no test files.
+Test packages: `cmd/agy`, `internal/agenttools`, `internal/agysettings`, `internal/bridge`, `internal/fanout`, `internal/geminiwire`, `internal/hybrid`, `internal/inventory`, `internal/launcher`, `internal/mesh`, `internal/mode`, `internal/openaiup`, `internal/paths`, `internal/providers`, `internal/realagy`, `internal/settings`, `internal/swarm`, `internal/wireadp`, `internal/wirecheck`, and `profiles` (the content-snapshot sync gate).
 
 `go test -race` is **not runnable on the development machine** (no C compiler). That is an environmental degradation, not a PASS, and this project does not claim `-race` coverage.
 
@@ -427,5 +454,11 @@ Test packages: `cmd/agy`, `internal/agenttools`, `internal/agysettings`, `intern
 - [`docs/swarm-hybrid.md`](docs/swarm-hybrid.md) — hybrid native + external swarms (`--seats`), the numbered swarm builder, the combined model inventory, the settings panel + `/setting_agypro` plugin, key masking and the community banner.
 - [`docs/fanout.md`](docs/fanout.md) — multi-model swarm specification.
 - [`docs/rules-conflicts.md`](docs/rules-conflicts.md) — Kimi vs Antigravity rule resolution matrix.
-- [`docs/skills-port-matrix.md`](docs/skills-port-matrix.md) — 41-skill 1:1 porting matrix.
+- [`docs/skills-port-matrix.md`](docs/skills-port-matrix.md): 43-skill 1:1 porting matrix (43 skill dirs / 52 files in `skills/`, deployed from the `profiles/tools` snapshot).
 - Native-coexistence design record and gate evidence: `docs/261014_0006_session_native-coexistence-design/NATIVE_COEXISTENCE_DESIGN.md` and `docs/261014_0007_session_hybrid-impl/` (phase records + blind-qa gate reports G4/G5/G6/G10/G11 + the G8 manual test script).
+
+---
+
+## License
+
+Distributed under the **MIT License**. See [`LICENSE`](LICENSE) for details.

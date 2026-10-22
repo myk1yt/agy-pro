@@ -118,12 +118,14 @@ The registry lives at `~/.agy-pro/providers.json` (overridable via `AGY_PRO_PROV
 Run `agy pro fanout --setup` to configure providers interactively in the terminal:
 1. Provider Name & OpenAI-compatible Base URL.
 2. API Key environment variable name & optional live key input.
-   - On Windows, automatically sets the key to the User Environment using `[System.Environment]::SetEnvironmentVariable`.
+   - On Windows, persists the key as a User Environment variable in `HKCU\Environment` through the advapi32 registry API (`RegSetValueExW`, `internal/providers/win32reg_windows.go`). The name and value travel as UTF-16 pointers and never appear on a shell command line.
 3. Model ID, Family, Context Length, and Max Output Tokens.
 4. Model Capabilities: Function Calling, Allowed Tools, Vision, Video, and Thinking mode.
 5. **Live Connection Probe Test**: Immediately issues a test ping to verify credentials and endpoint latency:
    - Success: `✅ Connection and basic call test succeeded (latency: 142ms)`
    - Failure: Displays HTTP code and response body, opening an **interactive correction loop** allowing immediate live adjustments to Base URL, API Key, or Model ID without restarting the wizard.
+
+**Write gate (`[y/N]`, `--yes`).** Both persisted writes (the `providers.json` upsert and, when a key was queued, the `HKCU\Environment` value) sit behind ONE gate: after the last prompt and before the FIRST write the wizard prints the exact composed diff, then asks `Apply this write to providers.json and HKCU\Environment? [y/N]:` (`providers.json` alone when no key is queued). `y` consents; `n`, an empty line, or any other word cancels with nothing written (exit 0). `--yes` is the scripted-caller stand-in for that answer: it consents after the diff prints without reading one (`agy pro fanout --setup --yes`). On a reader that cannot answer, a pipe, a redirected file, or any stdin that is not a console, the diff still prints and the wizard REFUSES with `[agy-pro] refusal: non-interactive stdin cannot consent to a setup write; re-run with --yes after reviewing the diff above (nothing written)` and exits 1 (`providers.ErrWizardWriteRefused`), so nothing is written. The same gate serves `agy pro setup` and `agy pro settings providers add-interactive` (`internal/providers/wizard.go`, `wizardConsent`).
 
 ### 2.4 Run-config resolution ladder (presets and the defaults block)
 
@@ -240,7 +242,8 @@ agy pro fanout [options]
 | `--timeout <sec>` | `300` | Swarm timeout in seconds. Flat default 300s; in partition mode (`--units`) with NO explicit `--timeout` the default auto-scales to `300 + 120 x units` seconds (capped at 3600). An explicit `--timeout` is honored exactly. |
 | `--out <dir>` | `./reports/fanout/<ts>` | Output directory for seat reports and reconciliation matrix. |
 | `--json` | `false` | Emits machine-readable `summary.json` directly to stdout. |
-| `--setup` | `false` | Runs the interactive provider configuration wizard. |
+| `--setup` | `false` | Runs the interactive provider configuration wizard (§2.3). It writes `providers.json` and, when a key is queued, the Windows user environment (`HKCU\Environment`), so it prints the exact composed diff and asks `[y/N]` first; on a reader that cannot answer it refuses naming `--yes` and writes nothing (exit 1). |
+| `--yes` | `false` | Consents to the `--setup` wizard's composed write without asking (the scripted-caller stand-in for the `[y/N]` answer, after the diff prints). Valid only with `--setup`: a lone `--yes` is a usage error (exit 2) and runs nothing. |
 
 The `Default` column above is the engine default (the last ladder rung, §2.4):
 an unset flag resolves from the active preset first and from the providers.json

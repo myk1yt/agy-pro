@@ -8,7 +8,7 @@
 [ 한국어 (Korean) ]
 1. 초보자를 위한 1초 원클릭 초간편 설치 방법
 2. 모드 전환 방법 (풀스택 모드 vs 클린 모드)
-3. 대화형 터미널 설정 마법사 및 실시간 연결 테스트 (agy pro setup)
+3. 설정 허브 및 실시간 연결 테스트 (agy pro setup, --wizard)
 4. 멀티모델 병렬 스웜 팬아웃 (agy pro fanout, 하이브리드 네이티브 좌석)
 5. 번호로 고르는 스웜 빌더 · 통합 모델 목록 · 설정 패널 (agy pro swarm / models --all / settings)
 6. 시스템 상태 진단 및 안전 복구 (agy pro doctor & restore)
@@ -17,7 +17,7 @@
 [ English ]
 1. One-Click Instant Installation for Beginners
 2. Mode Switching Guide (Full-Stack vs Clean)
-3. Interactive Setup Wizard & Live Connection Testing (agy pro setup)
+3. Setup Hub & Live Connection Testing (agy pro setup, --wizard)
 4. Multi-Model Swarm Fanout (agy pro fanout, hybrid native seats)
 5. Numbered Swarm Builder, Combined Model List & Settings Panel (agy pro swarm / models --all / settings)
 6. System Diagnostics & Safe Recovery (agy pro doctor & restore)
@@ -38,7 +38,7 @@ agy-pro는 코딩이나 시스템 설정을 잘 모르는 초보자도 마우스
      아래 한 줄을 그대로 붙여넣으면 git 유무를 자동으로 판별해 설치까지 끝납니다.
      (git이 있으면 브랜치 클론 후 install.cmd 실행, 없으면 ZIP을 %TEMP%에 풀어 install.ps1 실행)
 
-       powershell -NoProfile -ExecutionPolicy Bypass -Command "if (Get-Command git -ErrorAction SilentlyContinue) { cmd /c 'git clone -b feature/agy-pro https://github.com/myk1yt/agy-tools.git && cd agy-tools && install.cmd' } else { iwr 'https://codeload.github.com/myk1yt/agy-tools/zip/refs/heads/feature/agy-pro' -OutFile '$env:TEMP\agy-tools-agy-pro.zip' -UseBasicParsing; Expand-Archive -Path '$env:TEMP\agy-tools-agy-pro.zip' -DestinationPath '$env:TEMP\agy-tools-agy-pro' -Force; & (Resolve-Path '$env:TEMP\agy-tools-agy-pro\*\install.ps1').Path }"
+       powershell -NoProfile -ExecutionPolicy Bypass -Command "if (Get-Command git -ErrorAction SilentlyContinue) { cmd /c 'git clone -b feature/agy-pro https://github.com/myk1yt/agy-pro.git && cd agy-pro && install.cmd' } else { iwr 'https://codeload.github.com/myk1yt/agy-pro/zip/refs/heads/feature/agy-pro' -OutFile '$env:TEMP\agy-pro-src.zip' -UseBasicParsing; Expand-Archive -Path '$env:TEMP\agy-pro-src.zip' -DestinationPath '$env:TEMP\agy-pro-src' -Force; & (Resolve-Path '$env:TEMP\agy-pro-src\*\install.ps1').Path }"
 
      * 위 원라인 명령은 GitHub의 feature/agy-pro 브랜치 '현재 상태'를 내려받습니다.
        아직 push하지 않은 로컬 커밋은 내려받는 내용에 포함되지 않습니다.
@@ -55,9 +55,16 @@ agy-pro는 코딩이나 시스템 설정을 잘 모르는 초보자도 마우스
        (수정 직전의 기존 PATH 값과 레지스트리 타입을
         `%USERPROFILE%\.agy-pro\backups\path-<타임스탬프>.json`에 백업하고 복원 명령을 화면에 출력)
      - 시스템 진단(Doctor --strict) 자동 실행 및 정상 작동 여부 검증
+     - Antigravity 통합 배포: `agy`가 PATH에 있으면 `agy pro integrations apply tools --yes`를
+       한 번 실행해 `settings.json`의 statusLine 항목과 규칙·플러그인·스킬·훅을 함께 배포합니다.
+       `agy-tokens` 런처가 없는 컴퓨터에서는 상태줄 단계를 건너뛰고 그 사유를 한 줄로 알려 주며
+       호출 자체는 종료 코드 0으로 끝납니다. `agy pro integrations status`가 그 상태를 보여 주고,
+       런처가 생기면 `agy pro integrations repair`가 이 단계를 마저 완료합니다.
+       `agy`가 아직 없으면 이 명령을 화면에 출력하고 계속 진행합니다.
   4) 설치가 끝나면 "Installation Completed Successfully!" 메시지가 표시됩니다.
      이어서 "Run the external model setup wizard now? (y/N)" 질문에 y를 입력하면
-     외부 모델 설정 마법사(`agy pro setup`)가 곧바로 이어서 실행됩니다.
+     설정 허브(`agy pro setup`)가 곧바로 이어서 실행됩니다. 콘솔이 아닌 환경에서는
+     같은 명령이 고전 줄 단위 마법사로 동작합니다.
      더블클릭으로 실행한 경우 창이 바로 꺼지지 않고 "Press any key to continue . . ." 프롬프트가 대기합니다.
      아무 키나 눌러 종료한 뒤, 새로 터미널 창을 열면 즉시 `agy` 명령어를 사용할 수 있습니다!
 
@@ -65,14 +72,20 @@ agy-pro는 코딩이나 시스템 설정을 잘 모르는 초보자도 마우스
   PowerShell 창에 아래 한 줄을 붙여넣으면 설치 제거 스크립트를 내려받아 실행합니다.
   (무엇을 지울지 먼저 보여주고 y/N 확인을 기다립니다)
 
-    powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr 'https://raw.githubusercontent.com/myk1yt/agy-tools/feature/agy-pro/agy-pro/scripts/uninstall.ps1' -OutFile '$env:TEMP\agy-pro-uninstall.ps1' -UseBasicParsing; & '$env:TEMP\agy-pro-uninstall.ps1'"
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr 'https://raw.githubusercontent.com/myk1yt/agy-pro/feature/agy-pro/agy-pro/scripts/uninstall.ps1' -OutFile '$env:TEMP\agy-pro-uninstall.ps1' -UseBasicParsing; & '$env:TEMP\agy-pro-uninstall.ps1'"
 
   - 이미 저장소를 클론해 둔 경우에는 폴더 안의 `uninstall.cmd`를 더블클릭하거나
     터미널에서 `.\uninstall.cmd`를 실행하면 됩니다.
-  - 사용자 PATH에서 `~/.agy-pro/bin` 항목만 제거하고(다른 항목과 레지스트리 값 종류는
+  - 첫 단계로 배포된 통합을 먼저 되돌립니다. 그 파일들을 소유하는 것은 shim뿐이므로,
+    shim이 아직 남아 있는 동안 `agy pro integrations retract --yes`를 실행해 엔진이
+    Gemini 설정 트리에 배포한 규칙·플러그인·스킬·훅과 statusLine 항목을
+    `<AGY_PRO_HOME>/backups/<ts>_retract/`로 옮깁니다. `agy`를 찾지 못하면 그 사실을
+    알리고 다음 제거 전에 정상 설치본에서 같은 명령을 먼저 실행하라고 안내합니다.
+  - 그다음 사용자 PATH에서 `~/.agy-pro/bin` 항목만 제거하고(다른 항목과 레지스트리 값 종류는
     그대로 유지), `~/.agy-pro` 폴더 전체는 '휴지통'으로 이동합니다.
     영구 삭제하지 않으므로 실수해도 탐색기 휴지통에서 되돌릴 수 있습니다.
-  - 옵션: `-KeepState`(shim만 제거하고 providers.json/state.json/백업은 유지),
+  - 옵션: `-KeepState`(shim만 제거하고 providers.json/state.json/백업은 유지, 배포된
+    통합 되돌리기는 -KeepState에서도 그대로 실행),
     `-DryRun`(계획만 출력하고 아무것도 바꾸지 않음),
     `-RestorePath`(설치 전에 저장한 사용자 PATH 백업을 복원),
     `-Force`(y/N 확인 생략).
@@ -109,18 +122,30 @@ agy-pro는 사용 환경에 따라 두 가지 프로필 모드를 자유롭게 �
 모드를 변경할 때마다 기존 `~/.gemini` 설정은 타임스탬프가 찍힌 백업 폴더
 (`~/.agy-pro/backups/`)에 자동으로 안전하게 보관되므로 데이터 유실 걱정이 없습니다.
 
+[모드와 통합 프리셋은 무엇이 다른가]
+  - 모드(`agy pro mode full|clean`)와 통합 프리셋
+    (`agy pro integrations preset native|tools`)은 둘 다 "무엇을 배포하는가"만
+    바꿉니다. 규칙, 스킬, 플러그인, 훅, statusLine 내용이 여기에 해당합니다.
+  - 둘 다 "어떤 바이너리가 실행되는가"는 바꾸지 않습니다. 실행되는 agy 바이너리는
+    하나뿐이고, 프리셋은 그 바이너리를 고르는 스위치가 아닙니다.
+  - 그래서 프리셋을 native로 두어도 외부 모델·스웜·런처는 그대로 동작합니다.
+
 
 --------------------------------------------------------------------------------
-3. 대화형 터미널 마법사 및 실시간 연결 테스트 (agy pro setup)
+3. 설정 허브 및 실시간 연결 테스트 (agy pro setup, --wizard)
 --------------------------------------------------------------------------------
-OpenRouter, DeepSeek, Groq, Mistral 등 외부 최신 모델을 클릭과 엔터 몇 번으로
+OpenRouter, DeepSeek, Groq, Mistral 등 외부 최신 모델을 몇 번의 키 입력으로
 손쉽게 연결하고, 실시간 API 핑/레이턴시 테스트까지 한 번에 완료할 수 있습니다.
 
 [실행 방법]
   터미널에서 다음 명령어를 입력합니다:
-    agy pro setup
+    agy pro setup            # 전체 화면 설정 허브 (Windows 콘솔)
+    agy pro setup --wizard   # 어떤 환경에서든 고전 줄 단위 마법사
+  인자 없이 실행하면 Windows 콘솔에서는 전체 화면 설정 허브가 열리고, 콘솔이 아닌
+  환경(파이프·CI·비 Windows)에서는 아래 줄 단위 마법사로 자동 전환됩니다.
+  `--wizard`(숨은 별칭 `wizard`)는 어떤 환경에서든 줄 단위 마법사를 강제합니다.
 
-[마법사 진행 단계]
+[줄 단위 마법사 진행 단계]
   1) Provider 이름 입력 (예: deepseek, openrouter, groq, openai)
   2) API Base URL 확인 (기본 권장 URL이 자동으로 제시되며 Enter로 수락 가능)
   3) API 키 환경변수 이름 지정 (예: DEEPSEEK_API_KEY)
@@ -282,9 +307,12 @@ OpenRouter, DeepSeek, Groq, Mistral 등 외부 최신 모델을 클릭과 엔터
       agy pro settings --panel p4  # 특정 패널로 바로 열기
       agy pro settings show [--json] | set <키> <값> | providers ... | mode ... | doctor ...
   - 패널: Launch & Profile, Models & Providers, Bridge Tools & Budgets, Swarm & Fanout,
-    Diagnostics & Keys, Install & Update, Environment Variables.
-  - `agy pro settings set`으로 바꿀 수 있는 키는 default-profile, bridge-tools,
-    native-seat-concurrency(1~8)입니다. 브릿지 도구 예산(8턴/240초/60초/도구당 30초/턴당 16회)은
+    Diagnostics & Keys, Install & Update, Environment Variables, Appearance.
+  - `agy pro settings set`이 받는 키는 열한 개입니다: default-profile, bridge-tools,
+    native-seat-concurrency(1~8), language, launcher_menu, integration-preset,
+    integration-statusline, integration-hook, integration-rules, integration-plugins,
+    integration-skills. language는 표시 언어 코드(예: ko, en), launcher_menu는 런처 메뉴
+    표시 여부(on/off)입니다. 브릿지 도구 예산(8턴/240초/60초/도구당 30초/턴당 16회)은
     컴파일 상수라 읽기 전용으로 표시됩니다.
   - `/setting_agypro`는 **플러그인 슬래시 명령**입니다 (`/agy_help`와 같은 종류).
     설치: `agy plugin install plugins/agypro_settings` (슬래시 이름은 파일 이름에서 옵니다).
@@ -332,12 +360,25 @@ OpenRouter, DeepSeek, Groq, Mistral 등 외부 최신 모델을 클릭과 엔터
       agy pro mode restore
   - 전체 상태 한눈에 확인하기:
       agy pro status
+  - 배포된 통합(규칙·스킬·플러그인·훅·statusLine)이 어긋났을 때:
+      agy pro integrations status     # 먼저 읽기 전용으로 상태 확인
+      agy pro integrations repair     # 드리프트·누락된 대상 재배포
+      agy pro integrations rollback   # settings.json만 최신 스냅샷으로 복원
+      agy pro integrations rollback rules   # 규칙 트리만 설치 전 상태로 복원
+    `agy pro mode restore`는 모드가 관리하는 항목(agents, references, profile.json,
+    config.json)만 되돌립니다. 규칙·스킬·플러그인은 `agy pro integrations`가 소유하므로
+    위 명령으로 되돌립니다. 트리 되돌리기도 기능 하나씩만 됩니다(인자 없이 쓰면
+    settings.json 복원입니다).
+    통합 명령은 한 컴퓨터에서 한 번에 하나만 실행하세요. 동시에 돌린 두 명령은 서로
+    기다리지 않고, 나중 것이 매니페스트 전체를 덮어써 먼저 배포한 항목이 기록에서
+    빠집니다(그 파일들은 이후 status에서 foreign으로 보입니다). repair는 기록에 남은
+    대상의 드리프트만 맞추고, 기록에서 빠진 파일은 adopt나 다시 apply로 되찾습니다.
 
 
 --------------------------------------------------------------------------------
 7. 주요 명령어 요약 가이드
 --------------------------------------------------------------------------------
-  agy pro setup          : 외부 AI 모델 및 API 키 연동 대화형 마법사
+  agy pro setup          : 전체 화면 설정 허브 (프로바이더·모델·팬아웃 프리셋·프롬프트·언어). 고전 줄 단위 마법사는 --wizard
   agy pro mode           : 대화형 프로필 모드 선택 (Full-Stack / Clean)
   agy pro mode full      : 풀스택(에이전트 35종+스킬셋) 모드로 전환
   agy pro mode clean     : 기본(클린 Antigravity) 모드로 전환
@@ -348,11 +389,34 @@ OpenRouter, DeepSeek, Groq, Mistral 등 외부 최신 모델을 클릭과 엔터
   agy pro fanout --prompt "<질문>" : 멀티모델 병렬 스웜 질의 및 종합 결과 생성
   agy pro fanout --seats "native:<모델>,<프로바이더>/<모델>" : 하이브리드 스웜 (네이티브 좌석 포함)
   agy pro settings       : 전체 화면 설정 패널 (TUI, 사용 중단 예고 → agy pro setup). 세션 안에서는 플러그인 명령 /setting_agypro
+  agy pro integrations status : 배포된 통합(규칙·스킬·플러그인·훅·statusLine) 상태 보고 (읽기 전용, 게이트 없음)
+  agy pro integrations apply tools : 통합 프리셋 전체 배포 (동의 1회, settings.json 포함. agy-tokens 런처가 없으면 상태줄 단계만 건너뛰고 그 사유를 한 줄로 알리며 호출은 종료 코드 0으로 끝납니다. agy pro integrations status로 그 상태를 확인하고, 런처가 생기면 agy pro integrations repair로 이 단계를 마저 완료합니다)
+  agy pro integrations apply <기능> : 기능 하나 배포 (statusline|hook|rules|plugins|skills). 인자를 빼면 대기 중인 것만
+  agy pro integrations retract : 배포한 통합 제거 (인자 없으면 전부). 제거 스크립트 실행 전에 먼저 실행
+  agy pro integrations preset native|tools : 그 프리셋 상태로 맞추고 기록
+  agy pro integrations adopt : 이미 디스크에 있는 것을 기록 (파일 쓰기 없음)
+  agy pro integrations rollback : settings.json 최신 스냅샷으로 복원
+  agy pro integrations rollback <기능> : 기능 하나(hook|rules|plugins|skills)의 배포 트리를 설치 전 상태로 복원 (동의 1회, 의도 행 기록 없음)
+  agy pro integrations repair : 드리프트·누락된 대상 재배포
   agy pro doctor         : 시스템 진단 및 도구체인 상태 검사
   agy pro config bridge-tools <read,search,write,exec|none> : 외부 모델 도구 루프 설정 (기본 read,search)
   agy pro config show    : 시작 프로필, 프로필 모드, 도구 루프 설정 확인
   agy pro help           : 사용 가능한 전체 도움말 확인
   agy <일반명령어>       : 원본 Antigravity CLI로 100% 투명 실행
+
+  * 쓰기 동사(apply/retract/preset/adopt/rollback/repair)는 바꿀 내용을 정확한 diff로
+    먼저 보여주고 y/N을 한 번만 묻습니다. 콘솔이 없는 실행은 --yes를 붙여야 하고,
+    없으면 아무것도 쓰지 않고 종료 코드 1로 끝납니다. 종료 코드는 0(성공),
+    1(실행 오류 또는 거부), 2(사용법 오류)입니다.
+  * rollback은 인자가 없으면 settings.json을, 인자를 하나 주면 그 기능의 배포 트리를
+    되돌립니다. rollback statusline은 settings.json 문(인자 없음)을 안내하며 종료 코드
+    2로 끝나고, rollback native|tools는 프리셋 전체에 단일한 설치 전 트리가 없어
+    거부됩니다(종료 코드 2). 인자를 두 개 주면 사용법 오류입니다.
+  * 프리셋 단어는 native와 tools 둘뿐입니다. custom은 토글 조합에서 파생되는 모양이라
+    어느 동사에서도 인자로 쓸 수 없습니다(apply·retract·preset·rollback 모두 거부,
+    rollback 쪽은 종료 코드 2).
+  * 통합 프리셋은 "무엇을 배포하는가"만 바꾸고, 어떤 바이너리가 실행되는지는 바꾸지
+    않습니다. 실행되는 agy 바이너리는 하나뿐입니다(2장 참고).
 
 
 ================================================================================
@@ -371,7 +435,7 @@ with no prior programming or CLI experience.
      either way (with git: clone the branch and run install.cmd; without git:
      unzip the branch ZIP into %TEMP% and run install.ps1).
 
-       powershell -NoProfile -ExecutionPolicy Bypass -Command "if (Get-Command git -ErrorAction SilentlyContinue) { cmd /c 'git clone -b feature/agy-pro https://github.com/myk1yt/agy-tools.git && cd agy-tools && install.cmd' } else { iwr 'https://codeload.github.com/myk1yt/agy-tools/zip/refs/heads/feature/agy-pro' -OutFile '$env:TEMP\agy-tools-agy-pro.zip' -UseBasicParsing; Expand-Archive -Path '$env:TEMP\agy-tools-agy-pro.zip' -DestinationPath '$env:TEMP\agy-tools-agy-pro' -Force; & (Resolve-Path '$env:TEMP\agy-tools-agy-pro\*\install.ps1').Path }"
+       powershell -NoProfile -ExecutionPolicy Bypass -Command "if (Get-Command git -ErrorAction SilentlyContinue) { cmd /c 'git clone -b feature/agy-pro https://github.com/myk1yt/agy-pro.git && cd agy-pro && install.cmd' } else { iwr 'https://codeload.github.com/myk1yt/agy-pro/zip/refs/heads/feature/agy-pro' -OutFile '$env:TEMP\agy-pro-src.zip' -UseBasicParsing; Expand-Archive -Path '$env:TEMP\agy-pro-src.zip' -DestinationPath '$env:TEMP\agy-pro-src' -Force; & (Resolve-Path '$env:TEMP\agy-pro-src\*\install.ps1').Path }"
 
      * This one-liner installs from the CURRENT state of the feature/agy-pro
        branch on GitHub, so local commits that are not pushed yet are not included.
@@ -391,9 +455,18 @@ with no prior programming or CLI experience.
        `%USERPROFILE%\.agy-pro\backups\path-<timestamp>.json` first, and the
        restore command is printed on screen.
      - Runs `agy pro doctor --strict` to verify system operational readiness.
+     - Deploys the Antigravity integrations: when `agy` is on `PATH`, one call,
+       `agy pro integrations apply tools --yes`, writes the statusLine slot in
+       `settings.json` and deploys the rules, plugins, skills and hook. On a
+       machine without the `agy-tokens` launcher the statusline step is skipped
+       with a note and the call still exits 0; `agy pro integrations status`
+       reports that posture and `agy pro integrations repair` completes the
+       step once the launcher exists. When `agy` is not on `PATH` yet, that
+       exact command is printed instead.
   4) When finished, "Installation Completed Successfully!" will be displayed.
      The installer then asks "Run the external model setup wizard now? (y/N)";
-     answering `y` continues straight into the setup wizard (`agy pro setup`).
+     answering `y` runs `agy pro setup` right away: the full-screen setup hub on a Windows
+     console, the classic line wizard on any other host.
      When run via double-click, a "Press any key to continue . . ." prompt keeps the window open so you can review results.
      Press any key to finish, open any new terminal window, and type `agy` right away!
 
@@ -401,14 +474,22 @@ with no prior programming or CLI experience.
   Paste this ONE line into a PowerShell window: it downloads the uninstaller and
   runs it (it shows what it will remove, then waits for your y/N confirmation).
 
-    powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr 'https://raw.githubusercontent.com/myk1yt/agy-tools/feature/agy-pro/agy-pro/scripts/uninstall.ps1' -OutFile '$env:TEMP\agy-pro-uninstall.ps1' -UseBasicParsing; & '$env:TEMP\agy-pro-uninstall.ps1'"
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr 'https://raw.githubusercontent.com/myk1yt/agy-pro/feature/agy-pro/agy-pro/scripts/uninstall.ps1' -OutFile '$env:TEMP\agy-pro-uninstall.ps1' -UseBasicParsing; & '$env:TEMP\agy-pro-uninstall.ps1'"
 
   - Already cloned the repository? Double-click `uninstall.cmd` inside the folder,
     or run `.\uninstall.cmd` in a terminal.
-  - It removes only the `~/.agy-pro/bin` entry from the Windows User PATH (every
+  - FIRST it retracts the deployed integrations: while the shim still exists the
+    uninstaller runs `agy pro integrations retract --yes`, so the rules, plugins,
+    skills and hook trees plus the `statusLine` slot the engine wrote into the
+    Gemini config tree move into `<AGY_PRO_HOME>/backups/<ts>_retract/` instead of
+    being orphaned. If `agy` cannot be found it says so and tells you to run that
+    command from a working install before the next uninstall.
+  - Then it removes only the `~/.agy-pro/bin` entry from the Windows User PATH (every
     other entry and the registry value kind are kept) and moves the whole
     `~/.agy-pro` folder to the Recycle Bin, so a mistaken run can be undone.
-  - Options: `-KeepState` (remove the shim, keep providers.json/state.json/backups),
+  - Options: `-KeepState` (remove the shim, keep providers.json/state.json/backups;
+    the integrations retract still runs, because it owns the Gemini config tree and
+    not provider state),
     `-DryRun` (print the plan, change nothing),
     `-RestorePath` (restore the User PATH backup taken before the install),
     `-Force` (skip the y/N confirmation).
@@ -445,18 +526,31 @@ Switch between development environments with zero manual file copying:
 Every switch creates an atomic, timestamped backup inside `~/.agy-pro/backups/`,
 guaranteeing you can revert at any time with complete peace of mind.
 
+[Mode vs. Integration Preset]
+  - The mode (`agy pro mode full|clean`) and the integrations preset
+    (`agy pro integrations preset native|tools`) both change only what is
+    DEPLOYED: the rules, skills, plugins, hooks, and the statusLine content.
+  - Neither changes which binary runs. There is exactly one agy binary, and the
+    preset is not a switch that picks another one.
+  - So a `native` preset still leaves external models, the swarm, and the opt-in
+    launcher working exactly as before.
+
 
 --------------------------------------------------------------------------------
-3. Interactive Setup Wizard & Live Connection Testing (agy pro setup)
+3. Setup Hub & Live Connection Testing (agy pro setup, --wizard)
 --------------------------------------------------------------------------------
 Connect external OpenAI-compatible models (DeepSeek, OpenRouter, Groq, etc.)
 with guided interactive prompts and instant live health checking.
 
 [How to Run]
   Execute in terminal:
-    agy pro setup
+    agy pro setup            # full-screen setup hub (Windows console)
+    agy pro setup --wizard   # classic line wizard on any host
+  With no arguments a Windows console opens the full-screen hub; every other host (a pipe,
+  CI, a non-Windows terminal) falls back to the line wizard below. `--wizard` (hidden alias
+  `wizard`) forces the line wizard anywhere.
 
-[Wizard Workflow]
+[Line Wizard Workflow]
   1) Enter Provider name (e.g., deepseek, openrouter, groq, openai).
   2) Confirm or customize Base URL (smart defaults provided automatically).
   3) Enter API key environment variable name (e.g., DEEPSEEK_API_KEY).
@@ -621,10 +715,14 @@ simultaneously to heterogeneous models, then cross-verifying the results
       agy pro settings --panel p4  # deep-link one panel
       agy pro settings show [--json] | set <key> <value> | providers ... | mode ... | doctor ...
   - Panels: Launch & Profile, Models & Providers, Bridge Tools & Budgets, Swarm & Fanout,
-    Diagnostics & Keys, Install & Update, Environment Variables.
-  - Keys accepted by `agy pro settings set`: default-profile, bridge-tools,
-    native-seat-concurrency (1..8). The bridge tool budgets (8 turns / 240s wall / 60s turn /
-    30s per tool / 16 calls per turn) are compile-time constants shown read-only.
+    Diagnostics & Keys, Install & Update, Environment Variables, Appearance.
+  - `agy pro settings set` accepts eleven keys: default-profile, bridge-tools,
+    native-seat-concurrency (1..8), language, launcher_menu, integration-preset,
+    integration-statusline, integration-hook, integration-rules, integration-plugins,
+    integration-skills. `language` is the UI language code (e.g. ko, en);
+    `launcher_menu` is the launcher-menu toggle (on/off). The bridge tool
+    budgets (8 turns / 240s wall / 60s turn / 30s per tool / 16 calls per turn) are compile-time
+    constants shown read-only.
   - `/setting_agypro` is a **plugin slash command** (the same class as `/agy_help`).
     Install it with `agy plugin install plugins/agypro_settings` (the slash name comes from the
     file name). It is an agent-mediated workflow that runs the non-interactive
@@ -673,12 +771,26 @@ Diagnose issues and restore previous states effortlessly.
       agy pro mode restore
   - View current status summary:
       agy pro status
+  - When the deployed integrations (rules, skills, plugins, hook, statusLine) drifted:
+      agy pro integrations status     # read-only check first
+      agy pro integrations repair     # re-deploy drifted and missing destinations
+      agy pro integrations rollback   # restore settings.json only, newest snapshot
+      agy pro integrations rollback rules   # restore the rules tree to its pre-install bytes
+    `agy pro mode restore` copies back only the mode-managed items (agents, references,
+    profile.json, config.json). The rules, skills and plugins belong to
+    `agy pro integrations`, so the commands above are how those come back. A tree
+    rollback is one feature per run; the no-operand form is the settings.json door.
+    Run one integrations command at a time per machine. Concurrent runs do not wait
+    for each other: the later one overwrites the whole manifest, so entries the
+    first one recorded drop out and their files then read as foreign. `repair`
+    reconciles drift for what the record still claims, and `adopt` or a re-apply
+    takes the orphaned files back.
 
 
 --------------------------------------------------------------------------------
 7. Command Reference Summary
 --------------------------------------------------------------------------------
-  agy pro setup          : Interactive provider and API key setup wizard
+  agy pro setup          : Full-screen setup hub (providers, models, fanout presets, prompts, language); classic line wizard via --wizard
   agy pro mode           : Interactive profile switcher
   agy pro mode full      : Activate full-stack profile (35+ agents & skillsets)
   agy pro mode clean     : Activate clean default profile
@@ -689,11 +801,36 @@ Diagnose issues and restore previous states effortlessly.
   agy pro fanout --prompt "<q>" : Run multi-model swarm fanout with synthesis
   agy pro fanout --seats "native:<model>,<provider>/<model>" : Hybrid swarm (native seats included)
   agy pro settings       : Full-screen settings panel (TUI, deprecated → agy pro setup). Inside a session use the plugin command /setting_agypro
+  agy pro integrations status : Report the deployed integrations (rules, skills, plugins, hook, statusLine); read-only, no gate
+  agy pro integrations apply tools : Deploy the whole integrations preset (one consent, settings.json included. On a machine without the agy-tokens launcher only the statusline step is skipped, with a one-line note, and the call still exits 0. agy pro integrations status shows that posture, and agy pro integrations repair completes the step once the launcher exists)
+  agy pro integrations apply <feature> : Deploy one feature (statusline|hook|rules|plugins|skills); no operand applies what is pending
+  agy pro integrations retract : Remove what the engine deployed (no operand removes everything); run it before uninstalling
+  agy pro integrations preset native|tools : Reach that preset and record it
+  agy pro integrations adopt : Record what is already on disk (writes no file)
+  agy pro integrations rollback : Restore the newest settings.json snapshot
+  agy pro integrations rollback <feature> : Roll one content feature (hook|rules|plugins|skills) back to its pre-install tree (one consent, no intent row)
+  agy pro integrations repair : Re-deploy drifted and missing destinations
   agy pro doctor         : Run diagnostic health check
   agy pro config bridge-tools <read,search,write,exec|none> : Tool loop for external models (default read,search)
   agy pro config show    : Show startup profile, profile mode, and tool-loop setting
   agy pro help           : View full CLI help
   agy <arguments>        : 100% transparent pass-through to underlying agy CLI
+
+  * Every writing verb (apply/retract/preset/adopt/rollback/repair) prints its exact
+    diff first and asks a single y/N. A non-interactive run must pass --yes; without
+    it the verb writes nothing and exits 1. Exit codes: 0 ok, 1 runtime error or
+    refusal, 2 usage error.
+  * rollback with no operand restores settings.json; rollback <feature> restores
+    that one content tree and records no intent row (restored bytes are not a
+    posture you stated). rollback statusline exits 2 and points at the no-operand
+    settings.json door, rollback native|tools is refused (a whole posture has no
+    single pre-install tree), and two operands is a usage error. A feature with
+    nothing recorded prints "Nothing to roll back:" and exits 0 without a gate.
+  * Preset words are native and tools only. custom is the composed shape of a
+    mixed toggle set, so it is derived, never an operand: apply, retract, preset
+    and rollback all refuse it (rollback exits 2).
+  * The integrations preset changes only what is DEPLOYED, never which binary runs.
+    There is exactly one agy binary (see section 2).
 
 ================================================================================
                     Enjoy supercharged Antigravity with agy-pro!

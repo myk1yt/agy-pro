@@ -49,13 +49,13 @@
 **명령 프롬프트에 붙여넣기:**
 
 ```cmd
-git clone https://github.com/myk1yt/agy-tools.git && cd agy-tools && scripts\install.bat && install.cmd
+git clone https://github.com/myk1yt/agy-pro.git && cd agy-pro && scripts\install.bat && install.cmd
 ```
 
 **PowerShell에 붙여넣기** (PowerShell 5.1은 `&&`를 못 알아듣기 때문에 `cmd /c`로 감쌉니다):
 
 ```powershell
-cmd /c "git clone https://github.com/myk1yt/agy-tools.git && cd agy-tools && scripts\install.bat && install.cmd"
+cmd /c "git clone https://github.com/myk1yt/agy-pro.git && cd agy-pro && scripts\install.bat && install.cmd"
 ```
 
 하나가 오류를 낸 경우, 다른 쪽 설치 프로그램만 따로 실행할 수 있습니다.
@@ -71,18 +71,20 @@ install.cmd           :: agy-pro Go 셔틀만 (Windows 전용)
 
 `install.cmd`는 Go가 없으면 먼저 Go를 깔고, `agy.exe`를 빌드해서 `사용자 폴더\.agy-pro\bin`에 넣은 뒤, 사용자 PATH의 맨 앞에 그 폴더를 추가합니다. 그리고 `agy pro doctor --strict`로 진단한 뒤, 외부 모델 설정 마법사를 제안합니다. 마법사를 건드리고 싶지 않으면 `install.cmd -NoWizard`를 쓰세요.
 
+`scripts\install.bat`은 전역 명령을 등록한 뒤, Antigravity 배포를 Go 엔진에 넘깁니다. `agy`가 PATH에서 잡히면 `agy pro integrations apply tools --yes`를 한 번 실행해 `settings.json`의 `statusLine` 항목과 규칙·플러그인·스킬·훅을 배포합니다. `agy-tokens` 런처가 없는 컴퓨터에서는 상태줄 단계를 건너뛰고 그 사유를 한 줄로 알려 주며, 호출 자체는 종료 코드 0으로 끝납니다. `agy pro integrations status`가 그 상태를 보여 주고, 런처가 생기면 `agy pro integrations repair`가 이 단계를 마저 완료합니다. `agy`가 아직 없으면 그 명령을 화면에 출력하고 계속 진행하고, 호출이 실패하면 오류를 출력하며 0이 아닌 코드로 멈춥니다.
+
 ### macOS / Linux: Node 툴킷은 한 줄, Go 셔틀은 직접 빌드
 
 **Node 툴킷 (한 줄):**
 
 ```bash
-git clone https://github.com/myk1yt/agy-tools.git && cd agy-tools && bash scripts/install.sh
+git clone https://github.com/myk1yt/agy-pro.git && cd agy-pro && bash scripts/install.sh
 ```
 
 **agy-pro Go 셔틀:** 아직 자동 설치 프로그램은 Windows 전용입니다. Go 1.22 이상을 설치한 뒤 직접 빌드하세요.
 
 ```bash
-cd agy-tools/agy-pro
+cd agy-pro/agy-pro
 go build -o ~/.agy-pro/bin/agy ./cmd/agy
 ```
 
@@ -140,6 +142,31 @@ $env:AGY_LAUNCHER=1; agy
 | `agy pro settings` | 전체 화면 설정 패널 (기존 CLI형 패널, **사용 중단 예고** → `agy pro setup`) |
 | `agy pro doctor` | 진단 (`--strict`면 문제 있을 때 실패로 끝남) |
 | `agy pro status` | 현재 상태 요약 |
+| `agy pro integrations status` | 배포된 통합(규칙·스킬·플러그인·훅·statusLine) 상태 보고. 읽기 전용이라 확인 게이트가 없습니다 |
+| `agy pro integrations apply tools` | 통합 프리셋 전체 배포 (동의 1회, `settings.json`의 statusLine 포함). `agy-tokens` 런처가 없는 컴퓨터에서는 상태줄 단계를 건너뛰고 그 사유를 한 줄로 알리며 호출은 종료 코드 0으로 끝납니다. `agy pro integrations status`로 그 상태를 확인하고, 런처가 생기면 `agy pro integrations repair`로 이 단계를 마저 완료합니다 |
+| `agy pro integrations apply <기능>` | 기능 하나만 배포 (`statusline`/`hook`/`rules`/`plugins`/`skills`). 인자를 빼면 대기 중인 것만 배포 |
+| `agy pro integrations retract` | 배포한 통합 제거 (인자 없으면 전부). 제거 스크립트를 돌리기 전에 먼저 실행하세요 |
+| `agy pro integrations preset native\|tools` | 그 프리셋 상태로 맞추고 기록 |
+| `agy pro integrations adopt` | 이미 디스크에 있는 것을 기록 (파일은 쓰지 않음) |
+| `agy pro integrations rollback` | `settings.json` 최신 스냅샷으로 복원 |
+| `agy pro integrations rollback <기능>` | 기능 하나(`hook`/`rules`/`plugins`/`skills`)의 배포 트리를 설치 전 상태로 복원합니다 (동의 1회, 의도 행은 기록하지 않음). `rollback statusline`은 종료 코드 2로 인자 없는 settings.json 복원을 안내하고, `rollback native\|tools`는 프리셋 전체에 단일한 설치 전 트리가 없어 거부됩니다 |
+| `agy pro integrations repair` | 드리프트·누락된 대상을 다시 배포 |
+
+쓰기 동사(`apply`/`retract`/`preset`/`adopt`/`rollback`/`repair`)는 바꿀 내용을
+정확한 diff로 먼저 보여주고 `y/N`을 한 번만 묻습니다. 파일 배포, `settings.json`,
+`state.json`의 의도 행이 한 계획에 묶여도 동의는 한 번입니다. 파이프나 스크립트에서
+실행하면 `--yes`를 붙여야 하고, 없으면 아무것도 쓰지 않고 종료 코드 1로 끝납니다.
+종료 코드는 0(성공), 1(실행 오류 또는 거부), 2(사용법 오류)입니다. `rollback <기능>`도
+같은 게이트를 쓰지만 의도 행은 남기지 않습니다. 되돌린 바이트는 사용자가 선언한
+상태가 아니기 때문입니다. 되돌릴 것이 없으면 `Nothing to roll back:`만 출력하고
+게이트 없이 종료 코드 0으로 끝납니다. 인자를 두 개 주면 사용법 오류입니다.
+
+모드(`agy pro mode full|clean`)와 통합 프리셋(`agy pro integrations preset native|tools`)은
+둘 다 "무엇을 배포하는가"(규칙·스킬·플러그인·훅·statusLine 내용)만 바꿉니다. 어떤
+바이너리가 실행되는지는 바꾸지 않습니다. 실행되는 agy 바이너리는 하나뿐입니다.
+프리셋 단어는 `native`와 `tools` 둘뿐입니다. `custom`은 토글 조합에서 파생되는
+모양이라 어느 동사에서도 인자로 쓰지 않습니다(apply·retract·preset·rollback 모두
+거부하고, rollback 쪽은 종료 코드 2).
 
 `agy pro`만 치거나 `agy pro help`를 치면 도움말이 뜨는데, 맨 위에서
 `agy pro setup`이 전체 화면 설정 TUI를 연다고 크게 알려 줍니다.
@@ -240,12 +267,43 @@ agy pro setup --wizard   # 어떤 환경에서든 고전 줄 단위 마법사
   때문). 글자를 쳐도 저장되는 값은 창에서 고른 목록입니다.
 - **삭제**: 고른 모델 하나를 삭제합니다.
 
-**키처럼 생긴 값은 거부됩니다.** 모델 ID, 패밀리, 태그, 추론 강도에 키 값을
-붙여넣으면 저장되지 않습니다. 기준은 값의 모양입니다. 알려진 키 접두어(`sk-`,
-`gsk_`, `ghp_`, `npm_` 등)로 시작하거나, 영문과 숫자가 섞인 16자 이상의 끊김 없는
-덩어리가 들어 있으면 키로 봅니다. 하이픈, 밑줄, 점 같은 구분자가 끼면 그 덩어리가
-끊기므로 `acme-fast` 같은 평범한 모델 ID는 그대로 통과합니다. 거부 문장에는 입력한
-값이 나오지 않고 `(값 숨김)` 표기가 붙습니다.
+**키처럼 생긴 값은 거부됩니다.** 이 검사는 모델 ID, 패밀리, 태그, 추론 강도 네
+칸에 적용됩니다. 값이 진짜 키인지 확인하지는 않고 모양만 봅니다. 다음 모양이면
+저장되지 않습니다.
+
+- **알려진 키 머리말로 시작하는 값.** `sk-`, `key-`, `gsk_`, `nvapi-`, `live_`,
+  `secret_`, `ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_`, `github_pat_`, `xox`(`xoxb-`
+  등), `glpat-`, `npm_`, `dckr_pat-`/`dckr_pat_`, `bearer `, `eyJ`. 길이와
+  상관없이 거부합니다. `sk-abc`처럼 짧아도 마찬가지이고, 대소문자는 가리지
+  않습니다.
+- **하이픈, 밑줄, 점 없이 16자 이상 이어지는 덩어리.** 글자만
+  (`abcdefghijklmnopqrstuvwxyz`)이거나 숫자만(`1234567890123456`)이어도
+  거부합니다. `AKIA...` 꼴 AWS 액세스 키 ID가 이 모양입니다. 15자 이하는
+  통과합니다(`abcdefghijklmno`).
+- **구분자로 끊겨도 남는 16자 이상 조각.** 하이픈, 밑줄, 점으로 값이 끊겨도,
+  끊긴 조각 하나가 16자 이상이면서 글자와 숫자를 함께 가지면 거부합니다.
+  `acme_0123456789abcdef`와 `acme_ABCD1234efgh5678`이 거부됩니다. 조각이
+  글자뿐이면(`acme_abcdefghijklmnop`) 통과합니다.
+- **구분자를 지워 붙이면 21자 이상인 값.** 대문자가 하나라도 섞여 있으면
+  거부합니다. 머리말을 붙여 키를 흩어 놓은 `native:ABCDEFGHIJKLMNOPQRST`나
+  `acme:ABCDEFGHIJKLMNOPQRST`가 이 경우입니다. 여러 마디로 나뉜 보통 식별자
+  (마디가 네 개 이상이고 마디마다 16자 미만, 예: `ALPHA.BETA.GAMMA.DELTA`)는
+  여기서 빠집니다.
+- **점으로 나뉜 세 토막(JWT).** 각 토막이 6자 이상이고 합쳐서 16자 이상이면
+  거부합니다.
+- **경로나 주소 모양.** `./`, `../`, `C:\`, `https://`로 시작하는 값은 키가
+  아니어도 거부합니다(`./models/gemini-pro`). 화면이 그 값을 그릴 때 앞의 표시를
+  지우기 때문에, 입력한 글자와 저장될 글자가 달라지기 때문입니다.
+- **보이지 않는 문자.** 폭 없는 공백, 방향 제어 문자, BOM이 섞이면 거부합니다.
+  `acme`와 `fast` 사이에 폭 없는 공백을 넣어도 거부됩니다.
+
+평범한 모델 ID는 그대로 통과합니다(`acme-fast`, `claude-3-5-sonnet-20241022`,
+`meta-llama/Llama-3.3-70B-Instruct-Turbo`). 거부되면 커서가 그 칸에서 넘어가지
+않고, 승인 창도 열리지 않으며, `providers.json`은 그대로 남습니다. 거부 문장에는
+입력한 값이 나오지 않고 `(값 숨김)` 표기만 붙습니다. 추론 강도 칸에 키를 넣으면
+목록에 없는 값이라는 문장보다 이 거부 문장이 먼저 뜹니다. CLI로 모델을 넣을
+때(`agy pro settings providers model-add-json`)는 같은 검사가 도구 이름에도
+적용됩니다.
 
 중요: 저장/삭제 버튼을 눌러도 **즉시 파일에 쓰지 않습니다**. 바뀐 내용의 정확한
 diff(어느 프로바이더, 몇 개에서 몇 개로, 어떤 필드가 추가/변경됐는지)를 보여 주는
@@ -557,7 +615,7 @@ agy pro fanout --task review --units plan.json --root .
 
 ### 5.1 상태줄 배지
 
-설치가 끝나면 Antigravity CLI(`agy`)를 **재시작**하세요. 터미널 하단에 이런 배지가 뜹니다.
+설치가 끝나면 Antigravity CLI(`agy`)를 **재시작**하세요. 터미널 하단에 이런 배지가 뜹니다. 배지에는 `agy-tokens` 런처가 필요합니다. 런처가 없는 컴퓨터에서는 설치할 때 상태줄 단계를 건너뛰고 그 사유를 한 줄로 알려 주며, `agy pro integrations status`가 그 상태를 보여 주고, 런처가 생기면 `agy pro integrations repair`가 이 단계를 마저 완료합니다(아래 "상태줄 배지가 안 보임" 항목).
 
 ```text
 ⚡ 이번 턴: 1.2k (₩0.3) | 오늘 누적: 45.8k (₩9.9) | 캐시: 82% | 5h: ▰▰▰▰▱ 79% (4h 10m) | 7d: ▱▱▱▱▱ 21% (3d 20h) | 📊 대시보드
@@ -726,11 +784,12 @@ agy pro fanout --task research -n 3 --search-endpoint "https://search.example.co
 |---|---|---|
 | `agy`를 인식하지 못함 | 새 터미널을 열었는가 | 설치 후 반드시 새 창. 그래도 안 되면 PATH에 `.agy-pro\bin`이 있는지 확인 |
 | `scripts\install.bat`이 Node 오류로 끝남 | `node --version`이 16 이상인가 | Node.js LTS 설치 후 새 창에서 재실행 |
-| 상태줄 배지가 안 보임 | `agy`를 재시작했는가 | `~/.gemini\antigravity-cli\settings.json`에 `statusLine` 블록이 있는지 확인 |
+| 상태줄 배지가 안 보임 | `agy`를 재시작했는가 | `agy pro integrations status`로 statusLine 항목 상태를 확인하고, 어긋났으면 `agy pro integrations repair`를 실행하세요. 수동 확인은 `~/.gemini\antigravity-cli\settings.json`의 `statusLine` 블록입니다 |
 | `agy pro doctor`에서 `invalid` | 환경 변수 이름이 `apiKeyEnv`와 같은가 | 이름(대소문자 포함)이 같고, 값이 현재 창에 설정됐는지 확인 |
 | `agy pro doctor`에서 `SKIP` | 프로바이더 미등록 | `agy pro setup`으로 등록 |
 | 대시보드 포트가 이미 사용 중 | 8787을 다른 프로그램이 쓰는가 | `agy-tokens --serve --port 8790 --open`처럼 다른 포트 지정 |
 | 스웜 좌석이 401/403 오류 | 프로바이더 키가 잘못됐는가 | 엔진이 자동으로 다른 등록 프로바이더로 넘어갑니다. 결과에 `degraded` 표시가 남음 |
+| `agy pro integrations` 명령 두 개를 동시에 실행 | 한 컴퓨터에서 한 번에 하나만 실행했는가 | 동시 실행은 서로 직렬화되지 않아 나중 명령이 매니페스트를 통째로 덮어씁니다. 먼저 배포한 항목이 기록에서 빠지면 `repair`로 드리프트를 맞추고, 남은 파일은 `adopt`나 다시 `apply`로 되찾으세요 |
 
 ---
 
@@ -741,17 +800,18 @@ agy pro fanout --task research -n 3 --search-endpoint "https://search.example.co
 클론해 둔 저장소 폴더 안의 `uninstall.cmd`를 두 번 클릭하는 것이 제일 간단합니다. 저장소 폴더가 이미 없다면 아래 한 줄로 제거 프로그램을 받아 실행하세요.
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr 'https://raw.githubusercontent.com/myk1yt/agy-tools/main/agy-pro/scripts/uninstall.ps1' -OutFile '$env:TEMP\agy-pro-uninstall.ps1' -UseBasicParsing; & '$env:TEMP\agy-pro-uninstall.ps1'"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr 'https://raw.githubusercontent.com/myk1yt/agy-pro/main/agy-pro/scripts/uninstall.ps1' -OutFile '$env:TEMP\agy-pro-uninstall.ps1' -UseBasicParsing; & '$env:TEMP\agy-pro-uninstall.ps1'"
 ```
 
 제거 프로그램이 하는 일:
 
-1. 사용자 PATH에서 `.agy-pro\bin` 항목을 제거합니다 (다른 항목은 손대지 않음).
-2. `사용자 폴더\.agy-pro` 전체를 **휴지통**으로 옮깁니다 (영구 삭제 안 함).
+1. 배포된 통합을 가장 먼저 되돌립니다. 그 파일들을 소유하는 것은 셔틀뿐이므로, 셔틀이 아직 있을 때 `agy pro integrations retract --yes`를 실행해 엔진이 Gemini 설정 트리에 배포한 규칙·플러그인·스킬·훅과 `statusLine` 항목을 `<AGY_PRO_HOME>/backups/<ts>_retract/`로 옮깁니다. `agy`를 찾지 못하면 그 사실을 알리고 다음 제거 전에 정상 설치본에서 같은 명령을 먼저 실행하라고 안내합니다.
+2. 사용자 PATH에서 `.agy-pro\bin` 항목을 제거합니다 (다른 항목은 손대지 않음).
+3. `사용자 폴더\.agy-pro` 전체를 **휴지통**으로 옮깁니다 (영구 삭제 안 함).
 
 옵션:
 
-- `-KeepState`: 셔틀만 제거하고 `providers.json`, `state.json`, 백업은 유지.
+- `-KeepState`: 셔틀만 제거하고 `providers.json`, `state.json`, 백업은 유지. 위 1단계 되돌리기는 `-KeepState`에서도 그대로 실행됩니다(배포 파일에 대한 단계이고 프로바이더 상태와는 무관합니다).
 - `-RestorePath`: 설치 전에 저장해 둔 사용자 PATH로 되돌림.
 - `-DryRun`: 아무것도 바꾸지 않고 계획만 출력.
 
@@ -759,14 +819,22 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr 'https://raw.githubu
 
 ### Node 툴킷 제거
 
-1. `~/.gemini/antigravity-cli/settings.json`에서 `statusLine` 블록을 지웁니다 (이 한 줄이 전부입니다).
-2. 전역 명령을 해제합니다.
+1. 먼저 배포된 통합을 엔진으로 되돌립니다. 수동으로 파일을 지우는 것보다 이쪽이 안전합니다
+   (배포 파일이 `<AGY_PRO_HOME>/backups/<ts>_retract/`로 옮겨집니다).
+
+```powershell
+agy pro integrations retract --yes
+```
+
+2. `agy` 없이 손으로 정리해야 한다면 `~/.gemini/antigravity-cli/settings.json`에서
+   `statusLine` 블록을 지웁니다 (이 블록이 `settings.json`에서 손으로 만질 유일한 항목입니다. 1단계를 돌리지 못한 상태라면 엔진이 배포한 규칙·스킬·플러그인·훅 폴더도 함께 지워야 합니다).
+3. 전역 명령을 해제합니다.
 
 ```powershell
 npm unlink -g agy-tools
 ```
 
-3. 클론해 둔 저장소 폴더를 지웁니다.
+4. 클론해 둔 저장소 폴더를 지웁니다.
 
 ---
 

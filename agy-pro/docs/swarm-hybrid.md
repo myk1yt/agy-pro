@@ -329,7 +329,7 @@ agy pro settings --panel p4      # deep-link one panel
 ```
 
 Panels: `Launch & Profile`, `Models & Providers`, `Bridge Tools & Budgets`, `Swarm & Fanout`,
-`Diagnostics & Keys`, `Install & Update`, `Environment Variables`.
+`Diagnostics & Keys`, `Install & Update`, `Environment Variables`, `Appearance`.
 
 Keys: `↑/↓` move, `PgUp`/`PgDn` (or `Shift+↑/↓`) page, `←/→` switch section, `Tab` confirm/switch,
 `Enter`/digits select, `y`/`n` confirm destructive operations, `Esc` back, `Ctrl+L` redraw, `Ctrl+C` exit.
@@ -350,7 +350,7 @@ editable ONLY in the hub, where its write goes through the before/after approval
 
 ```bash
 agy pro settings show [--json]
-agy pro settings set <key> <value>            # default-profile | bridge-tools | native-seat-concurrency
+agy pro settings set <key> <value>            # eleven keys: default-profile | bridge-tools | native-seat-concurrency | language | launcher_menu | integration-preset | integration-statusline | integration-hook | integration-rules | integration-plugins | integration-skills
 agy pro settings providers list | add-json <file|-> | add-interactive | test <name> |
                              rename <old> <new> | delete <name>
 agy pro settings mode switch <full|clean> | restore | list | status
