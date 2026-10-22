@@ -279,7 +279,6 @@ async function runCli(argv = process.argv) {
       console.log(`  ${formatter.styleText('↳', 'gray')} ${i18n.t('syncCacheSaved', { path: syncRes.path })}\n`);
     } else {
       console.log(`\n  ${formatter.styleText('⚠', 'brightYellow')} ${i18n.t('syncFailed', { error: syncRes.error, fallback: syncRes.source })}`);
-      console.log(`  ${formatter.styleText('↳', 'gray')} ${i18n.t('syncCacheSaved', { path: syncRes.path })}\n`);
     }
     return;
   }

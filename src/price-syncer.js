@@ -10,6 +10,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const crypto = require('crypto');
 const { URL } = require('url');
 
 const config = require('./config');
@@ -19,10 +20,113 @@ const formatter = require('./formatter');
 /**
  * Default remote pricing repository endpoint and system cache paths.
  */
-const DEFAULT_REMOTE_URL = 'https://raw.githubusercontent.com/myk1yt/agy-tools/main/data/pricing.json';
+const DEFAULT_REMOTE_URL = 'https://raw.githubusercontent.com/myk1yt/agy-pro/main/data/pricing.json';
+/**
+ * Host every hop of a catalog fetch is allowed to end at (see redirectRefusal):
+ * the catalog's own publisher. A redirect that leaves it is not the catalog.
+ */
+const DEFAULT_REMOTE_HOST = 'raw.githubusercontent.com';
 const SYNC_CACHE_FILE = path.join(os.homedir(), '.gemini', 'antigravity_pricing.json');
 const BUNDLED_PRICING_FILE = path.join(__dirname, '..', 'data', 'pricing.json');
 const MAX_CACHE_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
+/**
+ * Cap on one downloaded catalog. The real catalog is ~10 KiB; the cap only
+ * bounds how much a hostile or broken upstream can make this process buffer.
+ */
+const MAX_REMOTE_BYTES = 1024 * 1024;
+const RENAME_ATTEMPTS = 10;
+const RENAME_RETRY_MS = 25;
+
+/**
+ * Reports whether a hostname can only be reached from this machine. Loopback
+ * HTTP is not a network hop, so a plain-http catalog served there cannot be
+ * downgraded by anyone in between; that is the one transport exception below
+ * (it is what the local mock-server tests use).
+ * @param {string} hostname - URL hostname (IPv6 brackets optional).
+ * @returns {boolean} True for localhost, 127.0.0.0/8 and ::1.
+ */
+function isLoopbackHost(hostname) {
+  const host = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '');
+  return host === 'localhost' || host === '::1' || /^127\./.test(host);
+}
+
+/**
+ * Refuses a transport this module will not accept a catalog over: HTTPS
+ * everywhere, plain HTTP only on loopback (see isLoopbackHost). Applied to the
+ * first hop and to every redirect hop, so a redirect can never downgrade the
+ * fetch.
+ * @param {URL} parsed - Parsed target URL.
+ * @returns {string|null} Refusal sentence, or null when the transport is allowed.
+ */
+function transportRefusal(parsed) {
+  if (parsed.protocol === 'https:') {
+    return null;
+  }
+  if (parsed.protocol === 'http:' && isLoopbackHost(parsed.hostname)) {
+    return null;
+  }
+  return `refusing ${parsed.protocol} transport for the pricing catalog; https is required (plain http only on loopback)`;
+}
+
+/**
+ * Decides whether one redirect hop may be followed: the redirect must keep an
+ * allowed transport AND stay on the current host or on the pinned catalog host.
+ * Both facts are checked before a request is built, so a refused hop touches no
+ * network.
+ * @param {URL} redirect - Parsed Location of the redirect.
+ * @param {URL} current - URL that produced the redirect.
+ * @returns {string|null} Refusal sentence, or null when the hop may be followed.
+ */
+function redirectRefusal(redirect, current) {
+  const transport = transportRefusal(redirect);
+  if (transport) {
+    return `refusing a redirect that downgrades the fetch: ${transport}`;
+  }
+  const nextHost = redirect.hostname.toLowerCase();
+  const sameHost = nextHost === current.hostname.toLowerCase();
+  if (!sameHost && nextHost !== DEFAULT_REMOTE_HOST) {
+    return `refusing a redirect to a different host (${nextHost}); the pricing catalog is fetched from ${DEFAULT_REMOTE_HOST} only`;
+  }
+  return null;
+}
+
+/**
+ * Normalizes an expected catalog digest to bare lowercase hex.
+ * @param {string} [value] - Caller-supplied digest, with or without a sha256: prefix.
+ * @returns {string|null} 64 hex characters, or null when no pin was supplied.
+ */
+function normalizeSha256(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const hex = value.trim().toLowerCase().replace(/^sha256:/, '');
+  return /^[0-9a-f]{64}$/.test(hex) ? hex : null;
+}
+
+/**
+ * Failure to persist the pricing cache. Raised so a caller cannot mistake a failed
+ * write for a successful one; the previous cache stays intact in this case.
+ */
+class PricingSaveError extends Error {
+  /**
+   * @param {string} message - Human-readable failure reason.
+   * @param {object} [info={}] - Failure context.
+   * @param {string} [info.path] - Cache path that could not be replaced.
+   * @param {string} [info.tmpPath] - Temp file used for the write, when one was created.
+   * @param {string} [info.code] - Stable error code for callers that branch on the kind.
+   * @param {Error} [info.cause] - Underlying fs error.
+   */
+  constructor(message, info = {}) {
+    super(message);
+    this.name = 'PricingSaveError';
+    this.code = info.code || 'PRICING_SAVE_FAILED';
+    this.path = info.path || null;
+    this.tmpPath = info.tmpPath || null;
+    if (info.cause) {
+      this.cause = info.cause;
+    }
+  }
+}
 
 /**
  * Validates the schema and completeness of a pricing catalog object.
@@ -66,16 +170,21 @@ function validatePricingData(data) {
 
 /**
  * Fetches JSON content from a remote URL using Node.js built-in https/http modules.
- * Supports redirects and configurable timeout.
+ * Follows redirects (same-or-pinned host, https only) with a configurable timeout,
+ * caps the body size and reports the sha256 of the bytes it accepted.
  * @param {string} [targetUrl=DEFAULT_REMOTE_URL] - URL to fetch from.
  * @param {number} [timeoutMs=8000] - Request timeout in milliseconds.
  * @param {number} [maxRedirects=3] - Maximum HTTP redirect hops allowed.
- * @returns {Promise<{ success: boolean, data?: object, error?: string, statusCode?: number }>}
+ * @returns {Promise<{ success: boolean, data?: object, digest?: string, error?: string, statusCode?: number }>}
  */
 function fetchRemotePricing(targetUrl = DEFAULT_REMOTE_URL, timeoutMs = 8000, maxRedirects = 3) {
   return new Promise(resolve => {
     try {
       const parsed = new URL(targetUrl);
+      const refused = transportRefusal(parsed);
+      if (refused) {
+        return resolve({ success: false, error: refused });
+      }
       const client = parsed.protocol === 'http:' ? http : https;
 
       const reqOptions = {
@@ -92,15 +201,27 @@ function fetchRemotePricing(targetUrl = DEFAULT_REMOTE_URL, timeoutMs = 8000, ma
       };
 
       const req = client.request(reqOptions, res => {
-        // Handle HTTP Redirects
+        // Handle HTTP Redirects. A hop is checked before it is requested, so a
+        // downgrade or a foreign host is refused without touching the network.
         if (
           [301, 302, 307, 308].includes(res.statusCode) &&
           res.headers.location &&
           maxRedirects > 0
         ) {
-          const redirectUrl = new URL(res.headers.location, targetUrl).href;
+          let redirect = null;
+          try {
+            redirect = new URL(res.headers.location, targetUrl);
+          } catch (_err) {
+            res.resume(); // Discard redirect body
+            return resolve({ success: false, error: 'refusing a redirect with an unparseable Location header' });
+          }
+          const refusedHop = redirectRefusal(redirect, parsed);
+          if (refusedHop) {
+            res.resume(); // Discard redirect body
+            return resolve({ success: false, statusCode: res.statusCode, error: refusedHop });
+          }
           res.resume(); // Discard redirect body
-          return resolve(fetchRemotePricing(redirectUrl, timeoutMs, maxRedirects - 1));
+          return resolve(fetchRemotePricing(redirect.href, timeoutMs, maxRedirects - 1));
         }
 
         if (res.statusCode < 200 || res.statusCode >= 300) {
@@ -112,19 +233,47 @@ function fetchRemotePricing(targetUrl = DEFAULT_REMOTE_URL, timeoutMs = 8000, ma
           });
         }
 
+        const declared = Number(res.headers['content-length']);
+        if (Number.isFinite(declared) && declared > MAX_REMOTE_BYTES) {
+          res.resume();
+          return resolve({
+            success: false,
+            statusCode: res.statusCode,
+            error: `catalog exceeds the ${MAX_REMOTE_BYTES}-byte cap (declared ${declared} bytes)`
+          });
+        }
+
         let rawData = '';
+        let received = 0;
+        let tooLarge = false;
         res.setEncoding('utf8');
         res.on('data', chunk => {
+          if (tooLarge) {
+            return;
+          }
+          received += Buffer.byteLength(chunk, 'utf8');
+          if (received > MAX_REMOTE_BYTES) {
+            tooLarge = true;
+            return;
+          }
           rawData += chunk;
         });
 
         res.on('end', () => {
+          if (tooLarge) {
+            return resolve({
+              success: false,
+              statusCode: res.statusCode,
+              error: `catalog exceeds the ${MAX_REMOTE_BYTES}-byte cap`
+            });
+          }
           try {
             const parsedJson = JSON.parse(rawData);
             return resolve({
               success: true,
               statusCode: res.statusCode,
-              data: parsedJson
+              data: parsedJson,
+              digest: crypto.createHash('sha256').update(rawData, 'utf8').digest('hex')
             });
           } catch (jsonErr) {
             return resolve({
@@ -198,29 +347,133 @@ function loadLocalSyncedPricing(cachePath = SYNC_CACHE_FILE) {
 }
 
 /**
+ * Blocks the thread briefly without a busy spin where Atomics is available.
+ * @param {number} ms - Milliseconds to wait.
+ */
+function sleepBlocking(ms) {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch (_err) {
+    const until = Date.now() + ms;
+    while (Date.now() < until) {
+      // Last-resort spin when shared memory is unavailable
+    }
+  }
+}
+
+/**
+ * Replaces `destPath` with `content` atomically: the payload goes to a sibling temp
+ * file first and is renamed into place, so a reader sees either the whole previous
+ * catalog or the whole new one, never a truncated file. The temp file is this
+ * function's own artifact and never outlives a failure.
+ * @param {string} destPath - Destination file path.
+ * @param {string} content - Complete file content.
+ * @throws {PricingSaveError} When the content cannot be put in place.
+ */
+function writeFileAtomic(destPath, content) {
+  const tmpPath = `${destPath}.${Date.now()}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+  let failure = null;
+
+  try {
+    fs.mkdirSync(path.dirname(destPath), { recursive: true });
+    fs.writeFileSync(tmpPath, content, 'utf8');
+
+    // Windows can hold a transient lock or AV scan on the destination; retry briefly.
+    for (let attempt = 0; attempt < RENAME_ATTEMPTS; attempt++) {
+      try {
+        fs.renameSync(tmpPath, destPath);
+        return;
+      } catch (renameErr) {
+        failure = renameErr;
+        if (attempt < RENAME_ATTEMPTS - 1) {
+          sleepBlocking(RENAME_RETRY_MS);
+        }
+      }
+    }
+  } catch (writeErr) {
+    failure = failure || writeErr;
+  }
+
+  try {
+    fs.unlinkSync(tmpPath);
+  } catch (_unlinkErr) {
+    // Nothing to clean up: the temp file was never created or is already gone
+  }
+
+  throw new PricingSaveError(`${destPath}: ${failure.message}`, {
+    path: destPath,
+    tmpPath,
+    cause: failure
+  });
+}
+
+/**
  * Saves a pricing catalog object to the local sync cache file atomically.
+ * A failed save leaves the previous cache untouched and is reported, never swallowed.
  * @param {object} pricingData - Pricing catalog data.
  * @param {string} [destPath=SYNC_CACHE_FILE] - Destination cache file path.
- * @returns {boolean} True if saved successfully.
+ * @param {object} [extraMeta] - Extra `_meta` fields, e.g. the digest of the bytes fetched.
+ * @returns {boolean} True once the new catalog is in place.
+ * @throws {PricingSaveError} When the cache cannot be written (permissions, locked file, unusable path).
  */
-function saveSyncedPricing(pricingData, destPath = SYNC_CACHE_FILE) {
-  try {
-    const dir = path.dirname(destPath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
+function saveSyncedPricing(pricingData, destPath = SYNC_CACHE_FILE, extraMeta = null) {
+  const payload = {
+    ...pricingData,
+    _meta: {
+      ...(extraMeta || {}),
+      syncedAt: new Date().toISOString(),
+      nodeVersion: process.version,
+      platform: process.platform
     }
-    const payload = {
-      ...pricingData,
-      _meta: {
-        syncedAt: new Date().toISOString(),
-        nodeVersion: process.version,
-        platform: process.platform
-      }
-    };
-    fs.writeFileSync(destPath, JSON.stringify(payload, null, 2), 'utf8');
-    return true;
+  };
+
+  let content;
+  try {
+    content = JSON.stringify(payload, null, 2);
+  } catch (serializeErr) {
+    throw new PricingSaveError(`${destPath}: catalog is not serializable (${serializeErr.message})`, {
+      path: destPath,
+      code: 'PRICING_SERIALIZE_FAILED',
+      cause: serializeErr
+    });
+  }
+
+  writeFileAtomic(destPath, content);
+  return true;
+}
+
+/**
+ * Surfaces a degraded sync on the user's output instead of falling back quietly.
+ * `syncPricing` keeps returning the fallback catalog (the caller's behavior is
+ * unchanged); this only makes a failed refresh visible. Auto-refresh callers pass
+ * `silent: true` and stay quiet.
+ * @param {{ source: string, path: string, modelCount: number }} result - Fallback result.
+ */
+function warnDegradedSync(result) {
+  try {
+    process.stderr.write(
+      `  ⚠ pricing sync did not refresh the cache: ${result.path} still holds the ` +
+      `${result.source} catalog (${result.modelCount} models), so rates may be stale.\n`
+    );
   } catch (_err) {
-    return false;
+    // A failed warning must never break the sync path
+  }
+}
+
+/**
+ * Surfaces a sync whose fresh catalog could not be persisted. The cache still serves
+ * the previous catalog, so the caller's numbers stay stale until a save succeeds.
+ * @param {{ path: string, source: string, modelCount: number, error: string, saveError?: object }} result - Unsaved result.
+ */
+function warnSaveFailure(result) {
+  try {
+    const detail = result.saveError && result.saveError.message ? result.saveError.message : result.error;
+    process.stderr.write(
+      `  ⚠ pricing sync downloaded fresh rates but could not save them (${detail}). ` +
+      `The ${result.source} catalog (${result.modelCount} models) stays active, so rates may be stale.\n`
+    );
+  } catch (_err) {
+    // A failed warning must never break the sync path
   }
 }
 
@@ -231,39 +484,88 @@ function saveSyncedPricing(pricingData, destPath = SYNC_CACHE_FILE) {
  * @param {string} [options.url] - Custom remote URL.
  * @param {string} [options.destPath] - Custom destination path.
  * @param {number} [options.timeoutMs] - Custom timeout.
- * @returns {Promise<{ success: boolean, source: string, modelCount: number, version: string, lastUpdated: string, error?: string, path: string, timestamp: string }>}
+ * @param {boolean} [options.silent] - Suppress the degraded-sync warning (auto-refresh path).
+ * @param {string} [options.expectedSha256] - Pin for the catalog bytes; a mismatch degrades the sync.
+ * @returns {Promise<{ success: boolean, source: string, modelCount: number, version: string, lastUpdated: string, error?: string, digest?: string, saveError?: { name: string, code: string|null, path: string, tmpPath: string|null }, fetchedModelCount?: number, fetchedVersion?: string, path: string, timestamp: string }>}
  */
 async function syncPricing(options = {}) {
   const url = options.url || DEFAULT_REMOTE_URL;
   const destPath = options.destPath || SYNC_CACHE_FILE;
   const timeoutMs = options.timeoutMs || 8000;
+  const silent = Boolean(options.silent);
 
   const fetchResult = await fetchRemotePricing(url, timeoutMs);
+
+  // A caller that pins the catalog digest gets exactly those bytes or a
+  // reported degradation; the pin is never silently ignored.
+  const pinnedDigest = normalizeSha256(options.expectedSha256);
+  if (fetchResult.success && pinnedDigest && fetchResult.digest !== pinnedDigest) {
+    delete fetchResult.data;
+    fetchResult.success = false;
+    fetchResult.error = `catalog digest mismatch: downloaded ${fetchResult.digest}, expected ${pinnedDigest}`;
+  }
 
   if (fetchResult.success && fetchResult.data) {
     const validation = validatePricingData(fetchResult.data);
     if (validation.valid) {
-      saveSyncedPricing(fetchResult.data, destPath);
+      const models = fetchResult.data.models || fetchResult.data.pricing || {};
+      let saveError = null;
+      try {
+        saveSyncedPricing(fetchResult.data, destPath, fetchResult.digest ? { remoteSha256: fetchResult.digest } : null);
+      } catch (err) {
+        saveError = err;
+      }
 
       // Refresh in-memory config catalog
       config.loadUserConfig();
 
-      const models = fetchResult.data.models || fetchResult.data.pricing || {};
-      return {
-        success: true,
-        source: 'remote',
-        modelCount: Object.keys(models).length,
-        version: fetchResult.data.version || '1.0.0',
-        lastUpdated: fetchResult.data.lastUpdated || new Date().toISOString().split('T')[0],
+      if (!saveError) {
+        return {
+          success: true,
+          source: 'remote',
+          modelCount: Object.keys(models).length,
+          version: fetchResult.data.version || '1.0.0',
+          lastUpdated: fetchResult.data.lastUpdated || new Date().toISOString().split('T')[0],
+          digest: fetchResult.digest || null,
+          timestamp: new Date().toISOString(),
+          path: destPath
+        };
+      }
+
+      // Fresh rates arrived but could not be persisted: the cache still serves the old
+      // catalog, so report the degradation instead of claiming a successful save.
+      const cachedAfterFailure = loadLocalSyncedPricing(destPath);
+      const activeFallback = cachedAfterFailure || loadBundledPricing() || {};
+      const activeModels = activeFallback.models || activeFallback.pricing || {};
+      const unsaved = {
+        success: false,
+        source: cachedAfterFailure ? 'cached' : 'bundled',
+        modelCount: Object.keys(activeModels).length,
+        version: activeFallback.version || '1.0.0',
+        lastUpdated: activeFallback.lastUpdated || '',
+        error: `Cache write failed: ${saveError.message}`,
+        saveError: {
+          name: saveError.name || 'Error',
+          code: saveError.code || null,
+          message: saveError.message,
+          path: destPath,
+          tmpPath: saveError.tmpPath || null
+        },
+        fetchedModelCount: Object.keys(models).length,
+        fetchedVersion: fetchResult.data.version || '1.0.0',
         timestamp: new Date().toISOString(),
         path: destPath
       };
+      if (!silent) {
+        warnSaveFailure(unsaved);
+      }
+      return unsaved;
     }
 
     // Validation failed on remote data, fallback
     const fallback = loadLocalSyncedPricing(destPath) || loadBundledPricing() || {};
     const fallbackModels = fallback.models || fallback.pricing || {};
-    return {
+    const degraded = {
       success: false,
       source: loadLocalSyncedPricing(destPath) ? 'cached' : 'bundled',
       modelCount: Object.keys(fallbackModels).length,
@@ -273,6 +575,10 @@ async function syncPricing(options = {}) {
       timestamp: new Date().toISOString(),
       path: destPath
     };
+    if (!silent) {
+      warnDegradedSync(degraded);
+    }
+    return degraded;
   }
 
   // Fetch failed, fallback to local cache or bundled
@@ -281,7 +587,7 @@ async function syncPricing(options = {}) {
   const activeFallback = cachedData || bundledData || {};
   const activeModels = activeFallback.models || activeFallback.pricing || {};
 
-  return {
+  const degraded = {
     success: false,
     source: cachedData ? 'cached' : 'bundled',
     modelCount: Object.keys(activeModels).length,
@@ -291,6 +597,10 @@ async function syncPricing(options = {}) {
     timestamp: new Date().toISOString(),
     path: destPath
   };
+  if (!silent) {
+    warnDegradedSync(degraded);
+  }
+  return degraded;
 }
 
 /**
@@ -559,9 +869,12 @@ function formatPricingTable(currency = 'usd', lang = 'en', options = {}) {
 
 module.exports = {
   DEFAULT_REMOTE_URL,
+  DEFAULT_REMOTE_HOST,
   SYNC_CACHE_FILE,
   BUNDLED_PRICING_FILE,
   MAX_CACHE_AGE_MS,
+  MAX_REMOTE_BYTES,
+  PricingSaveError,
   validatePricingData,
   fetchRemotePricing,
   loadBundledPricing,
