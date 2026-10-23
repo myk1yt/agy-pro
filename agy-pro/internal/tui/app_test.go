@@ -288,6 +288,12 @@ func TestSetupLanguageChoicePersistsAndRerenders(t *testing.T) {
 
 func TestSetupReturningSkipsLanguageScreen(t *testing.T) {
 	appTestHome(t, "ko")
+	// assembleSetupApp binds the stored language through SetLanguage, so this
+	// test moves the package-level bundle exactly like the choice test above.
+	// It must hand English back: without the restore every later screen test
+	// that asserts English catalog text (dashboard, doctor, help, manual) reads
+	// Korean and fails in whatever test happens to run next.
+	defer SetLanguage("en")
 	app := assembleSetupApp(plainTestCap())
 	out := app.CaptureRun(&ScriptedKeys{})
 	if strings.Contains(out, i18n.Load("ko").T("lang.screen.title")) {

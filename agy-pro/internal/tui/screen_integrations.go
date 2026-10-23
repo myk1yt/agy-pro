@@ -15,8 +15,10 @@ import (
 )
 
 // Row IDs of the integrations screen, in display order. The five feature rows
-// toggle one feature each; the preset row opens a native/tools choice; the five
-// action rows compose the multi-feature writes.
+// toggle one feature each; two rows open a choice instead of composing a write
+// (the preset row opens the native/tools choice, the rollback row opens the
+// snapshot picker) and both carry integrationsPickerMarker; the five action
+// rows compose the multi-feature writes.
 const (
 	integrationsIDPreset   = "integrations.preset"
 	integrationsIDApply    = "integrations.apply"
@@ -31,10 +33,37 @@ func integrationsFeatureID(feature integrations.Feature) string {
 	return "integrations.feature." + string(feature)
 }
 
+// integrationsPickerMarker flags a row whose activation opens a choice instead
+// of composing a write. Two rows carry it (the preset row and the rollback row)
+// and the chrome legend below names it, so the gesture is visible without
+// opening the row.
+//
+// It is ASCII on purpose. A second arrow glyph would read as the list's own
+// "▶" cursor sitting one column to the right, and two ASCII cells measure the
+// same in every cellwidth class, so the marker costs the note budget nothing on
+// a frame whose notes are CJK.
+const integrationsPickerMarker = ">>"
+
 // integrationsChromeHint is the screen's own legend. English chrome by decision
 // 6B, like the doctor screen's hints: it names the gestures the list footer does
-// not (the gate and the refresh), and no catalog key carries chrome.
-const integrationsChromeHint = "every action is gated: y approves, n or Esc cancels · r re-reads the posture"
+// not (the gate, the refresh and the picker marker), and no catalog key carries
+// chrome. It is 75 cells so it fits the 80-column frame whole; a longer legend
+// would be cut at compose and lose the tail, which is where the picker sentence
+// sits.
+const integrationsChromeHint = "every action is gated (y/n) · r re-reads · Enter on a " +
+	integrationsPickerMarker + " row opens a choice"
+
+// integrationsStatuslineLauncherMissingNote is the screen's own chrome for the
+// one statusline posture no catalog can carry. The settings door's launcher
+// error renders as a localized prefix plus the documented launcher path (a
+// 44-cell path behind the prefix), the longest posture this screen puts in a row
+// note; past the row budget cellwidth refuses a mid-string cut inside the RTL
+// range, so in ar the whole row rendered as the empty string and the operator saw
+// a feature label with no state at all. English chrome by decision 6B (the screen
+// owns its state chrome, no catalog key), 32 cells: the note column fits it in
+// every catalog at 80 columns. The exact launcher path stays on the CLI door's
+// error and in the engine's approval diff.
+const integrationsStatuslineLauncherMissingNote = "launcher missing - apply refuses"
 
 // integrationsScreen is the hub's Integrations surface: five feature toggles, the
 // preset row, and the five actions that compose a multi-feature write. Every
@@ -175,9 +204,14 @@ func (s *integrationsScreen) readPosture(feature integrations.Feature) string {
 			if errors.As(err, &launcher) {
 				// The wrapper is what the door bakes into settings.json, so a
 				// missing launcher is the one posture a user must fix before any
-				// statusLine write can be planned. The documented shape is the
-				// message, exactly as the CLI door says it.
-				return s.b.T("integrations.status.launcher_missing") + " " + launcher.Shape
+				// statusLine write can be planned. The sentence is chrome, not
+				// catalog text: a localized prefix plus launcher.Shape, the longest
+				// posture this screen renders, and past the row budget cellwidth
+				// refuses a mid-string cut inside the RTL range, so in ar the whole
+				// row rendered EMPTY - a label with no state. The exact launcher path
+				// stays on the CLI door's error and in the engine's approval diff,
+				// where it is a copyable operand.
+				return integrationsStatuslineLauncherMissingNote
 			}
 			return s.b.T("integrations.status.unavailable") + ": " + providers.MaskOperand(errText(err))
 		}
@@ -221,7 +255,11 @@ func (s *integrationsScreen) readPosture(feature integrations.Feature) string {
 // syncRows rebuilds the row list when the language or the posture changed. The
 // feature rows carry the intent and the engine posture side by side, which is the
 // honest reading of the two stores: the intent is what the user asked for, the
-// posture is what is on disk.
+// posture is what is on disk. The action rows carry what the row DOES instead -
+// they are writes, not features, so a description is the only thing that tells a
+// reader the difference between "Retract all" and "Rollback" without opening the
+// gate. The pending row's description is stateful: it carries the count of the
+// features Enter would deploy, read from the same slice the composition reads.
 func (s *integrationsScreen) syncRows() {
 	if !s.dirty && s.rows != nil {
 		return
@@ -238,18 +276,43 @@ func (s *integrationsScreen) syncRows() {
 	s.rows = append(s.rows,
 		Row{
 			Label: s.b.T("integrations.row.preset"),
+			// The marker trails the state line: the composed preset and the
+			// n-of-5 count are what this row is read for, so they keep the
+			// leading position and the marker only adds the gesture.
 			Note: s.b.Tf("integrations.preset.note", map[string]string{
 				"preset": s.presetWord(),
 				"on":     fmt.Sprint(s.onCount()),
 				"total":  fmt.Sprint(len(integrations.AllFeatures())),
-			}),
+			}) + " · " + integrationsPickerMarker,
 			ID: integrationsIDPreset,
 		},
-		Row{Label: s.b.T("integrations.action.apply_pending"), ID: integrationsIDApply},
-		Row{Label: s.b.T("integrations.action.retract_all"), ID: integrationsIDRetract},
-		Row{Label: s.b.T("integrations.action.adopt"), ID: integrationsIDAdopt},
-		Row{Label: s.b.T("integrations.action.rollback"), ID: integrationsIDRollback},
-		Row{Label: s.b.T("integrations.action.repair"), ID: integrationsIDRepair},
+		Row{
+			Label: s.b.T("integrations.action.apply_pending"),
+			Note:  s.b.Tf("integrations.row.help.apply_pending", map[string]string{"n": fmt.Sprint(len(s.pending))}),
+			ID:    integrationsIDApply,
+		},
+		Row{
+			Label: s.b.T("integrations.action.retract_all"),
+			Note:  s.b.T("integrations.row.help.retract_all"),
+			ID:    integrationsIDRetract,
+		},
+		Row{
+			Label: s.b.T("integrations.action.adopt"),
+			Note:  s.b.T("integrations.row.help.adopt"),
+			ID:    integrationsIDAdopt,
+		},
+		Row{
+			Label: s.b.T("integrations.action.rollback"),
+			// The marker leads here: this row has no state line to keep in front
+			// of it, so the gesture is the first thing the eye must catch.
+			Note: integrationsPickerMarker + " " + s.b.T("integrations.row.help.rollback"),
+			ID:   integrationsIDRollback,
+		},
+		Row{
+			Label: s.b.T("integrations.action.repair"),
+			Note:  s.b.T("integrations.row.help.repair"),
+			ID:    integrationsIDRepair,
+		},
 	)
 	cursor := s.list.Cursor()
 	s.list.SetRows(s.rows)

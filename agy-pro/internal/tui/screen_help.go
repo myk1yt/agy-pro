@@ -51,9 +51,13 @@ const (
 	// catalog-resolved, fallback kept: help.color.note
 	helpColorNote = "Detected once at startup: a non-console output or NO_COLOR forces plain, a VT probe gates color at all, then WT_SESSION or COLORTERM=truecolor picks truecolor and every other console gets 256 colors. Set AGY_PRO_COLOR to truecolor, 256, 16, or off to force a tier."
 	// English chrome (decision 6B keeps chrome English, so this hint carries
-	// no catalog key). The line names both halves of the close contract: the
-	// six scroll keys and the three keys that close the overlay.
-	helpCloseHint = "Up/Down/PgUp/PgDn/Home/End scroll; Esc/q/Enter close this overlay."
+	// no catalog key). The line names the overlay's whole contract: the six
+	// scroll keys, the Enter door into the manual browser, and the two keys
+	// that close the overlay. Enter left the close set when the door landed:
+	// the overlay is the manual's front door (user ask: a per-feature manual
+	// readable with Enter), so a stray Enter now opens the manual instead of
+	// dismissing the document, and Esc/q still close.
+	helpCloseHint = "Up/Down/PgUp/PgDn/Home/End scroll; Enter opens the AGY manual; Esc/q close."
 )
 
 // helpLine is one row of a help section: a left key/path column plus a
@@ -71,19 +75,24 @@ type helpSection struct {
 }
 
 // helpScreen is S12: the scrollable read-only help overlay. It carries the
-// full key map, the storage file locations, the RTL scope note, the
-// color-tier note, and the numbered-selection reminder.
+// guide section (what agy pro does plus the door into the manual browser), the
+// full key map, the storage file locations, the RTL scope note, the color-tier
+// note, and the numbered-selection reminder.
 //
-// Close contract (decision D5-5B): Up/Down scroll by one line and
-// PgUp/PgDn by one page, Home/End jump to either edge, Esc/q/Enter close the
-// overlay, and every other key is inert so a stray press cannot dismiss the
-// document the operator is reading. HandleKey calls a.Pop() as the primary
-// close mechanism, which the shell satisfies because it pushes the overlay
-// over the calling screen. When help is the root screen (a degenerate
-// standalone use with nothing beneath), Pop reports false and a.Exit()
-// closes the app instead, so the invariant holds in every stack shape. Esc
-// normally never reaches HandleKey: the App-level precedence pops the overlay
-// one step earlier, so the KeyEsc case covers the direct-drive path only.
+// Reading contract (decision D5-5B, amended by the manual door): Up/Down scroll
+// by one line and PgUp/PgDn by one page, Home/End jump to either edge, Enter
+// opens the manual browser, Esc/q close the overlay, and every other key is
+// inert so a stray press cannot dismiss the document the operator is reading.
+// openManual calls a.Pop() before pushing the manual, so the manual sits on the
+// screen that opened help and Esc from the manual lands back there rather than
+// on this overlay. The close path keeps the D5-5B shape: HandleKey calls
+// a.Pop() as the primary close mechanism, which the shell satisfies because it
+// pushes the overlay over the calling screen, and when help is the root screen
+// (a degenerate standalone use with nothing beneath) Pop reports false and
+// a.Exit() closes the app instead, so the invariant holds in every stack shape.
+// Esc normally never reaches HandleKey: the App-level precedence pops the
+// overlay one step earlier, so the KeyEsc case covers the direct-drive path
+// only.
 type helpScreen struct {
 	bundle   *i18n.Bundle
 	sections []helpSection
@@ -104,11 +113,25 @@ func NewHelpScreen() Screen {
 	return h
 }
 
-// buildSections composes the overlay content: key map, storage locations,
-// RTL scope, color tier, numbered-selection reminder.
+// buildSections composes the overlay content: the guide into the manual, the key
+// map, storage locations, RTL scope, color tier, numbered-selection reminder.
 func (h *helpScreen) buildSections() []helpSection {
 	b := h.bundle
 	return []helpSection{
+		{
+			// The guide is the overlay's first section: three plain sentences
+			// naming what agy pro adds, then the door sentence naming the
+			// gesture. All four resolve through the catalog, so a reader in any
+			// of the twelve languages is told how to reach the manual in that
+			// language.
+			title: b.T("help.section.guide"),
+			lines: []helpLine{
+				{key: "", desc: b.T("help.guide.line.1")},
+				{key: "", desc: b.T("help.guide.line.2")},
+				{key: "", desc: b.T("help.guide.line.3")},
+				{key: "", desc: b.T("help.guide.manual")},
+			},
+		},
 		{
 			title: b.T("help.section.keys"),
 			lines: []helpLine{
@@ -220,11 +243,11 @@ func (h *helpScreen) Draw(a *App) []string {
 	return append(out, "", helpCloseHint)
 }
 
-// HandleKey implements the close contract documented on helpScreen: Up/Down
-// scroll one line, PgUp/PgDn one page, Home/End jump to either edge, and only
-// Esc/q/Enter close the overlay (a.Pop, with a.Exit as the root-screen
-// fallback). Any other key is inert, so the arrows the footer advertises
-// scroll the document instead of dismissing it.
+// HandleKey implements the reading contract documented on helpScreen: Up/Down
+// scroll one line, PgUp/PgDn one page, Home/End jump to either edge, Enter opens
+// the manual browser, and only Esc/q close the overlay (a.Pop, with a.Exit as
+// the root-screen fallback). Any other key is inert, so the arrows the footer
+// advertises scroll the document instead of dismissing it.
 func (h *helpScreen) HandleKey(k Key, a *App) {
 	switch k {
 	case KeyUp:
@@ -239,6 +262,8 @@ func (h *helpScreen) HandleKey(k Key, a *App) {
 		h.sc.home()
 	case KeyEnd:
 		h.sc.end(h.page)
+	case KeyEnter:
+		h.openManual(a)
 	default:
 		if isHelpCloseKey(k) {
 			if !a.Pop() {
@@ -248,14 +273,25 @@ func (h *helpScreen) HandleKey(k Key, a *App) {
 	}
 }
 
-// isHelpCloseKey reports whether k closes the overlay: Esc, Enter, or q. Esc
-// normally never reaches HandleKey (the App-level precedence pops it first),
-// so this is the direct-drive path. The console reader delivers a printable
-// letter as the rune carrier (Caps Lock included) and the scripted and
-// line-mode seams hand over the plain spelling, so both forms resolve here.
+// openManual is the overlay's Enter door: it steps this overlay aside and pushes
+// the manual browser, so the manual sits on the screen that opened help and Esc
+// from the manual lands there in one step instead of on this overlay again. The
+// pop reports false only when help is the root screen (the degenerate standalone
+// stack), and the manual then stacks above it so Esc still has somewhere to go.
+func (h *helpScreen) openManual(a *App) {
+	a.Pop()
+	a.Push(NewManualScreen())
+}
+
+// isHelpCloseKey reports whether k closes the overlay: Esc or q. Enter is not in
+// this set any more: it opens the manual browser (openManual), which is the door
+// the guide section and the close hint both name. Esc normally never reaches
+// HandleKey (the App-level precedence pops it first), so this is the
+// direct-drive path. The console reader delivers a printable letter as the rune
+// carrier (Caps Lock included) and the scripted and line-mode seams hand over
+// the plain spelling, so both forms resolve here.
 func isHelpCloseKey(k Key) bool {
-	switch k {
-	case KeyEsc, KeyEnter:
+	if k == KeyEsc {
 		return true
 	}
 	if k == Key("q") {
@@ -265,9 +301,12 @@ func isHelpCloseKey(k Key) bool {
 	return ok && (r == 'q' || r == 'Q')
 }
 
-// wrapCells word-wraps one paragraph to w display cells. Long single words
-// are truncated through cellwidth (which refuses mid-string cuts on RTL
-// scripts, so an overlong RTL word renders whole or not at all).
+// wrapCells word-wraps one paragraph to w display cells. A word wider than the
+// frame is broken across rows through cellwidth, never dropped: a script written
+// without spaces (CJK) hands the wrapper one long run per sentence, and cutting
+// it once would silently lose the rest of the sentence. cellwidth refuses a
+// mid-string cut on RTL, which is the one case that still renders as an empty
+// row (FIX-15's shape); the caller's page/row budget absorbs it.
 func wrapCells(s string, w int) []string {
 	if w < 1 {
 		w = 1
@@ -291,15 +330,28 @@ func wrapCells(s string, w int) []string {
 			}
 			if line != "" {
 				out = append(out, line)
-			}
-			if cellwidth.String(word) > w {
-				out = append(out, cellwidth.Truncate(word, w))
 				line = ""
-			} else {
-				line = word
 			}
+			for cellwidth.String(word) > w {
+				head := cellwidth.Truncate(word, w)
+				if head == "" {
+					out = append(out, "")
+					word = ""
+					break
+				}
+				out = append(out, head)
+				runes, cut := []rune(word), len([]rune(head))
+				if cut <= 0 || cut >= len(runes) {
+					word = ""
+					break
+				}
+				word = string(runes[cut:])
+			}
+			line = word
 		}
-		out = append(out, line)
+		if line != "" {
+			out = append(out, line)
+		}
 	}
 	return out
 }

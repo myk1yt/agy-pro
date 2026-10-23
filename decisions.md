@@ -547,3 +547,25 @@ Consequences for sequencing: F3(a) and P1-7(a) are prerequisites for P5; P4 (28 
   20261023_021405); final posture: statusline recorded, hook 1 clean, rules 3 / plugins 43 / skills 52
   clean; commit 98e9af1 pushed. The user's next `agy pro setup` + agy run is the first real host turn
   for the pinned hook command (badge mode now actually receives --hook).
+
+## 2026-10-23 - UI enhancement wave: integrations row explanations + ten-topic manual browser (post-2109cc5)
+
+- CEO asked for per-row explanations on the Integrations screen and a manual readable
+  by Enter on the Help surface. Landed across five units: UI-1 (action-row localized notes,
+  ">>" picker marker on both picker rows, chrome-hint rewrite), FIX-15 (ar statusline row
+  rendered EMPTY via the cellwidth RTL-refusal -> English screen chrome const for the
+  launcher-missing posture; all-12 row fit pin un-skipped feature rows), UI-2 (screen_manual.go
+  browser: topic list + stacked page screens, 10 topics = nine hub surfaces + CLI; help overlay
+  gains the guide section and Enter-now-opens-the-manual contract change; two pre-existing test
+  home-leak fixes in linemode/app tests), FIX-16 (en authoring-token P1 + new catalog lint
+  {a-z tokens}; all-12 list pin with label-whole+teaser-whole; 21 teaser rewrites; parity pin
+  non-vacuity; q-close; MANUAL.ko.md hub-list staleness), FIX-17 (all-12 page pins with a
+  two-tier rule en/ko/ar scroll-free + others window+4; fr/it/ja topic-9 trims; found+fixed a
+  REAL text-loss bug - wrapCells dropped 676 CJK runes past an over-frame word; loss now 0).
+- Review: UI delta quartet (k3/mimopro/nwglmflex/stepfun) -> 2 P1 + 3 P2 all closed by FIX-16 ->
+  confirmation quartet (k3/mimoflash/nwglmflex/stepfun) all PASS -> FIX-17 (new P2 from the
+  confirmation k3 seat) closed with its own pins. Carried accepted: 1-cell-headroom list rows
+  (guard-pinned), ar over-frame-word blank-row path (loud via the blank-line clause), pageSizeFor
+  chrome under-reserve latent at current 10 topics.
+- Gates at close: build/vet + linux/darwin cross-vet ok; tui/cmd/i18n/integrations/settings
+  -count=1 ok; node suite 296/0. Rebuilt shim + reinstalled after commit.

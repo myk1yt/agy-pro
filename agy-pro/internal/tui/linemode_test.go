@@ -118,7 +118,13 @@ func TestLineModeHelpBlock(t *testing.T) {
 	}
 
 	// runSetup wires the session's output stream, so the block is reachable in
-	// production and not only in this test.
+	// production and not only in this test. The shell binds the stored UI
+	// language through SetLanguage while it assembles, so this call needs an
+	// isolated home: without one it reads the operator's live
+	// ~/.agy-pro/state.json and leaves that language in the package-level
+	// bundle, which made every later test that asserts English catalog text
+	// (dashboard, doctor, help, manual) fail in a full run.
+	t.Setenv("AGY_PRO_HOME", t.TempDir())
 	var framed strings.Builder
 	if code := runSetup(strings.NewReader("help\nq\n"), &framed, &strings.Builder{}, plainTestCap()); code != 0 {
 		t.Fatalf("runSetup exit code = %d; want 0", code)

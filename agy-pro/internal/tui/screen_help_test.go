@@ -32,9 +32,12 @@ func newHelpAppAt(height int, root *stubScreen) *App {
 	return app
 }
 
-// newHelpApp pushes a help overlay at a tall frame (everything visible).
+// newHelpApp pushes a help overlay at a tall frame (everything visible). The
+// height covers the whole document: the guide section landed first and pushed
+// the color-tier note past the 42-line window a 48-row frame provides, so the
+// full-document pins measure at 72 rows instead of shrinking the sections.
 func newHelpApp(root *stubScreen) *App {
-	return newHelpAppAt(48, root)
+	return newHelpAppAt(72, root)
 }
 
 // TestHelpKeyMapRows pins the full key map from plan-v2 section 4: arrows,
@@ -122,7 +125,8 @@ func TestHelpColorTierNote(t *testing.T) {
 
 // TestHelpScrollsByPgDn pins overlay scrolling: the color-tier section sits
 // past the first window at a small frame height and reaches it via PgDn;
-// scroll keys never close the overlay.
+// scroll keys never close the overlay. The page count covers the whole document
+// at the 4-line window a 10-row frame provides, guide section included.
 func TestHelpScrollsByPgDn(t *testing.T) {
 	helpTestEnv(t)
 	baseline := newHelpAppAt(10, nil)
@@ -137,7 +141,7 @@ func TestHelpScrollsByPgDn(t *testing.T) {
 	app.Push(root)
 	app.Push(helpScr)
 	var keys []Key
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 16; i++ {
 		keys = append(keys, KeyPgDn)
 	}
 	out := app.CaptureRun(&ScriptedKeys{Keys: keys})
@@ -161,9 +165,9 @@ func TestHelpArrowsScrollWithoutClosing(t *testing.T) {
 	app.Push(helpScr)
 
 	top := app.Frame().String() // the first draw derives page = 4
-	keysTitle := Bundle().T("help.section.keys")
-	if !strings.Contains(top, keysTitle) {
-		t.Fatalf("the first window must open on the key map; frames:\n%s", top)
+	guideTitle := Bundle().T("help.section.guide")
+	if !strings.Contains(top, guideTitle) {
+		t.Fatalf("the first window must open on the guide section; frames:\n%s", top)
 	}
 	if off := helpScr.sc.off; off != 0 {
 		t.Fatalf("scroll offset = %d before any press, want 0", off)
@@ -182,8 +186,8 @@ func TestHelpArrowsScrollWithoutClosing(t *testing.T) {
 	if scrolled == top {
 		t.Fatalf("three Down presses did not change the window; frames:\n%s", scrolled)
 	}
-	if strings.Contains(scrolled, keysTitle) {
-		t.Fatalf("the key-map title is still on screen after three Down presses; the window did not move:\n%s", scrolled)
+	if strings.Contains(scrolled, guideTitle) {
+		t.Fatalf("the guide title is still on screen after three Down presses; the window did not move:\n%s", scrolled)
 	}
 
 	app.Step(KeyUp)
@@ -195,12 +199,13 @@ func TestHelpArrowsScrollWithoutClosing(t *testing.T) {
 	}
 }
 
-// TestHelpCloseKeysClose pins the three keys that close the overlay: Enter and
-// q through the App dispatch, Esc on the direct-drive path (App.Step pops Esc
-// before HandleKey sees it, which TestHelpEscCloses covers).
+// TestHelpCloseKeysClose pins the two keys that close the overlay: q through the
+// App dispatch and Esc on the direct-drive path (App.Step pops Esc before
+// HandleKey sees it, which TestHelpEscCloses covers). Enter left the close set
+// when it became the manual door; TestHelpOpensManual pins its new meaning.
 func TestHelpCloseKeysClose(t *testing.T) {
 	helpTestEnv(t)
-	for _, k := range []Key{KeyEnter, RuneKey('q'), Key("q"), RuneKey('Q')} {
+	for _, k := range []Key{RuneKey('q'), Key("q"), RuneKey('Q')} {
 		root := &stubScreen{title: "Hub", mode: ModeNav}
 		app := newHelpApp(root)
 		app.CaptureRun(&ScriptedKeys{Keys: []Key{k}})
@@ -232,27 +237,56 @@ func TestHelpIgnoresKeysOutsideTheContract(t *testing.T) {
 		helpScr := app.Top()
 		app.Step(k)
 		if app.Depth() != 2 || app.Top() != helpScr {
-			t.Fatalf("key %q closed the overlay; only Esc/q/Enter may (depth %d)", k, app.Depth())
+			t.Fatalf("key %q closed the overlay; only Esc/q close, and Enter opens the manual (depth %d)", k, app.Depth())
 		}
 	}
 }
 
 // TestHelpCloseHintMatchesContract pins the hint line under the window against
-// the new close contract: it names the six scroll keys and the three close
-// keys, and drops the retired any-other-key promise.
+// the reading contract: it names the six scroll keys, the Enter door into the
+// manual, and the two close keys, and drops the retired any-other-key promise.
 func TestHelpCloseHintMatchesContract(t *testing.T) {
 	helpTestEnv(t)
 	out := newHelpApp(nil).CaptureRun(&ScriptedKeys{})
 	if !strings.Contains(out, helpCloseHint) {
 		t.Fatalf("close hint %q missing from the overlay; frames:\n%s", helpCloseHint, out)
 	}
-	for _, want := range []string{"Up/Down", "PgUp/PgDn", "Home/End", "Esc", "q", "Enter"} {
+	for _, want := range []string{"Up/Down", "PgUp/PgDn", "Home/End", "Enter", "Esc", "q"} {
 		if !strings.Contains(helpCloseHint, want) {
 			t.Fatalf("close hint %q does not name %q", helpCloseHint, want)
 		}
 	}
 	if strings.Contains(helpCloseHint, "any other key") {
 		t.Fatalf("close hint still promises the retired any-key contract: %q", helpCloseHint)
+	}
+	if !strings.Contains(helpCloseHint, "manual") {
+		t.Fatalf("close hint %q does not name the manual door Enter opens", helpCloseHint)
+	}
+}
+
+// TestHelpGuideSection pins the guide section: it is the overlay's FIRST
+// section, it resolves through the catalog (not the key IDs), and its last line
+// names the gesture that opens the manual.
+func TestHelpGuideSection(t *testing.T) {
+	helpTestEnv(t)
+	out := newHelpApp(nil).CaptureRun(&ScriptedKeys{})
+	b := Bundle()
+	title := b.T("help.section.guide")
+	if !strings.Contains(out, title) {
+		t.Fatalf("guide section title %q missing; frames:\n%s", title, out)
+	}
+	guideAt := strings.Index(out, title)
+	keysAt := strings.Index(out, b.T("help.section.keys"))
+	if guideAt < 0 || keysAt < 0 || guideAt > keysAt {
+		t.Fatalf("the guide section is not the first section (guide at %d, keys at %d)", guideAt, keysAt)
+	}
+	for _, key := range []string{"help.guide.line.1", "help.guide.line.2", "help.guide.line.3", "help.guide.manual"} {
+		if b.T(key) == key {
+			t.Fatalf("%s did not resolve: the catalog is missing the guide sentence", key)
+		}
+	}
+	if !strings.Contains(b.T("help.guide.manual"), "Enter") {
+		t.Fatalf("the door sentence %q does not name Enter", b.T("help.guide.manual"))
 	}
 }
 
@@ -270,11 +304,12 @@ func TestHelpEscCloses(t *testing.T) {
 
 // TestHelpCloseKeyClosesAtRoot pins the degenerate standalone case: help as
 // the root screen has nothing beneath it, so a close key closes the app (the
-// documented Pop-fallback-to-Exit choice) instead of hanging.
+// documented Pop-fallback-to-Exit choice) instead of hanging. q is the key that
+// still closes the overlay; Enter opens the manual and is pinned next door.
 func TestHelpCloseKeyClosesAtRoot(t *testing.T) {
 	helpTestEnv(t)
 	app := newHelpApp(nil)
-	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyEnter}})
+	out := app.CaptureRun(&ScriptedKeys{Keys: []Key{RuneKey('q')}})
 	if n := strings.Count(out, helpCloseHint); n != 1 {
 		t.Fatalf("frame count = %d, want 1 (run must end); frames:\n%s", n, out)
 	}

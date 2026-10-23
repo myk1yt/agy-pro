@@ -126,6 +126,64 @@ func TestPlaceholderParity(t *testing.T) {
 	}
 }
 
+// authoringTokenRe matches a SINGLE-brace authoring token: the shape a catalog
+// author writes for a value a template fills in ({iapply}, {drefresh}, {eight}).
+// Bundle.T and Bundle.Tf fill only the {{double}} slot form, so a single-brace
+// token is always a defect: it reaches the frame verbatim, and in en that means
+// every other locale inherits the raw token through the fallback chain. The
+// pattern is deliberately tight (lowercase start, then lowercase, digits and
+// underscore) so ordinary prose cannot trip it, and it is applied to the value
+// AFTER every {{slot}} span is blanked: "{{n}}" contains the substring "{n}",
+// which would otherwise read as a token.
+var authoringTokenRe = regexp.MustCompile(`\{[a-z][a-z0-9_]*\}`)
+
+// authoringTokenIn returns the first single-brace authoring token in v, or "".
+func authoringTokenIn(v string) string {
+	return authoringTokenRe.FindString(slotRe.ReplaceAllString(v, ""))
+}
+
+// TestNoAuthoringTokens: no catalog value may ship a single-brace authoring
+// token. The defect this pins is real history (FIX-16 P1-A): a value written as
+// a template string landed in en.json with the tokens intact, so the rendered
+// page read "the {iapply} row deploys ...", and en is the fallback locale every
+// other catalog leans on.
+func TestNoAuthoringTokens(t *testing.T) {
+	for code, m := range readAllCatalogs(t) {
+		for k, v := range m {
+			if tok := authoringTokenIn(v); tok != "" {
+				t.Errorf("%s.json: key %q ships the authoring token %s; T and Tf fill only the {{name}} slot form, so this value would render verbatim",
+					code, k, tok)
+			}
+		}
+	}
+}
+
+// TestAuthoringTokenLintBites pins the lint itself, so a future refactor cannot
+// turn TestNoAuthoringTokens into a no-op: a planted token is caught, and the
+// four near-miss shapes (a real {{slot}}, an uppercase body, an unterminated
+// brace, plain prose) stay green.
+func TestAuthoringTokenLintBites(t *testing.T) {
+	cases := []struct {
+		value string
+		want  string
+	}{
+		{"The {iapply} row deploys every feature.", "{iapply}"},
+		{"{drefresh} runs one bounded refresh.", "{drefresh}"},
+		{"eight sections: {eight}", "{eight}"},
+		{"rows: {a} and {b_2}", "{a}"},
+		{"{{n}} providers", ""},
+		{"{{providers}} | {{presets}} | {{lang}}", ""},
+		{"no braces here at all", ""},
+		{"{Apply} is not the token shape", ""},
+		{"a {b unterminated and c} d", ""},
+	}
+	for _, c := range cases {
+		if got := authoringTokenIn(c.value); got != c.want {
+			t.Errorf("authoringTokenIn(%q) = %q, want %q", c.value, got, c.want)
+		}
+	}
+}
+
 // TestValueHygiene: no ESC, CR, LF, em-dash, or community banner URL inside
 // any value. Values are single-line by contract.
 func TestValueHygiene(t *testing.T) {

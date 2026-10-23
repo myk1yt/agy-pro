@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -8,6 +10,7 @@ import (
 	"testing"
 
 	"agypro/internal/agysettings"
+	"agypro/internal/cellwidth"
 	"agypro/internal/i18n"
 	"agypro/internal/integrations"
 	"agypro/internal/mode"
@@ -111,6 +114,276 @@ func TestIntegrationsScreenRows(t *testing.T) {
 	if got := len(screen.rows); got != 11 {
 		t.Fatalf("rows = %d, want 11 (5 features + preset + 5 actions)", got)
 	}
+}
+
+// TestIntegrationsScreenActionRowNotes pins the explanation every action row
+// carries: the five write rows resolve their catalog description in BOTH
+// catalogs this screen ships against (en is the schema, ko is the language the
+// observation was made in), and the pending row's note carries the live count
+// the composition reads instead of a constant. A row whose label is a bare verb
+// ("Adopt", "Repair", "Rollback") was the whole problem: nothing on the frame
+// said what activating it would do.
+func TestIntegrationsScreenActionRowNotes(t *testing.T) {
+	integrationsTestHome(t)
+	integrationsWriteState(t, mode.State{IntegrationRules: mode.IntegrationToggleOn})
+
+	for _, lang := range []string{"en", "ko"} {
+		SetLanguage(lang)
+		b := i18n.Load(lang)
+		app, screen := integrationsScreenApp(t)
+		app.Frame()
+		if len(screen.pending) != 1 || screen.pending[0] != integrations.FeatureRules {
+			t.Fatalf("%s: pending = %v, want the rules feature alone", lang, screen.pending)
+		}
+		want := []struct {
+			idx  int
+			text string
+		}{
+			{6, b.Tf("integrations.row.help.apply_pending", map[string]string{"n": "1"})},
+			{7, b.T("integrations.row.help.retract_all")},
+			{8, b.T("integrations.row.help.adopt")},
+			{9, b.T("integrations.row.help.rollback")},
+			{10, b.T("integrations.row.help.repair")},
+		}
+		for _, tc := range want {
+			if strings.TrimSpace(tc.text) == "" {
+				t.Fatalf("%s: the row %d description resolves empty", lang, tc.idx+1)
+			}
+			note := screen.rows[tc.idx].Note
+			if tc.idx == 9 {
+				// The rollback row is a picker: the marker leads its note.
+				if note != integrationsPickerMarker+" "+tc.text {
+					t.Fatalf("%s: row %d note = %q, want the marker then %q", lang, tc.idx+1, note, tc.text)
+				}
+				continue
+			}
+			if !strings.Contains(note, tc.text) {
+				t.Fatalf("%s: row %d note = %q, want it to carry %q", lang, tc.idx+1, note, tc.text)
+			}
+		}
+	}
+
+	// The pending count is state, not a constant: a second pending feature moves
+	// the number the row shows.
+	SetLanguage("en")
+	integrationsWriteState(t, mode.State{
+		IntegrationRules:  mode.IntegrationToggleOn,
+		IntegrationSkills: mode.IntegrationToggleOn,
+	})
+	app, screen := integrationsScreenApp(t)
+	app.Frame()
+	if len(screen.pending) != 2 {
+		t.Fatalf("pending = %v, want two features", screen.pending)
+	}
+	if want := i18n.Load("en").Tf("integrations.row.help.apply_pending", map[string]string{"n": "2"}); !strings.Contains(screen.rows[6].Note, want) {
+		t.Fatalf("the pending row note = %q, want it to carry %q", screen.rows[6].Note, want)
+	}
+}
+
+// TestIntegrationsScreenPickerMarker pins the affordance the observation asked
+// for: both rows whose Enter opens a choice advertise it, no other row carries
+// the marker, the preset row keeps its state line IN FRONT of the marker, and
+// the screen legend names the marker so the gesture is discoverable without
+// opening the row.
+func TestIntegrationsScreenPickerMarker(t *testing.T) {
+	integrationsTestHome(t)
+	integrationsWriteState(t, mode.State{})
+	app, screen := integrationsScreenApp(t)
+	frame := app.Frame()
+
+	if strings.TrimSpace(integrationsPickerMarker) == "" {
+		t.Fatal("the picker marker is empty; the picker rows would advertise nothing")
+	}
+	picker := map[int]bool{5: true, 9: true}
+	for i, row := range screen.rows {
+		if got := strings.Contains(row.Note, integrationsPickerMarker); got != picker[i] {
+			t.Fatalf("row %d (%s) carries the marker = %v, want %v: note = %q", i+1, row.Label, got, picker[i], row.Note)
+		}
+	}
+	state := screen.b.Tf("integrations.preset.note", map[string]string{
+		"preset": screen.presetWord(),
+		"on":     "0",
+		"total":  fmt.Sprint(len(integrations.AllFeatures())),
+	})
+	presetNote := screen.rows[5].Note
+	if !strings.HasPrefix(presetNote, state) || !strings.HasSuffix(presetNote, integrationsPickerMarker) {
+		t.Fatalf("the preset note = %q, want the state line %q first and the marker last", presetNote, state)
+	}
+	if !strings.HasPrefix(screen.rows[9].Note, integrationsPickerMarker) {
+		t.Fatalf("the rollback note = %q, want the marker first", screen.rows[9].Note)
+	}
+
+	body := strings.Join(frame.Lines, "\n")
+	if !strings.Contains(body, integrationsChromeHint) {
+		t.Fatalf("the legend naming the marker is not on the 80-column frame:\n%s", body)
+	}
+	if got := strings.Count(body, integrationsPickerMarker); got < 3 {
+		t.Fatalf("the frame carries the marker %d times, want >= 3 (two picker rows and the legend):\n%s", got, body)
+	}
+}
+
+// TestIntegrationsChromeHintFitsTheFrame pins the legend verbatim AND to the
+// frame width. A legend past 80 cells is cut at the compose choke point, and the
+// cut takes the tail, which is where the picker sentence sits: the pin keeps the
+// sentence inside the frame instead of trusting the truncation.
+func TestIntegrationsChromeHintFitsTheFrame(t *testing.T) {
+	const want = "every action is gated (y/n) · r re-reads · Enter on a >> row opens a choice"
+	if integrationsChromeHint != want {
+		t.Fatalf("integrationsChromeHint = %q, want %q", integrationsChromeHint, want)
+	}
+	if w := cellwidth.String(integrationsChromeHint); w > 80 {
+		t.Fatalf("integrationsChromeHint is %d cells, want <= 80", w)
+	}
+}
+
+// TestIntegrationsScreenRowNotesFitFrameAt80x24 pins the budget after the notes
+// landed. A note renders inside the line it belongs to, so Draw still composes
+// 17 lines at 80x24 (2 summary + blank + 11 rows + blank + legend + footer), and
+// this asserts the whole note survives the row frame in ALL twelve catalogs. The
+// CJK catalogs are the tight ones (one character measures two cells) and ar is
+// the dangerous one: cellwidth refuses a mid-string cut inside the RTL range, so
+// an over-long ar row line would render as the empty string and drop the row
+// instead of truncating it.
+func TestIntegrationsScreenRowNotesFitFrameAt80x24(t *testing.T) {
+	integrationsTestHome(t)
+	integrationsWriteState(t, mode.State{IntegrationRules: mode.IntegrationToggleOn})
+	for _, meta := range i18n.Languages() {
+		lang := meta.Code
+		SetLanguage(lang)
+		app, screen := integrationsScreenApp(t)
+		if got, want := len(screen.Draw(app)), 17; got != want {
+			t.Fatalf("%s: Draw composed %d lines, want %d (a note renders inside its row, it adds no line)", lang, got, want)
+		}
+		frame := app.Frame()
+		if len(frame.Lines) > 24 {
+			t.Fatalf("%s: frame lines = %d, want <= 24:\n%s", lang, len(frame.Lines), frame.String())
+		}
+		if page := screen.list.PageSize(); page < len(screen.rows) {
+			t.Fatalf("%s: page size = %d, want >= %d rows so nothing pages at 80x24", lang, page, len(screen.rows))
+		}
+		rendered := screen.list.Render(80)
+		if len(rendered) != len(screen.rows) {
+			t.Fatalf("%s: rendered %d row lines, want %d", lang, len(rendered), len(screen.rows))
+		}
+		widest := 0
+		for i, line := range rendered {
+			w := cellwidth.String(line)
+			if w > 80 {
+				t.Fatalf("%s: row %d renders %d cells at 80 columns: %q", lang, i+1, w, line)
+			}
+			if w > widest {
+				widest = w
+			}
+			// Every row must survive whole, and in ar none may trip cellwidth's RTL
+			// rule, which refuses a mid-string cut and returns the empty line - a
+			// row that vanishes instead of truncating. That is what the statusline
+			// row used to do on a launcherless machine (FIX-15 gives it the
+			// screen's own short English state), so the feature rows are pinned here
+			// too, not just the picker and action rows below them.
+			if line == "" {
+				t.Fatalf("%s: row %d rendered empty at 80 columns (an over-long RTL line is refused, not cut)", lang, i+1)
+			}
+			// A truncated note would drop its tail from the frame with no other
+			// symptom, so each note must appear whole.
+			if !strings.Contains(line, screen.rows[i].Note) {
+				t.Fatalf("%s: row %d truncated its note; line = %q, note = %q", lang, i+1, line, screen.rows[i].Note)
+			}
+		}
+		body := strings.Join(frame.Lines, "\n")
+		if !strings.Contains(body, "[11]") {
+			t.Fatalf("%s: the last row is not on the frame at 80x24:\n%s", lang, body)
+		}
+		if lang == "ko" || lang == "en" {
+			t.Logf("%s measured: 17 Draw lines, frame %d of 24, widest row %d of 80 cells", lang, len(frame.Lines), widest)
+		}
+	}
+	SetLanguage("en")
+}
+
+// TestIntegrationsStatuslineRowLauncherMissingNote pins the one posture no
+// catalog can carry: the settings door's launcher error. Its note is the
+// localized prefix plus the documented launcher path, the longest sentence this
+// screen renders, and in ar it overran the 80-column row budget - and
+// cellwidth.Truncate refuses a mid-string cut inside the RTL range, so the whole
+// row rendered as the empty string: the operator saw the feature label with no
+// state at all. The screen now answers that one state with its own English
+// chrome const, which fits the note column in every catalog.
+func TestIntegrationsStatuslineRowLauncherMissingNote(t *testing.T) {
+	integrationsTestHome(t)
+	integrationsWriteState(t, mode.State{})
+	SetLanguage("ar")
+	t.Cleanup(func() { SetLanguage("en") })
+
+	if w := cellwidth.String(integrationsStatuslineLauncherMissingNote); w > 40 {
+		t.Fatalf("integrationsStatuslineLauncherMissingNote is %d cells, want <= 40 so it fits the note column in every locale", w)
+	}
+	if i18n.Dir("ar") != "rtl" {
+		t.Fatalf("ar is not an RTL locale in the catalog, so this test would prove nothing")
+	}
+
+	// No launcher is installed in this sandbox, which is the posture under test.
+	scr := NewIntegrationsScreen(settings.NewCore(settings.Deps{}))
+	screen, ok := scr.(*integrationsScreen)
+	if !ok {
+		t.Fatalf("NewIntegrationsScreen returned %T", scr)
+	}
+	app := NewApp(80, 24, dirFor("ar"))
+	app.Push(scr)
+	frame := app.Frame()
+
+	rendered := screen.list.Render(80)
+	if len(rendered) != len(screen.rows) {
+		t.Fatalf("rendered %d row lines, want %d", len(rendered), len(screen.rows))
+	}
+	// The symptom first: an over-long RTL row is refused whole, not cut, so the
+	// empty line is what the operator used to see where the statusline state goes.
+	if strings.TrimSpace(rendered[0]) == "" {
+		t.Fatalf("the statusline row rendered empty at 80 columns in ar (an over-long RTL line is refused, not cut)")
+	}
+	if !strings.Contains(rendered[0], integrationsStatuslineLauncherMissingNote) {
+		t.Fatalf("statusline row = %q, want it to carry the English chrome %q", rendered[0], integrationsStatuslineLauncherMissingNote)
+	}
+	// The localized sentence this const replaces must be gone from the row: a
+	// catalog-resolved posture cannot be cut mid-string once it overruns.
+	if localized := i18n.Load("ar").T("integrations.status.launcher_missing"); strings.Contains(rendered[0], localized) {
+		t.Fatalf("statusline row = %q, want no catalog posture %q", rendered[0], localized)
+	}
+	// The mirroring painter keeps text in logical order, so the const survives
+	// onto the rendered frame as well.
+	body := strings.Join(frame.Lines, "\n")
+	if !strings.Contains(body, integrationsStatuslineLauncherMissingNote) {
+		t.Fatalf("the RTL frame does not carry the statusline state %q:\n%s", integrationsStatuslineLauncherMissingNote, body)
+	}
+	if cellwidth.String(rendered[0]) > 80 {
+		t.Fatalf("statusline row = %q, %d cells at 80 columns", rendered[0], cellwidth.String(rendered[0]))
+	}
+	// The state the screen renders is the screen's own chrome, not a catalog
+	// value: the localized prefix plus the launcher path is what overran.
+	if got := screen.postures[string(integrations.FeatureStatusline)]; got != integrationsStatuslineLauncherMissingNote {
+		t.Fatalf("statusline posture = %q, want the screen's English chrome %q", got, integrationsStatuslineLauncherMissingNote)
+	}
+	// The mechanism, quantitatively: the note this unit replaced does not fit the
+	// row budget either, so pinning only "non-empty" would let a later catalog
+	// edit reintroduce the empty row silently.
+	_, planErr := integrations.StatusLinePlan("")
+	var launcher *integrations.StatusLineLauncherError
+	if !errors.As(planErr, &launcher) {
+		t.Fatalf("StatusLinePlan did not report the launcher error on this sandbox: %v", planErr)
+	}
+	legacy := screen.intentWord(screen.intentToggle(integrations.FeatureStatusline)) + " · " +
+		i18n.Load("ar").T("integrations.status.launcher_missing") + " " + launcher.Shape
+	labelW := 0
+	for _, row := range screen.rows {
+		if w := cellwidth.String(row.Label); w > labelW {
+			labelW = w
+		}
+	}
+	budget := 80 - len("  [ 1] ") - labelW - len("  ")
+	if w := cellwidth.String(legacy); w <= budget {
+		t.Fatalf("the replaced note measures %d cells and would fit the %d-cell budget now; the English chrome is no longer load-bearing - re-decide it", w, budget)
+	}
+	t.Logf("ar measured: statusline row %d of 80 cells, note %d cells, replaced note %d cells for a %d-cell budget",
+		cellwidth.String(rendered[0]), cellwidth.String(screen.rows[0].Note), cellwidth.String(legacy), budget)
 }
 
 // TestIntegrationsScreenFitsFrameAt80x24 is the measured frame-fit pin: at the
