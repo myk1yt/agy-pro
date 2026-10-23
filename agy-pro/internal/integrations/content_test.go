@@ -252,7 +252,14 @@ func sourceDirOf(feature Feature) string {
 
 // TestEnumerateHookIsOneFile pins the single-file feature: hooks/hooks.json in,
 // <config>/hooks/hooks.json out, and nothing else from the source tree.
+//
+// The digest is the digest of the DEPLOYED bytes, not of the source bytes: the
+// hook file's command value is rewritten at read time to this machine's absolute
+// launcher (hookrewrite.go). The home is sandboxed, so this machine has no
+// launcher and the deployed bytes are the portable source bytes; the rewrite's
+// own tests cover the launcher-present half.
 func TestEnumerateHookIsOneFile(t *testing.T) {
+	sandboxHome(t)
 	configDir := sandboxConfigDir(t)
 	source := fstest.MapFS{
 		"hooks/hooks.json":       {Data: []byte(hookFixtureJSON)},
@@ -274,8 +281,14 @@ func TestEnumerateHookIsOneFile(t *testing.T) {
 	if files[0].DestPath != wantDest {
 		t.Fatalf("DestPath = %q, want %q", files[0].DestPath, wantDest)
 	}
-	if files[0].SHA256 != SHA256Hex([]byte(hookFixtureJSON)) {
-		t.Fatalf("digest = %q, want the digest of the source bytes", files[0].SHA256)
+	if files[0].SHA256 != SHA256Hex(files[0].Data) {
+		t.Fatalf("digest = %q, want the digest of the deployed bytes", files[0].SHA256)
+	}
+	if string(files[0].Data) != hookFixtureJSON {
+		t.Fatalf("deployed bytes = %q, want the portable source bytes (no launcher exists in this sandbox)", string(files[0].Data))
+	}
+	if files[0].HookCommand == nil || files[0].HookCommand.Posture != HookCommandBare {
+		t.Fatalf("hook posture = %+v, want the bare fallback", files[0].HookCommand)
 	}
 }
 
@@ -338,6 +351,11 @@ func TestEnumerateRefusesUnusableSources(t *testing.T) {
 // including the hook, with ToolkitRoot as the hook-only fallback for a caller
 // that passes no source.
 func TestOpenFeatureSource(t *testing.T) {
+	// The home is sandboxed because the toolkit-root ladder's marker rung reads
+	// it: on a machine with an installed toolkit the "no root at all" assertion
+	// below would otherwise resolve the DEVELOPER's toolkit and fail for the
+	// host's state rather than for this engine's behavior.
+	sandboxHome(t)
 	sandboxConfigDir(t)
 	clearToolkitEnv(t)
 

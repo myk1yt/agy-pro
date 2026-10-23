@@ -92,7 +92,10 @@ marker instead of naming a family to avoid.
   non-interactive stdin must pass `--yes`, and the exit codes are 0 ok, 1
   runtime error or refusal, 2 usage error. Features are `statusline`, `hook`,
   `rules`, `plugins`, `skills`; presets are `native` and `tools` (`custom` is
-  derived from the toggles and refused as an operand).
+  derived from the toggles and refused as an operand). The deployed `hook`
+  document spells its one command field inline (`"command": "agy-tokens --hook"`,
+  no separate `args` array), because the host runs a hook handler's command through
+  a shell and documents only `type`, `command` and `timeout`.
 - The hub's Integrations screen and its hub row: per-feature intent plus engine
   posture, the preset picker, apply pending, retract all, adopt, rollback and
   repair, each behind the same single approval modal. The Integrations row lands

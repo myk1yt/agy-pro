@@ -1037,7 +1037,10 @@ func printKeyAudits(audits []providers.KeyAudit) bool {
 			fmt.Printf("       conflict: clean name and BOM variant both present with different values (try `agy pro doctor --fix-keys`)\n")
 		}
 		if a.Probe.Detail != "" {
-			fmt.Printf("       probe: %s\n", a.Probe.Detail)
+			// O-2 (FIX-13): the probe sentence is built from registry/provider data,
+			// a different source than the integrations Detail rows, but it is the same
+			// transcript class, so it prints under the same neutralisation.
+			fmt.Printf("       probe: %s\n", stripTerminalControl(a.Probe.Detail))
 		}
 	}
 	return allValid

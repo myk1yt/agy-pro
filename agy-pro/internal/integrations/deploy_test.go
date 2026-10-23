@@ -1338,7 +1338,7 @@ func TestPlanHookPrefersTheContentSource(t *testing.T) {
 		t.Fatalf("hook destination = %q, want %q", action.DestPath, want)
 	}
 	if action.NewSHA != SHA256Hex([]byte(hookFixtureJSON)) {
-		t.Fatalf("hook digest = %q, want the digest of the CONTENT SOURCE's hooks.json (the toolkit root must not win)", action.NewSHA)
+		t.Fatalf("hook digest = %q, want the digest of the bytes deployed from the CONTENT SOURCE's hooks.json (the toolkit root must not win; this sandbox has no launcher, so the deployed bytes are the source bytes verbatim)", action.NewSHA)
 	}
 
 	summary := sandbox.apply(plan)
@@ -1373,7 +1373,7 @@ func TestPlanHookFallsBackToToolkitRootMarker(t *testing.T) {
 		t.Fatalf("hook destination = %q, want %q", action.DestPath, want)
 	}
 	if action.NewSHA != SHA256Hex([]byte(hookFixtureJSON)) {
-		t.Fatalf("hook digest = %q, want the digest of the toolkit's hooks.json", action.NewSHA)
+		t.Fatalf("hook digest = %q, want the digest of the bytes deployed from the toolkit's hooks.json (no launcher exists here, so the deployed bytes are the toolkit bytes verbatim)", action.NewSHA)
 	}
 
 	summary := sandbox.apply(plan)

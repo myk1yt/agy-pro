@@ -165,6 +165,14 @@ const DiffLineLimit = 12
 // deploy.go diff lines for the destinations that change. An identical
 // destination writes nothing, so its line is summarized by the count instead of
 // filling the gate with no-op rows.
+//
+// The hook feature appends one fact row for the deploy-time command posture
+// (hookrewrite.go): whether the deployed command names this machine's absolute
+// launcher or ships as the portable bare fallback. It is a row rather than a note
+// on purpose - the write does happen, and a second note would break the rule that
+// exactly one note explains a subtracted step (the T8 launcherless pin) - and it
+// sits at column 0 with the door's own "file"/"command" label shape so the
+// two-space indent stays reserved for action rows.
 func DeployLines(feature Feature, plan *DeployPlan) []string {
 	created, updated, identical := plan.Counts()
 	lines := []string{fmt.Sprintf("%-11s%d create, %d update, %d identical", string(feature), created, updated, identical)}
@@ -182,6 +190,11 @@ func DeployLines(feature Feature, plan *DeployPlan) []string {
 	}
 	if shown == 0 {
 		lines = append(lines, "  (nothing to write: every destination already holds the engine's bytes)")
+	}
+	if plan.HookCommand != nil {
+		if text := plan.HookCommand.PostureText(); text != "" {
+			lines = append(lines, fmt.Sprintf("%-11s%s", "command", text))
+		}
 	}
 	return lines
 }
@@ -508,7 +521,11 @@ func ComposeDeployStep(feature Feature, kind StepKind, content fs.FS, emptyRetra
 		step.Plan = plan
 		if kind == StepAdopt && plan.Writes() > 0 {
 			// Record-only: an adopt that wrote bytes would be an apply wearing
-			// another name.
+			// another name. The hook file reaches this branch when a launcher
+			// exists and the live file still names the bare PATH name: the bytes
+			// differ, so adopt refuses and apply is the verb that pins it
+			// (hookrewrite.go). The refusal names the verb, which is what the
+			// caller's note repeats.
 			return step, nil, fmt.Errorf("%d destination(s) differ from the engine's content; adopt records only what already matches (run `agy pro integrations apply %s`)",
 				plan.Writes(), feature)
 		}
@@ -782,10 +799,26 @@ func ComposeRepair(content fs.FS) *Write {
 		if step.Lines == nil {
 			continue
 		}
-		step.Lines[0] = fmt.Sprintf("%s (%d drifted, %d missing)", step.Lines[0], status.Drifted, status.Missing)
+		step.Lines[0] += repairDriftTag(step.Plan, status)
 		write.AddStep(step)
 	}
 	return write
+}
+
+// repairDriftTag renders the "(N drifted, M missing)" suffix a repair step's head
+// line carries, or "" when the step would write nothing.
+//
+// The tag describes the state that TRIGGERED the repair, so it is only honest when
+// the re-plan of that same state still finds something to write: the classification
+// (Status) and the plan are two separate machine-state reads, and a launcher can
+// vanish between them. A plan with nothing to write is not a reconciliation, and
+// labeling it as one would tell the operator a no-op step repaired something. A
+// no-op step keeps its own "(nothing to write: ...)" line, which is the truth.
+func repairDriftTag(plan *DeployPlan, status *FeatureStatus) string {
+	if plan == nil || status == nil || plan.Writes() == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" (%d drifted, %d missing)", status.Drifted, status.Missing)
 }
 
 // ErrNoSettingsSnapshot means the machine has no settings.json snapshot in either

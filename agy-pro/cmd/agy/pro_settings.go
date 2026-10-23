@@ -804,7 +804,13 @@ func confirmRegistryMutation(in io.Reader, out, errw io.Writer, diff []string, y
 func confirmPersistedWrite(in io.Reader, out, errw io.Writer, banner string, diff []string, target, noun string, yes bool) (proceed bool, code int) {
 	fmt.Fprintln(out, banner)
 	for _, line := range diff {
-		fmt.Fprintln(out, "  "+line)
+		// The consent transcript is the one place every store's diff passes through,
+		// so the control-character neutralisation lives here and not in the line
+		// builders (FIX-12 / F-S9F-1): a composed integrations diff can carry the
+		// engine's Detail sentences (a path read out of the live hooks.json) and the
+		// settings ledger's field-name error rows, and an ESC sequence would let a
+		// crafted config value steer the screen the operator is about to approve.
+		fmt.Fprintln(out, "  "+stripTerminalControl(line))
 	}
 	if yes {
 		return true, 0

@@ -160,13 +160,27 @@ type SourceFile struct {
 	DestPath string
 	// SHA256 is the lowercase hex digest of Data.
 	SHA256 string
-	// Data is the content read at plan time.
+	// Data is the content read at plan time. For the hook feature it is
+	// conditional: the deploy-time rewrite of the source bytes when a launcher
+	// resolves and the document verifies (hookrewrite.go), and the unchanged source
+	// bytes otherwise (the documented bare fallback, and every document the rewrite
+	// declines). Either way the digest here is the digest of what lands on disk,
+	// not of what the snapshot carries.
 	Data []byte
+	// HookCommand is the deploy-time command rewrite's posture record. It is set
+	// for the hook feature only and nil for every tree feature.
+	HookCommand *HookCommandRewrite
 }
 
 // Enumerate reads every file a feature deploys out of source, hashing each one
 // and mapping it onto its destination. The result is sorted by RelPath, so a
 // plan built twice from the same tree has the same order and the same bytes.
+//
+// For the hook feature the bytes (and therefore the digest) are what the deploy
+// will write, which is the deploy-time rewrite of the command value when a
+// launcher resolves and the source bytes otherwise (the bare fallback, or a
+// document the rewrite declines: hookrewrite.go). Every other feature deploys its
+// source bytes unchanged.
 //
 // The skip list mirrors the Node deployer the engine replaces
 // (scripts/lib/configure-customizations.js syncDirectory): a .git directory, a
@@ -240,6 +254,13 @@ func enumerateLayout(layout FeatureLayout, source fs.FS) ([]SourceFile, error) {
 }
 
 // readSourceFile reads and hashes one file and maps it onto its destination.
+//
+// The hook file is the one source whose deployed bytes can differ from its source
+// bytes: its command value is rewritten to this machine's absolute launcher at read
+// time when a launcher resolves and the document verifies (hookrewrite.go). With no
+// launcher, or for a document the rewrite declines, the source bytes are what
+// deploys. Either way the digest this returns - and therefore every plan, apply,
+// manifest entry and status comparison - describes the bytes that land on disk.
 func readSourceFile(source fs.FS, layout FeatureLayout, sourcePath string) (SourceFile, error) {
 	rel := strings.TrimPrefix(sourcePath, layout.SourceDir+"/")
 	if layout.SingleFile() && rel == sourcePath {
@@ -256,13 +277,18 @@ func readSourceFile(source fs.FS, layout FeatureLayout, sourcePath string) (Sour
 		}
 		return SourceFile{}, fmt.Errorf("%w: %q: %v", ErrSourceUnusable, sourcePath, err)
 	}
-	return SourceFile{
+	file := SourceFile{
 		RelPath:    rel,
 		SourcePath: sourcePath,
 		DestPath:   destination,
-		SHA256:     SHA256Hex(data),
-		Data:       data,
-	}, nil
+	}
+	if layout.Feature == FeatureHook {
+		file.Data, file.HookCommand = hookCommandRewriteFor(data)
+	} else {
+		file.Data = data
+	}
+	file.SHA256 = SHA256Hex(file.Data)
+	return file, nil
 }
 
 // skipSourceEntry reports whether a source entry name is deployer noise rather

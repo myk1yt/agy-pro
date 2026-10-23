@@ -182,21 +182,34 @@ func loadIntentState() (*mode.State, error) {
 // engine's own verdict, and for the statusLine feature the settings door's
 // classification. It writes nothing and takes no consent gate (pick 7: a launch
 // path may read this).
+//
+// The engine's per-destination Detail sentences print as continuation lines under
+// their feature row. The engine computes them for the cases where a count is not
+// the whole story (why a drifted file drifted, what a clean file cannot do), and a
+// count alone would leave the operator with "1 drifted" and no next step.
 func integrationsStatus(out, errw io.Writer) int {
 	st, err := loadIntentState()
 	if err != nil {
-		fmt.Fprintf(errw, "[agy-pro] %v\n", err)
+		fmt.Fprintf(errw, "[agy-pro] %s\n", transcriptError(err))
 		return 1
 	}
 	fmt.Fprintln(out, "agy pro integrations status (read-only)")
 	fmt.Fprintf(out, "%-11s%-9s%s\n", "feature", "intent", "engine")
 	code := 0
 	for _, feature := range integrations.AllFeatures() {
-		posture, perr := featurePosture(feature)
+		posture, details, perr := featurePosture(feature)
 		if perr != nil {
 			code = 1
 		}
-		fmt.Fprintf(out, "%-11s%-9s%s\n", string(feature), intentWord(intentToggle(st, feature)), posture)
+		fmt.Fprintf(out, "%-11s%-9s%s\n", string(feature), intentWord(intentToggle(st, feature)), stripTerminalControl(posture))
+		for _, detail := range details {
+			// Aligned under the posture column: the row above is 11 + 9 columns of
+			// feature and intent. Both fields pass stripTerminalControl at this sink
+			// rather than at their builders (FIX-12): a posture word and a Detail can
+			// embed a path or a field name read out of the user-editable live config,
+			// and the printer is the one place that covers every source of a line.
+			fmt.Fprintf(out, "%-20s%s\n", "", stripTerminalControl(detail))
+		}
 	}
 	preset := intentPreset(st)
 	if preset == "" {
@@ -209,23 +222,24 @@ func integrationsStatus(out, errw io.Writer) int {
 	return code
 }
 
-// featurePosture renders one feature's engine verdict. The statusLine feature has
-// no content layout (it is the settings door), so it is classified by
-// StatusLinePlan; every other feature is classified by the deploy engine's
-// read-only Status.
-func featurePosture(feature integrations.Feature) (string, error) {
+// featurePosture renders one feature's engine verdict plus the engine's own detail
+// sentences for its destinations. The statusLine feature has no content layout (it
+// is the settings door), so it is classified by StatusLinePlan; every other feature
+// is classified by the deploy engine's read-only Status.
+func featurePosture(feature integrations.Feature) (string, []string, error) {
 	if feature == integrations.FeatureStatusline {
-		return statusLinePosture()
+		posture, err := statusLinePosture()
+		return posture, nil, err
 	}
 	status, err := integrations.Status(feature)
 	if err != nil {
-		return "unavailable: " + providers.MaskOperand(err.Error()), err
+		return "unavailable: " + providers.MaskOperand(err.Error()), nil, err
 	}
 	if status == nil || !status.Deployed {
 		if status != nil && status.Foreign > 0 {
-			return fmt.Sprintf("not deployed, %d foreign file(s) (left alone)", status.Foreign), nil
+			return fmt.Sprintf("not deployed, %d foreign file(s) (left alone)", status.Foreign), nil, nil
 		}
-		return "not deployed", nil
+		return "not deployed", nil, nil
 	}
 	parts := []string{}
 	if status.Clean > 0 {
@@ -243,7 +257,27 @@ func featurePosture(feature integrations.Feature) (string, error) {
 	if len(parts) == 0 {
 		parts = append(parts, "no destinations")
 	}
-	return strings.Join(parts, ", "), nil
+	return strings.Join(parts, ", "), destinationDetails(status), nil
+}
+
+// destinationDetails collects the engine's Detail sentence per destination, in
+// path order. The engine masks the secrets it names but not the control characters
+// they can carry (providers.MaskOperand is a credential masker, not a transcript
+// boundary), so the strings are handed on unchanged and the PRINT sink applies
+// stripTerminalControl: the same neutralisation then covers the posture word, the
+// consent diff and the ledger's field-name rows without a second copy per builder.
+func destinationDetails(status *integrations.FeatureStatus) []string {
+	if status == nil {
+		return nil
+	}
+	details := make([]string, 0, len(status.Destinations))
+	for _, destination := range status.Destinations {
+		if destination.Detail == "" {
+			continue
+		}
+		details = append(details, destination.Detail)
+	}
+	return details
 }
 
 // statusLinePosture renders the settings door's classification as one line (the
@@ -335,14 +369,14 @@ func (p *integrationPlan) writes() bool {
 func (p *integrationPlan) execute(core *settings.Core, out, errw io.Writer) int {
 	for _, row := range p.intent {
 		if _, err := row.reverify("agy pro integrations " + p.write.Verb); err != nil {
-			fmt.Fprintf(errw, "[agy-pro] %v\n", err)
+			fmt.Fprintf(errw, "[agy-pro] %s\n", transcriptError(err))
 			return 1
 		}
 	}
 	for i, step := range p.write.Steps() {
 		result, err := step.Run()
 		if err != nil {
-			fmt.Fprintf(errw, "[agy-pro] %s failed: %v\n", step.Feature, err)
+			fmt.Fprintln(errw, stepFailureRow(step.Feature, "failed", err))
 			fmt.Fprintln(errw, stepFailureNotice(i, len(p.intent)))
 			return 1
 		}
@@ -350,7 +384,7 @@ func (p *integrationPlan) execute(core *settings.Core, out, errw io.Writer) int 
 	}
 	for _, row := range p.intent {
 		if err := core.Set(row.key, row.after); err != nil {
-			fmt.Fprintf(errw, "[agy-pro] %v\n", err)
+			fmt.Fprintf(errw, "[agy-pro] %s\n", transcriptError(err))
 			return 1
 		}
 	}
@@ -507,18 +541,18 @@ func resolveIntegrationTargets(verb string, operands []string) (integrationTarge
 func integrationsWrite(verb string, operands []string, in io.Reader, out, errw io.Writer, yes bool) int {
 	targets, err := resolveIntegrationTargets(verb, operands)
 	if err != nil {
-		fmt.Fprintf(errw, "[agy-pro] %v\n%s\n", err, proIntegrationsUsage)
+		fmt.Fprintf(errw, "[agy-pro] %s\n%s\n", transcriptError(err), proIntegrationsUsage)
 		return 2
 	}
 	st, err := loadIntentState()
 	if err != nil {
-		fmt.Fprintf(errw, "[agy-pro] %v\n", err)
+		fmt.Fprintf(errw, "[agy-pro] %s\n", transcriptError(err))
 		return 1
 	}
 	if targets.pending {
 		pending, perr := pendingFeatures(st)
 		if perr != nil {
-			fmt.Fprintf(errw, "[agy-pro] %v\n", perr)
+			fmt.Fprintf(errw, "[agy-pro] %s\n", transcriptError(perr))
 			return 1
 		}
 		if len(pending) == 0 {
@@ -530,7 +564,7 @@ func integrationsWrite(verb string, operands []string, in io.Reader, out, errw i
 	}
 	plan, err := composeIntegrationPlan(verb, targets, st)
 	if err != nil {
-		fmt.Fprintf(errw, "[agy-pro] %v\n", err)
+		fmt.Fprintf(errw, "[agy-pro] %s\n", transcriptError(err))
 		return 1
 	}
 	return runComposedIntegrationPlan(plan, in, out, errw, yes)
@@ -633,12 +667,16 @@ func composeIntegrationPlan(verb string, targets integrationTargets, st *mode.St
 
 // runComposedIntegrationPlan presents the plan once and executes it after one
 // consent. A plan that changes nothing is reported without a gate: there is no
-// write to approve.
+// write to approve. Both transcript arms neutralise their lines with
+// stripTerminalControl (through transcriptRow, the same rendering the rollback and
+// repair arms use): the "nothing to write" report is the only diff a user sees on
+// that path, and a step line can embed a path or a field name read out of the live
+// config (FIX-12, widened in FIX-14).
 func runComposedIntegrationPlan(plan *integrationPlan, in io.Reader, out, errw io.Writer, yes bool) int {
 	if !plan.writes() {
 		fmt.Fprintln(out, "Nothing to write:")
 		for _, line := range plan.diff() {
-			fmt.Fprintln(out, "  "+line)
+			fmt.Fprintln(out, transcriptRow(line))
 		}
 		return 0
 	}
@@ -661,7 +699,7 @@ func integrationsPreset(operands []string, in io.Reader, out, errw io.Writer, ye
 	}
 	preset, err := integrations.ParsePreset(operands[0])
 	if err != nil {
-		fmt.Fprintf(errw, "[agy-pro] %v\n", err)
+		fmt.Fprintf(errw, "[agy-pro] %s\n", transcriptError(err))
 		return 2
 	}
 	if preset == integrations.PresetCustom {
@@ -675,12 +713,12 @@ func integrationsPreset(operands []string, in io.Reader, out, errw io.Writer, ye
 	}
 	st, err := loadIntentState()
 	if err != nil {
-		fmt.Fprintf(errw, "[agy-pro] %v\n", err)
+		fmt.Fprintf(errw, "[agy-pro] %s\n", transcriptError(err))
 		return 1
 	}
 	plan, err := composeIntegrationPlan("preset", targets, st)
 	if err != nil {
-		fmt.Fprintf(errw, "[agy-pro] %v\n", err)
+		fmt.Fprintf(errw, "[agy-pro] %s\n", transcriptError(err))
 		return 1
 	}
 	return runComposedIntegrationPlan(plan, in, out, errw, yes)
@@ -695,7 +733,7 @@ func integrationsPreset(operands []string, in io.Reader, out, errw io.Writer, ye
 func integrationsAdopt(in io.Reader, out, errw io.Writer, yes bool) int {
 	write, err := integrations.ComposeAdopt(profiles.GetToolsFS())
 	if err != nil {
-		fmt.Fprintf(errw, "[agy-pro] %v\n", err)
+		fmt.Fprintf(errw, "[agy-pro] %s\n", transcriptError(err))
 		return 1
 	}
 	return runComposedIntegrationPlan(&integrationPlan{write: write}, in, out, errw, yes)
@@ -748,13 +786,13 @@ func integrationsRollbackVerb(operands []string, in io.Reader, out, errw io.Writ
 func integrationsRollbackTree(feature integrations.Feature, in io.Reader, out, errw io.Writer, yes bool) int {
 	write, err := integrations.ComposeFeatureRollback(feature)
 	if err != nil {
-		fmt.Fprintf(errw, "[agy-pro] %v\n", err)
+		fmt.Fprintf(errw, "[agy-pro] %s\n", transcriptError(err))
 		return 1
 	}
 	if len(write.Steps()) == 0 {
 		fmt.Fprintln(out, "Nothing to roll back:")
 		for _, line := range write.Lines() {
-			fmt.Fprintln(out, "  "+line)
+			fmt.Fprintln(out, transcriptRow(line))
 		}
 		return 0
 	}
@@ -765,7 +803,7 @@ func integrationsRollbackTree(feature integrations.Feature, in io.Reader, out, e
 	for _, step := range write.Steps() {
 		result, err := step.Run()
 		if err != nil {
-			fmt.Fprintf(errw, "[agy-pro] %s rollback failed: %v\n", step.Feature, err)
+			fmt.Fprintln(errw, stepFailureRow(step.Feature, "rollback failed", err))
 			return 1
 		}
 		printRollbackReport(result, out)
@@ -805,7 +843,7 @@ func integrationsRollback(in io.Reader, out, errw io.Writer, yes bool) int {
 	if errors.Is(err, integrations.ErrNoSettingsSnapshot) {
 		path, pathErr := agysettings.GlobalSettingsPath()
 		if pathErr != nil {
-			fmt.Fprintf(errw, "[agy-pro] %v\n", pathErr)
+			fmt.Fprintf(errw, "[agy-pro] %s\n", transcriptError(pathErr))
 			return 1
 		}
 		fmt.Fprintf(out, "No settings.json snapshot to roll back to: neither settings.bak.<ts>.json (node) nor\nsettings.json.bak.<ts> (agy-pro) sits beside %s\n", providers.MaskOperand(path))
@@ -814,7 +852,7 @@ func integrationsRollback(in io.Reader, out, errw io.Writer, yes bool) int {
 		return 0
 	}
 	if err != nil {
-		fmt.Fprintf(errw, "[agy-pro] %v\n", err)
+		fmt.Fprintf(errw, "[agy-pro] %s\n", transcriptError(err))
 		return 1
 	}
 	proceed, code := confirmIntegrationsWrite(in, out, errw, write.Lines(), yes)
@@ -823,7 +861,7 @@ func integrationsRollback(in io.Reader, out, errw io.Writer, yes bool) int {
 	}
 	result, err := write.Steps()[0].Run()
 	if err != nil {
-		fmt.Fprintf(errw, "[agy-pro] %v\n", err)
+		fmt.Fprintf(errw, "[agy-pro] %s\n", transcriptError(err))
 		return 1
 	}
 	summary := result.DoorRollback
@@ -849,12 +887,16 @@ func integrationsRollback(in io.Reader, out, errw io.Writer, yes bool) int {
 // note 4: Plan+Apply IS the repair). Foreign files are never touched, and a
 // feature with nothing recorded is not invented. The settings door is repaired
 // the same way, through the same plan.
+//
+// The "nothing to repair" arm prints without a gate and its notes are engine
+// sentences that can embed the settings ledger's field-name text, so every row goes
+// through transcriptRow (FIX-14).
 func integrationsRepair(in io.Reader, out, errw io.Writer, yes bool) int {
 	write := integrations.ComposeRepair(profiles.GetToolsFS())
 	if len(write.Steps()) == 0 {
 		fmt.Fprintln(out, "Nothing to repair:")
 		for _, note := range write.Notes() {
-			fmt.Fprintln(out, "  "+note)
+			fmt.Fprintln(out, transcriptRow(note))
 		}
 		return 0
 	}

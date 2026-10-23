@@ -104,10 +104,13 @@ type PlanAction struct {
 	// OldSHA is the digest of the bytes found at the destination when the plan
 	// was built; empty for a create.
 	OldSHA string
-	// NewSHA is the digest of the source bytes the plan would write.
+	// NewSHA is the digest of the bytes the plan would write: the source bytes, or
+	// for the hook file the deploy-time rewritten form of them (hookrewrite.go, and
+	// the bare source bytes when no launcher resolves).
 	NewSHA string
-	// Data is the source content the plan would write. It is empty for an
-	// identical action, which writes nothing.
+	// Data is what the plan would write: the source content, or the hook file's
+	// rewritten content. It is empty for an identical action, which writes
+	// nothing.
 	Data []byte
 }
 
@@ -126,6 +129,11 @@ type DeployPlan struct {
 	Layout FeatureLayout
 	// Actions are the per-destination actions, ordered by RelPath.
 	Actions []PlanAction
+	// HookCommand is the deploy-time command rewrite's posture record for the
+	// hook feature (hookrewrite.go): whether the deployed command names this
+	// machine's absolute launcher or the portable bare fallback. It is nil for
+	// every tree feature.
+	HookCommand *HookCommandRewrite
 }
 
 // Counts returns how many destinations each action kind covers.
@@ -201,10 +209,16 @@ func shortSHA(sha string) string {
 
 // Plan builds a deployment plan for one feature against the live config tree.
 //
-// The content the plan reads is whatever fs.FS the caller hands over, except for
-// the hook feature, which OpenFeatureSource resolves through ToolkitRoot(). The
-// plan reads destinations to classify them (create/update/identical) and writes
-// nothing at all.
+// The content the plan reads is whatever fs.FS the caller hands over; a caller
+// with no source falls back to ToolkitRoot() for the hook feature only.
+// OpenFeatureSource is that decision. The plan reads destinations to classify
+// them (create/update/identical) and writes nothing at all.
+//
+// The hook file's bytes are rewritten at read time to this machine's absolute
+// launcher (hookrewrite.go), so every digest this plan carries - NewSHA, and the
+// manifest entry Apply records from it - describes the bytes that land on disk.
+// plan.HookCommand says which posture the plan took, for a renderer that wants to
+// show it.
 func Plan(feature Feature, content fs.FS) (*DeployPlan, error) {
 	layout, err := LayoutFor(feature)
 	if err != nil {
@@ -231,6 +245,9 @@ func Plan(feature Feature, content fs.FS) (*DeployPlan, error) {
 				ErrPlanInvalid, file.DestPath, other, file.RelPath)
 		}
 		seen[file.DestPath] = file.RelPath
+		if file.HookCommand != nil {
+			plan.HookCommand = file.HookCommand
+		}
 
 		action := PlanAction{
 			DestPath: file.DestPath,
@@ -686,8 +703,10 @@ const (
 	// StateClean means the manifest records the destination and the live bytes
 	// are exactly the recorded bytes.
 	StateClean DestinationState = "clean"
-	// StateDrifted means the manifest records the destination but the live
-	// bytes differ: someone else changed it.
+	// StateDrifted means the manifest records the destination but the live bytes
+	// are not the bytes this machine calls for: someone else changed the file, or
+	// the file is a posture the engine no longer stands behind (a bare hook
+	// command once a launcher exists). Detail says which.
 	StateDrifted DestinationState = "drifted"
 	// StateMissing means the manifest records the destination but it is gone.
 	StateMissing DestinationState = "missing"
@@ -711,6 +730,12 @@ type DestinationStatus struct {
 	// BackupRef is the recorded archive of the previous bytes, when there is
 	// one.
 	BackupRef string
+	// Detail is the engine's plain-English note about the destination when a
+	// digest match is not the whole story: why a drifted destination drifted, or
+	// what a still-Clean destination cannot do (a hook command the rewrite
+	// declines to pin, a hook command pointing at a launcher that is gone). It is
+	// empty when the state says everything. A door renders it verbatim.
+	Detail string
 }
 
 // FeatureStatus is the live posture of one feature. It is derived from the
@@ -746,6 +771,21 @@ func (s *FeatureStatus) OK() bool {
 // Drift is reported, never repaired: a changed file is StateDrifted, a file no
 // entry claims is StateForeign, a recorded file that is gone is StateMissing.
 // Nothing is written, so this is safe on a launch path (pick 7).
+//
+// The hook feature carries one extra check, because its deployed bytes depend on
+// the machine rather than on the source alone (hookrewrite.go,
+// hookLiveCommandPosture). It has two outcomes, and the difference matters:
+//
+//   - drift, when the live file is still the portable bare form and this machine
+//     would deploy the pinned form. That is the visible half of the fallback
+//     posture: a launcherless machine deploys the bare form and reads clean, and
+//     the same machine reads drifted the moment the launcher lands, so repair can
+//     pin it.
+//   - an advisory Detail with NO drift change, when the live bytes are what this
+//     engine would deploy but the operator has to know something: the rewrite
+//     declines this document (so apply cannot pin it), or the deployed command
+//     points at a launcher that is gone (so repairing it would have to unpin it
+//     first, re-opening F-V1).
 func Status(feature Feature) (*FeatureStatus, error) {
 	layout, err := LayoutFor(feature)
 	if err != nil {
@@ -783,6 +823,16 @@ func Status(feature Feature) (*FeatureStatus, error) {
 			destination.LiveSHA = liveSHA
 			destination.State = StateClean
 			status.Clean++
+		}
+		if feature == FeatureHook && destination.State == StateClean {
+			if detail, stale := hookLiveCommandPosture(entry.Path); detail != "" || stale {
+				destination.Detail = detail
+				if stale {
+					destination.State = StateDrifted
+					status.Clean--
+					status.Drifted++
+				}
+			}
 		}
 		status.Destinations = append(status.Destinations, destination)
 	}
