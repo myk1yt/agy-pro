@@ -524,3 +524,26 @@ Consequences for sequencing: F3(a) and P1-7(a) are prerequisites for P5; P4 (28 
   shim rebuild + install: APPROVED and executed after the commits; the real-home
   apply -> preset native -> preset tools round trip + uninstall dry-run: APPROVED and executed
   after the shim install; macOS self-heal: CEO ruled to leave it (no hardware).
+
+## 2026-10-23 - statusLine migration + hooks deploy-time pinning landed; real machine now fully engine-owned (commit 98e9af1, pushed)
+
+- Unit S migrated the real-home statusLine slot: launcher agy-tokens.bat created with the sanctioned
+  make-launchers generator (per-name supported); apply wrote the engine form and the door recorded it
+  ("slot holds the door's object and is recorded"); previous bytes archived by the ledger; measured
+  side effect disclosed: make-launchers' bat branch also writes the root marker (load-bearing -
+  without it the fallback scan spends ~60 s and exits AMBIGUOUS due to 12 stale Temp copies of
+  agy-tools under C:\Users\k1yt; retiring them is a user-environment decision).
+- Units H + FIX-11..14 (code quartet + security quartet + confirmation quartet, all seats PASS after
+  the fix rounds; 1 confirmation-seat P1 mixed-UNC bypass found and closed) landed the hooks
+  deploy-time command pinning: repo/snapshot sources stay portable (503 B, inline 'agy-tokens --hook',
+  args array removed after HOST EVIDENCE: the real agy.exe documents handlers as type/command/timeout
+  run via sh -c / cmd /c - the args array was never read, so the shipped hook silently ran WITHOUT
+  --hook on every install = O-1 root cause), the engine splices the machine's absolute launcher into
+  the command value only (quote closes before the tail, pinned across win/linux/darwin shapes),
+  launcherless machines keep the portable form with a self-reporting fact row, decline-vs-drift
+  agreement + unresolvable-pinned advisory + CLI transcript control-char stripping (CWE-150) +
+  exact-basename/UNC refusal (NTLM touch) all pinned.
+- Real-home convergence: repair re-deployed hooks.json (bdad7b11 -> d6b67789, pre-change archived
+  20261023_021405); final posture: statusline recorded, hook 1 clean, rules 3 / plugins 43 / skills 52
+  clean; commit 98e9af1 pushed. The user's next `agy pro setup` + agy run is the first real host turn
+  for the pinned hook command (badge mode now actually receives --hook).
