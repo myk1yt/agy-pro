@@ -1,0 +1,113 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 600" width="100%" role="img" aria-label="Before and after: plain agy versus agy with agy-pro">
+<title>agy alone versus agy + agy-pro</title>
+<defs>
+    <marker id="ah-0d9488" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#0d9488"/>
+    </marker>
+    <marker id="ah-16a34a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#16a34a"/>
+    </marker>
+    <marker id="ah-2563eb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2563eb"/>
+    </marker>
+    <marker id="ah-4b5563" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4b5563"/>
+    </marker>
+    <marker id="ah-9333ea" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#9333ea"/>
+    </marker>
+    <marker id="ah-d97706" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#d97706"/>
+    </marker>
+    <marker id="ah-db2777" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#db2777"/>
+    </marker>
+    <marker id="ah-dc2626" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#dc2626"/>
+    </marker>
+    <marker id="ah-ee4f2e" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#ee4f2e"/>
+    </marker>
+</defs>
+<rect x="0" y="0" width="680" height="600" fill="#ffffff"/>
+<!-- geometry: viewBox 680x600; 20px grid; left margin >= 20; latin 6.5px/char, CJK 13px/char at 13px; box padding >= 20px per side; text 50-bg / 800-fg, borders 600 -->
+<rect x="20" y="40" width="640" height="178" rx="16" fill="#ffffff" stroke="#4b5563" stroke-width="1.5"/>
+<!-- width: 'BEFORE' 6ch x 6.50px = 39.0px -->
+<text x="40" y="70" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#1f2937" text-anchor="start">BEFORE</text>
+<!-- width: 'agy alone: one model, one opinion' 33ch x 6.00px = 198.0px -->
+<text x="108" y="70" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="500" fill="#4b5563" text-anchor="start">agy alone: one model, one opinion</text>
+<!-- box [your prompt] 120x62: widest line 71.5px, padding 24.2px/side (>=20) -->
+<rect x="44" y="96" width="120" height="62" rx="12" fill="#f9fafb" stroke="#4b5563" stroke-width="1.5"/>
+<!-- width: 'your prompt' 11ch x 6.50px = 71.5px -->
+<text x="104.0" y="123.14" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#1f2937" text-anchor="middle">your prompt</text>
+<!-- width: 'one question' 12ch x 5.50px = 66.0px -->
+<text x="104.0" y="139.14" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#4b5563" text-anchor="middle">one question</text>
+<polyline points="168,127 194,127" fill="none" stroke="#4b5563" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#ah-4b5563)"/>
+<!-- box [one brain] 200x62: widest line 125.0px, padding 37.5px/side (>=20) -->
+<rect x="200" y="96" width="200" height="62" rx="12" fill="#faf5ff" stroke="#9333ea" stroke-width="1.5"/>
+<!-- width: 'one brain' 9ch x 6.50px = 58.5px -->
+<text x="300.0" y="123.64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#6b21a8" text-anchor="middle">one brain</text>
+<!-- width: '/model: native XOR bridge' 25ch x 5.00px = 125.0px -->
+<text x="300.0" y="138.64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-weight="400" fill="#9333ea" text-anchor="middle">/model: native XOR bridge</text>
+<polyline points="404,127 430,127" fill="none" stroke="#4b5563" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#ah-4b5563)"/>
+<!-- box [agy TUI] 200x62: widest line 88.0px, padding 56.0px/side (>=20) -->
+<rect x="436" y="96" width="200" height="62" rx="12" fill="#f9fafb" stroke="#4b5563" stroke-width="1.5"/>
+<!-- width: 'agy TUI' 7ch x 6.50px = 45.5px -->
+<text x="536.0" y="123.14" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#1f2937" text-anchor="middle">agy TUI</text>
+<!-- width: 'no second engine' 16ch x 5.50px = 88.0px -->
+<text x="536.0" y="139.14" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#4b5563" text-anchor="middle">no second engine</text>
+<rect x="44" y="172" width="592" height="30" rx="8" fill="#f9fafb" stroke="#f9fafb" stroke-width="1.5"/>
+<!-- strip 592x30: widest line 360.0px, padding 116.0px/side -->
+<!-- width: 'one model at a time, self-review, no seat to compare against' 60ch x 6.00px = 360.0px -->
+<text x="340.0" y="191.2" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#4b5563" text-anchor="middle">one model at a time, self-review, no seat to compare against</text>
+<rect x="20" y="238" width="640" height="320" rx="16" fill="#ffffff" stroke="#4b5563" stroke-width="1.5"/>
+<!-- width: 'AFTER' 5ch x 6.50px = 32.5px -->
+<text x="40" y="268" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#166534" text-anchor="start">AFTER</text>
+<!-- width: 'agy + agy-pro: a master, seats from every family, a bounded write' 65ch x 6.00px = 390.0px -->
+<text x="96" y="268" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="500" fill="#4b5563" text-anchor="start">agy + agy-pro: a master, seats from every family, a bounded write</text>
+<!-- box [your prompt] 120x62: widest line 71.5px, padding 24.2px/side (>=20) -->
+<rect x="44" y="340" width="120" height="62" rx="12" fill="#f9fafb" stroke="#4b5563" stroke-width="1.5"/>
+<!-- width: 'your prompt' 11ch x 6.50px = 71.5px -->
+<text x="104.0" y="367.14" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#1f2937" text-anchor="middle">your prompt</text>
+<!-- width: 'same keys' 9ch x 5.50px = 49.5px -->
+<text x="104.0" y="383.14" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#4b5563" text-anchor="middle">same keys</text>
+<polyline points="168,371 194,371" fill="none" stroke="#4b5563" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#ah-4b5563)"/>
+<!-- box [Gemini master] 180x62: widest line 85.0px, padding 47.5px/side (>=20) -->
+<rect x="200" y="340" width="180" height="62" rx="12" fill="#faf5ff" stroke="#9333ea" stroke-width="1.5"/>
+<!-- width: 'Gemini master' 13ch x 6.50px = 84.5px -->
+<text x="290.0" y="360.64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#6b21a8" text-anchor="middle">Gemini master</text>
+<!-- width: 'plans, arbitrates' 17ch x 5.00px = 85.0px -->
+<text x="290.0" y="375.64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-weight="400" fill="#9333ea" text-anchor="middle">plans, arbitrates</text>
+<!-- width: 'runs the route' 14ch x 5.00px = 70.0px -->
+<text x="290.0" y="389.64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-weight="400" fill="#9333ea" text-anchor="middle">runs the route</text>
+<!-- box [free native seats] 196x56: widest line 125.0px, padding 35.5px/side (>=20) -->
+<rect x="440" y="284" width="196" height="56" rx="12" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.5"/>
+<!-- width: 'free native seats' 17ch x 6.50px = 110.5px -->
+<text x="538.0" y="308.64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#166534" text-anchor="middle">free native seats</text>
+<!-- width: 'Gemini + Claude, $0 extra' 25ch x 5.00px = 125.0px -->
+<text x="538.0" y="323.64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-weight="400" fill="#16a34a" text-anchor="middle">Gemini + Claude, $0 extra</text>
+<!-- box [provider seats] 196x56: widest line 125.0px, padding 35.5px/side (>=20) -->
+<rect x="440" y="344" width="196" height="56" rx="12" fill="#fff0eb" stroke="#ee4f2e" stroke-width="1.5"/>
+<!-- width: 'provider seats' 14ch x 6.50px = 91.0px -->
+<text x="538.0" y="368.64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#9e341a" text-anchor="middle">provider seats</text>
+<!-- width: 'DeepSeek, GLM, Qwen, MiMo' 25ch x 5.00px = 125.0px -->
+<text x="538.0" y="383.64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-weight="400" fill="#ee4f2e" text-anchor="middle">DeepSeek, GLM, Qwen, MiMo</text>
+<!-- box [scoped writes] 196x56: widest line 85.0px, padding 55.5px/side (>=20) -->
+<rect x="440" y="404" width="196" height="56" rx="12" fill="#fff0eb" stroke="#ee4f2e" stroke-width="1.5"/>
+<!-- width: 'scoped writes' 13ch x 6.50px = 84.5px -->
+<text x="538.0" y="428.64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#9e341a" text-anchor="middle">scoped writes</text>
+<!-- width: 'verify + snapshot' 17ch x 5.00px = 85.0px -->
+<text x="538.0" y="443.64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-weight="400" fill="#ee4f2e" text-anchor="middle">verify + snapshot</text>
+<polyline points="384,371 412,371" fill="none" stroke="#4b5563" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<polyline points="412,371 412,312 432,312" fill="none" stroke="#4b5563" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#ah-4b5563)"/>
+<polyline points="412,371 432,371" fill="none" stroke="#4b5563" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#ah-4b5563)"/>
+<polyline points="412,371 412,432 432,432" fill="none" stroke="#4b5563" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#ah-4b5563)"/>
+<rect x="44" y="484" width="592" height="44" rx="8" fill="#f9fafb" stroke="#f9fafb" stroke-width="1.5"/>
+<!-- strip 592x44: widest line 228.0px, padding 182.0px/side -->
+<!-- width: 'the same agy TUI, the same keystrokes,' 38ch x 6.00px = 228.0px -->
+<text x="340.0" y="502.7" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#4b5563" text-anchor="middle">the same agy TUI, the same keystrokes,</text>
+<!-- width: 'no MCP server, no daemon at rest' 32ch x 6.00px = 192.0px -->
+<text x="340.0" y="517.7" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#4b5563" text-anchor="middle">no MCP server, no daemon at rest</text>
+<!-- width: 'same terminal. different engine room.' 37ch x 6.50px = 240.5px -->
+<text x="340" y="582" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#4b5563" text-anchor="middle">same terminal. different engine room.</text>
+</svg>

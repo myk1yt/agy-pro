@@ -1,570 +1,182 @@
-# ⚡ Antigravity CLI Developer Toolkit (`agy-tools`)
+# ⚡ agy-pro
 
 <div align="center">
 
 **[English](README.md)** | **[한국어](README.ko.md)**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Zero Dependencies](https://img.shields.io/badge/Dependencies-0%20(Pure%20Node.js)-brightgreen.svg)](#zero-dependency-architecture)
+[![Zero Dependencies](https://img.shields.io/badge/Dependencies-0%20(stdlib%20only)-brightgreen.svg)](#under-the-hood)
 [![Node.js Version](https://img.shields.io/badge/Node.js-%3E%3D16.0.0-green.svg)](https://nodejs.org)
-[![i18n Supported](https://img.shields.io/badge/i18n-21%20Languages%20(RTL)-orange.svg)](#-internationalization-i18n--21-languages)
-[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](#-installation--quick-start)
+[![i18n Supported](https://img.shields.io/badge/i18n-21%20Languages%20(RTL)-orange.svg)](#analytics)
+[![MCP Servers](https://img.shields.io/badge/MCP%20servers-0-blueviolet.svg)](#under-the-hood)
+[![Daemons](https://img.shields.io/badge/daemons-0%20at%20rest-blueviolet.svg)](#under-the-hood)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](#install)
 
-**Zero-dependency Developer Toolkit & Real-Time Token/Cost Analytics Suite for Antigravity CLI**
+**Two engines, one repo. `agy-tokens` tells you what every turn cost. `agy pro` puts more than one model behind the same `agy` terminal.**
 
 </div>
 
 ---
 
-> [!NOTE]
-> **Token usage is an estimated value calculated directly by our tokenizer / heuristic estimation engine.**
+<a id="toc"></a>
 
----
+`agy-tokens` reads your Antigravity CLI logs and the local Language Server, then shows tokens, dollars and the real 5h/7d Gemini quota in your statusline and in a browser dashboard. `agy pro` is a Go shim over the real `agy` binary: native Gemini and Claude seats plan and review for free, an external model writes real scoped code, and nothing is charged without a `y/N`.
 
-## 🌟 Executive Overview
-
-**Antigravity Developer Toolkit (`agy-tools`)** is a high-precision, zero-dependency CLI and dashboard suite designed specifically for **Antigravity CLI**. Its flagship command **`agy-tokens`** (also aliased as `agy-tools` and `agy-dashboard`) delivers instant statusline analytics, live 1:1 rate limit quota tracking, and an interactive real-time web dashboard.
-
-### Why `agy-tools`?
-- **Zero Antigravity Code Modifications**: this toolkit needs one `statusLine` command entry in `~/.gemini/antigravity-cli/settings.json`, and no Antigravity source change. The optional `agy pro` Go shim goes further: on request it also deploys the rules, plugins and capability folders plus the pre-turn hook, and `agy pro integrations status` lists every destination it owns. Each of them moves through the same single consent modal.
-- **1:1 Gemini Quota Pool Tracking**: Connects directly to the local Language Server via HTTPS/HTTP RPC to display exact **5-Hour (5h)** and **7-Day (7d)** rolling quota buckets with live countdown timers.
-- **Real-Time SSE Web Dashboard**: Opens an interactive single-page dashboard on `http://127.0.0.1:8787` powered by Server-Sent Events (SSE) and responsive pure-SVG vector charts.
-- **2026 Flagship Model Support**: Full out-of-the-box attribution for **Gemini 3.7 Flash**, **Gemini 3.6 Flash**, **Gemini 3.5 Flash**, **Claude Opus 4.6**, **Claude Sonnet 4.6**, and more.
-- **Zero External Dependencies**: Engineered with pure Node.js standard libraries (`http`, `fs`, `path`, `net`, `child_process`) for sub-millisecond execution and instant startup.
-- **Full Internationalization (i18n)**: 21 languages with automatic system locale detection and bidirectional RTL support (Arabic, Hebrew).
-
----
-
-## 🏗 System Architecture
-
-```mermaid
-flowchart TD
-    subgraph Antigravity Engine
-        A[Antigravity CLI Session\n~/.gemini/antigravity-cli] -->|Appends| B(transcript.jsonl)
-        A -->|Appends| C(history.jsonl)
-        LS[Language Server Process\nlanguage_server / agy.exe]
-    end
-
-    subgraph agy-tools Core
-        B --> D[Log Parser & BPE Tokenizer]
-        C --> D
-        D -->|Atomic Cache| E[(Token Tracker Cache\ntoken_tracker_cache.json)]
-        E --> F[Aggregator Engine]
-        
-        LS -->|HTTPS RPC\nRetrieveUserQuotaSummary| G[Gemini Quota Subsystem]
-        G -->|30s Atomic Cache| H[(gemini_quota_cache.json)]
-    end
-
-    subgraph Presentation & UI Layer
-        F & H --> I[Statusline Formatter\n--hook --raw --write-dashboard]
-        I -->|Clean Statusline Badge| J[Terminal Statusline]
-        I -->|OSC 8 Hyperlink| K[📊 Dashboard Link]
-        F & H --> L[HTML Report Generator]
-        L -->|Atomic Artifacts| M[(~/.gemini/antigravity-dashboard/)]
-        M --> N[Local SSE Server\n127.0.0.1:8787]
-        N -->|Live Push| O[Web Browser UI]
-    end
-```
-
----
-
-## 🌐 Agy-Tools Ecosystem & Branch Catalog
-
-This repository hosts a multi-faceted developer ecosystem beyond the core token tracker. Each major capability lives in its own dedicated branch:
-
-```mermaid
-flowchart TD
-    Core["main\nCore Engine & Token Monitor"]
-    Des["Agent/designer\n@designer Plugin"]
-    Sec["Agent/security-reviewer\n@security-reviewer Suite"]
-    CodeRev["Agent/code-reviewer\n@code-reviewer Suite"]
-    Gov["gemini-config\nAutonomous Governance Rules"]
-    Pro["feature/agy-pro\nagy-pro Go Shim & Swarm"]
-    Dash["dashboard\nHistorical Prototype"]
-    
-    Core -->|Plugin| Des
-    Core -->|Plugin| Sec
-    Core -->|Plugin| CodeRev
-    Core -->|Global Config| Gov
-    Core -->|Go shim suite| Pro
-    Dash -->|Merged & Superseded| Core
-```
-
-| Branch | Description | Key Capabilities | One-Shot Install (paste into **Command Prompt**) | One-Shot Install (paste into **PowerShell**) | One-Shot Install (paste into **macOS / Linux terminal**) |
-|---|---|---|---|---|---|
-| [`main`](https://github.com/myk1yt/agy-pro/tree/main) | **Core Engine, Developer Toolkit & agy-pro Go Shim** | Statusline badge, SSE Web Dashboard, 1:1 Gemini Quota Pool RPC, Dynamic Pricing, 21 languages, plus the agy-pro suite (transparent `agy` shim, multi-model swarm, fanout with partition mode, provider write/URL/search tools) | `git clone https://github.com/myk1yt/agy-pro.git && cd agy-pro && scripts\install.bat && install.cmd` | `cmd /c "git clone https://github.com/myk1yt/agy-pro.git && cd agy-pro && scripts\install.bat && install.cmd"` | `git clone https://github.com/myk1yt/agy-pro.git && cd agy-pro && bash scripts/install.sh` |
-| [`Agent/designer`](https://github.com/myk1yt/agy-pro/tree/Agent/designer) | **Zero-MCP Design Specialist** | `@designer` agent, 5 modular add-on modules (SVG, 3D Canvas, Cyberpunk, Sandbox, QA Harness) | `git clone -b Agent/designer https://github.com/myk1yt/agy-pro.git && cd agy-pro && powershell -ExecutionPolicy Bypass -File scripts\install-designer.ps1` | `cmd /c "git clone -b Agent/designer https://github.com/myk1yt/agy-pro.git && cd agy-pro && powershell -ExecutionPolicy Bypass -File scripts\install-designer.ps1"` | `git clone -b Agent/designer https://github.com/myk1yt/agy-pro.git && cd agy-pro && bash scripts/install-designer.sh` |
-| [`Agent/security-reviewer`](https://github.com/myk1yt/agy-pro/tree/Agent/security-reviewer) | **Enterprise Multi-Agent Security Audit** | `@security-reviewer` orchestrator + 4 domain inspectors (OWASP, IAM, Credentials, Supply Chain) | `git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-pro.git && cd agy-pro && powershell -ExecutionPolicy Bypass -File scripts\install-security-reviewer.ps1` | `cmd /c "git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-pro.git && cd agy-pro && powershell -ExecutionPolicy Bypass -File scripts\install-security-reviewer.ps1"` | `git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-pro.git && cd agy-pro && bash scripts/install-security-reviewer.sh` |
-| [`Agent/code-reviewer`](https://github.com/myk1yt/agy-pro/tree/Agent/code-reviewer) | **Pre-Merge Code Review & Quality Gate** | `@code-reviewer` agent, 4-stage pipeline, 8-category taxonomy, zero-tolerance P0-P3 gate | `git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-pro.git && cd agy-pro && powershell -ExecutionPolicy Bypass -File scripts\install-code-reviewer.ps1` | `cmd /c "git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-pro.git && cd agy-pro && powershell -ExecutionPolicy Bypass -File scripts\install-code-reviewer.ps1"` | `git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-pro.git && cd agy-pro && bash scripts/install-code-reviewer.sh` |
-| [`gemini-config`](https://github.com/myk1yt/agy-pro/tree/gemini-config) | **Autonomous Multi-Agent Governance** | 7-Stage Lifecycle Protocol, Master Zero-Source-Edit Invariant, orchestrator governance | `git clone -b gemini-config https://github.com/myk1yt/agy-pro.git && cd agy-pro && scripts\install.bat` | `cmd /c "git clone -b gemini-config https://github.com/myk1yt/agy-pro.git && cd agy-pro && scripts\install.bat"` | `git clone -b gemini-config https://github.com/myk1yt/agy-pro.git && cd agy-pro && bash scripts/install.sh` |
-| [`feature/agy-pro`](https://github.com/myk1yt/agy-pro/tree/feature/agy-pro) | **Go Shim & Multi-Model Swarm (`agy-pro`)** | Transparent `agy` shim, opt-in 2-second model launcher (`AGY_LAUNCHER=1`) with a combined native + external model list, external-model bridge, numbered swarm builder with hybrid native seats, `agy pro` suite (setup / mode / models / swarm / settings / fanout / doctor), one-click Windows install & uninstall (Windows only) | `git clone -b feature/agy-pro https://github.com/myk1yt/agy-pro.git && cd agy-pro && install.cmd` | `cmd /c "git clone -b feature/agy-pro https://github.com/myk1yt/agy-pro.git && cd agy-pro && install.cmd"` | - |
-| [`dashboard`](https://github.com/myk1yt/agy-pro/tree/dashboard) | **Historical Prototype** | Original token tracker foundation (fully merged into `main`) | - | - | - |
-
-> [!TIP]
-> Each row is a **complete, one-shot command for a fresh machine**: `git clone -b <branch>` checks the branch out *during* the clone, so there is no manual `git checkout` step left to forget (the classic "plugin.json not found" trap). The clone+checkout+installer chain is plain `&&`, which works in Command Prompt, bash (macOS/Linux) and PowerShell 7+. In the default **Windows PowerShell 5.1**, `&&` is not a valid separator — that is why every row also ships a `cmd /c "..."` wrapped version: paste *that one line* into a PowerShell window and it still runs end to end.
+**Contents:** [What you feel](#what-you-feel) · [What `agy pro` contains](#what-agy-pro-contains) · [The coding door](#coding-door) · [agy vs agy-pro](#difference) · [Analytics](#analytics) · [Install](#install) · [Branches](#branches) · [Under the hood](#under-the-hood) · [Safety](#safety) · [Docs](#docs)
 
 > [!NOTE]
-> The `main` row runs **two** installers back to back because `main` ships **both** components: `scripts\install.bat` (the Node.js toolkit; needs Node.js 16+) and `install.cmd` (the agy-pro Go shim; **Windows only**, needs no Node.js). Windows users should run both; the order does not matter, and if one of them reports an error you can still run the other installer on its own. On macOS/Linux, `install.sh` covers the Node toolkit only; the Go shim is built manually with `go build` (see the [Korean manual](MANUAL.ko.md)).
-
-#### Install the prerequisites first (git + Node.js) — also one shot
-
-`git` ships with Visual Studio Code and most developer setups; if it is genuinely missing, install it with `winget install --id Git.Git -e --accept-source-agreements --accept-package-agreements` first. Node.js is required **only for `main`** (the `Agent/*` plugin branches call `agy`, not `node`), and is a one-liner per platform:
-
-```powershell
-# Windows — install Node.js LTS (skip if `node --version` already works)
-winget install --id OpenJS.NodeJS.LTS -e --accept-source-agreements --accept-package-agreements
-```
-
-```bash
-# macOS (Homebrew)
-brew install node
-
-# Debian / Ubuntu
-sudo apt-get update && sudo apt-get install -y nodejs npm
-```
-
-After installing via winget, **open a brand-new terminal window** before running the install one-liner — a fresh window re-reads PATH so `node` becomes visible.
+> Token and cost numbers are calculated locally by this project's own tokenizer and heuristic estimation engine. They are estimates, not a provider invoice.
 
 ---
 
-## 🧭 Beginner Guide: Installing Any Branch (No Command-Line Experience Needed)
+<a id="what-you-feel"></a>
 
-This section is for first-time users. Follow it top to bottom and you will get any of the 5 installable branches (including `main` and `feature/agy-pro`) working — no prior git or terminal knowledge required.
+## 🎭 What you feel
 
-### Why `git clone -b <branch>` instead of `git checkout`?
+![Before and after: plain agy versus agy with agy-pro](docs/assets/agy-vs-agy-pro.svg)
 
-This repository keeps each add-on in a **separate git branch** (like a separate room in the same house). A plain `git clone` only unpacks ONE room at a time, so running an installer afterwards without switching reports "plugin.json not found" — the files simply are not in your folder yet. The one-shot commands in the table above solve this for a fresh machine: `git clone -b <branch>` **checks the branch out during the clone itself**, so there is no separate `git checkout` step left to forget. (Use `git checkout <branch>` only when you already cloned the repo earlier and want to switch rooms in the same folder.)
+Nothing about your terminal changes. `agy` is still `agy`: the same TUI, the same keys, the same exit codes. What changes is who is in the room when the request is big.
 
-### Step-by-step (Windows, no terminal experience required)
+On the top lane, one model answers everything. `/model` is XOR at the binary level, so a session holds native models **or** bridge models, never both, and the single brain grades its own homework. On the bottom lane the same prompt reaches a Gemini master that dispatches: free native seats on your subscription, external provider seats from other model families, and a shielded path where a metered seat may only write inside a scope the engine snapshots first.
 
-1. **Open a terminal in any folder** (it does not matter where: the command creates its own `agy-pro` folder)
-   - Press **Win + R**, type `powershell`, press Enter. (Or use Command Prompt — both work, see step 2.)
+The part that makes it feel frictionless: these routes are **standing instructions, not slash commands**. The master agent inside `agy` holds the routing rules in the workspace `AGENTS.md`, so an ordinary sentence fires them.
 
-2. **Paste ONE line for the branch you want** — the branch checkout is already built into the command:
-   - **In PowerShell (the blue window):** paste the **`cmd /c "..."` column** version from the branch table above. PowerShell 5.1 does not understand bare `&&`, so the `cmd /c` wrapper is what makes a single paste work.
-   - **In Command Prompt:** paste the **Command Prompt column** version.
-   - What each one-shot line does, in order: ① clones the repo **already switched to the right branch** (`git clone -b <branch>`) → ② `cd agy-pro` → ③ runs that branch's installer. Example (designer, PowerShell):
-   ```powershell
-   cmd /c "git clone -b Agent/designer https://github.com/myk1yt/agy-pro.git && cd agy-pro && powershell -ExecutionPolicy Bypass -File scripts\install-designer.ps1"
-   ```
+| You type (plain chat, no command) | What runs |
+|---|---|
+| `review the auth flow across the repo` | Read-only `review` fanout, seats from different model families, one reconciliation matrix with severities |
+| `audit this repo for leaked keys and OWASP issues` | Read-only `security` fanout, same seat rules |
+| `compare these two designs, which one breaks first?` | `research` fanout, seats argue, the master arbitrates with evidence |
+| `audit my plan before I build it` | `plan-audit` fanout, native seats, `$0` extra |
+| `fix the auth bug` | `agy pro code`: free native plan, then a metered provider write inside one scope, engine verification, snapshot rollback if the tree has to go back |
+| `just answer` / `no swarm` | Nothing fans out. A trivial single-file question is answered directly |
 
-3. **Verify it worked**
-   - Any of the above installers ends with a list of active agents. You should see your new agent name there (e.g. `designer` or `security-reviewer`).
-   - Or run this anytime:
-   ```powershell
-   agy agents
-   ```
+Korean is the same sentence, not a mode: `"인증 버그 고쳐줘"` and `"리뷰해줘"` fire the identical routes.
 
-4. **Real usage examples (what you actually do with it)**
-   - **Designer**: In the Antigravity chat input type `@designer` and then your request, for example:
-     - `@designer draw a 680px SVG architecture diagram of a 3-tier web app`
-     - `@designer build an interactive HTML widget with a slider that changes a 3D torus rotation speed`
-   - **Security Reviewer**: In the Antigravity chat input type `@security-reviewer` plus the code/folder you want audited, for example:
-     - `@security-reviewer audit this repository for hard-coded API keys and OWASP issues`
-     - `@security-reviewer check the IAM roles in deploy/terraform/ for least privilege violations`
-   - **Code Reviewer**: In the Antigravity chat input type `@code-reviewer` plus the diff or PR you want audited, for example:
-     - `@code-reviewer review all uncommitted changes against main before I create a PR`
-     - `@code-reviewer perform a pre-merge audit on HEAD~3..HEAD with focus on data-integrity and security`
-   - **gemini-config**: Nothing to type, and after installing Antigravity automatically loads the governance rules and orchestrator governance modules; the statusline badge (via the `statusLine` in settings.json) shows live token analytics every turn. It needs the `agy-tokens` launcher: without it the statusline step is skipped with a note, `agy pro integrations status` shows that posture, and `agy pro integrations repair` completes the step once the launcher exists.
+The review seats never see each other. No seat receives another seat's prompt, tool output or hypothesis, so agreement between two models means two models agreed, not that one repeated the other.
 
-5. **Uninstall (when you no longer want it)**
-   - **agy-pro shim** (installed by `install.cmd` / `agy-pro/scripts/install.ps1` on the `feature/agy-pro` branch): one command removes it — double-click `uninstall.cmd` in the repository root, or use the one-liner from the 🧹 Uninstall section above when you no longer have the clone. It deletes the `.agy-pro\bin` entry from your User `PATH` and moves `%USERPROFILE%\.agy-pro` to the Recycle Bin, so a mistaken run can be undone from Explorer. Add `-KeepState` to keep `providers.json`, `state.json` and the backups, or `-RestorePath` to put back the User `PATH` that was saved before the install. If you switched profiles, run `agy pro mode restore` first. No uninstaller at hand? Delete the `%USERPROFILE%\.agy-pro` folder manually and remove the `C:\Users\<you>\.agy-pro\bin` entry via System Properties → Environment Variables.
-   - **statusline hook and the engine's deployed content**: run `agy pro integrations retract --yes`; it removes the `statusLine` slot from `~/.gemini/antigravity-cli/settings.json` and moves every content tree the engine deployed into `<AGY_PRO_HOME>/backups/<ts>_retract/`. Without an `agy` on `PATH`, remove the `statusLine` block from `~/.gemini/antigravity-cli/settings.json` by hand. That block is the only `settings.json` edit you make by hand; the content trees the engine deployed are left orphaned unless `agy pro integrations retract --yes` runs from a working install.
-   - **Plugin branches (`Agent/designer`, `Agent/security-reviewer`, `Agent/code-reviewer`)**: their installers register a plugin via `agy plugin install` and copy the plugin's capability folders into the Antigravity config directory. Delete those capability folders, and check `agy plugin --help` for the removal command your Antigravity build supports.
-   - Run `agy agents` afterwards: the agent name should be gone.
+---
 
-> Already cloned the repo before? You do not need to clone again. Open a terminal inside the existing `agy-pro` folder, run `git checkout <branch>` (e.g. `git checkout Agent/designer`; the folder contents swap to that branch and nothing is deleted), and then run only the installer part of the one-liner.
+<a id="what-agy-pro-contains"></a>
 
-### Frequent errors and the surest fix right now
+## 🧩 What `agy pro` contains
 
-| Symptom | Why it happens | Surest fix |
+![What agy pro contains](docs/assets/agy-pro-feature-map.svg)
+
+Fourteen verbs, one binary. Everything else (`agy agents`, `agy -m ...`, `agy -p ...`) is passed straight through to the real binary, byte for byte.
+
+| Verb | What it does | Why you would reach for it |
 |---|---|---|
-| PowerShell prints `<path>-File : 잘못된 인수` / `-File` value is cut short, e.g. only `...install-` then stops | The command was pasted from a webpage with a line break or smart quotes inside the path | Type the command by hand OR paste into Notepad first, fix broken lines/quotes, then run. Avoid quotes containing pasted spaces at the end |
-| Endless repeated yellow/red `TLS ... handshake` / network flood in the terminal right after install | The statusline quota probe hammers the local Language Server when Antigravity is not running (pre-fix builds) | Update to the newest `main` (it contains a TLS probe cooldown guard), or remove the `statusLine` entry from `~/.gemini/antigravity-cli/settings.json` (the statusline hook ships no uninstaller script — see the Uninstall section above; `uninstall.cmd` on the `feature/agy-pro` branch removes the shim) |
-| `agy` is not recognized | The Antigravity CLI is not installed, or PATH does not include it | Install Antigravity CLI first; reopen the PowerShell window (a fresh window re-reads PATH) |
-| `plugin.json not found` when running an installer | You cloned without `-b` and ran the installer on the wrong branch | Re-run the full one-shot line from the branch table (it clones with `-b <branch>`), or `git checkout <branch>` inside the existing `agy-pro` folder first, then run the installer again |
-| PowerShell says script execution is disabled | Windows default policy blocks .ps1 files | Always launch through: `powershell -ExecutionPolicy Bypass -File scripts\...ps1` exactly as written in this README |
+| `setup` | Full-screen setup TUI: providers, models, fanout presets, prompts, UI language. `--wizard` for the classic line wizard | First run, and any time the registry changes |
+| `mode` | Switch profile between `full` (full-stack orchestrator) and `clean`, or `restore` | Same binary, different deployed content |
+| `status` | Active mode, registered providers, real `agy` path | One command when something feels off |
+| `models` | Configured providers and models. `--all` adds the numbered combined native + external inventory | Picking seats by number instead of by name |
+| `swarm` | Numbered builder: template + seats by number, dry-run echo with a per-seat cost note, then run | Hybrid swarms without memorizing seat grammar |
+| `settings` | Full-screen settings panel, plus `show` / `set` | Change one setting without editing JSON |
+| `integrations` | `status`, `apply`, `retract`, `preset`, `adopt`, `rollback`, `repair` for the deployed rules, plugins, capability folders and the `statusLine` slot | One owner for every file agy-pro puts on disk |
+| `hybrid` | Native-coexistence profile (`on p1`, `on p2`, `off`, `status`, `check`) | Keep a native setup next to an agy-pro one |
+| `doctor` | Toolchain, paths, keys. `--strict`, `--fix-keys`, `--rollback-keys` | A zero-token upstream key probe with a masked verdict |
+| `fanout` | The multi-model swarm engine: `review`, `security`, `research`, `plan-audit`, plus partition mode (`--units`) | The engine under every other multi-model surface |
+| `code` | `plan`, `write`, `review`, `rollback`, `run` | The coding door ([next section](#coding-door)) |
+| `config` | Persistent defaults: `default-profile`, `bridge-tools` | Set the startup behaviour once |
+| `version` | agy-pro version plus the underlying `agy` version | Bug reports |
+| `help` | Usage text, TUI first | Discovery |
 
-> Each branch also has its own `README.md` with details specific to that branch (open it after checking out that branch).
+Every verb that writes (`config`, `mode`, `doctor --fix-keys`, each setup-hub provider or model edit, each integration apply) prints the exact diff and waits for `y/N`. Scripted callers pass `--yes`; a reader that cannot answer is refused instead of guessed at.
+
+The other launcher surfaces, if you do not want to type verbs:
+
+```bash
+agy pro setup                            # full-screen hub, the recommended first run
+AGY_LAUNCHER=1 agy                       # opt-in 2s picker: [1] Native Gemini [2] External [3] Swarm
+agy pro models --all                     # numbered inventory, native rows and provider rows
+agy pro swarm                            # numbered builder on a TTY
+agy pro code --help                      # the coding door's full surface
+```
+
+Bare `agy` with no arguments and no `AGY_LAUNCHER=1` goes straight to native Gemini with zero extra delay. The picker only belongs to a bare `agy`: any argument skips it.
 
 ---
 
-## 🎨 Agent Plugins
+<a id="coding-door"></a>
 
-### `@designer` — Zero-MCP Self-Contained Design Specialist
+## 🛠 The coding door: `agy pro code`
 
-> **Branch**: [`Agent/designer`](https://github.com/myk1yt/agy-pro/tree/Agent/designer) · **Author**: myk1yt · **Version**: 1.0.0
+![The agy pro code pipeline](docs/assets/code-door-lifecycle.svg)
 
-Autonomous design agent generating mathematically verified UI/UX designs, interactive widgets, and 3D graphics directly inside Antigravity chat — without Figma, Blender, or any external MCP tools.
-
-**5 Bundled Modular Capabilities:**
-
-| Capability | Description |
-|---|---|
-| `design-core-harness` | Visual QA verification loop with 4-dimension defect checklist (ascender clipping, z-index collision, placeholder retention, WCAG AAA contrast) |
-| `design-vector-svg` | Mathematically precise 680px SVG layout engine with character width formulas and 9-family 4-tier color matrix |
-| `design-interactive-sandbox` | Live in-chat HTML sci-widgets with real-time parameter controls and 60fps canvas animation |
-| `design-3d-canvas` | WebGL 2.0 procedural geometry and custom GLSL vertex/fragment shaders (toroid, geodesic) |
-| `design-cyberpunk-brainmap` | Cyberpunk CRT scanline topology UI with DOM/SVG neural pulse DAG networks |
-
-**Installation & Usage:**
-```bash
-# Fresh machine — one shot (macOS / Linux terminal; checkout happens inside the clone):
-git clone -b Agent/designer https://github.com/myk1yt/agy-pro.git && cd agy-pro && bash scripts/install-designer.sh
-```
-
-```powershell
-# Fresh machine — one shot (Windows, paste into PowerShell or Command Prompt):
-cmd /c "git clone -b Agent/designer https://github.com/myk1yt/agy-pro.git && cd agy-pro && powershell -ExecutionPolicy Bypass -File scripts\install-designer.ps1"
-```
+One command for a bounded change worked by more than one model. Native seats plan and review on your subscription (`$0` extra). One external provider seat writes the scoped files (metered API). The engine snapshots the tree before the first write, runs the verification itself, allows one bounded repair, and can put the tree back byte for byte.
 
 ```bash
-# Already cloned earlier? Switch rooms, then install:
-git checkout Agent/designer
-powershell -ExecutionPolicy Bypass -File scripts/install-designer.ps1   # Windows
-bash scripts/install-designer.sh                                        # Linux / macOS
+# 1. plan only: native seats, free. Writes the run directory and stops.
+agy pro code plan --ask-file q.txt
+
+# 2. read the plan, then run it with ONE bounded scope.
+#    --writer is a provider seat, so this step is metered and asks y/N.
+agy pro code run --ask-file q.txt --scope "internal/x" \
+  --writer <provider/model> --verify "go build ./..." --yes
+
+# 3. if verification failed (exit 1), the report names the exact undo command:
+agy pro code rollback --run reports/code/<ts>
 ```
 
-Invoke in Antigravity CLI: `/agent` → select `designer`, or mention `@designer` directly.
+What the phases actually are:
+
+- **plan and review run on native seats, free by default.** The default line-up is `native:gemini-3.8-flash-high,native:claude-sonnet-5-5-high`. A native-only phase never asks for consent, because it costs nothing beyond your subscription.
+- **the write phase is metered and asks.** The writer is a provider seat only. A native seat builds no scoped tool runner, so the verb refuses a native `--writer` at usage time, before anything runs.
+- **verification belongs to the engine, not to the seat.** Compile-only detection is automatic (`go build` + `go vet` when the scope names a `.go` file under `go.mod`). Any other verifier, including every test runner, runs only when you name it with `--verify`.
+- **the run directory is the audit trail.** `reports/code/<ts>/phases.log` (one line per phase), `report.txt` (the change report a review reads), per-phase `summary.json` / `reconciliation.md` / `seat-*.md`, `verify/attempt-<n>-<cmd>.log` per attempt, and the snapshot itself.
+
+`--dry-run` prints the exact composed argv (the fanout call, every verifier, the rollback line) and exits 0 without spawning anything, so a metered run can be inspected before you spend a token.
+
+### The safety model, stated plainly
+
+- **Scoped provider writes.** A write target is in scope only when either its lexical root-relative path or its resolved real path sits inside the unit's scope globs. The same dual view decides what the snapshot claims, so the file a seat can write and the file rollback can restore are the same set.
+- **Governance files refuse every seat write.** `AGENTS.md`, `gemini.md`, `claude.md`, `providers.json` and its sibling aliases, `state.json`, `state-fanout.json`, `fanout-presets.json`, `integrations.json`, `settings.json`, plus the `rules/`, `.agy-pro/` and `.gemini/` directory components at any depth. `.git/**` is refused at snapshot time. The check follows the resolved directory chain, so a symlink cannot launder a governed path, and it compares Win32-canonical names on Windows so `AGENTS.md.` and `AGENTS.md:stream` are refused too.
+- **Rollback never deletes and never runs git.** The snapshot is a byte copy (`manifest.json` plus `snapshot/<relpath>`). Rollback restores in place and moves files the run created into `<out>/rollback-archive/`. A locked file stays exactly where it is and is named in `rollback.json`. `git` is never invoked, imported or parsed anywhere in the path.
+- **The ledger is bound to its run.** Every `manifest.json` carries `manifest.sig`, an HMAC-SHA256 over the manifest bytes under a per-run key kept outside every operation root. A hand-edited or forged ledger refuses whole, before a single byte is written.
+- **One cost rule: echo, then your GO.** Every metered seat is named in a masked echo, the echo says plainly that no cap exists, and nothing runs without `y/N` or `--yes`.
+- **Seats that partly failed say `degraded`, never `ok`.** The door reads the engine's own per-seat rows back. Some seats failed and the rest delivered, that phase is `degraded` and the report says so three ways. Every seat failed, that is exit 1.
+- **Honest caveat: native seats are measured, not contained.** A native seat is a real `agy` subprocess with its own tool surface, so a plan or review seat can write. The door snapshots before the plan phase, re-walks the scope after every native phase, and reports the difference as `native-drift` (plus `governance-drift` for a governance file). It names what happened instead of claiming a sandbox it does not own.
+
+Cost truth, without adjectives: there is no token or dollar cap anywhere in this door. What bounds a run is the engine's per-seat iteration limit and the wall clock, and the report prints token counts only when the engine's `summary.json` carries them. A budget meter is a future decision, not a shipped feature.
 
 ---
 
-### `@security-reviewer` — Enterprise Multi-Agent Security Audit Suite
+<a id="difference"></a>
 
-> **Branch**: [`Agent/security-reviewer`](https://github.com/myk1yt/agy-pro/tree/Agent/security-reviewer) · **Author**: myk1yt · **Version**: 1.0.0
+## ⚖️ `agy` alone vs `agy` + agy-pro
 
-Enterprise-grade security audit suite based on OWASP Top 10, CWE Top 25, and Google Cloud `roles/iam.securityReviewer` least-privilege principles. The lead orchestrator dispatches 4 specialized domain inspectors for comprehensive coverage.
+| | `agy` alone | `agy` + agy-pro |
+|---|---|---|
+| **Model choice** | `/model` picker is XOR: one family at a time, native or bridge | All families work together in one swarm, native seats and provider seats in the same run |
+| **Coding hands** | The native agent only | An external provider model can write real code, inside one bounded scope |
+| **Idea diversity** | One brain, one plan | Parallel plan and review seats, reconciled into one matrix |
+| **Review** | Self-review | Independent multi-model fanout with severities and a consensus split |
+| **Cost visibility** | None | Live 5h/7d quota buckets, statusline every turn, per-run seat usage, masked echo before any spend |
+| **Configuration** | Hand-edited files | Setup hub TUI plus one consent per integration apply |
+| **Fallback** | None | `mode clean` / `mode full`, `restore`, `doctor`, snapshot rollback, `degraded` status when a seat drops |
 
-**4 Domain Inspector Subagents:**
-
-| Subagent | Coverage |
-|---|---|
-| `sec-app-vuln` | OWASP Top 10 (2021) & CWE Top 25 — SQL Injection, XSS, Path Traversal, SSRF, Prompt Injection, ReDoS |
-| `sec-cloud-iam` | GCP IAM least privilege, Terraform/K8s/Dockerfile security, firewall rules (`0.0.0.0/0`, `allUsers`) |
-| `sec-credential-scanner` | Hardcoded API keys, private certs, JWT tokens, `.env` leakage, PII exposure |
-| `sec-supply-mcp` | Supply chain CVEs, MCP tool privilege escalation, CORS/CSP headers |
-
-**Standardized Audit Report:** 4-part EGC format — Philosophy Alignment → Scope → Consolidated Findings (Critical/High/Med/Low with exploit PoCs & remediations) → Quality Gate Verdict (PASS / CONDITIONAL PASS / FAIL).
-
-**Installation & Usage:**
-```bash
-# Fresh machine — one shot (macOS / Linux terminal; checkout happens inside the clone):
-git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-pro.git && cd agy-pro && bash scripts/install-security-reviewer.sh
-```
-
-```powershell
-# Fresh machine — one shot (Windows, paste into PowerShell or Command Prompt):
-cmd /c "git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-pro.git && cd agy-pro && powershell -ExecutionPolicy Bypass -File scripts\install-security-reviewer.ps1"
-```
-
-```bash
-# Already cloned earlier? Switch rooms, then install:
-git checkout Agent/security-reviewer
-powershell -ExecutionPolicy Bypass -File scripts/install-security-reviewer.ps1   # Windows
-bash scripts/install-security-reviewer.sh                                        # Linux / macOS
-```
-
-Invoke in Antigravity CLI: `/agent` → select `security-reviewer`, or mention `@security-reviewer` directly.
-
-### `@code-reviewer` — Pre-Merge Diff Reviewer & Deterministic Quality Gate
-
-> **Branch**: [`Agent/code-reviewer`](https://github.com/myk1yt/agy-pro/tree/Agent/code-reviewer) · **Author**: myk1yt · **Version**: 1.0.0
-
-Autonomous pre-merge diff reviewer and deterministic quality gate plugin for Google Antigravity. Built with a strict **read-only hardware constraint** (excluding all file write/edit tools), Code Reviewer audits pull requests and uncommitted working diffs through a robust 4-stage pipeline, catching bugs, security risks, stability flaws, and formatting issues before code merges into production.
-
-**2 Bundled Modular Capabilities:**
-
-| Capability | Description |
-|---|---|
-| `code-review-taxonomy` | 8-category taxonomy scan (correctness, security, stability, data-integrity, performance, maintainability, test-coverage, style-docs) with P0-P3 severity and 0-100 confidence scoring |
-| `quality-gate` | Universal deterministic quality gate running linter, typecheck, format check, and static security scans across changed files |
-
-**Installation & Usage:**
-```bash
-# Fresh machine — one shot (macOS / Linux terminal; checkout happens inside the clone):
-git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-pro.git && cd agy-pro && bash scripts/install-code-reviewer.sh
-```
-
-```powershell
-# Fresh machine — one shot (Windows, paste into PowerShell or Command Prompt):
-cmd /c "git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-pro.git && cd agy-pro && powershell -ExecutionPolicy Bypass -File scripts\install-code-reviewer.ps1"
-```
-
-```bash
-# Already cloned earlier? Switch rooms, then install:
-git checkout Agent/code-reviewer
-powershell -ExecutionPolicy Bypass -File scripts/install-code-reviewer.ps1   # Windows
-bash scripts/install-code-reviewer.sh                                        # Linux / macOS
-```
-
-Invoke in Antigravity CLI: `/agent` → select `code-reviewer`, or mention `@code-reviewer` directly.
+The one thing agy-pro does not change: the in-session `/model` popover stays XOR, because that constraint lives in the binary. The combined catalogue lives one layer up (`agy pro models --all`, launcher `[2]`, `agy pro swarm`).
 
 ---
 
-## 📜 Autonomous Multi-Agent Governance (`gemini-config`)
+<a id="analytics"></a>
 
-> **Branch**: [`gemini-config`](https://github.com/myk1yt/agy-pro/tree/gemini-config)
+## 📈 Analytics: statusline, quota, dashboard
 
-Shareable global configuration bundle that provisions the **7-Stage Multi-Agent Lifecycle Protocol** and engineering governance rules directly into your `~/.gemini` directory.
+`agy-tokens` needs one `statusLine` entry in `~/.gemini/antigravity-cli/settings.json` and no change to Antigravity itself. `agy pro integrations apply tools` writes that entry (snapshotting the file first), `agy pro integrations status` shows whether it still matches, and `agy pro integrations rollback` restores the snapshot.
 
-**Core Components:**
-- **`rules/AGENTS.md`**: Master Zero-Source-Edit & Zero-Monolithic-Execution invariants, 7-Stage lifecycle (`Intent → Decompose → Strategy → Adversarial Audit → SRP Plan → Worker Exec → Blind QA → Delivery`)
-- **`rules/GEMINI.md`**: Cross-platform, zero-dependency engineering standards
-- **`config/agents`**: Multi-agent delegation and double-blind QA runbook (Markdown governance agents)
-- **`config/statusLine` in `settings.json`**: Antigravity statusline turn badge (single integration point)
-
-**Installation:**
-```bash
-# Fresh machine — one shot (macOS / Linux terminal; checkout happens inside the clone):
-git clone -b gemini-config https://github.com/myk1yt/agy-pro.git && cd agy-pro && bash scripts/install.sh
-```
-
-```powershell
-# Fresh machine — one shot (Windows, paste into PowerShell or Command Prompt):
-cmd /c "git clone -b gemini-config https://github.com/myk1yt/agy-pro.git && cd agy-pro && scripts\install.bat"
-```
-
-```bash
-# Already cloned earlier? Switch rooms, then install:
-git checkout gemini-config
-scripts\install.bat                              # Windows
-chmod +x scripts/install.sh && ./scripts/install.sh   # Linux / macOS
-```
-
----
-
-## 📦 Quick Start & Installation
-
-Prerequisites: **Node.js 16+** ([nodejs.org](https://nodejs.org)) and **Antigravity CLI**
-
-### 1️⃣ One-Click Installation (Recommended)
-
-Run ONE line in your terminal (pick the column matching your shell below). This registers the global commands **and deploys the Antigravity integrations, including the statusline (`statusLine`) hook in `settings.json`**, through the Go engine (`agy pro integrations apply tools --yes`). On a machine without the `agy-tokens` launcher the statusline step is skipped with a note and the call still exits 0; `agy pro integrations status` reports that posture and `agy pro integrations repair` completes the step once the launcher exists:
-
-**Windows — Command Prompt:**
-```cmd
-git clone https://github.com/myk1yt/agy-pro.git && cd agy-pro && scripts\install.bat
-```
-
-**Windows — PowerShell (5.1 does not accept bare `&&`, hence the `cmd /c` wrapper):**
-```powershell
-cmd /c "git clone https://github.com/myk1yt/agy-pro.git && cd agy-pro && scripts\install.bat"
-```
-
-**Linux / macOS:**
-```bash
-git clone https://github.com/myk1yt/agy-pro.git && cd agy-pro && bash scripts/install.sh
-```
-
-The installer registers the global commands via `npm link`, so no separate `npm install -g .` step is needed on a fresh machine (see section 3️⃣ below for later updates).
-
-### 2️⃣ Getting Started
-1. **Restart Antigravity CLI (`agy`)**.
-2. Your terminal statusline will immediately display real-time token metrics and live Gemini quota pools! (It needs the `agy-tokens` launcher; without it the statusline step is skipped with a note and `agy pro integrations status` shows that posture.)
-3. To open the real-time browser dashboard, click `📊 Dashboard` in your terminal statusline or run:
-```bash
-agy-tokens --html --open
-```
-
-### 3️⃣ Updating your npm global copy (important: runtime uses the global copy)
-
-The statusline and `agy-tokens` commands run from the **npm global installation**, not directly from this cloned folder. After you `git pull` (or switch branches and re-run the installer), refresh the global copy so the runtime matches the repo:
-
-**Install fresh globally from this repo (Windows):**
-```cmd
-cd agy-pro
-npm install -g .
-```
-
-**Update later (after `git pull`):** run the same `npm install -g .` again — this re-links the newest source into `C:\Users\<you>\AppData\Roaming\npm\node_modules\agy-tools\`.
-
-Verify which copy actually runs and where it lives:
-```cmd
-agy-tokens --version
-where agy-tokens
-```
-If the `where` output does not point at `AppData\Roaming\npm`, the old copy is shadowing the new one: close and reopen the terminal (PATH refresh) and rerun `npm install -g .`.
-
----
-
-## 🚀 agy-pro: Go Shim, Model Launcher & Swarm Orchestrator
-
-`agy-pro/` is a Go shim that wraps the authentic `agy` binary. It keeps the native TUI, stdio handles, and exit codes intact, and adds an opt-in model launcher (`AGY_LAUNCHER=1`) with a combined native + external model list, a local bridge for external OpenAI-compatible models, profile switching, a numbered swarm builder with hybrid native seats, and one settings panel for everything. Go standard library only.
-
-### 📋 Copy & Paste Install (Windows)
-
-Paste ONE line into a PowerShell window (Windows PowerShell 5.1 or PowerShell 7). It picks the route on its own: with `git` it clones the `feature/agy-pro` branch and runs `install.cmd`; without `git` it downloads the branch ZIP into `%TEMP%` and runs `install.ps1`.
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "if (Get-Command git -ErrorAction SilentlyContinue) { cmd /c 'git clone -b feature/agy-pro https://github.com/myk1yt/agy-pro.git && cd agy-pro && install.cmd' } else { iwr 'https://codeload.github.com/myk1yt/agy-pro/zip/refs/heads/feature/agy-pro' -OutFile '$env:TEMP\agy-pro-src.zip' -UseBasicParsing; Expand-Archive -Path '$env:TEMP\agy-pro-src.zip' -DestinationPath '$env:TEMP\agy-pro-src' -Force; & (Resolve-Path '$env:TEMP\agy-pro-src\*\install.ps1').Path }"
-```
-
-> Every one-liner in this README installs from the **current state of the `feature/agy-pro` branch on GitHub**, so local commits that have not been pushed yet are not part of what you download.
-
-Command Prompt users can skip the wrapper and run the clone line directly: `git clone -b feature/agy-pro https://github.com/myk1yt/agy-pro.git && cd agy-pro && install.cmd`. Already cloned? Run `install.cmd` from the repository root, or call the installer directly with `powershell -NoProfile -ExecutionPolicy Bypass -File agy-pro\scripts\install.ps1`.
-
-The installer provisions the Go toolchain if missing, builds `agy.exe` into `~/.agy-pro/bin/`, prepends that directory to your User `PATH`, and runs `agy pro doctor`. Open a new terminal afterwards so the PATH change is picked up.
-
-The Node installers (`scripts/install.bat` / `scripts/install.sh`) no longer carry their own settings writers. Once `agy` resolves on `PATH` they hand the Antigravity deployment to the Go engine with one call, `agy pro integrations apply tools --yes`, which writes the `statusLine` slot in `settings.json` and deploys the rest of the managed content trees. On a machine without the `agy-tokens` launcher the statusline step is skipped with a note and the call still exits 0; `agy pro integrations status` reports that posture and `agy pro integrations repair` completes the step once the launcher exists. If `agy` is not on `PATH` yet, the installer prints that exact command and continues; if the call fails it stops with `[ERROR]` and exits non-zero, so a half-deployed machine is never reported as success.
-
-### 🧹 Uninstall (Windows, one line)
-
-Paste ONE line into a PowerShell window. It downloads the uninstaller, shows what it is about to do, and waits for your `y/N` confirmation:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr 'https://raw.githubusercontent.com/myk1yt/agy-pro/feature/agy-pro/agy-pro/scripts/uninstall.ps1' -OutFile '$env:TEMP\agy-pro-uninstall.ps1' -UseBasicParsing; & '$env:TEMP\agy-pro-uninstall.ps1'"
-```
-
-It removes exactly what the installer added, and nothing else:
-
-1. the `~/.agy-pro/bin` entry from your User `PATH` (that entry only; every other entry and the registry value kind are preserved),
-2. the whole `~/.agy-pro` folder, moved to the **Recycle Bin** (never deleted permanently).
-
-Before either step it retracts the deployed integrations, because only the shim can own those files: the uninstaller runs `agy pro integrations retract --yes` through `agy` while `agy` still exists, so every content tree and the statusLine slot the engine wrote into the Gemini config tree move into `<AGY_PRO_HOME>/backups/<ts>_retract/` instead of being orphaned. `-KeepState` still retracts (that step is about the deployed files, not provider state). If `agy` cannot be found, the uninstaller says so and tells you to run `agy pro integrations retract --yes` from a working install before the next uninstall.
-
-Variants, appended to the same line or run from a clone: `-KeepState` removes the shim but keeps `providers.json`, `state.json` and the backups; `-DryRun` prints the plan and changes nothing; `-RestorePath` restores the User PATH saved before the install (the newest `~/.agy-pro/backups/path-*.json`); `-Force` skips the confirmation prompt for scripted use. Cloned the repository earlier? Double-click `uninstall.cmd` in the repository root instead, or run `.\uninstall.cmd`. If you switched profiles with `agy pro mode`, run `agy pro mode restore` **before** uninstalling (the uninstaller prints that reminder whenever profile backups exist). A run without an interactive console (piped input, scheduled task) answers `no` automatically, so it cannot wipe the installation by accident.
-
-### First run
-
-```bash
-agy pro setup          # full-screen setup TUI: providers, models, fanout presets, prompts, language
-agy pro setup --wizard # the classic line wizard, on any host
-agy                    # default: straight to native Gemini, zero delay
-AGY_LAUNCHER=1 agy     # opt in: 2-second picker [1] Native Gemini  [2] External Models  [3] Swarm
-```
-
-`agy pro setup` is the only door to the setup TUI (Windows console hosts; pipes and scripts get the same line wizard as before, byte-identically). First run asks for the UI language (12 languages; Arabic is honest logical-order scope, no bidi shaping), then the hub covers provider registration, per-model add/update/delete behind an exact-diff approval gate, fanout presets, and prompt authoring. Bare `agy pro help` advertises the TUI at the top.
-
-The picker belongs to a **bare** `agy` (no arguments) with `AGY_LAUNCHER=1` set: any argument skips it and goes straight to the real binary, and without the opt-in the bare launch is native with zero delay. The launcher also prints one community line at startup (`Visit https://www.reddit.com/r/GoogleAntigravityCLI/! A space for antigravity-cli users. Remember r/GoogleAntigravityCLI`); it appears only in the interactive launcher, never in `-p`/piped/machine output. External models and the swarm are also reachable without the launcher (`AGY_PRO_BRIDGE=1 agy`, `agy pro swarm`, the `agypro_swarm` plugin). Profile and per-run overrides:
-
-```bash
-agy pro config default-profile gateway   # every `agy` run exposes all registered models in /model
-agy pro config default-profile native    # always native Gemini, no prompt
-agy -m "gemini-2.5-flash (google)"       # one external model for this run only
-agy pro mode full                        # switch to the full-stack orchestrator profile
-agy pro status                           # active mode, providers, real agy path
-```
-
-Every command that writes (`agy pro config ...`, `agy pro mode ...`, `agy pro doctor --fix-keys`, and each setup-hub provider or model edit) prints exactly what it will change first and needs a `y/N` answer; scripted callers add `--yes` to consent without a prompt.
-
-Everyday surfaces:
-
-```bash
-agy pro models --all                     # combined native + external model list (numbered)
-agy pro swarm                            # numbered builder: template + seats by number, then run
-agy pro fanout --seats "native:gemini-3.8-flash-high,nw/glm-5.3-flash"   # hybrid swarm
-agy pro settings                         # full-screen settings panel (TUI)
-```
-
-### Integrations: one owner for what gets deployed
-
-```bash
-agy pro integrations status              # read-only: intent next to what is on disk, no gate
-agy pro integrations apply tools         # the whole preset: statusLine slot + every managed content tree (statusline step skipped with a note when the `agy-tokens` launcher is absent)
-agy pro integrations apply rules         # one feature; no operand applies whatever is pending
-agy pro integrations retract             # remove what the engine deployed; no operand removes everything
-agy pro integrations preset native|tools # reach that preset and record it
-agy pro integrations adopt               # record what is already on disk (writes no file)
-agy pro integrations rollback            # restore the newest settings.json snapshot
-agy pro integrations rollback rules      # roll one content feature back to its pre-install tree
-agy pro integrations repair              # re-deploy drifted and missing destinations
-```
-
-`status` prints one row per managed feature, so the feature list is never second-hand: each row carries the recorded intent next to the engine's posture on disk. The presets are `native` and `tools`; `custom` is derived from the feature toggles and refused as an operand. Every writing verb composes one plan, prints the exact diff, and asks once, so a preset apply is a single `y/N` for the file deployment, the `settings.json` slot and the `state.json` intent rows together. On a machine without the `agy-tokens` launcher a preset apply is still one consent, but the statusline step is skipped with a note and the call exits 0; `agy pro integrations status` reports that posture and `agy pro integrations repair` completes the step once the launcher exists. A non-interactive stdin (installer, CI, pipe) must pass `--yes`, otherwise the verb refuses and writes nothing. Exit codes: 0 ok, 1 runtime error or refusal, 2 usage error. Run `retract` before uninstalling so the deployed files reach `<AGY_PRO_HOME>/backups/<ts>_retract/` instead of being orphaned.
-
-`rollback` takes one operand or none. No operand restores `settings.json` from its snapshot chain; `rollback <feature>` restores that one content feature's pre-install tree behind the same single consent and records no intent row (the restored bytes are not a posture you stated). `status` lists the feature words; `rollback statusline` exits 2 and points at the no-operand door, a preset operand (`native`, `tools`, `custom`) exits 2 because a whole posture has no single pre-install tree, and two operands is a usage error.
-
-The preset changes what is DEPLOYED (the engine's content trees and the statusLine slot); it never changes which binary runs. `agy pro mode full|clean` is the same kind of switch: deployed content only, one `agy` binary.
-
-### Hybrid swarm: native and external models in one run
-
-One swarm mixes Antigravity's own (native) models with your registered external providers, and every seat runs as its own agent. Verified live on 2026-10-13 with two seats (one native, one external): both answered, and when the external provider returned HTTP 401 the seat failed over to another registered provider and the run still completed 2/2.
-
-```bash
-# 1. Everything you can assign: native models plus registered providers
-agy pro models --all
-#   [ 1] gemini-3.8-flash-high     Gemini 3.8 Flash (High)          [native]
-#   [11] glm-5.3-flash-flex        tools, vision, thinking(default) [NW]
-#   [13] glm-5.3-flash             tools, vision, thinking(default) [Charm]
-
-# 2. Dry-run first: prints the exact fanout command, runs nothing
-agy pro swarm --template code-review --seats "1,13" --dry-run
-#   agy pro fanout --task review --seats native:gemini-3.8-flash-high,Charm/glm-5.3-flash \
-#     --root . --timeout 120 --tools read,search --prompt "..." --json
-
-# 3. Run it: each seat is one agent; artifacts land in ./reports/fanout/<timestamp>/
-#    (--timeout 305 pins the native seat's agy --print-timeout at 300s)
-agy pro fanout --task review --seats "native:gemini-3.8-flash-high,NW/glm-5.3-flash-flex" \
-  --root . --timeout 305 --tools read --prompt "Review the auth flow" --json
-```
-
-Seat grammar: `native:<model-id>` for Antigravity's own models, `<provider>/<model-id>` for a registered external provider, comma-separated. `agy pro swarm --seats` also takes numbered picks from the inventory above ("1,13", "2-4", presets "p1".."p3"), and the interactive builder (`agy pro swarm` with no flags on a TTY, or launcher `[3]`) walks the same choices by number. A provider seat that answers 401/403 fails over to another registered provider, and the summary records the hop plus a `degraded` flag instead of failing the run (live example: NW returned 401 "Invalid API key", the seat completed on Charm/qwen3.8-flash, 2/2 seats done).
-
-Every generated artifact (`summary.json`, `reconciliation.md`, per-seat reports) is written owner-only, and any key-shaped value that rides into a report or the console renders as the first 5 characters plus `****`, never a suffix.
-
-### Swarm from inside the agy TUI (`/agypro_swarm:swarm`)
-
-The swarm also runs from inside an `agy` chat session through the `agypro_swarm` plugin command. agy's plugin system namespaces plugin commands, so the invocation is `/agypro_swarm:swarm` (there is no core `/swarm`; the honesty label is mandatory everywhere). The command is agent-mediated: it reads the combined inventory (`agy pro models --all`), collects template / seats / tools / timeout / task through numbered menus, echoes the resolved `agy pro swarm --dry-run` command with a per-seat cost note and an explicit go/no-go, and only then runs the real swarm and presents `summary.json`, `reconciliation.md` and the per-seat reports in chat.
-
-Cost rules that are enforced by the command body: every seat is one full agent turn; native seats spend the Antigravity subscription, provider seats spend that provider's API credits; no real run happens without an explicit go after the dry-run echo. The task prompt travels through `--prompt-file` (a temp file), never spliced raw into a shell line, and API key values are never requested or echoed in chat. The dry-run echo is labeled information-only and is never executed or pasted: when the prompt came from a file it references the file instead of inlining the text, so no prompt content can ride a copy-pasteable shell line.
-
-The XOR boundary is unchanged and stated plainly: this is a command/tool action that runs separate subprocesses; it does not add external models to the session's `/model` popover, which stays native-or-bridge, never both.
-
-### What it adds
-
-| Capability | Command |
-|---|---|
-| Interactive 2-second model launcher (opt-in) | `AGY_LAUNCHER=1 agy` |
-| Combined native + external model list | `agy pro models --all`, launcher `[2]` |
-| External models inside the native `/model` picker | `agy -b`, `agy -m "<model> (<provider>)"`, `AGY_PRO_BRIDGE=1` |
-| Default startup profile (native / gateway / prompt) | `agy pro config default-profile <value>` |
-| Gateway tool loop for external models (default read-only) | `agy pro config bridge-tools read,search`, `agy pro config show` |
-| Profile switcher (full-stack / clean) | `agy pro mode full`, `agy pro mode clean` |
-| Full-screen setup TUI (providers, models, presets, prompts, language) | `agy pro setup` (`--wizard` for the classic line wizard) |
-| Numbered swarm builder (hybrid native + external seats) | `agy pro swarm`, `agy pro fanout --seats "native:<model>,<provider>/<model>"` |
-| Multi-model fanout swarm | `agy pro fanout -task=security -n=3` |
-| Settings panel / in-session settings | `agy pro settings` (TUI), `/setting_agypro` (plugin command) |
-| Deployed integrations (statusLine slot + the engine's managed content trees) | `agy pro integrations status`, `agy pro integrations apply tools`, `agy pro integrations retract` |
-| Swarm from inside the chat | `/agypro_swarm:swarm` (plugin slash command; numbered seats, dry-run echo + cost confirm, artifact findings in chat) |
-| Diagnostics | `agy pro doctor`, `agy pro status`, `agy pro models` |
-
-`agy pro doctor` probes every configured provider key upstream with zero tokens (`GET <baseURL>/models`, 5s timeout) and prints a masked verdict (`valid` / `invalid` / `indeterminate` / `SKIP`). Key material is always displayed as the first 5 characters followed by `****` (5 characters or fewer render as `****`; no suffix is ever shown). `agy pro doctor --fix-keys` restores a BOM-prefixed environment variable name from a probe-valid variant (backup written first) and `agy pro doctor --rollback-keys <dir>` undoes that repair.
-
-Inside an `agy` session, `/model` stays an all-or-nothing switch: native Antigravity models and bridge (external) models cannot share one catalog, so the single popover is XOR-limited by the binary. The closest in-session equivalent is gateway mode with the `google` (AI Studio) preset registered (`/model` then lists Gemini 2.5 next to your external models); the full native + external list lives at the agy-pro layer (`agy pro models --all`, launcher `[2]`, `agy pro swarm`).
-
-Full details: [`agy-pro/README.md`](agy-pro/README.md), [`agy-pro/docs/bridge-architecture.md`](agy-pro/docs/bridge-architecture.md) and [`agy-pro/docs/swarm-hybrid.md`](agy-pro/docs/swarm-hybrid.md).
-
----
-
-## ⚡ Statusline Integration & Architecture
-
-`agy-tokens` operates as a statusline-powered real-time token monitor. **No modification of Antigravity core files is required.**
-
-The installer script (`install.bat` / `install.sh`) hands that slot to the Go engine: `agy pro integrations apply tools --yes` writes the `statusLine` object into `~/.gemini/antigravity-cli/settings.json` while preserving your existing settings, and the ledger snapshots the file as `settings.json.bak.<ts>` before the atomic write. On a machine without the `agy-tokens` launcher the statusline step is skipped with a note and the call still exits 0; `agy pro integrations status` reports that posture and `agy pro integrations repair` completes the step once the launcher exists. You can run the same command by hand at any time, `agy pro integrations status` shows whether the slot still matches, and `agy pro integrations rollback` restores the newest snapshot. A pre-install removal is no longer a manual edit either: `agy pro integrations retract` takes the slot out and archives the bytes it replaced.
-
-### Clean Statusline Format
-The statusline badge renders without redundant prefixes, keeping terminal output clean, dense, and informative:
-
-**English Statusline:**
 ```text
 ⚡ Turn: 1.2k ($0.0002) | Today: 45.8k ($0.0068) | Cache: 82% | 5h: ▰▰▰▰▱ 79% (4h 10m) | 7d: ▰▱▱▱▱ 21% (3d 20h) | 📊 Dashboard
 ```
 
-**Korean Statusline:**
 ```text
 ⚡ 이번 턴: 1.2k (₩0.3) | 오늘 누적: 45.8k (₩9.9) | 캐시: 82% | 5h: ▰▰▰▰▱ 79% (4h 10m) | 7d: ▰▱▱▱▱ 21% (3d 20h) | 📊 대시보드
 ```
 
-- `--hook`: Formats output for Antigravity's `PostInvocation` statusline runner.
-- `--raw`: Strips JSON wrapper for direct terminal statusline display.
-- `--write-dashboard`: Atomically synchronizes real-time dashboard data on every turn.
+**1:1 Gemini quota.** The quota subsystem queries the local Antigravity Language Server over HTTPS/HTTP RPC (`RetrieveUserQuotaSummary`) and shows the two real rolling buckets: **5-Hour (`5h`)** burst window and **7-Day (`7d`)** weekly allowance, each with a live countdown. The answer is cached for 30 seconds at `~/.gemini/gemini_quota_cache.json`, so the statusline read stays sub-millisecond and the refresh never blocks the turn.
 
-### 🔧 Manual Setup & Troubleshooting
+**The `statusLine` entry itself.** If you prefer to wire it by hand (a container, a locked-down `PATH`, or no `agy` on `PATH` for the engine to call), add this block to `~/.gemini/antigravity-cli/settings.json`:
 
-If you prefer manual configuration or operate in specialized container/PATH environments:
-
-#### Manual `settings.json` Configuration
-Add the `statusLine` hook to `~/.gemini/antigravity-cli/settings.json`:
 ```json
 {
   "statusLine": {
@@ -576,17 +188,37 @@ Add the `statusLine` hook to `~/.gemini/antigravity-cli/settings.json`:
 }
 ```
 
-- **Direct Node path**: `"command": "node /path/to/agy-pro/bin/agy-tokens.js --hook --raw --write-dashboard"`
-- **Windows 8.3 short paths (if PATH is not inherited by subprocesses)**:
-  `"command": "C:\\PROGRA~1\\nodejs\\node.exe %APPDATA%\\npm\\NODE_M~1\\AGY-TO~1\\bin\\AGY-TO~1.JS --hook --raw --write-dashboard"` (ensure backslashes are escaped as `\\`)
+Direct Node path: `"command": "node /path/to/agy-pro/bin/agy-tokens.js --hook --raw --write-dashboard"`. On Windows, if the subprocess does not inherit `PATH`, use 8.3 short paths and escape every backslash:
 
----
+```text
+"command": "C:\\PROGRA~1\\nodejs\\node.exe %APPDATA%\\npm\\NODE_M~1\\AGY-TO~1\\bin\\AGY-TO~1.JS --hook --raw --write-dashboard"
+```
 
-## 🤖 Supported AI Models & Pricing Matrix
+**Real-time dashboard on port 8787.** One loopback server, Server-Sent Events on `/events`, and responsive pure-SVG charts: 30-day token volume as stacked bars (input, cached, output), dynamic Y-axis scaling, interactive tooltips, filters by date range (today, 7d, 30d, custom) and by model, and turn-by-turn model attribution including reasoning effort. The same page works from `file://` through script-tag polling, without CORS errors.
 
-`agy-tools` supports all 2026 flagship AI models available in Antigravity CLI (`/model`), including subword token pricing, prompt caching discounts, and dynamic price sync:
+```bash
+agy-tokens --serve --open     # SSE server on 127.0.0.1:8787 and open the browser
+agy-tokens --html --open      # static self-refreshing HTML artifact
+agy-tokens --sync-quota       # refresh the live quota pool now
+```
 
-| Model ID | Display Name | Provider | Context Window | Input / 1M | Cached Input / 1M | Output / 1M |
+**Data path, end to end.**
+
+```mermaid
+flowchart LR
+    A["agy session<br/>transcript.jsonl + history.jsonl"] --> B["log parser<br/>+ BPE tokenizer"]
+    B --> C[("token_tracker_cache.json")]
+    LS["Language Server<br/>language_server / agy.exe"] -->|"HTTPS RPC<br/>RetrieveUserQuotaSummary"| Q["quota subsystem"]
+    Q --> Qc[("gemini_quota_cache.json<br/>30s TTL")]
+    C --> D["aggregator"]
+    Qc --> D
+    D --> E["statusline badge<br/>--hook --raw"]
+    D --> F["HTML report"] --> G["SSE server<br/>127.0.0.1:8787"] --> H["browser UI"]
+```
+
+**Model and pricing matrix.** Subword token pricing, prompt-cache discounts, and a sync engine for official price changes:
+
+| Model ID | Display Name | Provider | Context | Input / 1M | Cached / 1M | Output / 1M |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | `gemini-3.7-flash` | **Gemini 3.7 Flash** | Google | 1M | $0.15 | $0.0375 | $0.60 |
 | `gemini-3.7-flash-thinking` | **Gemini 3.7 Flash (Thinking)** | Google | 1M | $0.15 | $0.0375 | $0.60 |
@@ -594,176 +226,220 @@ Add the `statusLine` hook to `~/.gemini/antigravity-cli/settings.json`:
 | `gemini-3.5-flash` | **Gemini 3.5 Flash** | Google | 1M | $0.15 | $0.0375 | $0.60 |
 | `gemini-2.5-pro` | **Gemini 2.5 Pro** | Google | 2M | $1.25 | $0.3125 | $5.00 |
 | `gemini-2.0-flash` | **Gemini 2.0 Flash** | Google | 1M | $0.10 | $0.0250 | $0.40 |
-| `claude-opus-4.6` (`claude-3-opus`) | **Claude Opus 4.6** | Anthropic | 200k | $15.00 | $1.50 | $75.00 |
-| `claude-sonnet-4.6` (`claude-3.7-sonnet`, `claude-3.5-sonnet`) | **Claude Sonnet 4.6** | Anthropic | 200k | $3.00 | $0.30 | $15.00 |
+| `claude-opus-4.6` | **Claude Opus 4.6** | Anthropic | 200k | $15.00 | $1.50 | $75.00 |
+| `claude-sonnet-4.6` | **Claude Sonnet 4.6** | Anthropic | 200k | $3.00 | $0.30 | $15.00 |
 | `claude-3.5-haiku` | **Claude 3.5 Haiku** | Anthropic | 200k | $0.80 | $0.08 | $4.00 |
 | `gpt-4o` | **GPT-4o** | OpenAI | 128k | $2.50 | $1.25 | $10.00 |
 | `o3-mini` | **o3-mini** | OpenAI | 200k | $1.10 | $0.55 | $4.40 |
 | `o1` | **o1** | OpenAI | 200k | $15.00 | $7.50 | $60.00 |
 
-### Dynamic Pricing Sync Engine
-Keep your pricing catalog synchronized with official API price updates:
 ```bash
-# Display full official pricing catalog table
-agy-tokens --prices --currency krw
-
-# Synchronize latest pricing catalog from remote repository
-agy-tokens --sync-prices
-
-# Automatically check and sync pricing if older than 24 hours
-agy-tokens --auto-sync
+agy-tokens --prices --currency krw    # the official catalogue as a table
+agy-tokens --sync-prices              # pull the newest official prices
+agy-tokens --auto-sync                # sync when the local catalogue is older than 24h
 ```
 
-### Smart Fuzzy Heuristic Fallback
-If custom or newly released models are detected in your session logs, `agy-tools` applies intelligent regex heuristics (`flash`, `pro`, `mini`, `free`, `local`) to assign appropriate rate tiers automatically.
+A model that is not in the table (a new release, a local model) falls back to regex heuristics on `flash`, `pro`, `mini`, `free` and `local` to pick a rate tier.
 
----
+**21 languages, RTL included.** Locale is detected from the host (`LANG`, `LC_ALL`), and the output layout has dedicated bidirectional handling for Arabic and Hebrew.
 
-## 📊 Real-Time SSE Web Dashboard
-
-The web dashboard is an offline-capable, real-time analytics suite accessible from any web browser:
-
-```bash
-# Start local SSE server and open dashboard in browser
-agy-tokens --serve --open
-
-# Generate static HTML report and open immediately
-agy-tokens --html --open
-```
-
-### Highlights
-- **Dual Transport Protocol**: Operates via Server-Sent Events (`/events`) on `http://127.0.0.1:8787` or via script-tag polling on `file://` local pages without CORS errors.
-- **Dynamic Pure-SVG Charts**: 30-day token volume visualizer with stacked bars (Input, Cached, Output), interactive tooltips, and dynamic Y-axis scaling.
-- **Turn-by-Turn Model Attribution**: Full visibility into reasoning effort, multi-model sessions, and tool executions.
-- **Interactive Filtering**: Real-time filtering by date range (Today, 7d, 30d, Custom Range) and AI model.
-- **VS Code Terminal OSC 8 Integration**: Clicking the `📊 Dashboard` badge inside VS Code terminal automatically starts the background server and opens the browser.
-
-👉 **Read the complete technical specification in [docs/DASHBOARD.md](docs/DASHBOARD.md)**.
-
----
-
-## ⏱ 1:1 Gemini Quota Pool Integration
-
-`agy-tools` directly queries the **Antigravity Language Server** via HTTPS/HTTP RPC (`RetrieveUserQuotaSummary`) to extract authentic rate limit metrics:
-
-- **5-Hour Limit (`5h`)**: Short-term sliding window burst quota.
-- **7-Day Limit (`7d`)**: Weekly sliding window cumulative allowance.
-- **Live Countdown Timers**: Real-time remaining duration formatting (e.g. `4h 10m`, `3d 20h`).
-- **30-Second Atomic Cache**: Cached at `~/.gemini/gemini_quota_cache.json` for sub-millisecond statusline reading with non-blocking background refreshes.
-
-```bash
-# Synchronize and inspect live Gemini quota pool
-agy-tokens --sync-quota
-```
-
-👉 **Read the complete technical specification in [docs/QUOTA_POOL.md](docs/QUOTA_POOL.md)**.
-
----
-
-## 🚀 CLI Commands & Options Reference
-
-All CLI capabilities are accessible via `agy-tools`, `agy-dashboard`, or `agy-tokens`:
-
-### Usage Examples
-
-```bash
-# View today's usage summary (default)
-agy-tokens
-
-# View 7-day breakdown table in Korean Won (KRW)
-agy-tokens --7d --currency krw
-
-# View 30-day breakdown table in US Dollars (USD)
-agy-tokens --30d --currency usd
-
-# View custom date range in Euro (EUR)
-agy-tokens --range 2026-08-01..2026-08-29 --currency eur
-
-# Inspect turn-by-turn breakdown for the latest session
-agy-tokens --session
-
-# Inspect turn-by-turn breakdown for a specific conversation UUID
-agy-tokens --session <conversation-uuid>
-
-# Free tier / flat subscription mode (pure token metrics, zero cost)
-agy-tokens --free
-
-# Programmatic JSON output for scripts and automation
-agy-tokens --today --json
-```
-
-### 🎛 Complete CLI Options Reference
-
-| Option | Shorthand | Description |
-| :--- | :--- | :--- |
-| `--today` | `-t` | Display today's usage summary *(default)* |
-| `--yesterday` | `-y` | Display yesterday's usage summary |
-| `--7d`, `--week` | | Display 7-day daily breakdown table and grand total |
-| `--30d`, `--month` | | Display 30-day daily breakdown table and grand total |
-| `--range <start..end>` | | Display aggregation for custom date range (`YYYY-MM-DD..YYYY-MM-DD`) |
-| `--all` | `-a` | Display full historical breakdown across all recorded sessions |
-| `--session [id]` | `-s` | Display turn-by-turn breakdown for latest or specified conversation ID |
-| `--currency <code\>` | | Display currency: `usd`, `krw`, `jpy`, `eur`, `gbp` |
-| `--lang <code\>` | | UI language code (see 21 supported languages below) |
-| `--model <name>` | | Override model pricing (e.g. `gemini-3.7-flash`, `claude-3.7-sonnet`) |
-| `--free`, `--no-cost` | | Free/Flat quota mode (hides dollar costs, displays token metrics) |
-| `--json` | | Output raw JSON data for programmatic integration |
-| `--hook`, `--badge` | | Output statusline badge payload for Antigravity PostInvocation hook |
-| `--raw` | | Output raw statusline badge string without JSON envelope |
-| `--fresh`, `--no-cache` | | Bypass cache and force full re-parsing of transcript logs |
-| `--prices`, `--models` | | Display official API pricing catalog table |
-| `--sync`, `--sync-prices` | | Synchronize latest official API pricing catalog |
-| `--sync-quota` | | Fetch and synchronize live Gemini quota pool from Language Server |
-| `--auto-sync` | | Automatically check and synchronize pricing if older than 24 hours |
-| `--html`, `--dashboard` | | Generate self-refreshing HTML dashboard artifact |
-| `--serve [port]` | | Start local real-time SSE dashboard server (default: `8787`) |
-| `--port <n>` | | Specify custom port for `--serve` (`0` for random port) |
-| `--open` | | Automatically open dashboard in default browser after `--html`/`--serve` |
-| `--write-dashboard` | | Write dashboard data files during statusline evaluation |
-| `--no-link` | | Suppress clickable OSC 8 dashboard link in statusline badge |
-| `--refresh <sec>` | | Set dashboard polling interval in seconds (default: `5`) |
-| `--no-color` | | Disable ANSI terminal color codes |
-| `--help`, `-h` | | Display CLI help screen |
-| `--version`, `-v` | | Display version information |
-
----
-
-## 🌐 Internationalization (i18n) — 21 Languages
-
-`agy-tools` automatically detects the host system locale (`LANG`, `LC_ALL`, etc.) and supports 21 languages out-of-the-box, with dedicated bidirectional Right-to-Left (RTL) formatting:
-
-| Region | Supported Languages & Locale Codes |
+| Region | Languages |
 | :--- | :--- |
-| **East Asia** | English (`en`), 한국어 (`ko`), 日本語 (`ja`), 简体中文 (`zh`), 繁體中文 (`zh-TW`) |
-| **South & Southeast Asia** | हिन्दी (`hi`), Tiếng Việt (`vi`), Bahasa Indonesia (`id`), ภาษาไทย (`th`) |
-| **Europe** | Deutsch (`de`), Français (`fr`), Español (`es`), Português (`pt`), Italiano (`it`), Nederlands (`nl`), Polski (`pl`), Svenska (`sv`), Русский (`ru`), Türkçe (`tr`) |
-| **Middle East (RTL)** | العربية (`ar`), עברית (`he`) |
+| East Asia | English (`en`), 한국어 (`ko`), 日本語 (`ja`), 简体中文 (`zh`), 繁體中文 (`zh-TW`) |
+| South and Southeast Asia | हिन्दी (`hi`), Tiếng Việt (`vi`), Bahasa Indonesia (`id`), ภาษาไทย (`th`) |
+| Europe | Deutsch (`de`), Français (`fr`), Español (`es`), Português (`pt`), Italiano (`it`), Nederlands (`nl`), Polski (`pl`), Svenska (`sv`), Русский (`ru`), Türkçe (`tr`) |
+| Middle East (RTL) | العربية (`ar`), עברית (`he`) |
 
-```bash
-# Force Korean language output
-agy-tokens --7d --lang ko
+The `agy pro setup` hub ships its own 12-language UI, with Arabic scoped honestly to logical order (no bidi shaping in a terminal).
 
-# Force Japanese language output
-agy-tokens --30d --lang ja
+### `agy-tokens` CLI, the short list
 
-# Force Arabic (RTL) language output
-agy-tokens --lang ar
+`agy-tokens`, `agy-tools` and `agy-dashboard` are the same command.
+
+| Option | What it gives you |
+| :--- | :--- |
+| *(none)*, `--today`, `-t` | Today's usage summary |
+| `--yesterday`, `-y` / `--7d` / `--30d` / `--all` / `--range YYYY-MM-DD..YYYY-MM-DD` | Any other window |
+| `--session [id]`, `-s` | Turn-by-turn breakdown for the latest or a named conversation |
+| `--currency <usd\|krw\|jpy\|eur\|gbp>` / `--lang <code>` | Display currency and UI language |
+| `--free`, `--no-cost` | Hide dollars, show tokens only (flat-subscription mode) |
+| `--json` | Raw JSON for scripts |
+| `--hook`, `--badge` / `--raw` | Statusline payload / raw badge string |
+| `--fresh`, `--no-cache` | Bypass the cache and re-parse transcripts |
+| `--prices`, `--sync-prices`, `--auto-sync` | Price catalogue, sync, auto-sync |
+| `--sync-quota` | Refresh the live Gemini quota pool |
+| `--html`, `--dashboard` / `--serve [port]` / `--open` / `--refresh <sec>` / `--port <n>` | Static report / SSE server (default `8787`, `0` for a random port) / open the browser / poll interval |
+| `--write-dashboard` / `--no-link` / `--no-color` | Statusline write side, OSC 8 link off, colour off |
+| `--model <name>` / `--help`, `-h` / `--version`, `-v` | Price override, help, version |
+
+---
+
+<a id="install"></a>
+
+## 🚀 Install & Quick Start
+
+Prerequisites: **Node.js 16+** ([nodejs.org](https://nodejs.org)) for the analytics side, **Antigravity CLI** (`agy`), and **Go 1.22+** for the shim (the installer provisions it if it is missing).
+
+**Windows, Command Prompt:**
+
+```cmd
+git clone https://github.com/myk1yt/agy-pro.git && cd agy-pro && scripts\install.bat
 ```
 
+**Windows, PowerShell (5.1 does not accept bare `&&`, hence the wrapper):**
+
+```powershell
+cmd /c "git clone https://github.com/myk1yt/agy-pro.git && cd agy-pro && scripts\install.bat"
+```
+
+**Linux / macOS:**
+
+```bash
+git clone https://github.com/myk1yt/agy-pro.git && cd agy-pro && bash scripts/install.sh
+```
+
+The Node installer registers the global commands with `npm link` and, once `agy` resolves on `PATH`, hands the Antigravity deployment to the Go engine in one call (`agy pro integrations apply tools --yes`). A missing `agy-tokens` launcher skips the statusline step with a note and still exits 0; `agy pro integrations repair` completes it later.
+
+**Now add the shim (one line, works with or without git):**
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -Command "if (Get-Command git -ErrorAction SilentlyContinue) { cmd /c 'git clone -b feature/agy-pro https://github.com/myk1yt/agy-pro.git && cd agy-pro && install.cmd' } else { iwr 'https://codeload.github.com/myk1yt/agy-pro/zip/refs/heads/feature/agy-pro' -OutFile '$env:TEMP\agy-pro-src.zip' -UseBasicParsing; Expand-Archive -Path '$env:TEMP\agy-pro-src.zip' -DestinationPath '$env:TEMP\agy-pro-src' -Force; & (Resolve-Path '$env:TEMP\agy-pro-src\*\install.ps1').Path }"
+```
+
+The installer builds `agy.exe` into `~/.agy-pro/bin/`, prepends that directory to your User `PATH`, and runs `agy pro doctor`. Open a new terminal afterwards so the `PATH` change is visible.
+
+**First run:**
+
+```bash
+agy pro setup            # the full-screen hub: providers, models, fanout presets, prompts, language
+agy                      # native Gemini, zero extra delay
+AGY_LAUNCHER=1 agy       # opt in: 2s picker [1] Native [2] External [3] Swarm
+agy pro code --help      # the whole coding door on one screen
+agy pro status           # active mode, providers, the real agy path
+```
+
+**Updating the npm global copy (the runtime uses the global copy, not the clone):**
+
+```cmd
+cd agy-pro
+npm install -g .
+```
+
+Run that again after every `git pull`. `agy-tokens --version` and `where agy-tokens` tell you which copy is live; if `where` does not point at `AppData\Roaming\npm`, reopen the terminal and re-link.
+
+**Uninstall, one line:**
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr 'https://raw.githubusercontent.com/myk1yt/agy-pro/feature/agy-pro/agy-pro/scripts/uninstall.ps1' -OutFile '$env:TEMP\agy-pro-uninstall.ps1' -UseBasicParsing; & '$env:TEMP\agy-pro-uninstall.ps1'"
+```
+
+It retracts the deployed integrations first (into `<AGY_PRO_HOME>/backups/<ts>_retract/`), removes only the `~/.agy-pro/bin` entry from the User `PATH`, and moves `~/.agy-pro` to the **Recycle Bin**. `-KeepState` keeps `providers.json` and the backups, `-DryRun` prints the plan, `-RestorePath` puts back the `PATH` saved before the install.
+
+For the statusline slot alone, `agy pro integrations retract --yes` removes the `statusLine` entry and archives the bytes it replaced.
+
+### If something looks wrong
+
+| Symptom | Fix |
+|---|---|
+| `agy` is not recognized | Install Antigravity CLI, then open a **new** terminal window (a fresh window re-reads `PATH`) |
+| `plugin.json not found` during an installer | The clone is on the wrong branch: re-run the one-shot line, which checks out the branch inside the clone |
+| PowerShell says script execution is disabled | Always launch through `powershell -ExecutionPolicy Bypass -File scripts\...ps1`, exactly as written here |
+| Endless `TLS handshake` flood right after install | Update to the newest `main` (it has the probe cooldown guard), or run `agy pro integrations retract --yes` |
+| A wedged setup | `agy pro doctor`, then `agy pro status`, then `agy pro integrations repair` |
+
 ---
 
-## 📚 Deep-Dive Technical Documentation
+<a id="branches"></a>
 
-For in-depth architectural specifications, sequence diagrams, and protocol definitions, refer to our technical guides in `docs/`:
+## 🧵 The other branches
 
-- 📖 **[Gemini Quota Pool Architecture (docs/QUOTA_POOL.md)](docs/QUOTA_POOL.md)**: Details HTTPS/HTTP RPC discovery, 5h/7d sliding windows, atomic caching, and sub-millisecond statusline reading.
-- 📊 **[Real-Time SSE Web Dashboard Architecture (docs/DASHBOARD.md)](docs/DASHBOARD.md)**: Details the dual transport mechanism (SSE push + script polling), SVG chart engine, VS Code terminal integration, and loopback security.
-- 📘 **[Korean User Manual (MANUAL.ko.md)](MANUAL.ko.md)**: Friendly illustrated Korean guide covering both one-shot installers, verification, the agy-pro suite (shim, launcher, swarm, partition fanout, provider tools), the Node tools, configuration, troubleshooting, and uninstall.
+Each add-on lives on its own branch, so `git clone -b <branch>` checks it out during the clone and no manual `git checkout` step is left to forget.
+
+| Branch | What it adds | One-shot install (Windows PowerShell) |
+|---|---|---|
+| [`main`](https://github.com/myk1yt/agy-pro/tree/main) | Everything: analytics, dashboard, shim, swarm, coding door | `cmd /c "git clone https://github.com/myk1yt/agy-pro.git && cd agy-pro && scripts\install.bat && install.cmd"` |
+| [`Agent/designer`](https://github.com/myk1yt/agy-pro/tree/Agent/designer) | `@designer`: zero-MCP design specialist (SVG, 3D canvas, cyberpunk, sandbox, QA harness) | `cmd /c "git clone -b Agent/designer https://github.com/myk1yt/agy-pro.git && cd agy-pro && powershell -ExecutionPolicy Bypass -File scripts\install-designer.ps1"` |
+| [`Agent/security-reviewer`](https://github.com/myk1yt/agy-pro/tree/Agent/security-reviewer) | `@security-reviewer`: orchestrator plus 4 domain inspectors (OWASP, IAM, credentials, supply chain) | `cmd /c "git clone -b Agent/security-reviewer https://github.com/myk1yt/agy-pro.git && cd agy-pro && powershell -ExecutionPolicy Bypass -File scripts\install-security-reviewer.ps1"` |
+| [`Agent/code-reviewer`](https://github.com/myk1yt/agy-pro/tree/Agent/code-reviewer) | `@code-reviewer`: pre-merge diff review, 8-category taxonomy, P0-P3 gate | `cmd /c "git clone -b Agent/code-reviewer https://github.com/myk1yt/agy-pro.git && cd agy-pro && powershell -ExecutionPolicy Bypass -File scripts\install-code-reviewer.ps1"` |
+| [`gemini-config`](https://github.com/myk1yt/agy-pro/tree/gemini-config) | Governance rules and the 7-stage multi-agent lifecycle, deployed into `~/.gemini` | `cmd /c "git clone -b gemini-config https://github.com/myk1yt/agy-pro.git && cd agy-pro && scripts\install.bat"` |
+| [`feature/agy-pro`](https://github.com/myk1yt/agy-pro/tree/feature/agy-pro) | The Go shim branch the one-liner installs from | `cmd /c "git clone -b feature/agy-pro https://github.com/myk1yt/agy-pro.git && cd agy-pro && install.cmd"` |
+
+On macOS and Linux, `bash scripts/install.sh` covers the Node side; the Go shim is built with `go build` (details in the [Korean manual](MANUAL.ko.md)).
 
 ---
+
+<a id="under-the-hood"></a>
+
+## 🔧 Under the hood
+
+**One shim, one extra process, no patched binary.**
+
+```text
+agy                  ->  the real agy binary, exactly as before
+agy agents           ->  passed straight through
+agy -m "..."         ->  passed straight through
+agy pro <verb>       ->  agy-pro's own engine
+```
+
+`agy pro` intercepts only its own verb space. The native TUI, stdio handles and exit codes stay intact, because the shim execs the authentic binary instead of reimplementing it. `AGY_LAUNCHER=1` adds the 2-second model picker to a bare `agy`; nothing else changes.
+
+**Zero dependencies, both sides.**
+
+- Go: `module agypro`, `go 1.22`, standard library only. One `agy.exe` binary.
+- Node: standard library only (`http`, `fs`, `path`, `net`, `child_process`), Node 16+. The statusline read is a cache hit, not a re-parse.
+
+**No MCP, no resident daemon.** The whole orchestration path spawns child processes and reads/writes files. Nothing listens on a port until you open the dashboard, and nothing runs when the terminal is closed.
+
+**Test floor.** `go test ./...` covers 28 Go packages, and `npm test` runs 296 JavaScript tests (0 failures). Both commands are the gate every change passes before it lands.
+
+**Artifacts are plain files you can read.**
+
+```text
+reports/fanout/<ts>/   summary.json, reconciliation.md, progress.log, seat-*.md
+reports/code/<ts>/     phases.log, report.txt, plan/, write/, review/,
+                       verify/attempt-*.log, manifest.json, snapshot/, rollback-archive/
+~/.agy-pro/            providers.json, state.json, backups/, ledger-keys/
+```
+
+Any key-shaped value that rides into a report or the console renders as the first 5 characters plus `****`, never a suffix.
+
+---
+
+<a id="safety"></a>
+
+## 🔒 Safety & consent model
+
+![Five safety layers around a code-door write run](docs/assets/security-layers.svg)
+
+Three rules cover almost everything:
+
+1. **One consent per plan, never per file.** `agy pro integrations apply tools` composes one plan (the `statusLine` slot, the content trees, the intent rows), prints the exact diff, and asks once. `status` is read-only and never prompts. A non-interactive stdin must pass `--yes`, otherwise the verb refuses and writes nothing.
+2. **Paid means echo plus your GO.** Any provider seat in a seat list, and every write run, is a metered API call with no token or cost cap. The echo names each seat masked, says no cap exists, and nothing runs without `y/N` or `--yes`. Native-only phases never ask, because they cost nothing extra.
+3. **Secrets never enter the artifacts.** The registry declares only environment variable names, never values. The echo masks every operand, the request text is stored as `ask.txt` instead of being printed, and logs pass through a redactor.
+
+`agy pro mode full|clean` and `agy pro integrations preset` change what is **deployed**, never which binary runs. That split is why a broken deployment is one `retract` or `rollback` away from clean, and why `agy pro doctor` can report the toolchain, the paths and the keys in one screen.
+
+---
+
+<a id="docs"></a>
+
+## 📚 Deep-dive documentation
+
+- 📖 **[Gemini quota pool](docs/QUOTA_POOL.md)**: RPC discovery, 5h/7d sliding windows, atomic caching, sub-millisecond statusline reads.
+- 📊 **[SSE dashboard](docs/DASHBOARD.md)**: the dual transport (SSE push plus script polling), the SVG chart engine, VS Code terminal integration, loopback security.
+- 🛠 **[`agy pro code` contract](agy-pro/docs/code.md)**: command surface, exit codes, the safety model with its named refusals, and the known limitations (including the ones this door does not solve).
+- 🌊 **[Fanout engine](agy-pro/docs/fanout.md)**: seat grammar, reconciliation, partition mode (`--units`), the tool sandbox.
+- 🔀 **[Hybrid seats](agy-pro/docs/swarm-hybrid.md)**: native plus provider seats in one run, failover behaviour.
+- 🌉 **[Bridge architecture](agy-pro/docs/bridge-architecture.md)**: how external models reach a native `agy` session.
+- 📘 **[Korean manual](MANUAL.ko.md)**: illustrated guide for both installers, verification, configuration, troubleshooting, uninstall.
+- 🧰 **[agy-pro README](agy-pro/README.md)**: the shim's own reference.
+
+---
+
+<a id="license"></a>
 
 ## 📄 License
 
-Distributed under the **MIT License**. See [`LICENSE`](LICENSE) for details.
+MIT. See [`LICENSE`](LICENSE).
 
-Developed with ❤️ by **kim,yong-tai**.
+Developed by **kim,yong-tai**.
