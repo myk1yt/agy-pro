@@ -808,7 +808,10 @@ var scopedWriteTools = map[string]bool{
 // resolvedPathInScope directly (their target must exist to be read), the
 // write tools use resolvedWriteTargetInScope, the write counterpart that
 // resolves the closest existing ancestor because a write target may not exist
-// yet. Both fail closed on any resolution error.
+// yet. Both fail closed on any resolution error. On the write branch a
+// stream-syntax component is refused by name before the scope mismatch is
+// reported (FIX-E2b, refuseStreamSyntaxOutsideScope), so the seat learns the
+// class the write guard would have named instead of a bare scope miss.
 func (r *ToolRunner) scopeRefusal(toolName, argsJSON string) (string, error) {
 	if len(r.Scope) == 0 || (!scopedPathTools[toolName] && !scopedWriteTools[toolName]) {
 		return "", nil
@@ -836,6 +839,21 @@ func (r *ToolRunner) scopeRefusal(toolName, argsJSON string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("path %q is outside unit scope (not relative to the workspace root)", args.Path)
 	}
+	// FIX-E2b: the write tools name the stream class instead of reporting a
+	// plain scope miss. PathInScope refuses a stream-syntax component on every
+	// arm (guard.go), so a colon target inside its OWN scope fell through to
+	// "path ... is outside unit scope" and the model never learned why: the
+	// stream refusal the write guard would have given by name never ran, because
+	// this scope gate answers first. The shape is not a scope verdict at all, so
+	// on the WRITE dispatch branch the reason is stated before the scope
+	// mismatch is reported. Reads and searches keep the generic refusal (their
+	// scope message is unchanged), and a benign out-of-scope write still gets the
+	// plain message, because this arm fires only on a stream-syntax component.
+	if scopedWriteTools[toolName] {
+		if comp, why := streamSyntaxComponent(rel); why != "" {
+			return r.refuseStreamSyntaxOutsideScope(args.Path, comp)
+		}
+	}
 	// FIX A2: the path tools FOLLOW symlinks, but ResolveSafePath returns the
 	// lexical path and the check used to match only that, so an in-scope symlink
 	// to an out-of-scope in-root target leaked cross-unit content. Match the
@@ -857,8 +875,31 @@ func (r *ToolRunner) scopeRefusal(toolName, argsJSON string) (string, error) {
 }
 
 // refuseOutOfScope builds the error-shaped refusal for a path outside the unit
-// scope: the model-visible string and the error persisted to the tool log. E2:
-// the logged error embeds the unit's scope entries verbatim, and they are
+// scope: the model-visible string and the error persisted to the tool log.
+func (r *ToolRunner) refuseOutOfScope(argPath string) (string, error) {
+	msg := fmt.Sprintf("Error: path %q is outside unit scope", argPath)
+	detail := fmt.Sprintf("path %q is outside unit scope %v", argPath, r.Scope)
+	return r.scopeRefusalError(msg, detail)
+}
+
+// refuseStreamSyntaxOutsideScope builds the WRITE-branch refusal for a target
+// whose component carries the Win32 stream separator (FIX-E2b). The shape arm
+// in PathInScope refuses such a target on every pattern, which is correct, but
+// reporting it as a bare scope miss hid the reason the write guard would have
+// named: a colon name is not a scope verdict at all, it addresses a stream of
+// some other file, so no scope pattern can bound it. The message therefore
+// keeps the scope framing (the call really is outside the boundary) and names
+// the stream class, which is the diagnostic the seats' summary and the tool log
+// have to carry. It fires only for a stream-syntax component, so a genuinely
+// out-of-scope write keeps the plain refusal from refuseOutOfScope.
+func (r *ToolRunner) refuseStreamSyntaxOutsideScope(argPath, comp string) (string, error) {
+	msg := fmt.Sprintf("Error: path %q is outside unit scope: path component %q has Windows stream syntax not allowed in path components (':' addresses a stream of a file, not a file of that name); write_file/replace_in_file refuse it", argPath, comp)
+	detail := fmt.Sprintf("path %q is outside unit scope %v: path component %q has Windows stream syntax not allowed in path components", argPath, r.Scope, comp)
+	return r.scopeRefusalError(msg, detail)
+}
+
+// scopeRefusalError renders both sinks of a scope-family refusal. E2: the
+// logged error embeds the unit's scope entries verbatim, and they are
 // plan-authored strings a misdirected key paste could land in; the tool log's
 // registry redactor knows only registered keys and generic credential shapes,
 // so a bare base64 run would persist raw. The refusal therefore seeds the
@@ -866,9 +907,7 @@ func (r *ToolRunner) scopeRefusal(toolName, argsJSON string) (string, error) {
 // providers.SeedEligible rule (the same rule the merge's planFieldSeeds uses):
 // a secret-shaped entry renders [REDACTED] in both sinks, while location-shaped
 // scope globs never seed, so the refusal keeps naming benign paths and scopes.
-func (r *ToolRunner) refuseOutOfScope(argPath string) (string, error) {
-	msg := fmt.Sprintf("Error: path %q is outside unit scope", argPath)
-	detail := fmt.Sprintf("path %q is outside unit scope %v", argPath, r.Scope)
+func (r *ToolRunner) scopeRefusalError(msg, detail string) (string, error) {
 	if seeds := scopeRefusalSeeds(r.Scope); len(seeds) > 0 {
 		redact := providers.NewRedactor(seeds...)
 		msg = redact(msg)
@@ -910,32 +949,100 @@ func resolvedWriteTargetInScope(rootAbs, target string, scope []string) bool {
 // component by component. Both sides end up compared in the same real-path
 // space, mirroring resolvedRelPath; it fails closed on any resolution error
 // or a resolved path that escapes the root.
+//
+// This is the FULL view (the final component included when it exists), which is
+// what the scope arm needs: replace_in_file READS the addressed file before it
+// rewrites it, so a file symlink whose real target belongs to another unit is a
+// cross-unit read even though the write itself replaces the link. The
+// directory-chain view the write guard and ResolvedDirChainRefusal judge is
+// resolvedDirChainRelPath below (FIX-F1, P-8).
 func resolvedWriteRelPath(root, target string) (string, error) {
+	return resolveWriteChain(root, target, true)
+}
+
+// resolvedDirChainRelPath is the DIRECTORY-CHAIN view: the final component is
+// never resolved (FIX-F1, P-8). It is the path the guard's resolved-dir arm and
+// the exported ResolvedDirChainRefusal judge, and it keeps the contract those
+// two state: a write and a restore of the write tools land by atomic
+// temp+rename, which REPLACES a file symlink instead of writing through it, so
+// the resolved final component is not an escalation surface and resolving it
+// over-refused a legitimate restore whose recorded row had become a symlink.
+// The result is the real parent chain with the written final component appended
+// verbatim.
+func resolvedDirChainRelPath(root, target string) (string, error) {
+	return resolveWriteChain(root, target, false)
+}
+
+// resolveWriteChain is the one ancestor walk behind both views above.
+// resolveFinal selects whether an existing final component is EvalSymlinks'd
+// (the scope view) or appended verbatim (the directory-chain view).
+//
+// Two properties this walk must keep (FIX-F1):
+//
+//   - the tail is collected deepest-first with ONE append per level and joined
+//     ONCE at the end (P-6). Rebuilding the path with a filepath.Join per tail
+//     component copies the whole accumulated prefix every time, which is
+//     quadratic in path depth; this walk also runs per manifest row through
+//     ResolvedDirChainRefusal, so a deep row would multiply that by the row
+//     count. parts+Join keeps it linear in the number of components.
+//   - a chain that cannot be DESCRIBED is an error, never a clear verdict
+//     (P-7). A component that exists but is not a directory cannot carry the
+//     tail below it (a regular file standing where the path continues), and a
+//     Lstat failure that is not "does not exist" (permissions, I/O) is not
+//     evidence of absence either. Both fail closed, and every caller of this
+//     walk treats an error as a refusal.
+func resolveWriteChain(root, target string, resolveFinal bool) (string, error) {
 	rootReal, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		return "", err
 	}
 	cur := target
-	var tail []string
+	if !resolveFinal {
+		cur = filepath.Dir(target)
+		if cur == target {
+			return "", fmt.Errorf("no directory chain to resolve for %q", target)
+		}
+	}
+	tail := make([]string, 0, 8)
+	if !resolveFinal {
+		tail = append(tail, filepath.Base(target))
+	}
 	for {
-		if _, err := os.Lstat(cur); err == nil {
+		if _, lerr := os.Lstat(cur); lerr == nil {
 			break
+		} else if !errors.Is(lerr, os.ErrNotExist) {
+			return "", lerr
 		}
 		parent := filepath.Dir(cur)
 		if parent == cur {
 			return "", fmt.Errorf("no existing ancestor for %q", target)
 		}
-		tail = append([]string{filepath.Base(cur)}, tail...)
+		tail = append(tail, filepath.Base(cur))
 		cur = parent
 	}
 	realAncestor, err := filepath.EvalSymlinks(cur)
 	if err != nil {
 		return "", err
 	}
-	resolved := realAncestor
-	for _, comp := range tail {
-		resolved = filepath.Join(resolved, comp)
+	if len(tail) > 0 {
+		// The ancestor has to be able to carry the tail. Lstat answered for the
+		// last component that EXISTS on the way up, and that component may be a
+		// regular file ("regular/child/x.json" with "regular" a file): the path
+		// below it is not missing, it is unreachable.
+		info, serr := os.Stat(realAncestor)
+		if serr != nil {
+			return "", serr
+		}
+		if !info.IsDir() {
+			return "", fmt.Errorf("resolved ancestor %q of %q is not a directory, so the %d component(s) below it cannot be described", realAncestor, target, len(tail))
+		}
 	}
+	parts := make([]string, 0, len(tail)+1)
+	parts = append(parts, realAncestor)
+	for i := len(tail) - 1; i >= 0; i-- {
+		parts = append(parts, tail[i])
+	}
+	resolved := filepath.Join(parts...)
 	rel, err := filepath.Rel(rootReal, resolved)
 	if err != nil {
 		return "", err

@@ -79,6 +79,8 @@ func handleProCommand(args []string) {
 		runDoctor(subArgs)
 	case "fanout":
 		runFanout(subArgs)
+	case "code":
+		os.Exit(runCodeCmd(subArgs, os.Stdin, os.Stdout, os.Stderr))
 	case "config":
 		runConfig(subArgs)
 	case "version", "--version", "-v":
@@ -116,6 +118,7 @@ func printProHelp() {
 	fmt.Println("  integrations    Install or remove agy-pro's rules/skills/plugins/hooks and statusLine [--yes]")
 	fmt.Println("  doctor          Diagnose toolchain, paths, keys (--strict, --fix-keys, --rollback-keys, --yes)")
 	fmt.Println("  fanout          Run multi-model parallel audit, review, or research swarm")
+	fmt.Println("  code            Plan, write, review, and roll back a bounded multi-seat code change [plan|write|review|rollback|run]")
 	fmt.Println("  config          Show or set persistent defaults (default-profile, bridge-tools) [--yes]")
 	fmt.Println("  hybrid          Native-coexistence profile (on p1|on p2|off|status|check) [--yes]")
 	fmt.Println("  version         Display agy-pro and underlying agy version information")

@@ -2,6 +2,149 @@
 Antigravity-cli (agy-tools) Changelog
 ================================================================================
 
+================================================================================
+agy pro code: the zero-MCP multi-model coding door (2026-10-24)
+================================================================================
+
+[Added]
+- `agy pro code` verb (cmd/agy/pro_code.go): plan | write | review | rollback |
+  run over the shipped partition mode of `agy pro fanout`. Native subscription
+  seats plan and review free, one provider seat writes a scoped unit, the engine
+  snapshots the tree before the first write, runs the verification itself with a
+  bounded repair (--max-repairs, default 1), and restores the snapshot on
+  `agy pro code rollback --run <dir>`. Run artifacts land in reports/code/<ts>.
+- `internal/codesnap` (new package): copy-based snapshot, tree diff, and
+  archive-move rollback. The manifest is the only source of truth; a file the run
+  created is MOVED into rollback-archive/ (the package's two removal call sites -
+  the key-store prune and the case-fold probe's own cleanup - cannot reach a
+  workspace file); git is never invoked, imported or parsed.
+- `internal/codework` (new package): plan synthesis with the shipped parser as the
+  validator, engine-owned verification detection and execution, bounded repair,
+  phase orchestration, and the additive-only CodeRunReport (compact human block on
+  stdout, `--json` for the machine document; every document stays byte-stable).
+- Governance and credential write denylist (internal/agenttools/guard.go):
+  `write_file` and `replace_in_file` now refuse agent rules (agents.md, gemini.md,
+  claude.md), the provider registry and its sibling aliases, per-run state,
+  integration and tool settings, and the `rules`, `.agy-pro`, `.gemini` directory
+  components at any depth. Reads and searches are unaffected; the check also
+  follows the symlink-resolved directory chain.
+- Documentation: `agy-pro/docs/code.md` (surface, exit codes, safety model,
+  limitations, quickstart) with claim pins in
+  `internal/codework/docs_claims_test.go`, plus a pointer section in
+  `agy-pro/docs/fanout.md` (section 9).
+
+[Changed]
+- Provider registry restored from the write-enabled factory-reset backup
+  (factory-reset-20261022_162014, sha256
+  d5c02fe6849db4c5d63b7347f0ed81d15fe25ac528626b6b907f2c1b457f69bc), so the four
+  registry models carry the write tools a write unit needs. Live-state step: no
+  repository file changes.
+
+[Unchanged by design]
+- No token or dollar cap exists anywhere in this door. The engine's per-seat
+  iteration limit (defaults.maxTurns) bounds the number of calls, and the report
+  prints no dollar figure because this path has no price table.
+
+[Hardening, review rounds 2-6]
+- Snapshot/snapshot-ledger identity is EXACT (internal/codesnap): whether a
+  walked path is a file the manifest recorded or withheld is decided by the path
+  itself, because the name-class fold merges spellings the filesystem keeps
+  apart. Directory-prefix comparisons fold ASCII case only, and the fold decision
+  is a runtime probe of the operation's root (case-sensitive volumes never see
+  two directories merged; an inconclusive probe folds). A rollback row whose
+  resolved DIRECTORY CHAIN transits a governance/credential directory or VCS
+  metadata refuses the whole manifest (exported as
+  agenttools.ResolvedDirChainRefusal and reused from the write guard's own
+  ancestor walk), and the archive arm refuses to move a file that IS a manifest
+  row under another ASCII case spelling (os.SameFile, reported in skipped[]; since
+  the round-5 fixes below the lookup is an index, so an unrelated hardlink is
+  archived rather than spared).
+- The run-directory claim test is a union of the lexical match on the authored
+  scope and a folded-literal match, with character classes copied verbatim, so a
+  character class such as [A-z] keeps its real coverage. The pre-consent gate in
+  internal/codework applies the same rule - a CALL into that authority since the
+  round-5 fixes at the end of this section - and a strict parity pin holds the two
+  layers together: a case-variant scope aimed at the run directory is now exit 2
+  BEFORE the consent prompt instead of exit 1 after it.
+- Verification environment is decided by what runs, not who named it: a
+  go-toolchain verifier, detected or explicit, runs with GOPROXY=off,
+  GOTOOLCHAIN=local and CGO_ENABLED=0, and an operator-set value for those names
+  is not passed through; the consent echo names the policy from the same
+  predicate. Every other explicit --verify keeps the sanitized environment.
+- Repair-excerpt fencing is capped at 16 backticks, and a wider backtick run is
+  neutralized to a `[N backticks elided]` marker before the fence is measured, so
+  an oversized excerpt keeps both its fence structure and its diagnostic text.
+- Named refusal classes and one fold everywhere: a Win32 stream-syntax scope
+  entry is refused at authoring time with its own class phrase, and the DOS device
+  names, the governance drift watchlist and the plan builder's name mirror all
+  compare through agenttools.Win32NameFold instead of strings.ToLower copies.
+- Documentation honesty pass (agy-pro/docs/code.md): the fold is described as a
+  name-CLASS test that over-refuses a look-alike which is a distinct file (the
+  measured volumes do not collide on ſ/ı/U+212A), file identity is stated as
+  exact, the 8.3 over-refusal band is stated exactly (a `~` tail of one to five
+  digits is refused, six or more is not), and every sentence the shipped code
+  contradicted was rewritten with its pin converted alongside it.
+- Round-5 fixes (FIX-F2, internal/codesnap + internal/codework): the ledger claim
+  scanner is escape-aware and follows Go's own class grammar, is exported once
+  (codesnap.FoldLiteralRuns / LedgerScopeClaims) and is CALLED by the pre-consent
+  gate instead of copied, so the two layers cannot drift again; the case-fold probe
+  now measures a directory inside the operation root (a whole-path flip answered
+  from the mount's parent and could switch the fold off on a case-insensitive
+  workspace) and its answer is cached per root; the archive restraint is indexed by
+  ASCII-folded path, so a run-created hardlink under another name is archived
+  instead of spared; and the consent echo no longer calls the hermetic verifier
+  environment "offline" - it names the trio, what it stops and the fact that the
+  verifier's own code is not network-sandboxed. The scanner is pinned by a
+  differential fuzz against path.Match (898,040 pattern/target pairs across three
+  phases, zero divergence, both fold policies; the alphabet gained the "-" and "~"
+  bytes and a two-byte non-ASCII letter in the round-6 sweep).
+- Round-6 seal (FIX-F1, internal/agenttools): the write guard's resolved-directory
+  arm judges BOTH denylists through the ONE resolver the exported predicate and the
+  rollback preflight also use, so a directory link into .git/.github is refused with
+  the lexical VCS refusal's own shape; a chain that cannot be resolved refuses
+  instead of passing; and the exported predicate resolves the parent chain only,
+  while the scope view keeps the full resolution because replace_in_file reads the
+  file it addresses.
+- Round-6 seal (FIX-F4, internal/codesnap): the undo net can no longer be turned into
+  an installer from a neighbouring run. (a) Every manifest Take writes is bound to
+  its run by `manifest.sig` = HMAC-SHA256 over the manifest bytes under a per-run
+  32-byte key kept in `~/.agy-pro/ledger-keys/<id>` (0700 directory, 0600 file,
+  outside every operation root); LoadManifest/Rollback verify it before believing a
+  row, a hand-edited or forged ledger refuses whole, and a ledger without a sidecar
+  - every run directory written before this binding - refuses as
+  `unsigned ledger (pre-provenance format)` instead of being trusted. The key ID is
+  derived from the ledger's own path, so the manifest stays byte-deterministic and a
+  re-take invalidates the older pair. (b) A scope that could claim ANY existing run
+  ledger under the root refuses the whole take and the whole rollback, not just a
+  scope against this run's own `--out` (the live-reproduced chain: run 2 granted
+  `--scope reports/code/t1/**` rewrote run 1's manifest and snapshot, and the
+  operator's rollback installed attacker bytes). (c) A claim whose INODE is shared
+  with a governance/credential, VCS or secret-class path of the same walk is
+  withheld like a secret, because a hardlink has no alias view for the name arms.
+  (d) The ledger claim tests measure the fold of BOTH the root and the ledger's
+  deepest existing ancestor, so a case-insensitive mount or casefold directory
+  BELOW a byte-exact root can no longer hide the ledger from the fold. Disclosed:
+  over-refusal of a user directory that holds `manifest.json` + `snapshot/`, and
+  pre-provenance run directories are evidence, not restore targets.
+- Round-8 hygiene pass (FIX-G1, internal/codesnap): the fold probe a discovered
+  ledger costs is now GATED - the walk asks the cheap claim test (under the fold-ON
+  policy, a proven superset of every measured verdict) and the ledger fingerprint
+  first, so a case-sensitive volume pays one probe per ledger CANDIDATE instead of
+  one per walked directory (measured on a 17-directory tree: 17 -> 1, and 0 when
+  nothing in scope carries the ledger shape); the key-store index records the
+  RESOLVED ledger directory, so removing the alias spelling a take used (a junction,
+  a subst drive, another ASCII case) can no longer make a live ledger look dead and
+  delete its undo key, and the prune re-stats the recorded directory immediately
+  before the removal to close the stat-to-remove window; the never-deletes pin now
+  counts removal call sites by PREFIX (os.RemoveAll included), so it counts exactly
+  two - the key-store prune and the probe's cleanup of its own throw-away directory -
+  and the doc sentence, rollback.go's mirror and this changelog state that same
+  count. Disclosed rather than fixed: a ledger whose `manifest.json` exceeds the
+  1 MiB fingerprint bound escapes the EARLY cross-run refusal (integrity unaffected -
+  `manifest.sig` and the rollback digest preflight still gate it), and planting a
+  valid-shape pair refuses the PLANTING run's own rollback as well (self-denial),
+  not only the next run's scopes.
+
 Version: 0.10.0
 Release Date: 2026-10-22
 Previous Version: 0.10.9

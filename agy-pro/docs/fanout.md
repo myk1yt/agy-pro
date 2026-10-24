@@ -606,3 +606,16 @@ convergence review and requires an explicit user approval; until then a
 registry model whose `allowedTools` filter does not list a tool refuses that
 tool at the model-level check. This document describes the engine surface;
 nothing here edits the live registry.
+
+---
+
+## 9. Composing this engine: the `agy pro code` door
+
+`agy pro code` is the shipped door that composes the partition mode of this
+engine into one command: native seats plan and review, one provider seat writes a
+scoped unit, the engine snapshots the tree before the write, runs the
+verification itself with a bounded repair, and can restore the snapshot with
+`agy pro code rollback`. Nothing here changes: the door passes a normal `--units`
+plan to this engine and leaves `engine.go`, `worker.go`, `cli.go`, `units.go` and
+`tasks.go` untouched. See [`code.md`](code.md) for the command surface, the exit
+codes, the safety model and the known limitations.
