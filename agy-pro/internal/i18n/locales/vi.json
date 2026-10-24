@@ -495,10 +495,12 @@
   "help.keys.home_end": "Nhảy tới dòng đầu hoặc cuối",
   "help.keys.yn": "Trả lời xác nhận có / không",
   "help.keys.redraw": "Vẽ lại màn hình",
-  "help.keys.space": "Chế độ sửa: chèn dấu cách",
+  "help.keys.space": "Danh sách: ghim dòng đích của thao tác. Chế độ sửa: chèn dấu cách.",
   "help.keys.save": "Chế độ sửa: phím lưu trong trình sửa",
   "help.keys.runes": "Chế độ sửa: ký tự in được thành nhập liệu",
   "help.numbered.reminder": "Mọi danh sách đánh số dòng: phím số 1-9 chọn và kích hoạt, mũi tên di chuyển con trỏ, Enter kích hoạt.",
+
+  "list.msg.pinned": "Đã ghim lựa chọn: {{name}}. Các dòng thao tác giờ nhắm vào dòng này.",
   "help.storage.providers.purpose": "registry nhà cung cấp; mọi lần ghi đều qua hộp thoại phê duyệt",
   "help.storage.state.purpose": "chế độ profile, profile mặc định, ngôn ngữ, công tắc launcher",
   "help.storage.presets.purpose": "preset seat fanout đã lưu",

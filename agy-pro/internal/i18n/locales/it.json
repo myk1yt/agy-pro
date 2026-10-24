@@ -495,10 +495,12 @@
   "help.keys.home_end": "Salta alla prima o all'ultima riga",
   "help.keys.yn": "Risponde alle conferme sì / no",
   "help.keys.redraw": "Ridisegna lo schermo",
-  "help.keys.space": "Modifica: inserisce uno spazio",
+  "help.keys.space": "Elenco: fissa la riga di destinazione delle azioni. Modifica: inserisce uno spazio.",
   "help.keys.save": "Modifica: combinazione di salvataggio negli editor",
   "help.keys.runes": "Modifica: i caratteri stampabili diventano input di testo",
   "help.numbered.reminder": "Ogni elenco numera le righe: le cifre 1-9 selezionano e attivano, le frecce muovono il cursore, Invio attiva.",
+
+  "list.msg.pinned": "Selezione fissata: {{name}}. Le righe di azione ora agiscono su questa riga.",
   "help.storage.providers.purpose": "registry dei provider; ogni scrittura passa dalla finestra di approvazione",
   "help.storage.state.purpose": "modalità profilo, profilo predefinito, lingua, toggle del launcher",
   "help.storage.presets.purpose": "preset di seat fanout salvati",

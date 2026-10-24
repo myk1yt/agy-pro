@@ -495,10 +495,12 @@
   "help.keys.home_end": "Saute à la première ou la dernière ligne",
   "help.keys.yn": "Répond aux confirmations oui / non",
   "help.keys.redraw": "Redessine l'écran",
-  "help.keys.space": "Mode édition : insère un espace",
+  "help.keys.space": "Liste : fixe la ligne visée par les actions. Mode édition : insère un espace.",
   "help.keys.save": "Mode édition : raccourci d'enregistrement dans les éditeurs",
   "help.keys.runes": "Mode édition : les caractères imprimables deviennent une saisie de texte",
   "help.numbered.reminder": "Chaque liste numérote ses lignes : les chiffres 1-9 sélectionnent et activent, les flèches déplacent le curseur, Entrée active.",
+
+  "list.msg.pinned": "Sélection fixée : {{name}}. Les lignes d'action visent désormais cette ligne.",
   "help.storage.providers.purpose": "registre des fournisseurs ; chaque écriture passe par la modale d'approbation",
   "help.storage.state.purpose": "mode du profil, profil par défaut, langue, bascule du lanceur",
   "help.storage.presets.purpose": "préréglages de sièges fanout enregistrés",

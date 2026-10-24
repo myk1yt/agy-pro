@@ -495,10 +495,12 @@
   "help.keys.home_end": "Springt zur ersten oder letzten Zeile",
   "help.keys.yn": "Beantwortet Ja/Nein-Bestätigungen",
   "help.keys.redraw": "Zeichnet den Bildschirm neu",
-  "help.keys.space": "Bearbeitungsmodus: fügt ein Leerzeichen ein",
+  "help.keys.space": "Liste: fixiert die Zielzeile der Aktionen. Bearbeitungsmodus: fügt ein Leerzeichen ein.",
   "help.keys.save": "Bearbeitungsmodus: Speicherbelegung in Editoren",
   "help.keys.runes": "Bearbeitungsmodus: druckbare Zeichen werden zu Texteingabe",
   "help.numbered.reminder": "Jede Liste nummeriert ihre Zeilen: Ziffern 1-9 wählen und aktivieren, Pfeile bewegen den Cursor, Enter aktiviert.",
+
+  "list.msg.pinned": "Auswahl fixiert: {{name}}. Die Aktionszeilen wirken jetzt auf diese Zeile.",
   "help.storage.providers.purpose": "Anbieter-Registry; jeder Schreibzugriff läuft durch den Genehmigungsdialog",
   "help.storage.state.purpose": "Profilmodus, Standardprofil, Sprache, Launcher-Schalter",
   "help.storage.presets.purpose": "gespeicherte Fanout-Seat-Presets",

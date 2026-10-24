@@ -31,7 +31,7 @@ const (
 	// catalog-resolved, fallback kept: help.keys.redraw
 	helpKeysRedraw = "Redraws the screen"
 	// catalog-resolved, fallback kept: help.keys.space
-	helpKeysSpace = "Edit mode: inserts a space"
+	helpKeysSpace = "List: pins the verb target. Edit mode: inserts a space."
 	// catalog-resolved, fallback kept: help.keys.save
 	helpKeysSave = "Edit mode: save binding in editors"
 	// catalog-resolved, fallback kept: help.keys.runes

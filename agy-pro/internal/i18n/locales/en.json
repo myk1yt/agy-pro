@@ -495,10 +495,12 @@
   "help.keys.home_end": "Jumps to the first or last row",
   "help.keys.yn": "Answers yes / no confirmation prompts",
   "help.keys.redraw": "Redraws the screen",
-  "help.keys.space": "Edit mode: inserts a space",
+  "help.keys.space": "List: pins the verb target. Edit mode: inserts a space.",
   "help.keys.save": "Edit mode: save binding in editors",
   "help.keys.runes": "Edit mode: printable runes become text input",
   "help.numbered.reminder": "Every list numbers its rows: digits 1-9 select and activate, arrows move the cursor, Enter activates.",
+
+  "list.msg.pinned": "Selection pinned: {{name}}. The action rows now act on this row.",
   "help.storage.providers.purpose": "provider registry; every write goes through the approval modal",
   "help.storage.state.purpose": "profile mode, default profile, language, launcher toggle",
   "help.storage.presets.purpose": "saved fanout seat presets",

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"agypro/internal/i18n"
 )
 
 // helpTestEnv points AGY_PRO_HOME at a short-lived temp dir (a short
@@ -43,11 +45,19 @@ func newHelpApp(root *stubScreen) *App {
 // TestHelpKeyMapRows pins the full key map from plan-v2 section 4: arrows,
 // digits 1-9, Enter, Esc, Tab, Backspace/Delete, PgUp/PgDn, Home/End, y/n,
 // Ctrl+C, Ctrl+L, Space, Ctrl+S, EDIT-mode runes, and the rows-past-9
-// clause, plus the numbered-selection reminder.
+// clause, plus the numbered-selection reminder. The Space row names BOTH of
+// its meanings (the NAV pin on the lists that support selection, the EDIT-mode
+// space insert), so the row can never regress to the EDIT half alone.
 func TestHelpKeyMapRows(t *testing.T) {
 	helpTestEnv(t)
 	app := newHelpApp(nil)
 	out := app.CaptureRun(&ScriptedKeys{})
+	if got := i18n.Load("en").T("help.keys.space"); got != helpKeysSpace {
+		t.Fatalf("en help.keys.space = %q, want the fallback const %q", got, helpKeysSpace)
+	}
+	if !strings.Contains(helpKeysSpace, "pins") || !strings.Contains(helpKeysSpace, "inserts a space") {
+		t.Fatalf("the Space row text %q names only one of its two meanings", helpKeysSpace)
+	}
 	for _, want := range []string{
 		"Key Map",
 		"1-9", "Digits select the numbered row",
@@ -60,7 +70,7 @@ func TestHelpKeyMapRows(t *testing.T) {
 		"Home/End", "Jumps to the first or last row",
 		"y/n", "Answers yes / no confirmation prompts",
 		"Ctrl+L", "Redraws the screen",
-		"Space",
+		"Space", helpKeysSpace,
 		"Ctrl+S",
 		"a-z 0-9 symbols", "printable runes",
 		"10+", "Rows past 9: arrows + Enter reach them",

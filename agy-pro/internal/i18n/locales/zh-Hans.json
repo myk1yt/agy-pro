@@ -495,10 +495,12 @@
   "help.keys.home_end": "跳到第一行或最后一行",
   "help.keys.yn": "回答是 / 否确认提示",
   "help.keys.redraw": "重绘屏幕",
-  "help.keys.space": "编辑模式：插入空格",
+  "help.keys.space": "列表：固定操作行的目标。编辑模式：插入空格。",
   "help.keys.save": "编辑模式：编辑器中的保存快捷键",
   "help.keys.runes": "编辑模式：可打印字符成为文本输入",
   "help.numbered.reminder": "每个列表都会给行编号：数字 1-9 选择并确认，方向键移动光标，Enter 确认。",
+
+  "list.msg.pinned": "已固定选择：{{name}}。操作行现在作用于该行。",
   "help.storage.providers.purpose": "提供商注册表；每次写入都经过审批弹窗",
   "help.storage.state.purpose": "配置档模式、默认配置档、语言、启动器开关",
   "help.storage.presets.purpose": "已保存的扇出席位预设",

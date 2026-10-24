@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"agypro/internal/cellwidth"
+	"agypro/internal/i18n"
 	"agypro/internal/providers"
 )
 
@@ -140,6 +141,109 @@ func TestListDigitOutOfRangeIgnored(t *testing.T) {
 	}
 	if l.HandleKey(KeyEsc) {
 		t.Fatal("Esc is not a list key; the App dispatcher owns it")
+	}
+}
+
+// TestListSpaceSelectsWithoutActivating pins the Space half of the shared
+// list contract: with a select callback registered, Space hands the cursor row
+// to that callback and reports the key consumed, and it never reaches onPick.
+// The pin gesture must not be able to activate anything (it would otherwise be
+// a second, undocumented Enter on every sticky-target screen).
+func TestListSpaceSelectsWithoutActivating(t *testing.T) {
+	var selected, picked []int
+	l := newStepList(func(i int) { picked = append(picked, i) })
+	l.SetOnSelect(func(i int) { selected = append(selected, i) })
+	l.SetRows(rows(5))
+
+	l.HandleKey(KeyDown)
+	if !l.HandleKey(KeySpace) {
+		t.Fatal("Space not consumed on a list with a select callback")
+	}
+	if fmt.Sprint(selected) != "[1]" {
+		t.Fatalf("select callback saw %v, want [1] (the cursor row)", selected)
+	}
+	if len(picked) != 0 {
+		t.Fatalf("Space reached onPick: %v (Space must never activate)", picked)
+	}
+	if l.Cursor() != 1 {
+		t.Fatalf("Space moved the cursor to %d, want 1", l.Cursor())
+	}
+	// Enter still activates through onPick: the two gestures stay distinct.
+	l.HandleKey(KeyEnter)
+	if fmt.Sprint(picked) != "[1]" {
+		t.Fatalf("Enter after Space picked %v, want [1]", picked)
+	}
+}
+
+// TestListSpaceFallsThroughWithoutSelectCallback pins the compatibility half:
+// a list that never registered a select callback keeps Space unmapped, so it
+// reports the key unhandled and every other screen (and the tools overlay,
+// which owns Space itself) sees exactly the key it saw before.
+func TestListSpaceFallsThroughWithoutSelectCallback(t *testing.T) {
+	l := newStepList(nil)
+	l.SetRows(rows(5))
+	if l.HandleKey(KeySpace) {
+		t.Fatal("Space consumed on a list with no select callback; other screens would lose the key")
+	}
+	if l.Cursor() != 0 {
+		t.Fatalf("cursor moved to %d on an unhandled Space", l.Cursor())
+	}
+}
+
+// TestListFooterHintNamesSpaceOnlyWhenSelectable pins the discoverability rule:
+// the Space clause appears only on lists that actually implement the gesture,
+// and the hint still fits the 80-cell frame the screens are pinned at (a body
+// line is clamped to the frame width, so an over-long hint would lose exactly
+// the Space clause it was added for). Lists without a callback keep the old
+// strings byte-identical (TestListFooterHint pins those).
+func TestListFooterHintNamesSpaceOnlyWhenSelectable(t *testing.T) {
+	for _, n := range []int{5, 12} {
+		l := newStepList(nil)
+		l.SetRows(rows(n))
+		l.SetOnSelect(func(int) {})
+		hint := l.FooterHint()
+		if !strings.Contains(hint, "Space") {
+			t.Fatalf("%d-row selectable footer %q does not name Space", n, hint)
+		}
+		if w := cellwidth.String(hint); w > 80 {
+			t.Fatalf("%d-row selectable footer = %d cells, want <= 80: %q", n, w, hint)
+		}
+	}
+	// The armed compose keeps its live prefix: the selectable clause is part of
+	// the resting legend only, so the pending row number stays the whole hint.
+	l := newStepList(nil)
+	l.SetRows(rows(14))
+	l.SetOnSelect(func(int) {})
+	l.HandleKey(Key("0"))
+	if got, want := l.FooterHint(), "composing 0·_ · digits extend · Enter activates the cursor row"; got != want {
+		t.Fatalf("armed compose footer = %q, want %q", got, want)
+	}
+}
+
+// TestListPinnedMessageResolvesInAllLocales pins the confirmation line the
+// three sticky-target screens share: en carries the fallback const text, and
+// all twelve catalogs carry their own translation with the {{name}} slot
+// intact, so a pin reads in the user's language everywhere (the
+// providers/model message-key pattern).
+func TestListPinnedMessageResolvesInAllLocales(t *testing.T) {
+	langs := i18n.Languages()
+	if len(langs) != 12 {
+		t.Fatalf("locale registry = %d codes, want the closed 12-locale set", len(langs))
+	}
+	if got := i18n.Load("en").T("list.msg.pinned"); got != listMsgPinned {
+		t.Fatalf("en list.msg.pinned = %q, want the fallback const %q", got, listMsgPinned)
+	}
+	for _, lm := range langs {
+		got := i18n.Load(lm.Code).T("list.msg.pinned")
+		if got == "list.msg.pinned" {
+			t.Fatalf("%s: T returned the key ID, so the catalog carries no entry", lm.Code)
+		}
+		if !strings.Contains(got, "{{name}}") {
+			t.Fatalf("%s: template %q lost the {{name}} slot", lm.Code, got)
+		}
+		if lm.Code != "en" && got == listMsgPinned {
+			t.Fatalf("%s: resolved the English text, so the locale file carries no translation", lm.Code)
+		}
 	}
 }
 

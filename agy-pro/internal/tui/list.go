@@ -15,6 +15,15 @@ type Row struct {
 	ID    string
 }
 
+// listMsgPinned is the Space-pin confirmation line the three sticky-target
+// screens (providers, models, presets) share: the gesture and its feedback are
+// one mechanism in this widget, so they carry one sentence and one catalog key
+// rather than three near-identical copies that can drift. The {{name}} slot
+// takes the pinned row's own identity through the masker that screen already
+// uses for its row labels.
+// catalog-resolved, fallback kept: list.msg.pinned
+const listMsgPinned = "Selection pinned: {{name}}. The action rows now act on this row."
+
 // stepList is the shared two-handled list core. EVERY selectable list in
 // the TUI delegates to it, so no screen can ship arrow-only or digit-only
 // navigation (structural guarantee, key map requirement 2). Both input
@@ -29,6 +38,9 @@ type Row struct {
 //     instead of swallowing the key.
 //   - arrows move a visible cursor; Enter activates the cursor row
 //   - PgUp/PgDn page by pageSize rows; Home/End jump to first/last
+//   - Space calls the screen's select callback (onSelect) when one is
+//     registered, and falls through unhandled when none is: the list never
+//     guesses what a Space means on a screen that did not ask for it
 //
 // Digit semantics are absolute, not per visible page: pressing 1 on a
 // paged list still activates row 1 (single-key digits cover 1..9 of the
@@ -36,6 +48,7 @@ type Row struct {
 type stepList struct {
 	rows     []Row
 	onPick   func(idx int)
+	onSelect func(idx int) // optional Space callback (nil = Space unhandled)
 	cursor   int
 	offset   int
 	pageSize int
@@ -48,6 +61,14 @@ type stepList struct {
 func newStepList(onPick func(idx int)) *stepList {
 	return &stepList{onPick: onPick, pageSize: 10}
 }
+
+// SetOnSelect registers the Space callback. Lists that do not call this keep
+// Space exactly as it was: unmapped in NAV, so HandleKey reports it as
+// unhandled and the screen (or a live overlay) sees it. The callback receives
+// the cursor index and is the row validator: the list never decides which
+// rows are selectable, so the screen can keep its entity/verb boundary in one
+// place (a verb row is then a consumed no-op, not a miss).
+func (l *stepList) SetOnSelect(fn func(idx int)) { l.onSelect = fn }
 
 // SetRows replaces the rows and resets cursor and window to the top.
 func (l *stepList) SetRows(rows []Row) {
@@ -160,6 +181,19 @@ func (l *stepList) HandleKey(k Key) bool {
 	case KeyEnter:
 		if len(l.rows) > 0 {
 			l.pick(l.cursor)
+		}
+	case KeySpace:
+		// Space is the explicit SELECT gesture, never an activation: it must
+		// not reach pick, so pinning a row can never open a screen or a
+		// danger gate (the screens' Space callbacks only set the sticky
+		// target). A list with no select callback reports the key unhandled,
+		// which is what keeps every other screen and the tools overlay
+		// (screen_models.go, its own Space-to-toggle) byte-identical.
+		if l.onSelect == nil {
+			return false
+		}
+		if len(l.rows) > 0 {
+			l.onSelect(l.cursor)
 		}
 	case Key("0"):
 		// 0 is not a row selector; on lists past the single-digit range it
@@ -286,12 +320,25 @@ func (l *stepList) Render(w int) []string {
 // invisible (F-09): the footer carries the 0, every digit typed after it, and
 // the row Enter would activate. The hint uses the footer line that every list
 // already draws, so the compose costs no extra frame row.
+//
+// A list with a select callback advertises Space in the same line: the gesture
+// exists only there, so a hint naming it on every list would advertise a dead
+// key, and a hint naming it nowhere would leave the fix for the arrow-only
+// sticky-target defect undiscoverable. Both variants stay inside the 80-cell
+// frame the screens are pinned at (a body line is clamped, so an over-long hint
+// would lose exactly the Space clause).
 func (l *stepList) FooterHint() string {
 	if l.compose {
 		if l.pending == 0 {
 			return "composing 0·_ · digits extend · Enter activates the cursor row"
 		}
 		return fmt.Sprintf("composing 0·%d_ · Enter activates row %d · other keys cancel", l.pending, l.pending)
+	}
+	if l.onSelect != nil {
+		if len(l.rows) > 9 {
+			return "digits 1-9 select+activate · rows 10+: 0 then digits · arrows+Enter · Space pins"
+		}
+		return "digits 1-9 select+activate · arrows move · Enter activates · Space pins"
 	}
 	if len(l.rows) > 9 {
 		return "digits 1-9 select+activate · rows past 9: 0 then digits · arrows + Enter"

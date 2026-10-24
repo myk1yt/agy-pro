@@ -495,10 +495,12 @@
   "help.keys.home_end": "跳到第一列或最後一列",
   "help.keys.yn": "回答 是 / 否 確認提示",
   "help.keys.redraw": "重繪畫面",
-  "help.keys.space": "編輯模式：插入空格",
+  "help.keys.space": "清單：固定操作列的目標。編輯模式：插入空格。",
   "help.keys.save": "編輯模式：編輯器中的儲存快捷鍵",
   "help.keys.runes": "編輯模式：可列印字元成為文字輸入",
   "help.numbered.reminder": "每個清單都會為各列編號：數字 1-9 選取並執行，方向鍵移動游標，Enter 確認執行。",
+
+  "list.msg.pinned": "已固定選擇：{{name}}。操作列現在作用於該列。",
   "help.storage.providers.purpose": "提供者登錄檔；每次寫入都需經過核准對話框",
   "help.storage.state.purpose": "設定檔模式、預設設定檔、語言、啟動器開關",
   "help.storage.presets.purpose": "已存的 fanout 席位預設",

@@ -255,6 +255,24 @@ func corruptPresetWarning(b *i18n.Bundle, path string) string {
 // goes exclusively through the preset store (fanout-presets.json, atomic
 // 0600); providers.json is never touched here. Navigation is the shared
 // stepList, so digits and arrows+Enter are both always live (requirement 2).
+//
+// The sticky selection follows the cursor while the cursor rests on a preset
+// row, and that rule alone made the action rows unreachable for arrow-only
+// users: the action block sits BELOW the preset block, so travelling down to
+// Edit/Delete passes every remaining preset row and each rest re-stole the
+// target, leaving the verb on the LAST preset. Space pins a row explicitly
+// (locked, selectAt) and the cursor-reassert is suspended until the pin is
+// consumed.
+//
+// The pin is held by PRESET NAME, not by index (fix round 1, F-01; the providers
+// screen's by-name and the models screen's by-ID rule). The store is rewritten
+// whole by other surfaces (the editor above this screen, another session), so an
+// index re-clamped after a reload can name a DIFFERENT preset than the one the
+// user pinned, and a locked selection made that silent: the pin survived while
+// Edit/Duplicate/Delete/Set default pointed at a neighbour. A pin therefore
+// re-anchors by name on reload and drops (with its lock) when the name no longer
+// resolves, which leaves nothing selected and the verbs refusing rather than
+// guessing.
 type presetsScreen struct {
 	store      fanout.PresetStore
 	openEditor func(name string, a *App)
@@ -264,7 +282,9 @@ type presetsScreen struct {
 	rows       []Row
 	pf         *fanout.PresetsFile
 	loadErr    string
-	sel        int // sticky preset selection (index into pf.Presets)
+	sel        int    // sticky preset selection (index into pf.Presets)
+	selName    string // preset NAME the selection holds (identity the Space pin re-anchors by)
+	locked     bool   // Space pinned sel: the cursor reassert must not overwrite it
 	app        *App
 	sig        string // rendered-state signature; reloadIfChanged compares against it
 	corruptLatch
@@ -293,6 +313,7 @@ func NewPresetsScreen(store fanout.PresetStore, openEditor func(name string, a *
 	}
 	s.setLang(i18n.Normalize(lang))
 	s.list = newStepList(s.activate)
+	s.list.SetOnSelect(s.selectAt)
 	s.reload()
 	return s
 }
@@ -396,15 +417,38 @@ func (s *presetsScreen) reloadIfChanged() {
 // cannot leave the visible cursor on a different verb than the one the user
 // activated (preset rows and action rows keep their IDs across a rebuild); a
 // row that vanished (a deleted preset) falls back to the old index, which
-// SetCursor clamps into the new range. The sticky selection is kept and
-// clamped into the new preset range; the signature is recorded from the
+// SetCursor clamps into the new range. The signature is recorded from the
 // adopted state.
+//
+// The sticky selection has two re-anchor rules (fix round 1, F-01): a Space pin
+// is resolved by preset NAME and drops with its lock when the name is gone, while
+// an unpinned selection keeps the historical index clamp. The split is deliberate:
+// the pin is the state that can silently re-target a neighbour the user never
+// chose, whereas the unlocked clamp is itself a pinned contract
+// (TestPresetsStickySelectionAfterMutation: after a Delete the selection clamps
+// onto a preset that still exists) and is always visible through the marker.
 func (s *presetsScreen) adopt(pf *fanout.PresetsFile, loadErr string) {
 	s.pf = pf
 	s.loadErr = loadErr
 	s.sig = presetsSig(pf, loadErr)
-	if s.sel > len(s.pf.Presets)-1 {
-		s.sel = len(s.pf.Presets) - 1
+	if s.locked {
+		// Re-anchor the pin by identity: a pinned preset that reordered keeps its
+		// target, a pinned preset that is gone leaves NOTHING selected, so the verbs
+		// refuse (withSelected's select-first message) instead of acting on whatever
+		// index the clamp landed on.
+		s.selectPreset(presetsIndexByName(s.pf, s.selName))
+		if s.sel < 0 {
+			s.selName, s.locked = "", false
+		}
+	} else {
+		if s.sel > len(s.pf.Presets)-1 {
+			s.sel = len(s.pf.Presets) - 1
+		}
+		if s.sel < 0 {
+			s.selectPreset(-1)
+		} else {
+			s.selectPreset(s.sel)
+		}
 	}
 	cursor := s.list.Cursor()
 	oldID := ""
@@ -423,11 +467,44 @@ func (s *presetsScreen) adopt(pf *fanout.PresetsFile, loadErr string) {
 	s.list.SetCursor(target)
 }
 
+// presetsIndexByName resolves a preset NAME to its index in pf, or -1 when the
+// store does not carry it. The name is the store's addressing key (the row IDs
+// and every store verb address a name, never a position), so it is also the
+// identity the Space pin is held by.
+func presetsIndexByName(pf *fanout.PresetsFile, name string) int {
+	if pf == nil || name == "" {
+		return -1
+	}
+	for i := range pf.Presets {
+		if pf.Presets[i].Name == name {
+			return i
+		}
+	}
+	return -1
+}
+
+// selectPreset points the sticky selection at index i and records the identity it
+// holds. Every write site (the cursor reassert, the Space pin, the reload clamp,
+// Duplicate's move onto the copy) goes through here, so sel and selName cannot
+// disagree while a pin is live.
+func (s *presetsScreen) selectPreset(i int) {
+	s.sel, s.selName = i, ""
+	if s.pf != nil && i >= 0 && i < len(s.pf.Presets) {
+		s.selName = s.pf.Presets[i].Name
+		return
+	}
+	s.sel = -1
+}
+
 // buildRows composes the row inventory: the fixed built-in row, one row per
 // preset, then the five action rows. The preset note is the one-line flag
 // summary (task, n, timeout, tools) or, when only hidden fields are pinned,
 // the pinned-count digest (survey defect D10); the default preset carries the
-// badge.
+// badge. The sticky-selected preset row carries the visible "●" marker the
+// providers and models screens already draw, so the target of Edit/Duplicate/
+// Delete/Set default is never invisible (audit F9's rule; this screen used to
+// keep its selection private). The built-in row is never marked: it is not a
+// preset, and no verb acts on it.
 func (s *presetsScreen) buildRows() []Row {
 	rows := make([]Row, 0, len(s.pf.Presets)+6)
 	rows = append(rows, Row{ID: presetsRowIDBuiltin, Label: builtinPresetRowLabel, Note: builtinDefaultsSummary(s.b)})
@@ -437,7 +514,11 @@ func (s *presetsScreen) buildRows() []Row {
 		if p.Name == s.pf.DefaultPreset {
 			note = noteWithDefaultBadge(note, s.b.T("presets.default.badge"))
 		}
-		rows = append(rows, Row{ID: presetRowPrefix + p.Name, Label: providers.MaskOperand(p.Name), Note: note})
+		label := providers.MaskOperand(p.Name)
+		if i == s.sel {
+			label = "● " + label
+		}
+		rows = append(rows, Row{ID: presetRowPrefix + p.Name, Label: label, Note: note})
 	}
 	b := s.b
 	rows = append(rows,
@@ -448,6 +529,31 @@ func (s *presetsScreen) buildRows() []Row {
 		Row{ID: presetsRowIDSetDefault, Label: b.T("presets.action.set_default")},
 	)
 	return rows
+}
+
+// syncMarker moves the visible selection marker to the sticky-selected preset
+// row by rewriting the row labels IN PLACE (the providers and models screens'
+// F-S1 pattern): s.rows and the stepList share the same backing array (SetRows
+// stores the slice header), so the label writes are picked up by the next
+// Render without a SetRows call, which would reset the scroll window and make
+// the view jump on every selection move. Labels are recomputed from the row ID
+// (MaskOperand over the preset name) rather than prefix-stripped, so a name that
+// happens to start with the marker glyph cannot confuse the sync, and a
+// credential-shaped on-disk name masks here exactly as it does in buildRows. The
+// built-in row sits at index 0, so the preset at selection index i is row i+1.
+func (s *presetsScreen) syncMarker() {
+	for i := range s.rows {
+		if !strings.HasPrefix(s.rows[i].ID, presetRowPrefix) {
+			continue
+		}
+		label := providers.MaskOperand(s.rows[i].ID[len(presetRowPrefix):])
+		if i == s.sel+1 {
+			label = "● " + label
+		}
+		if s.rows[i].Label != label {
+			s.rows[i].Label = label
+		}
+	}
 }
 
 // presetFlagSummary renders the one-line flag summary of a preset: the
@@ -570,6 +676,15 @@ func (s *presetsScreen) statusLine() string {
 
 // activate is the stepList onPick callback, shared by digit selection and
 // arrows+Enter. Preset rows open the editor; action rows dispatch.
+//
+// This is where the Space pin is consumed (the selectAt lifecycle): activating a
+// preset row navigates into the editor (a different surface with its own state)
+// and the four sticky verbs (Edit, Duplicate, Delete, Set default) spend the pin
+// they acted on, so both clear s.locked and the follow-on-rest rule resumes. The
+// built-in row and the New row open a view/editor that reads no selection, so
+// they leave the pin standing: the user comes back to the row they pinned. Esc
+// pop needs no clearing: the popped screen instance is discarded, so the pin
+// cannot outlive it.
 func (s *presetsScreen) activate(idx int) {
 	if s.app == nil || idx < 0 || idx >= len(s.rows) {
 		return
@@ -579,16 +694,21 @@ func (s *presetsScreen) activate(idx int) {
 	case id == presetsRowIDBuiltin:
 		s.open(builtinPresetSentinel)
 	case strings.HasPrefix(id, presetRowPrefix):
+		s.locked = false
 		s.open(id[len(presetRowPrefix):])
 	case id == presetsRowIDNew:
 		s.open("")
 	case id == presetsRowIDEdit:
+		s.locked = false
 		s.withSelected(func(p fanout.Preset) { s.open(p.Name) })
 	case id == presetsRowIDDuplicate:
+		s.locked = false
 		s.withSelected(s.duplicate)
 	case id == presetsRowIDDelete:
+		s.locked = false
 		s.withSelected(s.askDelete)
 	case id == presetsRowIDSetDefault:
+		s.locked = false
 		s.withSelected(s.setDefault)
 	}
 }
@@ -685,7 +805,11 @@ func (s *presetsScreen) duplicate(p fanout.Preset) {
 			return
 		}
 		s.reload()
-		s.sel = len(s.pf.Presets) - 1
+		s.selectPreset(len(s.pf.Presets) - 1)
+		// The marker now follows the selection, so the reload-time marker (the
+		// pre-duplicate selection, clamped) has to move onto the copy: the
+		// cursor stays on the Duplicate row, so no later reassert would.
+		s.syncMarker()
 		a.SetMessage(s.b.T("common.success") + ": " + fillHubSlots(missingOr(s.b, "presets.msg.duplicated", presetsMsgDuplicated),
 			map[string]string{"name": providers.MaskOperand(name)}))
 	})
@@ -945,12 +1069,45 @@ func (s *presetsScreen) explainLines(w int) []string {
 // delegates to the stepList and keeps the sticky preset selection in sync
 // while the cursor sits on a preset row. Esc never arrives here: the App
 // precedence handles it first.
+//
+// The reassert is gated by s.locked, the Space pin (see the type doc): while a
+// pin holds, arrow travel over other preset rows leaves the target alone. The
+// stepList consumes Space before this block runs, so the pin is already set
+// when the gate is read.
 func (s *presetsScreen) HandleKey(k Key, a *App) {
 	s.app = a
 	s.reloadIfChanged()
 	s.list.HandleKey(k)
+	if s.locked {
+		return
+	}
 	if c := s.list.Cursor(); c >= 1 && c <= len(s.pf.Presets) {
-		s.sel = c - 1
+		if s.sel != c-1 {
+			s.selectPreset(c - 1)
+			s.syncMarker()
+		}
+	}
+}
+
+// selectAt is the stepList Space callback: the explicit pin. Row 0 is the
+// read-only built-in row and rows 1..len(pf.Presets) are the presets, so the
+// boundary is the row index minus one: Space on the built-in row or any action
+// row is a consumed no-op with no state change, Space on a preset row pins it,
+// locks the selection, moves the marker in place and confirms on the message
+// line. Pinning again re-pins (the lock simply stays on). Space never activates:
+// this callback never reaches activate, so a pin cannot open the editor or any
+// write gate. The pin also records the preset NAME it holds, the identity reload
+// re-anchors by (F-01).
+func (s *presetsScreen) selectAt(idx int) {
+	if idx < 1 || idx > len(s.pf.Presets) {
+		return
+	}
+	s.selectPreset(idx - 1)
+	s.locked = true
+	s.syncMarker()
+	if s.app != nil {
+		s.app.SetMessage(fillHubSlots(missingOr(s.b, "list.msg.pinned", listMsgPinned),
+			map[string]string{"name": presetNameOperand(s.pf.Presets[s.sel].Name)}))
 	}
 }
 

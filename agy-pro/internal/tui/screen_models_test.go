@@ -1224,3 +1224,442 @@ func TestModelsMessageRoles(t *testing.T) {
 		}
 	}
 }
+
+// modelsPinMessage is the confirmation line Space writes on this screen,
+// resolved the way the screen resolves it (catalog entry, then the shared
+// const) with the model id through the row-label slot masker.
+func modelsPinMessage(id string) string {
+	return fillHubSlots(missingOr(Bundle(), "list.msg.pinned", listMsgPinned),
+		map[string]string{"name": maskSlotOperand(id)})
+}
+
+// TestModelsSpacePinSurvivesArrowTransitToTheStickyVerbs is the flow that was
+// impossible before the Space pin: the action rows sit below the model block, so
+// arrow travel from model 1 down to Edit/Delete passes model 2, and each rest
+// re-stole the sticky selection, leaving the verb on the LAST model. Space pins
+// model 1, the transit cannot overwrite the pin, and the verb acts on it.
+func TestModelsSpacePinSurvivesArrowTransitToTheStickyVerbs(t *testing.T) {
+	cases := []struct {
+		name string
+		down int // Downs from the opening cursor row (model 1) to the verb row
+	}{
+		// Rows: 1 acme-fast, 2 acme-slow, 3 Add, 4 Edit, 5 Delete, 6 Toggle, 7 Tools, 8 Back.
+		{"Edit", 3},
+		{"Delete", 4},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls []formCall
+			app, _, _ := newModelsTestApp(t, func(mode string, modelID string, a *App) {
+				calls = append(calls, formCall{mode: mode, modelID: modelID})
+			})
+			scr := app.Top().(*modelsScreen)
+
+			app.Step(KeySpace) // pin acme-fast (the opening cursor row)
+			if got, want := app.Message(), modelsPinMessage("acme-fast"); got != want {
+				t.Fatalf("pin confirmation = %q, want %q", got, want)
+			}
+			if app.Modal() != nil || len(calls) != 0 {
+				t.Fatalf("Space activated something: modal=%v form calls=%v", app.Modal() != nil, calls)
+			}
+			for i := 0; i < tc.down; i++ {
+				app.Step(KeyDown)
+				if lines := app.Frame().Lines; !strings.Contains(strings.Join(lines, "\n"), "● acme-fast") {
+					t.Fatalf("the pin was stolen after %d Down(s):\n%s", i+1, strings.Join(lines, "\n"))
+				}
+			}
+			app.Step(KeyEnter)
+			if tc.name == "Edit" {
+				if len(calls) != 1 || calls[0] != (formCall{mode: "edit", modelID: "acme-fast"}) {
+					t.Fatalf("Edit after the transit asked for %v, want [edit acme-fast] (the pinned row)", calls)
+				}
+				return
+			}
+			m := app.Modal()
+			if m == nil {
+				t.Fatal("Delete after the transit opened no approval gate")
+			}
+			if body := strings.Join(m.Body(160), "\n"); !strings.Contains(body, "acme-fast") {
+				t.Fatalf("the gate summarizes no acme-fast; body:\n%s", body)
+			}
+			if scr.locked {
+				t.Fatal("the pin survived the verb that consumed it")
+			}
+		})
+	}
+}
+
+// TestModelsSpaceOnAnActionRowIsANoOp pins the boundary: the action rows below
+// the model block are not selectable, so Space there changes nothing, and a
+// Space on an action row AFTER a pin leaves the pin standing.
+func TestModelsSpaceOnAnActionRowIsANoOp(t *testing.T) {
+	var calls []formCall
+	app, _, _ := newModelsTestApp(t, func(mode string, modelID string, a *App) {
+		calls = append(calls, formCall{mode: mode, modelID: modelID})
+	})
+	scr := app.Top().(*modelsScreen)
+
+	app.Step(KeySpace) // pin acme-fast
+	pinned := app.Message()
+	app.Step(KeyDown) // cursor on acme-slow; the pin holds
+	if scr.sel != 0 {
+		t.Fatalf("the pin was overwritten by the rest: sel=%d, want 0", scr.sel)
+	}
+	for i := 0; i < 3; i++ {
+		app.Step(KeyDown) // row 5 = Delete
+	}
+	app.Step(KeySpace)
+	if got := app.Message(); got != pinned {
+		t.Fatalf("Space on the Delete row rewrote the message to %q, want the pin line %q", got, pinned)
+	}
+	if !scr.locked || scr.sel != 0 {
+		t.Fatalf("Space on the Delete row dropped the pin: sel=%d locked=%v", scr.sel, scr.locked)
+	}
+	if app.Modal() != nil || len(calls) != 0 {
+		t.Fatalf("Space on the Delete row activated something: modal=%v calls=%v", app.Modal() != nil, calls)
+	}
+}
+
+// TestModelsSpaceDoesNotShadowTheToolsOverlay pins the interaction the shared
+// list-level Space case must not break: the tools overlay owns Space
+// (toggle-the-cursor-tool), and it is a live modal, so the key reaches the
+// overlay's own Key handler and never the list under it.
+func TestModelsSpaceDoesNotShadowTheToolsOverlay(t *testing.T) {
+	app, _, _ := newModelsTestApp(t, nil)
+
+	// Pin a model first, then open the tools overlay through the Tools row
+	// (row 7) so the list-level Space case is registered and armed.
+	app.Step(KeySpace)
+	for i := 0; i < 6; i++ {
+		app.Step(KeyDown)
+	}
+	app.Step(KeyEnter)
+	ov, ok := app.Modal().(*toolsOverlay)
+	if !ok {
+		t.Fatalf("the Tools row opened %T, want the tools overlay", app.Modal())
+	}
+	// acme-fast grants read_file only; the overlay refuses to clear the last
+	// grant, so toggle the SECOND row (list_dir, ungranted) to see a flip.
+	app.Step(KeyDown)
+	before := ov.list.Row(ov.list.Cursor()).Label
+	app.Step(KeySpace)
+	after := ov.list.Row(ov.list.Cursor()).Label
+	if before == after {
+		t.Fatalf("Space did not toggle the tool in the overlay (label stayed %q)", before)
+	}
+	if app.Modal() == nil {
+		t.Fatal("Space closed the overlay instead of toggling a tool")
+	}
+	if got, want := app.Message(), modelsPinMessage("acme-fast"); got != want {
+		t.Fatalf("Space inside the overlay rewrote the message to %q, want the pin line %q", got, want)
+	}
+}
+
+// modelsWriteReg rewrites the temp providers.json in place: the external
+// mid-list mutation reloadIfChanged has to catch (fix round 1, F-01).
+func modelsWriteReg(t *testing.T, path string, reg *providers.Registry) {
+	t.Helper()
+	data, err := json.MarshalIndent(reg, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal registry: %v", err)
+	}
+	if err := providers.WriteFileAtomic(path, append(data, '\n'), 0o600); err != nil {
+		t.Fatalf("rewrite registry: %v", err)
+	}
+}
+
+// TestModelsSpacePinDropsWhenItsTargetVanishes is the F-01 regression pin. The
+// model selection used to be index-anchored, so an EXTERNAL mid-list deletion of
+// the pinned model (picked up by reloadIfChanged) clamped the index onto the
+// following model while the lock stayed on: the pin silently re-targeted a model
+// the user never chose, and Delete would have opened its gate. The pin is now
+// re-anchored by model ID, so a vanished target drops the selection AND the lock,
+// which leaves the verbs refusing instead of guessing.
+func TestModelsSpacePinDropsWhenItsTargetVanishes(t *testing.T) {
+	var calls []formCall
+	app, _, path := newModelsTestApp(t, func(mode string, modelID string, a *App) {
+		calls = append(calls, formCall{mode: mode, modelID: modelID})
+	})
+	scr := app.Top().(*modelsScreen)
+
+	// Rows: 1 acme-fast, 2 acme-slow, 3 Add, 4 Edit, 5 Delete, 6 Toggle, 7 Tools, 8 Back.
+	app.Step(KeySpace) // pin acme-fast, a MID-LIST row (acme-slow follows it)
+	if !scr.locked || scr.selID != "acme-fast" || scr.sel != 0 {
+		t.Fatalf("the pin did not take: sel=%d selID=%q locked=%v", scr.sel, scr.selID, scr.locked)
+	}
+
+	// External mid-list deletion: acme-fast is gone, so acme-slow slides into index
+	// 0 and an index clamp would point the verbs at it.
+	reg := modelsFixtureReg()
+	reg.Providers[0].Models = reg.Providers[0].Models[1:]
+	modelsWriteReg(t, path, reg)
+	app.Frame() // reloadIfChanged picks the new registry up, as a live screen does
+
+	if scr.locked || scr.sel != -1 || scr.selID != "" {
+		t.Fatalf("the pin outlived its target: sel=%d selID=%q locked=%v", scr.sel, scr.selID, scr.locked)
+	}
+	if body := strings.Join(app.Frame().Lines, "\n"); strings.Contains(body, "●") {
+		t.Fatalf("a vanished pin still marks a row:\n%s", body)
+	}
+
+	// The Delete verb (row 4 on the shrunk list: 1 acme-slow, 2 Add, 3 Edit, 4
+	// Delete) must refuse instead of opening a gate for the clamped neighbour.
+	app.Step(Digit(4))
+	if got, want := app.Message(), Bundle().T("models.msg.select_model"); got != want {
+		t.Fatalf("Delete after the pinned model vanished = %q, want the refusal %q", got, want)
+	}
+	if app.Modal() != nil {
+		t.Fatal("Delete opened an approval gate for a model nobody selected")
+	}
+	if len(calls) != 0 {
+		t.Fatalf("the vanished pin opened a form: %v", calls)
+	}
+}
+
+// TestModelsSpaceRePinMovesThePin pins the re-pin transition on this screen:
+// another Space on another entity row moves the pin, the message names the new
+// target, and the vertices below act on it.
+func TestModelsSpaceRePinMovesThePin(t *testing.T) {
+	var calls []formCall
+	app, _, _ := newModelsTestApp(t, func(mode string, modelID string, a *App) {
+		calls = append(calls, formCall{mode: mode, modelID: modelID})
+	})
+	scr := app.Top().(*modelsScreen)
+
+	app.Step(KeySpace) // pin acme-fast
+	app.Step(KeyDown)  // rest on acme-slow: the pin holds
+	if scr.selID != "acme-fast" {
+		t.Fatalf("the rest stole the pin: selID=%q", scr.selID)
+	}
+	app.Step(KeySpace) // re-pin onto acme-slow
+	if got, want := app.Message(), modelsPinMessage("acme-slow"); got != want {
+		t.Fatalf("re-pin confirmation = %q, want %q", got, want)
+	}
+	if !scr.locked || scr.selID != "acme-slow" || scr.sel != 1 {
+		t.Fatalf("the re-pin did not move: sel=%d selID=%q locked=%v", scr.sel, scr.selID, scr.locked)
+	}
+	if body := strings.Join(app.Frame().Lines, "\n"); !strings.Contains(body, "● acme-slow") {
+		t.Fatalf("the marker did not follow the re-pin:\n%s", body)
+	}
+
+	// Two Downs reach the Edit row (rows: 1 acme-fast, 2 acme-slow, 3 Add, 4 Edit).
+	app.Step(KeyDown)
+	app.Step(KeyDown)
+	app.Step(KeyEnter)
+	if len(calls) != 1 || calls[0] != (formCall{mode: "edit", modelID: "acme-slow"}) {
+		t.Fatalf("Edit after the re-pin asked for %v, want [edit acme-slow]", calls)
+	}
+}
+
+// TestModelsSpacePinUnlocksWhenAModelRowIsActivated pins the navigation
+// transition on this screen: Enter on a model row opens its form and consumes the
+// pin, because a model row activation addresses the CURSOR row, never the pin.
+func TestModelsSpacePinUnlocksWhenAModelRowIsActivated(t *testing.T) {
+	var calls []formCall
+	app, _, _ := newModelsTestApp(t, func(mode string, modelID string, a *App) {
+		calls = append(calls, formCall{mode: mode, modelID: modelID})
+	})
+	scr := app.Top().(*modelsScreen)
+
+	app.Step(KeySpace) // pin acme-fast
+	app.Step(KeyDown)  // rest on acme-slow; the pin holds
+	if !scr.locked || scr.selID != "acme-fast" {
+		t.Fatalf("the pin did not survive the rest: selID=%q locked=%v", scr.selID, scr.locked)
+	}
+	app.Step(KeyEnter) // activates the CURSOR row (acme-slow) and clears the pin
+	if len(calls) != 1 || calls[0] != (formCall{mode: "edit", modelID: "acme-slow"}) {
+		t.Fatalf("model row activation asked for %v, want [edit acme-slow]", calls)
+	}
+	if scr.locked {
+		t.Fatal("the pin survived the navigation into the edit form")
+	}
+	if body := strings.Join(app.Frame().Lines, "\n"); !strings.Contains(body, "● acme-slow") {
+		t.Fatalf("the marker did not adopt the activated row:\n%s", body)
+	}
+}
+
+// TestModelsNoSpaceTransitTargetsTheLastRow is the no-Space negative control
+// (fix round 1, F-02): the exact key sequence the pin tests use, minus Space,
+// still lands the verb on the LAST model row. It keeps the pin tests honest (they
+// prove the gesture, not the fixture) and documents the defect the gesture fixes.
+func TestModelsNoSpaceTransitTargetsTheLastRow(t *testing.T) {
+	var calls []formCall
+	app, _, _ := newModelsTestApp(t, func(mode string, modelID string, a *App) {
+		calls = append(calls, formCall{mode: mode, modelID: modelID})
+	})
+	scr := app.Top().(*modelsScreen)
+
+	for i := 0; i < 3; i++ {
+		app.Step(KeyDown) // acme-slow, Add, Edit: every rest re-steals the selection
+	}
+	app.Step(KeyEnter)
+	if len(calls) != 1 || calls[0].modelID != "acme-slow" {
+		t.Fatalf("the no-Space transit asked for %v, want the LAST model row (acme-slow)", calls)
+	}
+	if scr.locked {
+		t.Fatal("the no-Space transit locked something; Space is the only pin")
+	}
+}
+
+// threeModelRegistry is the fixture the T-01 move tests read: three models so the
+// pinned row is genuinely MID-LIST (a neighbour on each side), which is the shape
+// an index anchor breaks on. The ids are deliberately distinct from the two-model
+// fixture so a stale reference cannot pass by matching the wrong record.
+func threeModelRegistry() *providers.Registry {
+	reg := modelsFixtureReg()
+	reg.Providers[0].Models = []providers.Model{
+		{ID: "acme-one", Family: "fast"},
+		{ID: "acme-two", Family: "mid"},
+		{ID: "acme-three", Family: "slow"},
+	}
+	return reg
+}
+
+// TestModelsSpacePinnedTargetSurvivesAMovedRow is the T-01 regression pin: the
+// other half of the F-01 identity re-anchor. A pinned model that MOVES through an
+// external mutation (a reorder, or a deletion of an entry BEFORE it) must keep its
+// target: the selection re-anchors onto the same model ID at its NEW index, the
+// lock stays on, the marker follows the row, and the verb below fires on it. The
+// reference structure is the providers screen's
+// TestProvidersStickyTargetHeldByProviderName ("reordered registry keeps the
+// marked provider"); before the re-anchor, the clamp left the pin on the index,
+// which after the move names a different model than the user pinned.
+func TestModelsSpacePinnedTargetSurvivesAMovedRow(t *testing.T) {
+	cases := []struct {
+		name string
+		// mutate applies the external registry change to a fresh fixture.
+		mutate func(reg *providers.Registry)
+		// wantIdx is where the pinned model (acme-two) sits after the reload.
+		wantIdx int
+		// editRow is the digit that reaches the Edit row on the mutated list.
+		editRow Key
+	}{
+		{
+			// [one, two, three] -> [three, one, two]: acme-two moves 1 -> 2.
+			name: "reordered registry keeps the pinned model",
+			mutate: func(reg *providers.Registry) {
+				m := reg.Providers[0].Models
+				reg.Providers[0].Models = []providers.Model{m[2], m[0], m[1]}
+			},
+			wantIdx: 2,
+			editRow: Digit(5), // rows: 1 three, 2 one, 3 two, 4 Add, 5 Edit
+		},
+		{
+			// [one, two, three] -> [two, three]: the row BEFORE the pin is gone, so
+			// acme-two moves 1 -> 0.
+			name: "deletion before the pinned model shifts its index",
+			mutate: func(reg *providers.Registry) {
+				reg.Providers[0].Models = reg.Providers[0].Models[1:]
+			},
+			wantIdx: 0,
+			editRow: Digit(4), // rows: 1 two, 2 three, 3 Add, 4 Edit
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls []formCall
+			app, _, path := newModelsTestAppReg(t, threeModelRegistry(), func(mode string, modelID string, a *App) {
+				calls = append(calls, formCall{mode: mode, modelID: modelID})
+			})
+			scr := app.Top().(*modelsScreen)
+
+			// Rows: 1 acme-one, 2 acme-two, 3 acme-three, 4 Add, 5 Edit, ...
+			app.Step(KeyDown)  // rest on acme-two: the MID entity row
+			app.Step(KeySpace) // pin it
+			if !scr.locked || scr.selID != "acme-two" || scr.sel != 1 {
+				t.Fatalf("the pin did not take: sel=%d selID=%q locked=%v", scr.sel, scr.selID, scr.locked)
+			}
+
+			mutated := threeModelRegistry()
+			tc.mutate(mutated)
+			modelsWriteReg(t, path, mutated)
+			app.Frame() // reloadIfChanged re-reads the registry, as a live screen does
+
+			if !scr.locked {
+				t.Fatal("the pin dropped although the pinned model still exists; a move must keep it")
+			}
+			if scr.selID != "acme-two" || scr.sel != tc.wantIdx {
+				t.Fatalf("the pin re-anchored to sel=%d selID=%q, want index %d of acme-two", scr.sel, scr.selID, tc.wantIdx)
+			}
+			body := strings.Join(app.Frame().Lines, "\n")
+			if !strings.Contains(body, "● acme-two") {
+				t.Fatalf("the marker did not follow the moved pin:\n%s", body)
+			}
+			if strings.Contains(body, "● acme-one") || strings.Contains(body, "● acme-three") {
+				t.Fatalf("the marker also sits on a neighbour:\n%s", body)
+			}
+
+			// The verb below the entity block must act on the moved pin, not on
+			// whatever now occupies the old index.
+			app.Step(tc.editRow)
+			if len(calls) != 1 || calls[0] != (formCall{mode: "edit", modelID: "acme-two"}) {
+				t.Fatalf("Edit after the move asked for %v, want [edit acme-two]", calls)
+			}
+			if scr.locked {
+				t.Fatal("the pin survived the verb that consumed it")
+			}
+		})
+	}
+}
+
+// TestModelsSpacePinUnlocksWhenAVerbConsumesIt is the T-02 close-out: the models
+// screen's verb-consumption unlock (screen_models.go activate's `s.locked = false`
+// arms) asserted on its own, the way the presets screen already pins it
+// (TestPresetsSpacePinUnlocksAfterTheVerb). The transit test asserts it only in its
+// Delete arm, and the Edit arm returns before reaching it, so this test fires both
+// an Edit (opens the form) and a Tools (opens the overlay and keeps the screen).
+func TestModelsSpacePinUnlocksWhenAVerbConsumesIt(t *testing.T) {
+	t.Run("Edit opens the form and drops the pin", func(t *testing.T) {
+		var calls []formCall
+		app, _, _ := newModelsTestApp(t, func(mode string, modelID string, a *App) {
+			calls = append(calls, formCall{mode: mode, modelID: modelID})
+		})
+		scr := app.Top().(*modelsScreen)
+
+		// Rows: 1 acme-fast, 2 acme-slow, 3 Add, 4 Edit, ...
+		app.Step(KeySpace) // pin acme-fast
+		for i := 0; i < 3; i++ {
+			app.Step(KeyDown) // acme-slow, Add, Edit: the pin holds through the transit
+		}
+		app.Step(KeyEnter) // the Edit verb consumes the pin
+		if len(calls) != 1 || calls[0] != (formCall{mode: "edit", modelID: "acme-fast"}) {
+			t.Fatalf("Edit asked for %v, want [edit acme-fast]", calls)
+		}
+		if scr.locked {
+			t.Fatal("the pin survived the verb that consumed it")
+		}
+
+		// The follow-on-rest rule is live again: the marker follows the cursor.
+		app.Step(KeyHome)
+		app.Step(KeyDown)
+		if body := strings.Join(app.Frame().Lines, "\n"); !strings.Contains(body, "● acme-slow") {
+			t.Fatalf("the marker did not follow the cursor after the verb:\n%s", body)
+		}
+	})
+
+	t.Run("Tools keeps the screen and drops the pin", func(t *testing.T) {
+		app, _, _ := newModelsTestApp(t, nil)
+		scr := app.Top().(*modelsScreen)
+
+		// Rows: 1 acme-fast, 2 acme-slow, 3 Add, 4 Edit, 5 Delete, 6 Toggle,
+		// 7 Tools, 8 Back.
+		app.Step(KeySpace) // pin acme-fast
+		for i := 0; i < 6; i++ {
+			app.Step(KeyDown)
+		}
+		app.Step(KeyEnter) // the Tools verb consumes the pin and opens its overlay
+		if _, ok := app.Modal().(*toolsOverlay); !ok {
+			t.Fatalf("the Tools row opened %T, want the tools overlay", app.Modal())
+		}
+		if scr.locked {
+			t.Fatal("the pin survived the Tools verb, so the follow-on-rest rule stays suspended")
+		}
+		app.Step(KeyEsc) // close the overlay: the screen stays, the pin is already spent
+		if app.Modal() != nil {
+			t.Fatal("Esc did not close the tools overlay")
+		}
+		if scr.locked {
+			t.Fatal("the pin came back after the overlay closed")
+		}
+	})
+}

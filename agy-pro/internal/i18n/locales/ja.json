@@ -495,10 +495,12 @@
   "help.keys.home_end": "先頭または末尾の行に移動",
   "help.keys.yn": "はい / いいえの確認プロンプトに回答",
   "help.keys.redraw": "画面を再描画",
-  "help.keys.space": "編集モード: スペースを挿入",
+  "help.keys.space": "一覧: 操作行の対象を固定。編集モード: スペースを挿入。",
   "help.keys.save": "編集モード: エディターの保存キー",
   "help.keys.runes": "編集モード: 印字可能な文字はテキスト入力になる",
   "help.numbered.reminder": "すべてのリストは行に番号を付けます: 数字 1-9 で選択して実行、矢印でカーソル移動、Enter で実行。",
+
+  "list.msg.pinned": "選択を固定: {{name}}。操作行はこの行を対象にします。",
   "help.storage.providers.purpose": "プロバイダーレジストリ。すべての書き込みは承認モーダルを経由",
   "help.storage.state.purpose": "プロファイルモード、既定プロファイル、言語、ランチャー切替",
   "help.storage.presets.purpose": "保存済みファンアウトシートプリセット",

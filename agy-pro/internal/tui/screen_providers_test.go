@@ -1748,3 +1748,309 @@ func TestProvidersStickyTargetHeldByProviderName(t *testing.T) {
 		}
 	})
 }
+
+// providersPinMessage is the confirmation line Space writes, resolved the same
+// way the screen resolves it (catalog entry for the active language, the shared
+// const as the fallback), with the provider name through the row-label masker.
+func providersPinMessage(name string) string {
+	return fillHubSlots(missingOr(Bundle(), "list.msg.pinned", listMsgPinned),
+		map[string]string{"name": providers.MaskSlot(name)})
+}
+
+// TestProvidersSpacePinSurvivesArrowTransitToTheVerbRow is the flow that was
+// impossible before the Space pin (user ask): with the follow-on-rest rule
+// alone, arrow travel from provider 1 down to the Edit row passes provider 2,
+// and each rest re-stole the sticky target, so Edit always opened the LAST
+// provider. Space pins provider 1 explicitly, the transit cannot overwrite the
+// pin, and Enter on the Edit row opens the form for the pinned provider.
+func TestProvidersSpacePinSurvivesArrowTransitToTheVerbRow(t *testing.T) {
+	providersFixture(t, twoProviderRegistry())
+	core := providersTestCore(providers.ProbeSkipped, "no key")
+	var modeArg, nameArg string
+	var pushed Screen
+	app := newProvidersFormApp(core, &modeArg, &nameArg, &pushed)
+
+	// Rows: 1 gemini, 2 anthropic, 3 Add, 4 Test all, 5 Test, 6 Edit, 7 Delete.
+	app.Step(KeySpace) // pin gemini (the opening cursor row) without activating it
+	if got, want := app.Message(), providersPinMessage("gemini"); got != want {
+		t.Fatalf("pin confirmation = %q, want %q", got, want)
+	}
+	if app.Depth() != 1 {
+		t.Fatalf("Space activated a screen (depth %d); it must only pin", app.Depth())
+	}
+
+	// Arrow-only transit to the Edit row: anthropic, Add, Test all, Test, Edit.
+	for i := 0; i < 5; i++ {
+		app.Step(KeyDown)
+		lines := app.Frame().Lines
+		if !frameLineMatches(lines, func(l string) bool { return strings.Contains(l, "● gemini") }) {
+			t.Fatalf("the pin was stolen after %d Down(s); marker is not on gemini:\n%s", i+1, strings.Join(lines, "\n"))
+		}
+	}
+	app.Step(KeyEnter)
+	if modeArg != "edit" || nameArg != "gemini" {
+		t.Fatalf("Edit after the transit asked for mode %q name %q, want \"edit\" and gemini (the pinned row)", modeArg, nameArg)
+	}
+	if pushed == nil {
+		t.Fatal("the Edit verb pushed no form")
+	}
+}
+
+// TestProvidersSpacePinReachesTheDeleteGateForThePinnedRow pins the same
+// transit against the danger row: the approval gate opened from the bottom of
+// the list summarizes the PINNED provider, and answering n writes nothing, so
+// the pin cannot widen the delete blast radius.
+func TestProvidersSpacePinReachesTheDeleteGateForThePinnedRow(t *testing.T) {
+	path := providersFixture(t, twoProviderRegistry())
+	saves := 0
+	var opened []string
+	app := newProvidersApp(providersRecordingCore(&saves), &opened)
+
+	app.Step(KeySpace) // pin gemini
+	for i := 0; i < 6; i++ {
+		app.Step(KeyDown) // transit to the Delete row (row 7)
+	}
+	app.Step(KeyEnter)
+	m := app.Modal()
+	if m == nil {
+		t.Fatal("the Delete verb opened no gate after a pin")
+	}
+	if _, ok := m.(*Approval); !ok {
+		t.Fatalf("gate = %T, want the M4 approval modal", m)
+	}
+	if body := strings.Join(m.Body(160), "\n"); !strings.Contains(body, "gemini") {
+		t.Fatalf("the gate summarizes no gemini; body:\n%s", body)
+	}
+	app.Step(KeyNo)
+	if saves != 0 {
+		t.Fatalf("the declined gate wrote %d time(s)", saves)
+	}
+	reg, err := providers.LoadFrom(path)
+	if err != nil {
+		t.Fatalf("reload temp registry: %v", err)
+	}
+	if len(reg.Providers) != 2 {
+		t.Fatalf("registry after the declined gate = %+v, want both providers", reg.Providers)
+	}
+}
+
+// TestProvidersSpaceOnAVerbRowIsANoOp pins the boundary: the verb rows below the
+// provider block are not selectable, so a Space there changes nothing (no pin,
+// no message) and a later verb still refuses, while a Space on a verb row AFTER
+// a pin leaves the pin standing.
+func TestProvidersSpaceOnAVerbRowIsANoOp(t *testing.T) {
+	providersFixture(t, twoProviderRegistry())
+	app := newProvidersApp(providersTestCore(providers.ProbeSkipped, "no key"), new([]string))
+	scr := app.Top().(*ProvidersScreen)
+
+	app.Step(KeyDown)
+	app.Step(KeyDown) // row 3 = Add; the rest already selected anthropic (follow-on-rest)
+	beforeSel, beforeName, beforeMsg := scr.sel, scr.selName, app.Message()
+	app.Step(KeySpace)
+	if got := app.Message(); got != beforeMsg {
+		t.Fatalf("Space on the Add row wrote a message: %q", got)
+	}
+	if scr.sel != beforeSel || scr.selName != beforeName || scr.locked {
+		t.Fatalf("Space on the Add row changed the selection: sel=%d selName=%q locked=%v", scr.sel, scr.selName, scr.locked)
+	}
+	// Nothing was pinned either: the refusal proof uses a fresh screen whose
+	// cursor never rested on a provider row.
+	fresh := newProvidersApp(providersTestCore(providers.ProbeSkipped, "no key"), new([]string))
+	fresh.Step(KeyEnd)
+	fresh.Step(KeySpace) // Delete row: no pin, no message
+	if got := fresh.Message(); got != "" {
+		t.Fatalf("Space on the Delete row wrote a message: %q", got)
+	}
+	fresh.Step(Digit(5))
+	if got, want := fresh.Message(), Bundle().T("providers.msg.select_provider"); got != want {
+		t.Fatalf("verb after the no-op Space = %q, want the refusal %q", got, want)
+	}
+
+	// Re-pin half: a pin, a transit onto a verb row, and a Space there.
+	app.Step(KeyHome) // cursor back to gemini
+	app.Step(KeySpace)
+	pinned := app.Message()
+	if pinned != providersPinMessage("gemini") {
+		t.Fatalf("re-pin confirmation = %q, want %q", pinned, providersPinMessage("gemini"))
+	}
+	for i := 0; i < 4; i++ {
+		app.Step(KeyDown) // row 5 = Test
+	}
+	app.Step(KeySpace)
+	if got := app.Message(); got != pinned {
+		t.Fatalf("Space on the Test row rewrote the message to %q, want the pin line %q", got, pinned)
+	}
+	if !scr.locked || scr.selName != "gemini" {
+		t.Fatalf("Space on the Test row dropped the pin: selName=%q locked=%v", scr.selName, scr.locked)
+	}
+}
+
+// TestProvidersSpacePinUnlocksAfterTheVerb pins the first unlock transition: a
+// sticky verb spends the pin, so the follow-on-rest rule resumes immediately and
+// the marker follows the cursor again.
+func TestProvidersSpacePinUnlocksAfterTheVerb(t *testing.T) {
+	providersFixture(t, twoProviderRegistry())
+	app := newProvidersApp(providersTestCore(providers.ProbeValid, "dest example.com: credential accepted"), new([]string))
+	scr := app.Top().(*ProvidersScreen)
+
+	app.Step(KeySpace) // pin gemini
+	for i := 0; i < 4; i++ {
+		app.Step(KeyDown) // row 5 = Test
+	}
+	app.Step(KeyEnter) // the verb consumes the pin
+	if scr.locked {
+		t.Fatal("the pin survived the verb that consumed it")
+	}
+	if got := app.Message(); !strings.Contains(got, "gemini") {
+		t.Fatalf("the verb's verdict = %q, want the pinned gemini", got)
+	}
+
+	app.Step(KeyHome) // cursor back to gemini
+	app.Step(KeyDown) // rest on anthropic: the cursor reassert is live again
+	lines := app.Frame().Lines
+	if !frameLineMatches(lines, func(l string) bool { return strings.Contains(l, "● anthropic") }) {
+		t.Fatalf("the marker did not follow the cursor after the verb:\n%s", strings.Join(lines, "\n"))
+	}
+	if frameLineMatches(lines, func(l string) bool { return strings.Contains(l, "● gemini") }) {
+		t.Fatalf("gemini is still marked after the cursor moved to anthropic:\n%s", strings.Join(lines, "\n"))
+	}
+}
+
+// TestProvidersSpacePinUnlocksWhenAnEntityRowIsActivated pins the navigation
+// transition: Enter on a provider row opens its models screen, so the pin is
+// spent (a provider row activation addresses the CURSOR row, never the pinned
+// one) and the marker adopts the row the cursor activated.
+func TestProvidersSpacePinUnlocksWhenAnEntityRowIsActivated(t *testing.T) {
+	providersFixture(t, twoProviderRegistry())
+	var opened []string
+	app := newProvidersApp(providersTestCore(providers.ProbeSkipped, "no key"), &opened)
+	scr := app.Top().(*ProvidersScreen)
+
+	app.Step(KeySpace) // pin gemini
+	app.Step(KeyDown)  // rest on anthropic; the pin holds
+	if !scr.locked || scr.selName != "gemini" {
+		t.Fatalf("the pin did not survive the rest: selName=%q locked=%v", scr.selName, scr.locked)
+	}
+	app.Step(KeyEnter) // activates the CURSOR row (anthropic) and clears the pin
+	if got, want := strings.Join(opened, ","), "anthropic"; got != want {
+		t.Fatalf("provider row activation opened %q, want %q", got, want)
+	}
+	if scr.locked {
+		t.Fatal("the pin survived the navigation into the models screen")
+	}
+	lines := app.Frame().Lines
+	if !frameLineMatches(lines, func(l string) bool { return strings.Contains(l, "● anthropic") }) {
+		t.Fatalf("the marker did not adopt the activated row:\n%s", strings.Join(lines, "\n"))
+	}
+}
+
+// TestProvidersSpacePinDropsWhenItsTargetVanishes pins the invariant the pin
+// rests on: locked means "the selection owns the cursor-reassert", so a locked
+// screen with no selection would freeze the marker forever. An external delete
+// of the pinned provider clears the identity (reload's re-anchor) and must take
+// the lock with it.
+func TestProvidersSpacePinDropsWhenItsTargetVanishes(t *testing.T) {
+	path := providersFixture(t, twoProviderRegistry())
+	app := newProvidersApp(providersTestCore(providers.ProbeSkipped, "no key"), new([]string))
+	scr := app.Top().(*ProvidersScreen)
+
+	app.Step(KeySpace) // pin gemini
+	if !scr.locked || scr.selName != "gemini" {
+		t.Fatalf("the pin did not take: selName=%q locked=%v", scr.selName, scr.locked)
+	}
+
+	providersWrite(t, path, anthropicOnlyRegistry()) // gemini is deleted behind the screen
+	app.Frame()                                      // reloadIfChanged picks the new registry up
+	if scr.locked || scr.selName != "" || scr.sel != -1 {
+		t.Fatalf("the pin outlived its target: sel=%d selName=%q locked=%v", scr.sel, scr.selName, scr.locked)
+	}
+
+	// The follow-on-rest rule is live again: the only provider row gets marked.
+	app.Step(KeyUp) // cursor stays on the row; the rest re-asserts the selection
+	if lines := app.Frame().Lines; !frameLineMatches(lines, func(l string) bool { return strings.Contains(l, "● anthropic") }) {
+		t.Fatalf("the marker did not resume following the cursor:\n%s", strings.Join(lines, "\n"))
+	}
+}
+
+// TestProvidersSpacePinEndToEndThroughTheShell drives the flow the user asked
+// for through the SHIPPED shell (assembleSetupApp + the line-mode reader, the
+// same wiring RunSetup installs on a non-console host): hub row 1 opens the
+// providers screen, Space pins gemini, five Downs walk the cursor down to the
+// Edit row past anthropic, and Enter opens the provider form for the PINNED
+// provider. Before the pin, every one of those rests re-stole the selection,
+// so the form always came up for anthropic (the last provider row). The form
+// carries the pinned provider's endpoint, and the other endpoint is absent, so
+// the assertion names the target rather than the gesture.
+func TestProvidersSpacePinEndToEndThroughTheShell(t *testing.T) {
+	appTestHome(t, "en") // temp AGY_PRO_HOME, state.json language en, providers.json seeded
+	cap := plainTestCap()
+	var out, errb bytes.Buffer
+	script := strings.NewReader("1\nspace\ndown\ndown\ndown\ndown\ndown\nenter\n")
+	if code := runSetup(script, &out, &errb, cap); code != 0 {
+		t.Fatalf("runSetup exit = %d, want 0; stderr=%s", code, errb.String())
+	}
+	frames := out.String()
+	if !strings.Contains(frames, providersPinMessage("gemini")) {
+		t.Fatalf("the shell never rendered the pin confirmation:\n%s", frames)
+	}
+	if !strings.Contains(frames, Bundle().T("providers.form.title.edit")) {
+		t.Fatalf("the Edit verb opened no provider form:\n%s", frames)
+	}
+	if !strings.Contains(frames, "https://example.com") {
+		t.Fatalf("the form does not carry the PINNED provider's endpoint:\n%s", frames)
+	}
+	if strings.Contains(frames, "api.anthropic.com") {
+		t.Fatalf("the form carries the LAST provider's endpoint, so the transit stole the pin:\n%s", frames)
+	}
+
+	// Negative control: the same transit WITHOUT the Space gesture reproduces
+	// the reported defect, so the assertion above is sensitive to the fix and
+	// not to the fixture.
+	appTestHome(t, "en")
+	var control, controlErr bytes.Buffer
+	noPin := strings.NewReader("1\ndown\ndown\ndown\ndown\ndown\nenter\n")
+	if code := runSetup(noPin, &control, &controlErr, plainTestCap()); code != 0 {
+		t.Fatalf("control runSetup exit = %d, want 0; stderr=%s", code, controlErr.String())
+	}
+	if !strings.Contains(control.String(), "api.anthropic.com") {
+		t.Fatalf("the control (no pin) did not reproduce the last-row target:\n%s", control.String())
+	}
+}
+
+// TestProvidersSpaceRePinMovesThePin closes the re-pin row of the lifecycle
+// matrix for this screen (fix round 1, F-02): another Space on another provider
+// row moves the pin, the confirmation names the new target, and the verb below
+// acts on it rather than on the first pin.
+func TestProvidersSpaceRePinMovesThePin(t *testing.T) {
+	providersFixture(t, twoProviderRegistry())
+	core := providersTestCore(providers.ProbeSkipped, "no key")
+	var modeArg, nameArg string
+	var pushed Screen
+	app := newProvidersFormApp(core, &modeArg, &nameArg, &pushed)
+	scr := app.Top().(*ProvidersScreen)
+
+	// Rows: 1 gemini, 2 anthropic, 3 Add, 4 Test all, 5 Test, 6 Edit, 7 Delete.
+	app.Step(KeySpace) // pin gemini
+	app.Step(KeyDown)  // rest on anthropic: the pin holds
+	if !scr.locked || scr.selName != "gemini" {
+		t.Fatalf("the rest stole the pin: selName=%q locked=%v", scr.selName, scr.locked)
+	}
+	app.Step(KeySpace) // re-pin onto anthropic
+	if got, want := app.Message(), providersPinMessage("anthropic"); got != want {
+		t.Fatalf("re-pin confirmation = %q, want %q", got, want)
+	}
+	if !scr.locked || scr.selName != "anthropic" {
+		t.Fatalf("the re-pin did not move: selName=%q locked=%v", scr.selName, scr.locked)
+	}
+	if lines := app.Frame().Lines; !frameLineMatches(lines, func(l string) bool { return strings.Contains(l, "● anthropic") }) {
+		t.Fatalf("the marker did not follow the re-pin:\n%s", strings.Join(lines, "\n"))
+	}
+
+	for i := 0; i < 4; i++ {
+		app.Step(KeyDown) // rows 3..6: Add, Test all, Test, Edit
+	}
+	app.Step(KeyEnter)
+	if modeArg != "edit" || nameArg != "anthropic" {
+		t.Fatalf("Edit after the re-pin asked for mode %q name %q, want \"edit\" and anthropic", modeArg, nameArg)
+	}
+}

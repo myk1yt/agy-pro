@@ -1147,3 +1147,386 @@ func TestPresetsSetDefaultGateAnswersLineModeWords(t *testing.T) {
 		})
 	}
 }
+
+// presetsPinMessage is the confirmation line Space writes on this screen,
+// resolved the way the screen resolves it (catalog entry, then the shared
+// const) with the preset name through the row-label masker.
+func presetsPinMessage(name string) string {
+	return fillHubSlots(missingOr(i18n.Load("en"), "list.msg.pinned", listMsgPinned),
+		map[string]string{"name": providers.MaskOperand(name)})
+}
+
+// TestPresetsSpaceShowsTheMarkerAndPinsThroughTransit covers the two halves of
+// the preset-list fix: the sticky selection used to be INVISIBLE here (audit F9
+// asked for the marker the models screen already drew), and the action rows sit
+// below the preset block, so arrow travel to Edit passed the remaining preset
+// rows and each rest re-stole the target. The marker now follows the cursor on a
+// rest, Space pins a row explicitly, and the pin survives the transit.
+func TestPresetsSpaceShowsTheMarkerAndPinsThroughTransit(t *testing.T) {
+	st, _ := presetsFixture(t)
+	app, opened := newPresetsApp(st, nil)
+	scr := app.Top().(*presetsScreen)
+
+	// Rows: 1 built-in, 2 alpha, 3 beta, 4 New, 5 Edit, 6 Duplicate, 7 Delete,
+	// 8 Set default. The opening frame marks nothing (sel starts at -1).
+	if body := strings.Join(app.Frame().Lines, "\n"); strings.Contains(body, "●") {
+		t.Fatalf("the opening frame marks a preset before any selection:\n%s", body)
+	}
+
+	app.Step(KeyDown) // rest on alpha: the marker follow makes the target visible
+	if body := strings.Join(app.Frame().Lines, "\n"); !strings.Contains(body, "● alpha") {
+		t.Fatalf("resting on a preset row does not mark it:\n%s", body)
+	}
+
+	app.Step(KeySpace) // pin alpha explicitly
+	if got, want := app.Message(), presetsPinMessage("alpha"); got != want {
+		t.Fatalf("pin confirmation = %q, want %q", got, want)
+	}
+	if len(*opened) != 0 {
+		t.Fatalf("Space activated the editor: %v", *opened)
+	}
+
+	// Arrow-only transit to the Edit row (alpha -> beta -> New -> Edit): without
+	// the pin each rest would leave beta selected and Edit would open beta.
+	for i := 0; i < 3; i++ {
+		app.Step(KeyDown)
+		if body := strings.Join(app.Frame().Lines, "\n"); !strings.Contains(body, "● alpha") {
+			t.Fatalf("the pin was stolen after %d Down(s):\n%s", i+1, body)
+		}
+	}
+	if body := strings.Join(app.Frame().Lines, "\n"); strings.Contains(body, "● beta") {
+		t.Fatalf("the transit row stole the mark:\n%s", body)
+	}
+	app.Step(KeyEnter)
+	if len(*opened) != 1 || (*opened)[0] != "alpha" {
+		t.Fatalf("Edit after the transit opened %v, want [alpha] (the pinned preset)", *opened)
+	}
+	if scr.locked {
+		t.Fatal("the pin survived the verb that consumed it")
+	}
+}
+
+// TestPresetsSpaceOnNonPresetRowsIsANoOp pins the boundary: the read-only
+// built-in row and the five action rows are not selectable, so Space there
+// changes nothing, and a Space on an action row AFTER a pin leaves the pin
+// standing.
+func TestPresetsSpaceOnNonPresetRowsIsANoOp(t *testing.T) {
+	st, _ := presetsFixture(t)
+	app, opened := newPresetsApp(st, nil)
+	scr := app.Top().(*presetsScreen)
+
+	app.Step(KeySpace) // row 1 is the built-in row: no pin, no message
+	if got := app.Message(); got != "" {
+		t.Fatalf("Space on the built-in row wrote a message: %q", got)
+	}
+	if scr.sel != -1 || scr.locked {
+		t.Fatalf("Space on the built-in row selected something: sel=%d locked=%v", scr.sel, scr.locked)
+	}
+	if body := strings.Join(app.Frame().Lines, "\n"); strings.Contains(body, "●") {
+		t.Fatalf("Space on the built-in row marked a row:\n%s", body)
+	}
+
+	app.Step(KeyDown) // alpha
+	app.Step(KeySpace)
+	pinned := app.Message()
+	if pinned != presetsPinMessage("alpha") {
+		t.Fatalf("pin confirmation = %q, want %q", pinned, presetsPinMessage("alpha"))
+	}
+	app.Step(KeyDown) // beta (pin holds)
+	app.Step(KeyDown) // New
+	app.Step(KeySpace)
+	if got := app.Message(); got != pinned {
+		t.Fatalf("Space on the New row rewrote the message to %q, want the pin line %q", got, pinned)
+	}
+	if !scr.locked || scr.sel != 0 {
+		t.Fatalf("Space on the New row dropped the pin: sel=%d locked=%v", scr.sel, scr.locked)
+	}
+	if len(*opened) != 0 {
+		t.Fatalf("Space opened the editor: %v (Space must only pin)", *opened)
+	}
+}
+
+// TestPresetsSpacePinUnlocksAfterTheVerb pins the unlock transition: a sticky
+// verb spends the pin, so the follow-on-rest rule resumes and the marker follows
+// the cursor again.
+func TestPresetsSpacePinUnlocksAfterTheVerb(t *testing.T) {
+	st, _ := presetsFixture(t)
+	app, opened := newPresetsApp(st, nil)
+	scr := app.Top().(*presetsScreen)
+
+	app.Step(KeyDown) // alpha
+	app.Step(KeySpace)
+	for i := 0; i < 3; i++ {
+		app.Step(KeyDown) // row 5 = Edit
+	}
+	app.Step(KeyEnter) // Edit consumes the pin
+	if len(*opened) != 1 || (*opened)[0] != "alpha" {
+		t.Fatalf("Edit opened %v, want [alpha]", *opened)
+	}
+	if scr.locked {
+		t.Fatal("the pin survived the verb that consumed it")
+	}
+
+	app.Step(KeyHome) // row 1 = built-in
+	app.Step(KeyDown) // row 2 = alpha
+	app.Step(KeyDown) // row 3 = beta: the rest re-asserts the selection again
+	if body := strings.Join(app.Frame().Lines, "\n"); !strings.Contains(body, "● beta") {
+		t.Fatalf("the marker did not follow the cursor after the verb:\n%s", body)
+	}
+}
+
+// TestPresetsSpacePinDropsWhenItsTargetVanishes is the F-01 regression pin for
+// the preset list. The selection used to be index-anchored, so an EXTERNAL
+// mid-list removal of the pinned preset (picked up by reloadIfChanged) clamped the
+// index onto the following preset while the lock stayed on: the pin silently
+// re-targeted a preset the user never chose, and Delete would have opened its
+// gate. The pin is now re-anchored by preset name, so a vanished target drops the
+// selection AND the lock, which leaves the verbs refusing instead of guessing.
+func TestPresetsSpacePinDropsWhenItsTargetVanishes(t *testing.T) {
+	st, _ := presetsFixture(t) // alpha (index 0, MID-LIST), beta
+	app, opened := newPresetsApp(st, nil)
+	scr := app.Top().(*presetsScreen)
+
+	// Rows: 1 built-in, 2 alpha, 3 beta, 4 New, 5 Edit, 6 Duplicate, 7 Delete,
+	// 8 Set default.
+	app.Step(KeyDown)  // rest on alpha
+	app.Step(KeySpace) // pin alpha
+	if !scr.locked || scr.selName != "alpha" || scr.sel != 0 {
+		t.Fatalf("the pin did not take: sel=%d selName=%q locked=%v", scr.sel, scr.selName, scr.locked)
+	}
+
+	// External mid-list removal: alpha is gone, so beta slides into index 0 and an
+	// index clamp would point Edit/Duplicate/Delete/Set default at it.
+	err := st.SavePresets(&fanout.PresetsFile{
+		Presets:       []fanout.Preset{{Name: "beta", N: 2}},
+		DefaultPreset: "beta",
+	})
+	if err != nil {
+		t.Fatalf("external store rewrite: %v", err)
+	}
+	app.Frame() // reloadIfChanged adopts the new store state, as a live screen does
+
+	if scr.locked || scr.sel != -1 || scr.selName != "" {
+		t.Fatalf("the pin outlived its target: sel=%d selName=%q locked=%v", scr.sel, scr.selName, scr.locked)
+	}
+	if body := strings.Join(app.Frame().Lines, "\n"); strings.Contains(body, "●") {
+		t.Fatalf("a vanished pin still marks a row:\n%s", body)
+	}
+
+	// Delete (row 6 on the shrunk list: 1 built-in, 2 beta, 3 New, 4 Edit,
+	// 5 Duplicate, 6 Delete) must refuse instead of opening a gate for beta.
+	app.Step(Digit(6))
+	if got, want := app.Message(), Bundle().T("presets.msg.select_first"); got != want {
+		t.Fatalf("Delete after the pinned preset vanished = %q, want the refusal %q", got, want)
+	}
+	if app.Modal() != nil {
+		t.Fatal("Delete opened a gate for a preset nobody selected")
+	}
+	if len(*opened) != 0 {
+		t.Fatalf("the vanished pin opened the editor: %v", *opened)
+	}
+}
+
+// TestPresetsSpaceRePinMovesThePin pins the re-pin transition on this screen:
+// another Space on another preset row moves the pin, the message names the new
+// target and the verbs below act on it.
+func TestPresetsSpaceRePinMovesThePin(t *testing.T) {
+	st, _ := presetsFixture(t)
+	app, opened := newPresetsApp(st, nil)
+	scr := app.Top().(*presetsScreen)
+
+	app.Step(KeyDown)  // alpha
+	app.Step(KeySpace) // pin alpha
+	app.Step(KeyDown)  // beta: the pin holds
+	if scr.selectedName() != "alpha" {
+		t.Fatalf("the rest stole the pin: selection = %q, want alpha", scr.selectedName())
+	}
+	app.Step(KeySpace) // re-pin onto beta
+	if got, want := app.Message(), presetsPinMessage("beta"); got != want {
+		t.Fatalf("re-pin confirmation = %q, want %q", got, want)
+	}
+	if !scr.locked || scr.selName != "beta" || scr.sel != 1 {
+		t.Fatalf("the re-pin did not move: sel=%d selName=%q locked=%v", scr.sel, scr.selName, scr.locked)
+	}
+	if body := strings.Join(app.Frame().Lines, "\n"); !strings.Contains(body, "● beta") {
+		t.Fatalf("the marker did not follow the re-pin:\n%s", body)
+	}
+
+	app.Step(KeyDown) // row 4 New
+	app.Step(KeyDown) // row 5 Edit
+	app.Step(KeyEnter)
+	if len(*opened) != 1 || (*opened)[0] != "beta" {
+		t.Fatalf("Edit after the re-pin opened %v, want [beta]", *opened)
+	}
+}
+
+// TestPresetsSpacePinUnlocksWhenAPresetRowIsActivated pins the navigation
+// transition on this screen: Enter on a preset row opens its editor and consumes
+// the pin, because a preset row activation addresses the CURSOR row, never the
+// pin.
+func TestPresetsSpacePinUnlocksWhenAPresetRowIsActivated(t *testing.T) {
+	st, _ := presetsFixture(t)
+	app, opened := newPresetsApp(st, nil)
+	scr := app.Top().(*presetsScreen)
+
+	app.Step(KeyDown)  // alpha
+	app.Step(KeySpace) // pin alpha
+	app.Step(KeyDown)  // beta: the pin holds
+	if !scr.locked || scr.selName != "alpha" {
+		t.Fatalf("the pin did not survive the rest: selName=%q locked=%v", scr.selName, scr.locked)
+	}
+	app.Step(KeyEnter) // activates the CURSOR row (beta) and clears the pin
+	if len(*opened) != 1 || (*opened)[0] != "beta" {
+		t.Fatalf("preset row activation opened %v, want [beta]", *opened)
+	}
+	if scr.locked {
+		t.Fatal("the pin survived the navigation into the editor")
+	}
+	if body := strings.Join(app.Frame().Lines, "\n"); !strings.Contains(body, "● beta") {
+		t.Fatalf("the marker did not adopt the activated row:\n%s", body)
+	}
+}
+
+// TestPresetsNoSpaceTransitTargetsTheLastRow is the no-Space negative control
+// (fix round 1, F-02): the exact key sequence the pin tests use, minus Space,
+// still lands Edit on the LAST preset. It keeps the pin tests honest and
+// documents the defect the gesture fixes.
+func TestPresetsNoSpaceTransitTargetsTheLastRow(t *testing.T) {
+	st, _ := presetsFixture(t)
+	app, opened := newPresetsApp(st, nil)
+	scr := app.Top().(*presetsScreen)
+
+	for i := 0; i < 4; i++ {
+		app.Step(KeyDown) // alpha, beta, New, Edit: every rest re-steals the selection
+	}
+	app.Step(KeyEnter)
+	if len(*opened) != 1 || (*opened)[0] != "beta" {
+		t.Fatalf("the no-Space transit opened %v, want the LAST preset (beta)", *opened)
+	}
+	if scr.locked {
+		t.Fatal("the no-Space transit locked something; Space is the only pin")
+	}
+}
+
+// threePresetStore is the fixture the T-01 move test reads: alpha, beta, gamma so
+// the pinned row is genuinely MID-LIST (a neighbour on each side), the shape an
+// index anchor breaks on. The three names are mutually distinct (alpha/beta are
+// shared with the two-preset fixture, but each test runs on its own temp store),
+// so a stale reference cannot pass by matching the wrong record within a run.
+func threePresetStore(t *testing.T) *fanout.PresetFileStore {
+	t.Helper()
+	t.Setenv(providers.EnvHome, t.TempDir())
+	st := &fanout.PresetFileStore{Path: filepath.Join(t.TempDir(), "fanout-presets.json")}
+	pf := &fanout.PresetsFile{
+		Presets: []fanout.Preset{
+			{Name: "alpha", Task: "review", N: 1},
+			{Name: "beta", Task: "review", N: 2},
+			{Name: "gamma", Task: "review", N: 3},
+		},
+		DefaultPreset: "alpha",
+	}
+	if err := st.SavePresets(pf); err != nil {
+		t.Fatalf("seed three-preset store: %v", err)
+	}
+	return st
+}
+
+// TestPresetsSpacePinnedTargetSurvivesAMovedRow is the T-01 regression pin for the
+// preset list: the other half of the F-01 identity re-anchor. A pinned preset that
+// MOVES through an external store rewrite (a reorder, or a removal of an entry
+// BEFORE it) must keep its target: the selection re-anchors onto the same preset
+// NAME at its NEW index, the lock stays on, the marker follows the row, and the
+// verb below fires on it. The reference structure is the providers screen's
+// TestProvidersStickyTargetHeldByProviderName ("reordered registry keeps the
+// marked provider"); before the re-anchor, the clamp left the pin on the index,
+// which after the move names a different preset than the user pinned.
+func TestPresetsSpacePinnedTargetSurvivesAMovedRow(t *testing.T) {
+	cases := []struct {
+		name string
+		// store is the externally rewritten store state the screen reloads from.
+		store func(t *testing.T) *fanout.PresetsFile
+		// wantIdx is where the pinned preset (beta) sits after the reload.
+		wantIdx int
+		// editRow is the digit that reaches the Edit row on the mutated list.
+		editRow Key
+	}{
+		{
+			// [alpha, beta, gamma] -> [gamma, alpha, beta]: beta moves 1 -> 2.
+			name: "reordered store keeps the pinned preset",
+			store: func(t *testing.T) *fanout.PresetsFile {
+				return &fanout.PresetsFile{
+					Presets: []fanout.Preset{
+						{Name: "gamma", Task: "review", N: 3},
+						{Name: "alpha", Task: "review", N: 1},
+						{Name: "beta", Task: "review", N: 2},
+					},
+					DefaultPreset: "alpha",
+				}
+			},
+			wantIdx: 2,
+			// rows: 1 built-in, 2 gamma, 3 alpha, 4 beta, 5 New, 6 Edit
+			editRow: Digit(6),
+		},
+		{
+			// [alpha, beta, gamma] -> [beta, gamma]: the row BEFORE the pin is gone,
+			// so beta moves 1 -> 0.
+			name: "removal before the pinned preset shifts its index",
+			store: func(t *testing.T) *fanout.PresetsFile {
+				return &fanout.PresetsFile{
+					Presets: []fanout.Preset{
+						{Name: "beta", Task: "review", N: 2},
+						{Name: "gamma", Task: "review", N: 3},
+					},
+					DefaultPreset: "beta",
+				}
+			},
+			wantIdx: 0,
+			// rows: 1 built-in, 2 beta, 3 gamma, 4 New, 5 Edit
+			editRow: Digit(5),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := threePresetStore(t)
+			app, opened := newPresetsApp(st, nil)
+			scr := app.Top().(*presetsScreen)
+
+			// Rows: 1 built-in, 2 alpha, 3 beta, 4 gamma, 5 New, 6 Edit, ...
+			app.Step(KeyDown)  // rest on alpha
+			app.Step(KeyDown)  // rest on beta: the MID preset row
+			app.Step(KeySpace) // pin it
+			if !scr.locked || scr.selName != "beta" || scr.sel != 1 {
+				t.Fatalf("the pin did not take: sel=%d selName=%q locked=%v", scr.sel, scr.selName, scr.locked)
+			}
+
+			if err := st.SavePresets(tc.store(t)); err != nil {
+				t.Fatalf("external store rewrite: %v", err)
+			}
+			app.Frame() // reloadIfChanged adopts the new store state, as a live screen does
+
+			if !scr.locked {
+				t.Fatal("the pin dropped although the pinned preset still exists; a move must keep it")
+			}
+			if scr.selName != "beta" || scr.sel != tc.wantIdx {
+				t.Fatalf("the pin re-anchored to sel=%d selName=%q, want index %d of beta", scr.sel, scr.selName, tc.wantIdx)
+			}
+			body := strings.Join(app.Frame().Lines, "\n")
+			if !strings.Contains(body, "● beta") {
+				t.Fatalf("the marker did not follow the moved pin:\n%s", body)
+			}
+			if strings.Contains(body, "● alpha") || strings.Contains(body, "● gamma") {
+				t.Fatalf("the marker also sits on a neighbour:\n%s", body)
+			}
+
+			// The verb below the preset block must act on the moved pin, not on
+			// whatever now occupies the old index.
+			app.Step(tc.editRow)
+			if len(*opened) != 1 || (*opened)[0] != "beta" {
+				t.Fatalf("Edit after the move opened %v, want [beta]", *opened)
+			}
+			if scr.locked {
+				t.Fatal("the pin survived the verb that consumed it")
+			}
+		})
+	}
+}

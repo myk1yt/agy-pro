@@ -495,10 +495,12 @@
   "help.keys.home_end": "첫 행 또는 마지막 행으로 점프",
   "help.keys.yn": "예 / 아니오 확인 프롬프트에 답변",
   "help.keys.redraw": "화면을 다시 그립니다",
-  "help.keys.space": "편집 모드: 공백 삽입",
+  "help.keys.space": "목록: 동작 행의 대상을 고정. 편집 모드: 공백 삽입.",
   "help.keys.save": "편집 모드: 편집기에서 저장 단축키",
   "help.keys.runes": "편집 모드: 출력 가능한 문자는 텍스트 입력이 됩니다",
   "help.numbered.reminder": "모든 목록은 행에 번호를 매깁니다: 숫자 1-9로 선택 및 활성화, 방향키로 커서 이동, Enter로 활성화.",
+
+  "list.msg.pinned": "선택 고정: {{name}}. 이제 동작 행이 이 행을 대상으로 합니다.",
   "help.storage.providers.purpose": "프로바이더 레지스트리; 모든 쓰기는 승인 모달을 통과합니다",
   "help.storage.state.purpose": "프로필 모드, 기본 프로필, 언어, 런처 토글",
   "help.storage.presets.purpose": "저장된 팬아웃 시트 프리셋",

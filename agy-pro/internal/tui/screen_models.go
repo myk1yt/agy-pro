@@ -95,6 +95,23 @@ func missingOr(b *i18n.Bundle, key, fallback string) string {
 // rows returning from the model form (or mutated behind the screen's back)
 // render fresh on the next frame. Navigation is the shared stepList, so
 // digits and arrows+Enter are both always live (requirement 2).
+//
+// The sticky selection follows the cursor while the cursor rests on a model row
+// (user decision 2A), and that rule alone made the action rows unreachable for
+// arrow-only users: the action block sits BELOW the model block, so travelling
+// down to Edit/Delete/Toggle/Tools passes every remaining model row and each
+// rest re-stole the target, leaving the verb on the LAST model. Space pins a row
+// explicitly (locked, selectAt) and the cursor-reassert is suspended until the
+// pin is consumed.
+//
+// The pin is held by MODEL ID, not by index (fix round 1, F-01: the providers
+// screen's by-name rule). The registry is rewritten whole by other surfaces (the
+// model form above this screen, another session), so an index re-clamped after a
+// reload can name a DIFFERENT model than the one the user pinned, and a locked
+// selection made that silent: the pin survived while the verbs pointed at a
+// neighbour. A pin therefore re-anchors by ID on reload and drops (with its lock)
+// when the ID no longer resolves, which leaves nothing selected and the verbs
+// refusing rather than guessing.
 type modelsScreen struct {
 	core         *settings.Core
 	providerName string
@@ -105,8 +122,10 @@ type modelsScreen struct {
 	rows         []Row
 	models       []providers.Model
 	sel          int
+	selID        string // model ID the selection holds (identity the Space pin re-anchors by)
 	loadErr      string
 	sig          string
+	locked       bool // Space pinned sel: the cursor reassert must not overwrite it
 	app          *App
 }
 
@@ -122,6 +141,7 @@ func NewModelsScreen(core *settings.Core, providerName string, openForm func(mod
 	}
 	s.setLang(i18n.Normalize(lang))
 	s.list = newStepList(s.activate)
+	s.list.SetOnSelect(s.selectAt)
 	s.reload()
 	return s
 }
@@ -164,9 +184,16 @@ func findProviderCI(reg *providers.Registry, name string) *providers.Provider {
 // the user saw (audit F9); a row that vanished (a deleted model) falls back
 // to the old index clamped into the new range by SetCursor, which can land
 // past the model block on an action row when the vanished row was the last
-// model row. The sticky selection is clamped into the new model range and
-// floors at -1 (none selected). The on-disk signature is recorded so
-// reloadIfChanged can skip the rebuild while the file is unchanged.
+// model row. The on-disk signature is recorded so reloadIfChanged can skip the
+// rebuild while the file is unchanged.
+//
+// The sticky selection has two re-anchor rules (fix round 1, F-01): a Space pin
+// is resolved by MODEL ID and drops with its lock when the ID is gone, while an
+// unpinned selection keeps the historical index clamp. The split is deliberate:
+// the pin is the state that can silently re-target a neighbour the user never
+// chose, whereas the unlocked clamp is itself a pinned contract
+// (TestModelsCursorIdentityAfterDelete: a stray Enter after a delete reopens the
+// gate for the survivor) and is always visible through the marker.
 func (s *modelsScreen) reload() {
 	s.models = nil
 	s.loadErr = ""
@@ -185,10 +212,57 @@ func (s *modelsScreen) reload() {
 			s.sig = modelsSig(reg, s.providerName)
 		}
 	}
-	if s.sel > len(s.models)-1 {
-		s.sel = len(s.models) - 1
+	if s.locked {
+		// Re-anchor the pin by identity. A pinned model that moved keeps its
+		// target; a pinned model that is gone leaves NOTHING selected, so the verbs
+		// refuse (withCursorModel's select-a-model message) instead of acting on
+		// whatever index the clamp landed on.
+		s.selectModel(modelsIndexByID(s.models, s.selID))
+		if s.sel < 0 {
+			s.selID, s.locked = "", false
+		}
+	} else {
+		// Unpinned selection: the historical clamp, floored at -1, with the identity
+		// re-read from the row the clamp landed on so a later pin starts from the
+		// truth.
+		if s.sel > len(s.models)-1 {
+			s.sel = len(s.models) - 1
+		}
+		if s.sel < 0 {
+			s.selectModel(-1)
+		} else {
+			s.selectModel(s.sel)
+		}
 	}
 	s.rebuild()
+}
+
+// modelsIndexByID resolves a model ID to its index in models, or -1 when the
+// slice does not carry it. The ID is the registry's addressing key inside one
+// provider (Core.ModelDelete addresses an ID, never a position), so it is also
+// the identity the Space pin is held by.
+func modelsIndexByID(models []providers.Model, id string) int {
+	if id == "" {
+		return -1
+	}
+	for i := range models {
+		if models[i].ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+// selectModel points the sticky selection at index i and records the identity it
+// holds. Every write site (the cursor reassert, the Space pin, the reload clamp)
+// goes through here, so sel and selID cannot disagree while a pin is live.
+func (s *modelsScreen) selectModel(i int) {
+	s.sel, s.selID = i, ""
+	if i >= 0 && i < len(s.models) {
+		s.selID = s.models[i].ID
+		return
+	}
+	s.sel = -1
 }
 
 // rebuild refreshes the row inventory and restores the cursor by ROW ID, so
@@ -298,9 +372,9 @@ func (s *modelsScreen) reloadIfChanged() {
 // enabled state, the tool grant count, and the thinking/vision/video
 // capability flags. The sticky-selected model row carries a visible marker
 // so the target of the Edit/Delete/Toggle/Tools rows is never invisible
-// (the presets screen keeps its selection invisible; audit F9 asked for a
-// marker here because a stray Enter after a mutation must act on the row
-// the user sees marked).
+// (audit F9 asked for a marker here because a stray Enter after a mutation
+// must act on the row the user sees marked; the presets screen now draws the
+// same marker, and the three sticky-target screens draw it from one pattern).
 func (s *modelsScreen) buildRows() []Row {
 	rows := make([]Row, 0, len(s.models)+6)
 	for i, m := range s.models {
@@ -369,12 +443,23 @@ func (s *modelsScreen) modelNote(m providers.Model) string {
 
 // activate is the stepList onPick callback, shared by digit selection and
 // Enter. Model rows open the form in edit mode; action rows dispatch.
+//
+// This is where the Space pin is consumed (the selectAt lifecycle): activating
+// a model row navigates into the edit form (a different surface with its own
+// state), the four sticky verbs (Edit, Delete, Toggle, Tools) spend the pin
+// they acted on, and Back pops the screen, so all of them clear s.locked and
+// the follow-on-rest rule resumes. The Add row is not a selection verb: it
+// leaves the pin standing, so returning from the add form shows the row the
+// user pinned. Esc pop needs no clearing here (App.Pop runs before this screen
+// sees the key) and needs none afterwards either: the popped screens are
+// discarded instances, so the pin cannot outlive them.
 func (s *modelsScreen) activate(idx int) {
 	if s.app == nil || idx < 0 || idx >= len(s.rows) {
 		return
 	}
 	id := s.rows[idx].ID
 	if strings.HasPrefix(id, modelRowPrefix) {
+		s.locked = false
 		if s.openForm != nil {
 			s.openForm("edit", id[len(modelRowPrefix):], s.app)
 		}
@@ -386,18 +471,23 @@ func (s *modelsScreen) activate(idx int) {
 			s.openForm("add", "", s.app)
 		}
 	case modelsActionEditID:
+		s.locked = false
 		s.withCursorModel(func(m providers.Model) {
 			if s.openForm != nil {
 				s.openForm("edit", m.ID, s.app)
 			}
 		})
 	case modelsActionDeleteID:
+		s.locked = false
 		s.askDelete()
 	case modelsActionToggleID:
+		s.locked = false
 		s.toggleEnabled()
 	case modelsActionToolsID:
+		s.locked = false
 		s.openTools()
 	case modelsActionBackID:
+		s.locked = false
 		s.app.Pop()
 	}
 }
@@ -604,12 +694,44 @@ func (s *modelsScreen) Draw(a *App) []string {
 // the marker follows in place (syncMarker), so the list window never
 // resets. Esc never arrives here: the App precedence handles it first
 // (clears the message, then pops back to the providers screen).
+//
+// The reassert is gated by s.locked, the Space pin (see the type doc): while a
+// pin holds, arrow travel over other model rows leaves the target alone. The
+// stepList consumes Space before this block runs, so the pin is already set
+// when the gate is read.
 func (s *modelsScreen) HandleKey(k Key, a *App) {
 	s.app = a
 	s.list.HandleKey(k)
+	if s.locked {
+		return
+	}
 	if c := s.list.Cursor(); c >= 0 && c < len(s.models) && s.sel != c {
-		s.sel = c
+		s.selectModel(c)
 		s.syncMarker()
+	}
+}
+
+// selectAt is the stepList Space callback: the explicit pin. Model rows occupy
+// indices 0..len(models)-1 and the action rows (Add, Edit, Delete, Toggle,
+// Tools, Back) sit below them, so the row index is the boundary: Space on an
+// action row is a consumed no-op with no state change, Space on a model row
+// pins it, locks the selection, moves the marker in place and confirms on the
+// message line. Pinning again re-pins (the lock simply stays on). Space never
+// activates: this callback never reaches activate, so a pin cannot open the
+// model form, the approval gate, or the tools overlay, and it cannot shadow the
+// overlay's own Space-to-toggle (that overlay is a modal, and its Key handles
+// Space before its list ever sees the key). The pin also records the model ID it
+// holds, the identity reload re-anchors by (F-01).
+func (s *modelsScreen) selectAt(idx int) {
+	if idx < 0 || idx >= len(s.models) {
+		return
+	}
+	s.selectModel(idx)
+	s.locked = true
+	s.syncMarker()
+	if s.app != nil {
+		s.app.SetMessage(fillHubSlots(missingOr(s.b, "list.msg.pinned", listMsgPinned),
+			map[string]string{"name": maskSlotOperand(s.models[idx].ID)}))
 	}
 }
 

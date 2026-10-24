@@ -81,8 +81,9 @@ func digitIndex(k Key) (int, bool) {
 // KeyRune carrier plus every key whose NAV meaning is shadowed by text
 // entry (digits 1-9 and 0, lowercase y/n, space). This helper is the
 // mode-scoped half of the dispatcher: in NAV a list consumes digits via
-// digitIndex and y/n via the confirm gate, while in EDIT the form and the
-// editor receive them as text through EditRune.
+// digitIndex, y/n via the confirm gate, and Space through the select
+// callback the sticky-target lists register (stepList.SetOnSelect), while in
+// EDIT the form and the editor receive them as text through EditRune.
 func EditRune(k Key) (rune, bool) {
 	if r, ok := RuneOf(k); ok {
 		return r, true

@@ -33,8 +33,10 @@ const (
 // Mode is the dispatcher scope of the active surface. The dual meanings of
 // digits and y/n resolve through it: digits select in ModeNav (via the
 // shared stepList) and become text in ModeEdit (via EditRune); y/n confirm
-// in ModeConfirm and become text in ModeEdit. Ctrl+C exits and Ctrl+L
-// redraws in every mode.
+// in ModeConfirm and become text in ModeEdit. Space follows the same rule:
+// on a list that registered a select callback it pins the verb target in
+// ModeNav (stepList.SetOnSelect) and inserts a space through EditRune in
+// ModeEdit on every surface. Ctrl+C exits and Ctrl+L redraws in every mode.
 type Mode int
 
 const (

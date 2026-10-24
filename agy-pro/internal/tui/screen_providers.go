@@ -113,6 +113,15 @@ const (
 // provider than the user selected. A name survives a reorder and, when the
 // provider is gone, resolves to nothing: the marker clears and the verbs refuse
 // with the select-a-provider message instead of silently hitting a neighbour.
+//
+// The selection has two modes. By default it FOLLOWS THE CURSOR: every key that
+// rests the cursor on a provider row re-asserts that row (user ask U2). That
+// rule alone made the verbs unreachable for arrow-only users, because the verb
+// rows sit BELOW the whole provider block: travelling down to Edit/Delete
+// passes every remaining provider row and each rest re-stole the target, so the
+// verb always hit the LAST provider. Space therefore PINS a row explicitly
+// (locked), and the cursor-reassert is suppressed until the pin is consumed
+// (selectAt, HandleKey, pick).
 type ProvidersScreen struct {
 	core       *settings.Core
 	openModels func(providerName string, a *App)
@@ -125,6 +134,7 @@ type ProvidersScreen struct {
 	sig        string // registry signature the rows were built from
 	selName    string // sticky-selected provider NAME: the identity the verbs resolve
 	sel        int    // derived marker index of selName in reg.Providers, -1 when none
+	locked     bool   // Space pinned selName: the cursor reassert must not overwrite it
 	app        *App   // set by HandleKey; the list callback needs it
 }
 
@@ -147,6 +157,7 @@ func NewProvidersScreen(core *settings.Core, openModels func(providerName string
 		sel:        -1,
 	}
 	s.list = newStepList(s.pick)
+	s.list.SetOnSelect(s.selectAt)
 	s.reload()
 	return s
 }
@@ -232,15 +243,46 @@ func providersEmptyLine(b *i18n.Bundle) string {
 // does not move the cursor still re-asserts the selection of the row it rests
 // on. The app pointer is kept for the activation callback, which needs it to
 // open screens, set messages, and show the approval modal.
+//
+// The follow-on-rest rule is exactly what a Space pin has to escape (see the
+// type doc), so the reassert is gated by s.locked: while the pin holds, arrow
+// travel over other provider rows leaves the target alone, and the stepList
+// consumes Space before this block runs (selectAt sets the pin).
 func (s *ProvidersScreen) HandleKey(k Key, a *App) {
 	s.app = a
 	s.list.HandleKey(k)
+	if s.locked {
+		return
+	}
 	if c := s.list.Cursor(); c >= 0 && c < len(s.reg.Providers) {
 		name := s.reg.Providers[c].Name
 		if s.sel != c || s.selName != name {
 			s.sel, s.selName = c, name
 			s.syncMarker()
 		}
+	}
+}
+
+// selectAt is the stepList Space callback: the explicit pin. Provider rows
+// occupy indices 0..len(reg.Providers)-1 and the verb rows (Add, Test all, Test,
+// Edit, Delete) sit below them, so the boundary IS the row index: a Space on a
+// verb row is a consumed no-op that changes no state, while a Space on an entity
+// row sets the sticky target, locks it, moves the marker in place and confirms
+// on the message line. Pinning again on another (or the same) row simply
+// re-pins: the lock stays on and the follow-on-rest rule stays suspended. Space
+// never activates anything: this callback never reaches pick, so a pin can never
+// open the models screen, the form, or the delete gate.
+func (s *ProvidersScreen) selectAt(idx int) {
+	if idx < 0 || idx >= len(s.reg.Providers) {
+		return
+	}
+	name := s.reg.Providers[idx].Name
+	s.sel, s.selName = idx, name
+	s.locked = true
+	s.syncMarker()
+	if s.app != nil {
+		s.app.SetMessage(fillHubSlots(missingOr(s.bundle, "list.msg.pinned", listMsgPinned),
+			map[string]string{"name": providers.MaskSlot(name)}))
 	}
 }
 
@@ -295,8 +337,12 @@ func (s *ProvidersScreen) reload() {
 	if s.sel < 0 {
 		// The selected provider is no longer in the registry: drop the identity
 		// too, so a later provider that happens to reuse the name starts from an
-		// unselected screen rather than re-adopting a stale selection.
+		// unselected screen rather than re-adopting a stale selection. A Space pin
+		// cannot outlive its target either: with nothing selected the lock would
+		// keep the cursor-reassert suspended over a list that has no target, so it
+		// drops together with the identity.
 		s.selName = ""
+		s.locked = false
 	}
 	s.rebuild()
 }
@@ -439,6 +485,16 @@ func (s *ProvidersScreen) note(p providers.Provider) string {
 // row hands off to the provider form with the form screen's own "add" mode
 // contract (the form unit owns those strings, so this screen passes them
 // literally like the models screen does).
+//
+// The pin lifecycle ends here, on the two activations that consume it: a sticky
+// verb (Test, Edit, Delete) spends the pin it acted on, and a provider row
+// navigates into the models screen, which is a different surface with its own
+// selection. Both clear s.locked, so the follow-on-rest rule resumes the moment
+// the user is back on this list. Add and Test all are registry-level rows that
+// never read the selection, so they leave a pin standing: the user comes back
+// from the add form to the row they pinned. Popping this screen needs no
+// clearing: App.Pop drops the screen object, so the pin cannot outlive it (and
+// the hub builds a fresh instance on every push).
 func (s *ProvidersScreen) pick(idx int) {
 	a := s.app
 	if a == nil || idx < 0 || idx >= s.list.Len() {
@@ -453,16 +509,20 @@ func (s *ProvidersScreen) pick(idx int) {
 	case id == providersRowIDTestAll:
 		s.testAll(a)
 	case id == providersRowIDTest:
+		s.locked = false
 		s.withSelectedProvider(func(p providers.Provider) { s.testOne(p.Name, a) })
 	case id == providersRowIDEdit:
+		s.locked = false
 		s.withSelectedProvider(func(p providers.Provider) {
 			if s.openForm != nil {
 				s.openForm("edit", p.Name, a)
 			}
 		})
 	case id == providersRowIDDelete:
+		s.locked = false
 		s.withSelectedProvider(func(p providers.Provider) { s.confirmDelete(p.Name, a) })
 	case strings.HasPrefix(id, providerRowPrefix):
+		s.locked = false
 		s.openModels(strings.TrimPrefix(id, providerRowPrefix), a)
 	}
 }
