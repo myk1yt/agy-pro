@@ -1,0 +1,14 @@
+# Git line-ending policy — prevents Windows core.autocrlf from corrupting
+# cross-platform installer scripts (test/run-tests.js suite 25 enforces this).
+
+# Windows batch must stay CRLF
+*.bat text eol=crlf
+
+# POSIX shell scripts must stay LF
+*.sh text eol=lf
+scripts/install.sh text eol=lf
+
+# Node sources: normalize to LF in repo, checkout native is not forced
+*.js text
+*.json text
+*.md text

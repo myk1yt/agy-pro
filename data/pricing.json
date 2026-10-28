@@ -1,0 +1,236 @@
+{
+  "schemaVersion": 1,
+  "version": "1.0.0",
+  "lastUpdated": "2026-08-27",
+  "sources": {
+    "google": "https://ai.google.dev/pricing",
+    "anthropic": "https://www.anthropic.com/pricing",
+    "openai": "https://openai.com/pricing"
+  },
+  "models": {
+    "gemini-3.7-flash": {
+      "id": "gemini-3.7-flash",
+      "provider": "google",
+      "displayName": "Gemini 3.7 Flash",
+      "contextWindow": "1M",
+      "inputPerMillion": 0.15,
+      "cachedInputPerMillion": 0.0375,
+      "outputPerMillion": 0.60,
+      "aliases": [
+        "gemini-3.7-flash",
+        "gemini 3.7 flash",
+        "gemini 3.7 flash (high)",
+        "gemini 3.7 flash (low)",
+        "gemini-3.7-flash-high",
+        "gemini-3.7-flash-low"
+      ]
+    },
+    "gemini-3.7-flash-thinking": {
+      "id": "gemini-3.7-flash-thinking",
+      "provider": "google",
+      "displayName": "Gemini 3.7 Flash (Thinking)",
+      "contextWindow": "1M",
+      "inputPerMillion": 0.15,
+      "cachedInputPerMillion": 0.0375,
+      "outputPerMillion": 0.60,
+      "aliases": [
+        "gemini-3.7-flash-thinking",
+        "gemini 3.7 flash thinking",
+        "gemini-3.7-flash-thinking-exp",
+        "gemini-3.7-thinking",
+        "gemini 3.7 thinking"
+      ]
+    },
+    "gemini-2.5-flash": {
+      "id": "gemini-2.5-flash",
+      "provider": "google",
+      "displayName": "Gemini 2.5 Flash",
+      "contextWindow": "1M",
+      "inputPerMillion": 0.15,
+      "cachedInputPerMillion": 0.0375,
+      "outputPerMillion": 0.60,
+      "aliases": [
+        "gemini-2.5-flash",
+        "gemini 2.5 flash",
+        "gemini-flash"
+      ]
+    },
+    "gemini-2.5-pro": {
+      "id": "gemini-2.5-pro",
+      "provider": "google",
+      "displayName": "Gemini 2.5 Pro",
+      "contextWindow": "2M",
+      "inputPerMillion": 1.25,
+      "cachedInputPerMillion": 0.3125,
+      "outputPerMillion": 5.00,
+      "notes": ">128k prompt rate: $2.50 / $10.00",
+      "aliases": [
+        "gemini-2.5-pro",
+        "gemini 2.5 pro",
+        "gemini-3-pro",
+        "gemini 3 pro",
+        "gemini-pro"
+      ]
+    },
+    "gemini-2.0-flash": {
+      "id": "gemini-2.0-flash",
+      "provider": "google",
+      "displayName": "Gemini 2.0 Flash",
+      "contextWindow": "1M",
+      "inputPerMillion": 0.10,
+      "cachedInputPerMillion": 0.025,
+      "outputPerMillion": 0.40,
+      "aliases": [
+        "gemini-2.0-flash",
+        "gemini 2.0 flash",
+        "gemini-2-flash"
+      ]
+    },
+    "gemini-2.0-flash-lite": {
+      "id": "gemini-2.0-flash-lite",
+      "provider": "google",
+      "displayName": "Gemini 2.0 Flash Lite",
+      "contextWindow": "1M",
+      "inputPerMillion": 0.075,
+      "cachedInputPerMillion": 0.01875,
+      "outputPerMillion": 0.30,
+      "aliases": [
+        "gemini-2.0-flash-lite",
+        "gemini 2.0 flash lite",
+        "gemini-2-flash-lite"
+      ]
+    },
+    "claude-3.7-sonnet": {
+      "id": "claude-3.7-sonnet",
+      "provider": "anthropic",
+      "displayName": "Claude 3.7 Sonnet",
+      "contextWindow": "200k",
+      "inputPerMillion": 3.00,
+      "cachedInputPerMillion": 0.30,
+      "outputPerMillion": 15.00,
+      "aliases": [
+        "claude-3.7-sonnet",
+        "claude 3.7 sonnet",
+        "claude-3-7-sonnet",
+        "claude-3.7-sonnet-thinking",
+        "claude-3.7-sonnet (thinking)"
+      ]
+    },
+    "claude-3.5-sonnet": {
+      "id": "claude-3.5-sonnet",
+      "provider": "anthropic",
+      "displayName": "Claude 3.5 Sonnet",
+      "contextWindow": "200k",
+      "inputPerMillion": 3.00,
+      "cachedInputPerMillion": 0.30,
+      "outputPerMillion": 15.00,
+      "aliases": [
+        "claude-3.5-sonnet",
+        "claude 3.5 sonnet",
+        "claude-3-5-sonnet",
+        "sonnet"
+      ]
+    },
+    "claude-3.5-haiku": {
+      "id": "claude-3.5-haiku",
+      "provider": "anthropic",
+      "displayName": "Claude 3.5 Haiku",
+      "contextWindow": "200k",
+      "inputPerMillion": 0.80,
+      "cachedInputPerMillion": 0.08,
+      "outputPerMillion": 4.00,
+      "aliases": [
+        "claude-3.5-haiku",
+        "claude 3.5 haiku",
+        "claude-3-5-haiku",
+        "haiku"
+      ]
+    },
+    "claude-3-opus": {
+      "id": "claude-3-opus",
+      "provider": "anthropic",
+      "displayName": "Claude 3 Opus",
+      "contextWindow": "200k",
+      "inputPerMillion": 15.00,
+      "cachedInputPerMillion": 1.50,
+      "outputPerMillion": 75.00,
+      "aliases": [
+        "claude-3-opus",
+        "claude 3 opus",
+        "claude-3-opus-20240229",
+        "opus"
+      ]
+    },
+    "gpt-4o": {
+      "id": "gpt-4o",
+      "provider": "openai",
+      "displayName": "GPT-4o",
+      "contextWindow": "128k",
+      "inputPerMillion": 2.50,
+      "cachedInputPerMillion": 1.25,
+      "outputPerMillion": 10.00,
+      "aliases": [
+        "gpt-4o",
+        "gpt 4o",
+        "gpt-4o-2024-11-20",
+        "gpt-4o-latest"
+      ]
+    },
+    "gpt-4o-mini": {
+      "id": "gpt-4o-mini",
+      "provider": "openai",
+      "displayName": "GPT-4o mini",
+      "contextWindow": "128k",
+      "inputPerMillion": 0.15,
+      "cachedInputPerMillion": 0.075,
+      "outputPerMillion": 0.60,
+      "aliases": [
+        "gpt-4o-mini",
+        "gpt 4o mini",
+        "gpt-4o-mini-2024-07-18"
+      ]
+    },
+    "o3-mini": {
+      "id": "o3-mini",
+      "provider": "openai",
+      "displayName": "o3-mini",
+      "contextWindow": "200k",
+      "inputPerMillion": 1.10,
+      "cachedInputPerMillion": 0.55,
+      "outputPerMillion": 4.40,
+      "aliases": [
+        "o3-mini",
+        "o3 mini",
+        "o3-mini-high",
+        "o3-mini-medium",
+        "o3-mini-low"
+      ]
+    },
+    "o1": {
+      "id": "o1",
+      "provider": "openai",
+      "displayName": "o1",
+      "contextWindow": "200k",
+      "inputPerMillion": 15.00,
+      "cachedInputPerMillion": 7.50,
+      "outputPerMillion": 60.00,
+      "aliases": [
+        "o1",
+        "o1-preview",
+        "o1-full"
+      ]
+    },
+    "default": {
+      "id": "default",
+      "provider": "google",
+      "displayName": "Gemini 3.7 Flash (Default)",
+      "contextWindow": "1M",
+      "inputPerMillion": 0.15,
+      "cachedInputPerMillion": 0.0375,
+      "outputPerMillion": 0.60,
+      "aliases": [
+        "default"
+      ]
+    }
+  }
+}
