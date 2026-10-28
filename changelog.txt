@@ -1,0 +1,177 @@
+================================================================================
+Antigravity-cli (agy-tools) Changelog
+================================================================================
+
+Version: 0.10.3
+Release Date: 2026-09-12
+Previous Version: 0.10.2
+
+--------------------------------------------------------------------------------
+[Overview]
+--------------------------------------------------------------------------------
+This release permanently eliminates the Go Language Server TLS handshake error
+("client sent an HTTP request to an HTTPS server") in src/gemini-quota.js.
+Previously, when the Language Server was running on an HTTPS endpoint without
+a CSRF token or when an RPC call returned an authentication failure (HTTP 401),
+fetchLiveGeminiQuota attempted a plaintext HTTP fallback on the same port,
+triggering Go Language Server TLS handshake errors in the console.
+In this release:
+1. When candidate ports respond over HTTPS (or TLS handshake succeeds),
+   plaintext HTTP fallback is strictly blocked and the protocols loop breaks
+   immediately for that port.
+2. When no CSRF token is available (!csrfToken), unauthenticated Language Server
+   RPC calls are gracefully skipped, preventing futile network requests, 401 logs,
+   and TLS handshake issues while preserving honest fallback diagnostics.
+
+--------------------------------------------------------------------------------
+[Detailed Changes & Differences from 0.10.2]
+--------------------------------------------------------------------------------
+
+1. HTTPS Port Fallback Protection (src/gemini-quota.js)
+   - Introduced confirmed HTTPS port detection (_detectedHttpsPorts):
+     * When any response is received over HTTPS or socket.once('secureConnect')
+       fires, the port is marked as HTTPS.
+     * When proto === 'https' completes with an HTTPS response (whether 200, 401,
+       403, or any HTTP status code) or TLS handshake succeeded, the protocols
+       loop immediately breaks for that candidate port. Plaintext HTTP fallback
+       is never attempted on confirmed HTTPS ports.
+     * makeRpcRequest guards against plaintext HTTP calls to confirmed HTTPS ports,
+       immediately rejecting with ERR_HTTP_BLOCKED_ON_HTTPS without socket emission.
+
+2. Graceful Unauthenticated Probe Skip (src/gemini-quota.js)
+   - When !csrfToken (no CSRF token found in CLI args or environment variables),
+     unauthenticated Language Server RPC calls are gracefully skipped.
+   - Sets auth failure diagnostics ('HTTP 401 (missing CSRF token)') without
+     sending zero-benefit network requests that are guaranteed to fail with 401.
+
+3. Test Suite Expansion (test/run-tests.js)
+   - Added unit test: fetchLiveGeminiQuota should NEVER attempt plaintext HTTP
+     fallback on a port that responded via HTTPS (asserts 0 clientError/TLS errors).
+   - Added unit test: fetchLiveGeminiQuota should gracefully skip unauthenticated
+     RPC probe when csrfToken is missing (asserts 0 requests made, clean auth_failure).
+   - Test suite pass rate: 210 passed, 0 failed (100% pass rate).
+
+4. Version Bump (package.json)
+   - Bumped version to 0.10.3.
+
+5. Zero External Dependency Invariant
+   - Built purely with Node.js standard built-ins (http, https, crypto, child_process, fs, path).
+
+--------------------------------------------------------------------------------
+
+Version: 0.10.2
+Release Date: 2026-09-12
+Previous Version: 0.10.1
+
+--------------------------------------------------------------------------------
+[Overview]
+--------------------------------------------------------------------------------
+This release fixes statusline badge wrapping behavior in hook and subprocess
+environments (such as Antigravity CLI's statusLine integration). Previously,
+when process.stdout.columns was unavailable or stdout was not a TTY, the formatter
+fell back to an arbitrary 100-column width limit, causing normal badges containing
+the Dashboard link (📊 대시보드) to wrap onto a second line with Dashboard isolated.
+The formatter now defaults strictly to 1 single line in hook/subprocess/non-TTY
+environments, and only wraps to 2 lines when terminal columns are genuinely
+known and too narrow.
+
+--------------------------------------------------------------------------------
+[Detailed Changes & Differences from 0.10.1]
+--------------------------------------------------------------------------------
+
+1. Terminal Width Resolution & Non-TTY Single-Line Default (src/formatter.js)
+   - Updated resolveBadgeWidth():
+     * Respects process.env.COLUMNS when explicitly provided.
+     * Evaluates process.stdout.columns ONLY when process.stdout.isTTY is true and
+       positive finite columns are available.
+     * Falls back to Infinity instead of 100 in non-TTY, piped, or hook subprocess
+       environments.
+   - Guarded wrapBadgeSegments() against non-finite or non-positive widths to ensure
+     clean single-line rendering by default.
+   - Prevents premature line breaks that previously pushed the Dashboard link segment
+     down to line 2 during routine Antigravity statusLine invocations.
+
+2. Test Suite Expansion (test/run-tests.js)
+   - Added REQ-1f: Verified resolveBadgeWidth returns Infinity when COLUMNS is unset
+     and stdout is not a TTY.
+   - Added REQ-1g: Verified renderRealTimeBadge defaults to 1 single line in hook/
+     subprocess (non-TTY) environments, retaining the Dashboard link inline.
+   - Added REQ-1h: Verified renderRealTimeBadge wraps into 2 physical lines when
+     stdout.isTTY is true and stdout.columns is narrow (< total width).
+   - Test suite pass rate: 208 passed, 0 failed (100% pass rate).
+
+3. Version Bump (package.json)
+   - Bumped version to 0.10.2.
+
+4. Zero External Dependency Invariant
+   - Built purely with Node.js standard built-ins.
+
+--------------------------------------------------------------------------------
+
+Version: 0.10.1
+Release Date: 2026-09-12
+Previous Version: 0.10.0
+
+--------------------------------------------------------------------------------
+[Overview]
+--------------------------------------------------------------------------------
+This release introduces real-time quota fallback and CSRF token discovery across
+both the interactive terminal statusline (formatter.js) and the web dashboard
+(html-report.js). When Language Server live quota is stale (>5m) or encounters
+an authentication rejection (HTTP 401), the application seamlessly falls back
+to local transcript rolling quota (rollingUsage: 5h and 7d sliding windows)
+instead of freezing on outdated snapshot data.
+
+--------------------------------------------------------------------------------
+[Detailed Changes & Differences from 0.10.0]
+--------------------------------------------------------------------------------
+
+1. Environment Variable CSRF Token Discovery (src/gemini-quota.js)
+   - Updated parseCommandLine() to inspect process.env.ANTIGRAVITY_CSRF_TOKEN
+     and process.env.CSRF_TOKEN when --csrf_token / --csrf-token flag is absent
+     from the process command line.
+   - Preserves command-line arguments as first priority when explicitly present.
+   - Solves the Language Server v0.2+ issue where the server process no longer
+     exposes --csrf_token in its command-line arguments.
+
+2. Cache Staleness & Diagnostics Flagging (src/gemini-quota.js)
+   - In getCachedGeminiQuota(), the cache age is evaluated against a 5-minute TTL
+     (STALE_RETRY_AFTER_MS = 300,000ms).
+   - If the snapshot age exceeds 5 minutes, or if lastError.kind === 'auth_failure',
+     the returned object is explicitly stamped with isStale: true and isFresh: false.
+   - Enables upstream callers (statusline, hook runner, web dashboard) to
+     differentiate between live fresh quota and obsolete/unauthenticated snapshots.
+
+3. Statusline Seamless Fallback to Real-Time Rolling Quota (src/formatter.js)
+   - In renderRealTimeBadge(), when geminiQuota is stale (isStale === true or
+     lastError.kind === 'auth_failure') and badgeData.rollingUsage is available,
+     the badge bypasses the frozen Language Server cache snapshot.
+   - Renders live 5h and 7d quotas from local session transcripts using the
+     rollingUsage metrics (remain5hPercent, remain7dPercent) annotated with '(est)'.
+   - Retains backward compatibility: if rollingUsage is not provided, continues
+     rendering the cached snapshot with staleness markers ('*' for stale, '!' for
+     auth failure).
+
+4. Web Dashboard Seamless Fallback (src/html-report.js)
+   - In the client-side renderQuota(r, gq) renderer, checks whether geminiQuota is
+     stale or auth-failed via isStaleGq.
+   - When stale or auth-failed, falls back gracefully to rollingUsage ('r') to
+     render live 5h and 7d quota cards with the ESTIMATE badge and real-time usage
+     meters instead of displaying obsolete multi-hour-old data.
+
+5. Version Bump (package.json)
+   - Version updated from 0.10.0 (and legacy 0.0.1 in repository metadata) to 0.10.1.
+
+6. Verification & Test Suite Expansion (test/run-tests.js)
+   - Added unit test: parseCommandLine token discovery from ANTIGRAVITY_CSRF_TOKEN
+     and CSRF_TOKEN with CLI priority preservation.
+   - Added unit test: getCachedGeminiQuota staleness flagging (isStale: true) on
+     age >= 5m or HTTP 401 auth_failure.
+   - Added unit test: renderRealTimeBadge fallback to rollingUsage with '(est)'.
+   - Test suite pass rate: 205 passed, 0 failed (100% pass rate).
+
+7. Zero External Dependency Invariant
+   - Strictly maintained zero external runtime dependencies using Node.js
+     core modules only (fs, path, http, https, child_process).
+
+================================================================================

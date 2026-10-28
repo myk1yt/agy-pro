@@ -1,0 +1,1 @@
+const logParser = require('./log-parser'); module.exports = { estimateTokens: logParser.estimateTokens, estimateMessageTokens: logParser.estimateMessageTokens, estimateConversationTokens: logParser.estimateConversationTokens };
