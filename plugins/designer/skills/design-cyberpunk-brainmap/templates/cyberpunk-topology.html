@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; connect-src 'none';">
+  <title>Cyberpunk Observatory DAG Topology</title>
+  <style>
+    :root {
+      --bg-radial: radial-gradient(1200px at 44% 96%, #0b2340 0%, #01030a 100%);
+      --cyan-bright: #00f0ff;
+      --cyan-glow: rgba(0, 240, 255, 0.4);
+      --magenta-bright: #ff0055;
+      --magenta-glow: rgba(255, 0, 85, 0.4);
+      --amber-bright: #ffb800;
+      --green-bright: #00ff66;
+      --text-main: #e2e8f0;
+      --text-muted: #64748b;
+      --panel-bg: rgba(7, 16, 34, 0.85);
+      --panel-border: rgba(0, 240, 255, 0.2);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background: var(--bg-radial);
+      color: var(--text-main);
+      font-family: "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+      min-height: 100vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* CRT Scanlines Overlay */
+    .crt-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background-image: repeating-linear-gradient(
+        0deg,
+        rgba(0, 0, 0, 0.28) 0px,
+        rgba(0, 0, 0, 0.28) 1px,
+        transparent 1px,
+        transparent 2px
+      );
+      pointer-events: none;
+      z-index: 100;
+    }
+
+    /* 7.5s Laser Sweep Animation */
+    .laser-sweep {
+      position: fixed;
+      left: 0;
+      width: 100%;
+      height: 6px;
+      background: linear-gradient(90deg, transparent, var(--cyan-bright), transparent);
+      box-shadow: 0 0 20px var(--cyan-bright), 0 0 40px var(--cyan-bright);
+      opacity: 0;
+      pointer-events: none;
+      z-index: 99;
+      animation: sweep 7.5s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+    }
+
+    @keyframes sweep {
+      0% { top: -10%; opacity: 0; }
+      15% { opacity: 0.65; }
+      85% { opacity: 0.65; }
+      100% { top: 110%; opacity: 0; }
+    }
+
+    /* Header HUD */
+    .observatory-header {
+      padding: 18px 28px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--panel-border);
+      background: rgba(1, 3, 10, 0.6);
+      backdrop-filter: blur(12px);
+      z-index: 10;
+    }
+
+    .brand-title {
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 1.5px;
+      color: var(--cyan-bright);
+      text-shadow: 0 0 10px var(--cyan-glow);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .telemetry-badges {
+      display: flex;
+      gap: 14px;
+      font-size: 11px;
+    }
+
+    .badge {
+      padding: 4px 10px;
+      border-radius: 4px;
+      border: 1px solid var(--panel-border);
+      background: rgba(0, 240, 255, 0.05);
+      color: var(--text-main);
+    }
+
+    .badge span {
+      color: var(--cyan-bright);
+      font-weight: 700;
+    }
+
+    /* Main Workspace Layout */
+    .workspace {
+      flex: 1;
+      position: relative;
+      display: flex;
+      width: 100%;
+      height: calc(100vh - 65px);
+    }
+
+    .graph-container {
+      flex: 1;
+      height: 100%;
+      position: relative;
+    }
+
+    svg.network-canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    /* SVG Elements Styling */
+    .edge-base {
+      stroke: rgba(0, 240, 255, 0.18);
+      stroke-width: 2px;
+      fill: none;
+      transition: stroke 180ms ease, stroke-width 180ms ease;
+    }
+
+    .edge-pulse {
+      fill: none;
+      stroke-width: 3px;
+      stroke-linecap: round;
+      stroke-dasharray: 20 180;
+      animation: pulseFlow 3s linear infinite;
+    }
+
+    @keyframes pulseFlow {
+      from { stroke-dashoffset: 200; }
+      to { stroke-dashoffset: 0; }
+    }
+
+    .node-group {
+      cursor: pointer;
+      transition: transform 180ms cubic-bezier(0.4, 0, 0.2, 1), opacity 180ms ease;
+    }
+
+    .node-group:hover {
+      transform: scale(1.04);
+    }
+
+    .node-box {
+      fill: var(--panel-bg);
+      stroke: var(--panel-border);
+      stroke-width: 1.5px;
+      rx: 8px;
+      filter: drop-shadow(0 4px 15px rgba(0, 0, 0, 0.6));
+      transition: stroke 180ms ease, fill 180ms ease;
+    }
+
+    .node-group:hover .node-box {
+      stroke: var(--cyan-bright);
+      fill: rgba(11, 35, 64, 0.95);
+      filter: drop-shadow(0 0 15px var(--cyan-glow));
+    }
+
+    .edge-item {
+      transition: opacity 180ms cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    /* Dimming rule for non-selected nodes and inactive edges */
+    .dimmed {
+      opacity: 0.18 !important;
+      filter: grayscale(0.8);
+      transition: opacity 180ms cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    /* Right Telemetry Sidebar */
+    .inspector-panel {
+      width: 320px;
+      background: rgba(4, 10, 24, 0.9);
+      border-left: 1px solid var(--panel-border);
+      backdrop-filter: blur(15px);
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      z-index: 10;
+    }
+
+    .panel-header {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--cyan-bright);
+      letter-spacing: 1px;
+      border-bottom: 1px solid var(--panel-border);
+      padding-bottom: 8px;
+    }
+
+    .telemetry-card {
+      background: rgba(0, 240, 255, 0.03);
+      border: 1px solid rgba(0, 240, 255, 0.15);
+      border-radius: 6px;
+      padding: 14px;
+      font-size: 11px;
+    }
+
+    .telemetry-row {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+
+    .telemetry-label {
+      color: var(--text-muted);
+    }
+
+    .telemetry-val {
+      color: var(--text-main);
+      font-weight: 600;
+    }
+
+    .status-pill {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 700;
+      background: rgba(0, 255, 102, 0.15);
+      color: var(--green-bright);
+      border: 1px solid var(--green-bright);
+    }
+  </style>
+</head>
+<body>
+
+  <div class="crt-overlay"></div>
+  <div class="laser-sweep"></div>
+
+  <!-- Header -->
+  <header class="observatory-header">
+    <div class="brand-title">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+      </svg>
+      NEURAL OBSERVATORY // DAG TOPOLOGY v2.0
+    </div>
+    <div class="telemetry-badges">
+      <div class="badge">SYSTEM: <span>ONLINE</span></div>
+      <div class="badge">TOPOLOGY: <span>DAG DIRECTED</span></div>
+      <div class="badge">SWEEP: <span>7.5s LASER</span></div>
+    </div>
+  </header>
+
+  <!-- Workspace -->
+  <main class="workspace">
+    <div class="graph-container">
+      <svg class="network-canvas" id="dagSvg" viewBox="0 0 920 600" preserveAspectRatio="xMidYMid meet">
+        <defs>
+          <linearGradient id="cyan-pulse-grad" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stop-color="#00f0ff"/>
+            <stop offset="100%" stop-color="#a855f7"/>
+          </linearGradient>
+        </defs>
+
+        <!-- Edges Group -->
+        <g id="edgesGroup">
+          <!-- Genesis -> Master -->
+          <g class="edge-item" data-source="node-genesis" data-target="node-master">
+            <path id="e-gen-master" class="edge-base" d="M 170 300 C 230 300, 230 300, 280 300"/>
+            <path class="edge-pulse" stroke="url(#cyan-pulse-grad)" d="M 170 300 C 230 300, 230 300, 280 300"/>
+          </g>
+
+          <!-- Master -> Worker 1 -->
+          <g class="edge-item" data-source="node-master" data-target="node-w1">
+            <path id="e-master-w1" class="edge-base" d="M 420 300 C 470 300, 470 160, 520 160"/>
+            <path class="edge-pulse" stroke="#00f0ff" d="M 420 300 C 470 300, 470 160, 520 160"/>
+          </g>
+
+          <!-- Master -> Worker 2 -->
+          <g class="edge-item" data-source="node-master" data-target="node-w2">
+            <path id="e-master-w2" class="edge-base" d="M 420 300 C 470 300, 470 300, 520 300"/>
+            <path class="edge-pulse" stroke="#a855f7" d="M 420 300 C 470 300, 470 300, 520 300"/>
+          </g>
+
+          <!-- Master -> Worker 3 -->
+          <g class="edge-item" data-source="node-master" data-target="node-w3">
+            <path id="e-master-w3" class="edge-base" d="M 420 300 C 470 300, 470 440, 520 440"/>
+            <path class="edge-pulse" stroke="#ffb800" d="M 420 300 C 470 300, 470 440, 520 440"/>
+          </g>
+
+          <!-- Workers -> Blind QA -->
+          <g class="edge-item" data-source="node-w1" data-target="node-qa">
+            <path id="e-w1-qa" class="edge-base" d="M 660 160 C 710 160, 710 300, 750 300"/>
+            <path class="edge-pulse" stroke="#00f0ff" d="M 660 160 C 710 160, 710 300, 750 300"/>
+          </g>
+
+          <g class="edge-item" data-source="node-w2" data-target="node-qa">
+            <path id="e-w2-qa" class="edge-base" d="M 660 300 C 710 300, 710 300, 750 300"/>
+            <path class="edge-pulse" stroke="#a855f7" d="M 660 300 C 710 300, 710 300, 750 300"/>
+          </g>
+
+          <g class="edge-item" data-source="node-w3" data-target="node-qa">
+            <path id="e-w3-qa" class="edge-base" d="M 660 440 C 710 440, 710 300, 750 300"/>
+            <path class="edge-pulse" stroke="#ffb800" d="M 660 440 C 710 440, 710 300, 750 300"/>
+          </g>
+        </g>
+
+        <!-- Nodes Group -->
+        <g id="nodesGroup">
+          <!-- Genesis Node -->
+          <g class="node-group" id="node-genesis" data-name="Genesis User Intent" data-type="Root Intent" data-status="VERIFIED" data-latency="12ms">
+            <rect class="node-box" x="40" y="260" width="130" height="80"/>
+            <text x="105" y="295" fill="#00f0ff" font-size="11" font-weight="700" text-anchor="middle">USER INTENT</text>
+            <text x="105" y="318" fill="#64748b" font-size="10" text-anchor="middle">design.md Pre-Spec</text>
+          </g>
+
+          <!-- Master Node -->
+          <g class="node-group" id="node-master" data-name="Master Orchestrator" data-type="Topology Engine" data-status="ACTIVE" data-latency="48ms">
+            <rect class="node-box" x="280" y="260" width="140" height="80"/>
+            <text x="350" y="295" fill="#a855f7" font-size="11" font-weight="700" text-anchor="middle">MASTER AGENT</text>
+            <text x="350" y="318" fill="#64748b" font-size="10" text-anchor="middle">7-Stage Decompose</text>
+          </g>
+
+          <!-- Worker 1 Node -->
+          <g class="node-group" id="node-w1" data-name="Vector Math Worker" data-type="680px SVG Engine" data-status="RUNNING" data-latency="180ms">
+            <rect class="node-box" x="520" y="120" width="140" height="80"/>
+            <text x="590" y="155" fill="#00f0ff" font-size="11" font-weight="700" text-anchor="middle">VECTOR SVG</text>
+            <text x="590" y="178" fill="#64748b" font-size="10" text-anchor="middle">Formula Char-Sizing</text>
+          </g>
+
+          <!-- Worker 2 Node -->
+          <g class="node-group" id="node-w2" data-name="Shader Canvas Worker" data-type="WebGL Raymarcher" data-status="RUNNING" data-latency="210ms">
+            <rect class="node-box" x="520" y="260" width="140" height="80"/>
+            <text x="590" y="295" fill="#a855f7" font-size="11" font-weight="700" text-anchor="middle">3D GLSL CANVAS</text>
+            <text x="590" y="318" fill="#64748b" font-size="10" text-anchor="middle">Zero-Blender Shaders</text>
+          </g>
+
+          <!-- Worker 3 Node -->
+          <g class="node-group" id="node-w3" data-name="Sci-Widget Worker" data-type="In-Chat Sandbox" data-status="RUNNING" data-latency="140ms">
+            <rect class="node-box" x="520" y="400" width="140" height="80"/>
+            <text x="590" y="435" fill="#ffb800" font-size="11" font-weight="700" text-anchor="middle">SCI-WIDGET</text>
+            <text x="590" y="458" fill="#64748b" font-size="10" text-anchor="middle">60 FPS Live Sliders</text>
+          </g>
+
+          <!-- Blind QA Node -->
+          <g class="node-group" id="node-qa" data-name="Blind QA Verifier" data-type="4-Dimension Quality Gate" data-status="100% PASS" data-latency="95ms">
+            <rect class="node-box" x="750" y="260" width="130" height="80"/>
+            <text x="815" y="295" fill="#00ff66" font-size="11" font-weight="700" text-anchor="middle">BLIND QA GATE</text>
+            <text x="815" y="318" fill="#64748b" font-size="10" text-anchor="middle">WCAG AAA Verified</text>
+          </g>
+        </g>
+      </svg>
+    </div>
+
+    <!-- Right Inspector Panel -->
+    <aside class="inspector-panel">
+      <div class="panel-header">NODE TELEMETRY INSPECTOR</div>
+      <div class="telemetry-card">
+        <div class="telemetry-row">
+          <span class="telemetry-label">Selected Node:</span>
+          <span class="telemetry-val" id="inspName">Hover a node</span>
+        </div>
+        <div class="telemetry-row">
+          <span class="telemetry-label">Architecture Role:</span>
+          <span class="telemetry-val" id="inspType">-</span>
+        </div>
+        <div class="telemetry-row">
+          <span class="telemetry-label">Execution Latency:</span>
+          <span class="telemetry-val" id="inspLatency">-</span>
+        </div>
+        <div class="telemetry-row">
+          <span class="telemetry-label">Quality Status:</span>
+          <span class="status-pill" id="inspStatus">IDLE</span>
+        </div>
+      </div>
+
+      <div class="telemetry-card" style="margin-top: 10px;">
+        <div style="color: var(--cyan-bright); font-weight:700; margin-bottom: 6px;">82% INERTIAL DIMMING</div>
+        <div style="color: var(--text-muted); font-size: 10.5px; line-height: 1.5;">
+          Hovering over any topological node isolates its active lineage and dims all non-relevant branches to 18% opacity with 180ms ease.
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <script>
+    const nodeGroups = document.querySelectorAll('.node-group');
+    const edgeItems = document.querySelectorAll('.edge-item');
+
+    const inspName = document.getElementById('inspName');
+    const inspType = document.getElementById('inspType');
+    const inspLatency = document.getElementById('inspLatency');
+    const inspStatus = document.getElementById('inspStatus');
+
+    nodeGroups.forEach(node => {
+      node.addEventListener('mouseenter', () => {
+        const nodeId = node.id;
+        inspName.textContent = node.getAttribute('data-name');
+        inspType.textContent = node.getAttribute('data-type');
+        inspLatency.textContent = node.getAttribute('data-latency');
+        inspStatus.textContent = node.getAttribute('data-status');
+
+        // Identify connected nodes across active lineage
+        const connectedNodeIds = new Set([nodeId]);
+        edgeItems.forEach(edge => {
+          const src = edge.getAttribute('data-source');
+          const tgt = edge.getAttribute('data-target');
+          if (src === nodeId || tgt === nodeId) {
+            connectedNodeIds.add(src);
+            connectedNodeIds.add(tgt);
+            edge.classList.remove('dimmed');
+          } else {
+            edge.classList.add('dimmed');
+          }
+        });
+
+        // Dim non-connected nodes to 18% opacity (82% dimming rule)
+        nodeGroups.forEach(other => {
+          if (connectedNodeIds.has(other.id)) {
+            other.classList.remove('dimmed');
+          } else {
+            other.classList.add('dimmed');
+          }
+        });
+      });
+
+      node.addEventListener('mouseleave', () => {
+        nodeGroups.forEach(other => other.classList.remove('dimmed'));
+        edgeItems.forEach(edge => edge.classList.remove('dimmed'));
+        inspName.textContent = 'Hover a node';
+        inspType.textContent = '-';
+        inspLatency.textContent = '-';
+        inspStatus.textContent = 'IDLE';
+      });
+    });
+  </script>
+</body>
+</html>
