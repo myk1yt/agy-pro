@@ -1,0 +1,1307 @@
+# agy-pro User Manual
+
+English canonical manual. Korean readers should use `MANUAL.ko.md`.
+
+This manual covers both halves of the repository:
+
+| Component | Purpose | Runtime requirement |
+|---|---|---|
+| `agy pro` Go shim | Native passthrough, external providers, fanout and swarm, bounded code changes, integrations, hybrid profiles | The authentic Antigravity `agy` binary; Go 1.22+ only when building |
+| `agy-tokens` Node toolkit | Turn and session token/cost reports, live Gemini quota, statusline, HTML/SSE dashboard | Node.js 16+ |
+
+`agy-tools`, `agy-dashboard`, `agy-tokens` and `antigravity-tools` are launchers for the same Node entry point. Token counts and prices are local estimates, not a provider invoice.
+
+## Contents
+
+1. Install and quickstart
+2. Command and routing model
+3. Setup hub, providers, models and prompts
+4. Settings, launcher and bridge tools
+5. Fanout and reconciliation
+6. Fanout presets and the resolution ladder
+7. Numbered swarm builder
+8. `agy pro code`: bounded code changes
+9. Hybrid native coexistence
+10. Integrations, profile modes and recovery
+11. Statusline, usage, tokens and dashboard
+12. Plugins and lifecycle hooks
+13. Storage, security and troubleshooting
+14. Uninstall and command reference
+
+All shell examples use placeholders such as `acme/fast-reasoner`. Register your own provider and model first. Program output marked "captured" came from a real read-only or dry-run invocation. Blocks marked "output shape" explain fields and are not claimed to be execution transcripts.
+
+---
+
+## 1. Install and quickstart
+
+### 1.1 Prerequisites
+
+- Authentic Antigravity CLI. The shim looks for `AGY_PRO_REAL_AGY`, then PATH, then the standard local binary locations.
+- Node.js 16+ for `agy-tokens`.
+- Go 1.22+ only if you build the shim. The installed binary does not need Go at runtime.
+
+### 1.2 Windows: both components
+
+From Command Prompt:
+
+```cmd
+git clone https://github.com/myk1yt/agy-pro.git && cd agy-pro && scripts\install.bat && install.cmd
+```
+
+PowerShell 5.1 does not accept bare `&&`, so wrap the same line:
+
+```powershell
+cmd /c "git clone https://github.com/myk1yt/agy-pro.git && cd agy-pro && scripts\install.bat && install.cmd"
+```
+
+`install.cmd` is a four-line wrapper around `agy-pro\scripts\install.ps1`. You can also invoke that script directly:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\agy-pro\scripts\install.ps1
+```
+
+The Go installer performs five stages:
+
+1. Creates `~/.agy-pro`, `~/.agy-pro/bin`, and `~/.agy-pro/backups`.
+2. Finds Go on PATH, in `C:\Program Files\Go`, or in `~/.agy-pro/go`. Missing or older-than-1.22 Go triggers winget, then a portable Go 1.23.6 download. The archive is checked against the installer's pinned SHA256 before extraction. A checksum failure quarantines the archive with a `.BADHASH` suffix and stops installation.
+3. Builds `./cmd/agy` with stripped symbols into a temporary executable. If the build fails and `agy-pro/bin/agy.exe` exists, that prebuilt binary is copied with an explicit "not freshly compiled" notice. It then swaps the executable into `~/.agy-pro/bin/agy.exe`.
+4. Prepends `~/.agy-pro/bin` to the Windows User PATH. The previous raw PATH and registry kind are saved to `~/.agy-pro/backups/path-<timestamp>.json`, and a restore command is printed. Existing PATH entries and the registry kind are preserved.
+5. Runs `agy pro doctor --strict`. Structural failure stops installation. On success it offers `agy pro setup`; use `-NoWizard` to skip that prompt and `-NoPause` to skip the final key wait.
+
+The Node installer registers global commands. If `agy` resolves, it calls `agy pro integrations apply tools --yes` to deploy rules, skills, plugins, hooks and the statusline. A missing `agy-tokens` launcher skips only the statusline step with a note; `agy pro integrations status` exposes that posture and `agy pro integrations repair` completes it later.
+
+Open a new terminal after installation so it inherits the new PATH.
+
+### 1.3 macOS and Linux
+
+The Node toolkit has an installer:
+
+```bash
+git clone https://github.com/myk1yt/agy-pro.git && cd agy-pro && bash scripts/install.sh
+```
+
+The automated Go shim installer is Windows-only. Build the shim yourself:
+
+```bash
+cd agy-pro/agy-pro
+go build -o ~/.agy-pro/bin/agy ./cmd/agy
+```
+
+Put `~/.agy-pro/bin` first on PATH. The setup hub's full-screen UI targets Windows consoles; other hosts use the line wizard and the full CLI surface.
+
+### 1.4 First run
+
+```bash
+agy pro setup
+agy pro status
+agy pro doctor
+agy pro models --all
+agy pro integrations status
+agy-tokens --version
+```
+
+A useful first review without an interactive builder:
+
+```bash
+agy pro fanout --task review --n 3 --prompt-file request.txt \
+  --root . --tools read,search --timeout 900 --max-native 3
+```
+
+### 1.5 Updating
+
+The Node runtime normally resolves the global copy, not the clone. After pulling changes:
+
+```cmd
+npm install -g .
+```
+
+Check the active launcher with `agy-tokens --version` and `where agy-tokens` on Windows. Rebuild and reinstall the Go shim after Go changes.
+
+---
+
+## 2. Command and routing model
+
+### 2.1 One shim, no patched upstream binary
+
+```text
+agy                         -> authentic agy, native default
+agy agents / -m / -p        -> argument normalization where needed, then authentic agy
+agy pro <verb>              -> agy-pro engine
+agy pro setup               -> setup hub or line wizard
+```
+
+The shim preserves native stdio and exit codes. `agy pro` currently has 14 verbs:
+
+| Verb | Use |
+|---|---|
+| `setup` | Providers, models, fanout presets, prompts, settings, doctor, help, language, dashboard, integrations |
+| `mode` | Full/clean profile, restore, list/backups, status |
+| `status` | Active mode, launch profile, real agy path, provider registry |
+| `models` | Configured models, combined inventory, JSON inventory |
+| `swarm` | Interactive or flag-driven swarm builder |
+| `settings` | Legacy panel and non-interactive settings/provider/mode/doctor verbs |
+| `integrations` | Deployed content and statusLine ownership |
+| `hybrid` | P1/P2 native-coexistence profiles |
+| `doctor` | Structural and key diagnostics, Windows key-name repair |
+| `fanout` | Cross-verification and partition engine |
+| `code` | Plan, write, review, rollback, composed run |
+| `config` | Launch profile and bridge-tool defaults |
+| `version` | Shim and upstream versions |
+| `help` | Top-level help |
+
+An unknown `agy pro` verb exits 1. Flag-driven subcommands generally use 0 for success, 1 for runtime failure and 2 for usage errors. Explicit `--help`/`-h` prints the usage and is a success (0) on every `agy pro` subcommand (R3-F-06: previously only the flag-parsed verbs); an unknown flag or operand on any subcommand is a usage error (2). Consent cancellation on an interactive write reports `[CANCELLED] nothing written` and returns 0; non-interactive refusal without `--yes` returns 1.
+
+### 2.2 Four independent meanings of "native"
+
+Do not conflate these axes:
+
+| Setting | What it decides |
+|---|---|
+| `default_profile = native` | Plain launch goes straight to authentic agy |
+| `hybrid_profile = p1/p2/none` | Whether a per-session native-coexistence mesh starts |
+| `current_mode = full/clean` | Which profile content is deployed |
+| `integration_preset = native/tools/custom` | Which integrations are deployed; `native` means deploy nothing |
+
+No integration preset selects a second binary.
+
+---
+
+## 3. Setup hub, providers, models and prompts
+
+### 3.1 Open the right interface
+
+```bash
+agy pro setup                 # TUI only when stdin and stdout are consoles
+agy pro setup --wizard        # English line wizard on any host
+agy pro setup --wizard --yes  # non-interactive write consent after the diff
+```
+
+A pipe, CI, non-Windows TTY or mintty takes the line wizard. `--yes` may appear before or after `--wizard`. Unknown operands fail closed with exit 2 and a masked error. `agy pro settings providers add-interactive` and the hidden alias `wizard` reach the same wizard.
+
+### 3.2 Hub navigation
+
+```text
+                         agy pro setup
+                              │
+       ┌──────────────────────┼──────────────────────┐
+       │                      │                      │
+ [1] Providers          [2] Fanout Presets      [3] Prompts
+       │                      │                      │
+ add/edit/test,           [1] built-in defaults   task + native seat
+ models + capabilities    named presets            role text
+       │                      │
+       │                 Enter: edit selected row
+       │                 Ctrl+S: save
+       │                 Ctrl+A: row [1] -> NEW copy
+       │                 D: reset row [1] after confirm
+       │
+ [4] Settings           [5] Doctor             [6] Help / manual
+ [7] Language           [8] Dashboard          [9] Integrations
+ [0] Exit
+```
+
+Digits 1-9 activate rows; arrows + Enter work on every row including 10 and later. Space pins a verb target in lists. Root Esc asks before exiting, Ctrl+L redraws, Ctrl+C exits. Editors use Left/Right/Home/End/Delete/Backspace for text. A dirty editor asks before Esc or Right discards changes.
+
+The Help overlay scrolls with Up/Down/PgUp/PgDn/Home/End. Enter opens the screen manual; Esc or q closes.
+
+### 3.3 Providers and secret storage
+
+The wizard asks for provider name, base URL, key environment-variable name, key value, model ID/family and capabilities, then performs a live probe. The value can be saved in the Windows User environment. `providers.json` receives the variable NAME only. Key displays use first 5 characters + `****`, or only `****` for values of length 5 or less.
+
+Example registry shape:
+
+```json
+{
+  "providers": [
+    {
+      "name": "acme",
+      "baseURL": "https://api.example.com/v1",
+      "apiKeyEnv": "ACME_API_KEY",
+      "models": [
+        {
+          "id": "fast-reasoner",
+          "family": "reasoner",
+          "contextLength": 200000,
+          "maxOutputTokens": 32768,
+          "capabilities": {
+            "supportsTools": true,
+            "supportsThinking": true,
+            "reasoningEffort": "high",
+            "supportsVision": true,
+            "allowedTools": ["read_file", "list_dir", "grep", "glob"]
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+Set the key for the current PowerShell process:
+
+```powershell
+$env:ACME_API_KEY = "paste the real key here"
+```
+
+Persist it for your Windows user:
+
+```powershell
+[Environment]::SetEnvironmentVariable("ACME_API_KEY", "paste the real key here", "User")
+```
+
+Do not put the value in `providers.json`, a preset, chat, a report or a command-line seat token.
+
+### 3.4 Model editing and validation
+
+In Hub > Providers, choose a provider to list its models. Add, edit, delete, enable/disable and tool-edit actions apply to the row marked `●`. Select a model row before using those actions. Enter on a model opens its edit form.
+
+Fields include ID, family, tags, enabled, context length, maximum output tokens, thinking, reasoning effort, vision, video and allowed tools. Reasoning effort is one of:
+
+```text
+default | none | low | medium | high | xhigh | max
+```
+
+Case and surrounding whitespace normalize; empty means runtime default. An empty allowed-tool list is refused because it means all tools. The tool picker uses Space to toggle, Enter to apply and Esc to cancel.
+
+Secret-shaped values are refused before an approval opens, without echoing the operand. Path/URL-shaped IDs and invisible controls are also refused. Every registry mutation presents an exact masked diff and re-reads the presented base before writing. A concurrent change makes the write refuse instead of overwriting a stale approval.
+
+CLI twins:
+
+```bash
+agy pro settings providers list
+agy pro settings providers add-json provider.json --yes
+agy pro settings providers test acme
+agy pro settings providers rename acme acme-eu --yes
+agy pro settings providers delete acme-eu --yes
+agy pro settings providers model-add-json acme model.json --yes
+agy pro settings providers model-update acme fast-reasoner model.json --yes
+agy pro settings providers model-delete acme fast-reasoner --yes
+```
+
+`add-json` with an existing provider name replaces that provider and its whole model list after the displayed approval. Provider deletion leaves environment key values untouched.
+
+### 3.5 Combined model inventory
+
+```bash
+agy pro models          # configured providers and model capabilities
+agy pro models --all    # numbered native + external groups
+agy pro models --json   # combined entries as JSON
+```
+
+`--all` and `--json` are alternatives, not additive flags. Inventory errors exit 1; usage errors exit 2. Missing key variables and `excluded (exclusion list)` rows are marked. The native catalog is cached and fetched with a scrubbed child environment.
+
+### 3.6 Model exclusion list
+
+Edit at Setup > Settings > Model Exclusion List. Entries can be:
+
+| Entry | Matches |
+|---|---|
+| `acme` | Every model of that provider |
+| `fast-reasoner` | That model ID under any provider |
+| `acme/fast-reasoner` | Exact provider/model pair, split at first `/` |
+| `family:k3` | Family k3 or an ID containing the boundary-safe k3 token |
+
+Entries are trimmed at load. Interior whitespace, control runes (Cc) and invisible format runes (Cf) are refused. Individual blank entries drop; an all-blank list is refused. Missing or null `defaults.excludeModels` applies built-in `family:k3`. Explicit `[]` excludes nothing.
+
+Auto-seating and failover skip excluded models. Explicit `--seats`, a plan-unit seat, a builder number or a saved preset name is honored with an `explicit pick honored` warning. The list never rejects an explicit pick. The legacy settings panel shows this row read-only.
+
+### 3.7 Prompt authoring
+
+Hub > Prompts edits `review`, `security`, `plan-audit`, `research`, `ideas`, `custom` and the native seat preamble. Files are one per slot under `~/.agy-pro/prompts/`, including `seat.txt`. Missing files use the compiled prompts byte-for-byte. Empty override files are errors.
+
+Resolution is environment override > slot file > compiled prompt:
+
+```text
+AGY_PRO_PROMPTS_DIR      -> alternate directory for every slot
+AGY_PRO_SEAT_PREAMBLE    -> inline native seat preamble only
+```
+
+The seat preamble guides behavior, not authorization. Use tool allow-lists to prohibit writes, commands, URL reads or web search.
+
+### 3.8 Languages and display
+
+The first setup run offers 12 languages: English, Simplified Chinese, Traditional Chinese, Korean, Japanese, Russian, Hindi, German, French, Italian, Vietnamese and Arabic. Change later at Settings > Appearance > Language or with `agy pro settings set language <code> --yes`.
+
+Arabic uses logical-order text and mirrored layout, without visual bidi reordering, shaping, mid-string truncation or inline RTL editing. Hindi rows do not promise fixed-width Devanagari cells. `AGY_PRO_COLOR=truecolor|256|16|off` forces a color tier; `NO_COLOR` forces plain output.
+
+---
+
+## 4. Settings, launcher and bridge tools
+
+### 4.1 Legacy settings panel and current CLI
+
+`agy pro settings` opens the older full-screen panel and prints a deprecation notice. The maintained configuration surface is `agy pro setup`. The non-interactive commands remain supported:
+
+```bash
+agy pro settings show
+agy pro settings show --json
+agy pro settings --panel p4
+agy pro settings set native-seat-concurrency 4 --yes
+```
+
+The eight panel areas are Launch & Profile, Models & Providers, Bridge Tools & Budgets, Swarm & Fanout, Diagnostics & Keys, Install & Update, Environment Variables and Appearance.
+
+Accepted `set` keys:
+
+| Key | Value |
+|---|---|
+| `default-profile` | `prompt`, `native`, `gateway` |
+| `bridge-tools` | `read,search,write,exec` subset or `none` |
+| `native-seat-concurrency` | Integer 1..8 |
+| `language` | One of the 12 UI codes |
+| `launcher_menu` | `on/off`, also `1/0`, `true/false` |
+| `integration-preset` | `native`, `tools` |
+| `integration-statusline` | `on`, `off` |
+| `integration-hook` | `on`, `off` |
+| `integration-rules` | `on`, `off` |
+| `integration-plugins` | `on`, `off` |
+| `integration-skills` | `on`, `off` |
+
+Hyphen/underscore aliases are accepted by the state layer. Every write presents its persisted diff before consent.
+
+### 4.2 Launcher routing
+
+A bare interactive `agy` shows the 2-second launcher only when `AGY_LAUNCHER=1` or Setup > Settings > Launcher menu is on. The environment variable wins when non-empty: `1` shows, any other value hides. If it is unset or empty, the stored value applies; absent means off.
+
+The launcher choices are native, combined external inventory and swarm. Enter/timeout chooses native. Any argument, one-shot `-p`/`--print`, piped stdin or `AGY_LAUNCHER=0` skips the menu.
+
+```powershell
+$env:AGY_LAUNCHER=1; agy
+$env:AGY_LAUNCHER=0; agy
+```
+
+`default-profile` provides another default route:
+
+```bash
+agy pro config default-profile prompt --yes
+agy pro config default-profile native --yes
+agy pro config default-profile gateway --yes
+```
+
+### 4.3 Gateway bridge tools
+
+```bash
+agy pro config show
+agy pro config bridge-tools read,search --yes
+agy pro config bridge-tools read,search,write --yes
+agy pro config bridge-tools read,search,write,exec --yes
+agy pro config bridge-tools none --yes
+```
+
+| Token | Exposed tools | Default |
+|---|---|---|
+| `read` | `read_file`, `list_dir` | On |
+| `search` | `grep`, `glob` | On |
+| `write` | `write_file`, `replace_in_file` | Off |
+| `exec` | `run_command` | Off |
+| `none` | Tool loop disabled | Alternative |
+
+`AGY_PRO_BRIDGE_TOOLS` overrides state.json for one launch. An invalid or blank override disables the loop fail-closed. The bridge, not agy, executes returned tool calls and returns final text to agy.
+
+Fixed budgets are 8 iterations, 240 seconds per loop, 60 seconds per upstream turn, 30 seconds per tool call and 16 calls per turn. They are compile-time constants, not settings. For a one-shot tool-heavy turn, `agy --print-timeout 300s` is useful.
+
+---
+
+## 5. Fanout and reconciliation
+
+### 5.1 When to use it
+
+Use cross-verification for code review, security audit, research, plan audit, ideas or a custom task. Each seat receives the same task input independently. Provider seats call metered APIs; native seats consume Antigravity quota through real subprocesses.
+
+```bash
+agy pro fanout --task review --n 3 --prompt-file review.txt \
+  --root . --tools read,search --timeout 900 --max-native 3
+
+agy pro fanout --task security \
+  --seats "native:gemini-3.8-flash-high,acme/fast-reasoner" \
+  --prompt-file security.txt --tools read,search
+```
+
+Seat grammar is comma-separated `native:<model-id>`, `provider/model`, or bare `model`. `--seats` is the only explicit fanout seat-list flag. Explicit seats determine the count. Native concurrency uses state.json and falls back to 1, and values above 8 clamp to 8. Failed native seats remain failed; they do not fail over to another native model. Provider failover follows the configured pool and exclusion policy.
+
+### 5.2 Run lifecycle
+
+```text
+flags + env + preset store + providers defaults
+                    │
+                    ▼
+            resolved RunConfig
+                    │
+          seat / partition plan resolution
+                    │
+       ┌────────────┴─────────────┐
+       │                          │
+ provider seats              native agy subprocesses
+ (failover possible)         (failure recorded)
+       └────────────┬─────────────┘
+                    ▼
+       seat markdown + progress.log
+                    ▼
+       findings parser + consolidation
+                    ▼
+       reconciliation.md + summary.json
+```
+
+`--json` keeps stdout to one summary document and moves progress to stderr. In human mode progress and the final banner use stdout. Preset and exclusion notices use stderr.
+
+### 5.3 Full flag reference
+
+| Flag | Default and behavior |
+|---|---|
+| `--task` | `review`; known set is `review`, `security`, `plan-audit`, `research`, `ideas`, `custom` |
+| `--prompt` | Inline prompt text |
+| `--prompt-file` | Prompt path, or `-` for stdin |
+| `--units` | Partition JSON plan; exclusive with prompt and seat-source flags |
+| `--n` | 3 automatic seats unless a lineup or units supplies the count |
+| `--seats` | Mixed native/provider lineup; the only explicit seat-list flag |
+| `--max-native` | 0 means state.json then 1; positive values clamp to 1..8 |
+| `--root` | `.`; provider tool workspace |
+| `--tools` | `read,search`; closed set `read,search,write,exec` |
+| `--max-turns` | 500 provider tool-loop turns by default |
+| `--timeout` | 300 seconds; configured values are honored exactly |
+| `--out` | `./reports/fanout/<ts>` |
+| `--json` | Human banner off, summary JSON on stdout |
+| `--preset` | Named preset; missing name is usage error 2 |
+| `--allow-host` | Repeatable bare host/IP; port ignored and lowercase matched |
+| `--search-endpoint` | HTTPS URL template containing one `{query}`; loopback HTTP allowed; empty uses native fallback unless `--search-native=off` |
+| `--search-key-env` | Env-var NAME; optional when endpoint needs no key; key-only still uses native fallback |
+| `--search-native` | `auto` (default) runs one native agy turn per empty-endpoint search; `off` keeps the legacy no-search behavior |
+| `--setup` | Launch provider wizard and exit |
+| `--yes` | Consent for `--setup` only; alone it is exit 2 |
+
+### 5.4 Findings and statuses
+
+The parser maps `CRITICAL` to `BLOCKER` and groups normalized finding titles.
+
+| Status | Rule | Required next step |
+|---|---|---|
+| `CONFIRMED` | At least 2 seats report the finding | Review and address with high consensus |
+| `DISPUTED` | One seat reports BLOCKER or HIGH | Main-agent arbitration on file:line/repro evidence |
+| `OBSERVATION` | One seat reports MEDIUM, LOW or INFO | Track as an observation |
+| `thin` | Success but no findings signal | Excluded from consensus denominator |
+| `degraded` | Failed/skipped/thin condition present | Verdict is partial, not a clean pass |
+
+Output shape:
+
+```text
+Task:                  <task>
+Seats Evaluated:       <completed> / <requested>
+Degraded Mode:         <true|false>
+Confirmed Issues:      <n>
+Disputed Issues:       <n>
+Artifacts Generated:
+  Reconciliation:      <out>/reconciliation.md
+  Machine Summary:     <out>/summary.json
+```
+
+`reconciliation.md` contains the matrix, detailed findings and an arbitration checklist. `summary.json` contains seats, issues, counts, optional usage, optional `seat_lineup`, optional `partition`, `sources` and an `untrusted_data` notice. `progress.log` carries seat start/finish lines. Seat reports are `seat-<n>-<provider>-<model>.md`. All are written owner-only.
+
+### 5.5 Provider tools and network egress
+
+`read,search` are on by default. URL reading stays off until a host is allowed. Provider-seat web search uses an explicit endpoint when set and otherwise uses the native fallback by default.
+
+| Capability | Enable | Limits |
+|---|---|---|
+| Workspace read/search | `--tools read,search` | Root and, in partition mode, unit scope |
+| Workspace write | Partition unit `"write": true` | Provider only, scoped; no CLI-wide partition write switch |
+| `read_url_content` | Repeat `--allow-host example.com` | GET, HTTPS except loopback HTTP, no auth, 3 redirects revalidated, 512KiB, text only |
+| `search_web` | SET `--search-endpoint` for explicit HTTP; EMPTY uses native fallback unless `--search-native=off` | Explicit: one `{query}`, HTTPS except loopback, key read only at call time. Native: one headless real-agy turn per search, subscription quota |
+
+Examples:
+
+```bash
+agy pro fanout --task research --prompt-file research.txt \
+  --allow-host example.com --allow-host docs.example.com
+
+agy pro fanout --task research --prompt-file research.txt \
+  --search-endpoint "https://search.example.com/q={query}" \
+  --search-key-env SEARCH_API_KEY
+```
+
+The search key belongs in the environment, never in the endpoint or preset. Native seats do not receive this provider tool runner; they retain real agy's tools.
+
+For provider seats, a SET `search_endpoint` keeps the existing explicit HTTP behavior. Leaving it EMPTY no longer means "no web search": with `--search-native=auto` (the default) and a resolvable real agy, the engine offers `search_web` and runs one headless real-agy turn per search, consuming Antigravity subscription quota. `search_key_env` alone does NOT switch to explicit mode. `--search-native=off`, or an unavailable agy fallback, keeps the legacy no-search behavior. The native fallback chain was verified with stub agy executables, not a live search in those tests.
+
+The native search child runs as a restricted agy agent by default: the deployed `agypro-search` asset (`~/.gemini/config/agents/agypro-search/AGENT.md`, deployed from the repo copy) declares only the two web tools `search_web` and `read_url_content`, so the child holds no file, shell or subagent tools. The installer deploys that asset (`install.ps1` step 4/6) and both embedded profiles ship it, so `agy pro mode` cannot take the route away. When the asset is absent or agy does not list its name, the child falls back to a full agy agent with its own tool surface, restricted only by the search prompt, and the run line says so. On either route the child is not bounded by the run's `--allow-host` list or the seats' read-only tool set, and the search prompt asks it to stay on web search and URL reading.
+
+Every actual fanout CLI run discloses the resolved search route before seats start. The rung label is `flag`, `engine` or `preset`; the `restricted child` clause is the default deployed route and `full agy agent child` appears only on the fallback:
+
+```text
+fanout[flag] search=endpoint(api.example.com)
+fanout[engine] search=agy-native (restricted child; subscription per search)
+fanout[flag] search=agy-native (full agy agent child; subscription per search)
+fanout[flag] search=off
+```
+
+You can connect a search API instead. Tavily (1,000/month free) and Serper (2,500 one-time signup credits) are the low-friction picks; Brave is no longer card-free. Google's official Gemini-API grounding route also exists, but it bills an API key, its 5,000 free search queries/month apply on the paid Gemini API tier and bill per executed query after that, and the free API tier does not offer search grounding. It uses `GEMINI_API_KEY` and is NOT a drop-in value for the `search_endpoint` template.
+
+### 5.6 Partition mode
+
+Use `--units` for disjoint units, one provider seat per unit, merged in plan order.
+
+```json
+[
+  {
+    "id": "auth",
+    "title": "Review authentication",
+    "scope": ["internal/auth/*.go"],
+    "deliverable": "Findings with file:line evidence",
+    "seat": "acme/fast-reasoner"
+  },
+  {
+    "id": "store",
+    "title": "Review storage",
+    "scope": ["internal/store/*.go"],
+    "deliverable": "Findings with file:line evidence",
+    "write": false
+  }
+]
+```
+
+```bash
+agy pro fanout --task review --units plan.json --root .
+```
+
+Required fields are `id`, `title`, `scope`, `deliverable`; optional fields are `seat`, `body`, `write`. Limits and refusals:
+
+- At most 64 units, each with a unique trimmed ID.
+- Scope cannot be empty, root-wide or a bare wildcard such as `**`.
+- Detectable scope overlap is refused at parse; merge checks again.
+- Native seats are refused.
+- `--prompt`, `--prompt-file`, `--seats` and global `--tools write/exec` are refused.
+- Write is per provider unit only, bounded to that unit's scope.
+- Default timeout scales to 300 + 120 per unit, capped at 3600 seconds. An explicit or preset/default timeout is honored exactly.
+
+Artifacts include `merged.md`, `reconciliation.md`, `summary.json` with a `partition` manifest, and claimed-file verification. Conflict, missing deliverable or failed merge verification fails the run while preserving evidence.
+
+---
+
+## 6. Fanout presets and the resolution ladder
+
+### 6.1 What a preset stores
+
+`~/.agy-pro/fanout-presets.json` stores named run settings and `default_preset`, not a prompt. The 13 optional knobs are:
+
+| Field | Related flag / meaning |
+|---|---|
+| `task` | `--task` |
+| `n` | `--n` |
+| `timeout_seconds` | `--timeout` |
+| `tools` | `--tools` |
+| `max_turns` | `--max-turns` |
+| `max_native` | `--max-native` |
+| `allow_hosts` | Repeatable `--allow-host` |
+| `search_endpoint` | `--search-endpoint`; empty selects native fallback by default |
+| `search_key_env` | Environment NAME only; key-only still uses native fallback |
+| `out_dir` | `--out` |
+| `root` | `--root` |
+| `seats` | Structured pinned lineup; the only preset seat source |
+| `json` | JSON output; only true is pinned |
+
+Empty means unset. It does not mean zero, false or "freeze the displayed engine default". An empty `seats` value still lets the engine auto-select.
+
+### 6.2 Edit row [1] or a named preset
+
+Open Setup > [2] Fanout Presets.
+
+- Enter on row [1] `(built-in defaults)` edits that seed record directly.
+- `Ctrl+S` saves only fields actually set.
+- `Ctrl+A` opens a NEW preset prefilled with visible defaults. It does not save over row [1].
+- The `Delete` action row on row [1] resets it to engine defaults behind confirmation and clears a default key pointing at the seed. `D` does the same for the pinned current selection: on row [1] it opens the same reset gate ("Reset (built-in defaults) to engine defaults? All saved settings are removed."), on an ordinary preset row the same delete gate, and with no selection it prints the screen's usual "Select a preset row first." message. Both `d` and `D` work on the raw-console path and in line mode.
+- Set default on row [1] is allowed but redundant once a seed record is saved; with no seed record saved yet it is refused with the screen's usual "Select a preset row first." message.
+- New, Edit, Duplicate, Delete and Set default act on ordinary presets. Space pins the target before using an action row.
+
+The reserved name is exact, case-sensitive `(built-in defaults)`. Ordinary create/rename cannot use it. Near-miss names remain ordinary. Duplicate reserved records in a hand-edited file collapse to the first at load with one warning.
+
+Editor zones are scalar fields A, allow_hosts, scalar fields B, seats. Zone B has five rows: `search_endpoint`, `search_key_env`, `out_dir`, `root`, `json`. Tab walks A > hosts > B > seats > A. Ctrl+S saves; Right closes. Enter on `json` also saves. Enter on task opens the known-task picker. Every seat row shows `[x] ` when armed and `[ ] ` when unarmed. Enter arms a seat row; Space arms or unarms it. Seat actions are `+ Add seat`, `▲ Move seat up`, `▼ Move seat down`, `✕ Remove seat`; Delete on a seat is the one-key removal.
+
+The save validator refuses unknown tasks, malformed seats, invalid hosts, invalid search key variable names, secret-shaped values and parent traversal. Duplicate seats and same-family seats are soft warnings, not refusals.
+
+### 6.3 Resolution ladder
+
+```text
+strongest
+   │
+   ├─ explicit CLI values, chat picks, builder picks
+   ├─ --preset NAME
+   ├─ AGY_PRO_FANOUT_PRESET=NAME
+   ├─ default_preset key in fanout-presets.json
+   ├─ row [1] (built-in defaults) saved seed record
+   ├─ providers.json defaults block
+   └─ engine literals / native-first automatic lineup
+weakest
+```
+
+The ladder applies per field. Explicit flags beat every preset. A set but dangling `default_preset` warns and suppresses row [1]. A missing preset named by flag/env is exit 2.
+
+`providers.json defaults` contributes `n`, `timeoutSeconds`, `maxTurns`, `tools` and the exclusion policy. `tokenBudget` and `excludeFamilies` remain reserved. Drift from engine defaults is printed, not normalized silently. `max_native` uses flag > preset > state.json > 1.
+
+A default preset that conflicts with an explicit seat source or partition read-only mode drops only the conflicting preset knob with a warning. An explicitly named preset with the same conflict is a usage error. `seats` is the only preset seat source; an empty value still lets the engine auto-select. The legacy fanout `models` field, flag and ladder rung are removed. A stored preset record carrying the legacy `models` key prints one advisory for that record and ignores the value, which is never echoed:
+
+```text
+warning: preset "legacy": the legacy models field is removed; use seats (ignoring the stored value)
+```
+
+### 6.4 Lineup rungs, cost and drift
+
+| Source | Missing provider seat | Cost/consent behavior |
+|---|---|---|
+| `--seats`, chat or builder pick | Hard error | Calling workflow must obtain approval before spend |
+| `--preset` or env | Hard error | Ad-hoc echo; calling workflow must obtain approval |
+| Store `default_preset` | Skip with warning; `degraded: true` | Standing approval for stored lineup |
+| Row-[1] seed, no default key | Same standing rung and behavior | Same standing approval |
+| No preset lineup | Engine auto-selects native first | Determined by selected seats and calling workflow |
+
+The fanout binary has no generic provider-seat `y/N` gate. Its `--yes` is only for `--setup`. The swarm plugin, agent routing rules and `agy pro code` own their go/no-go gates. Do not mistake the ad-hoc echo for actual user consent.
+
+If every provider seat in a standing lineup vanished, the run stops with an error. Unknown `native:<id>` is never registry-checked; it starts and fails inside its subprocess, leaving a degraded result.
+
+### 6.5 Actual runtime notices
+
+The lineup echo is:
+
+```text
+fanout: seat lineup from preset "<name>" (<rung> rung): N seat(s), M metered provider seat(s) (<seats>)
+```
+
+When row [1]'s seed is adopted with no `default_preset` store key, the rung is `(default_preset rung, no key set)`. A real render is:
+
+```text
+fanout: seat lineup from preset "(built-in defaults)" (default_preset rung, no key set): 1 seat(s), 0 metered provider seats (native:no-key)
+```
+
+A keyed store default keeps `(default_preset rung)` without the suffix.
+
+Ad-hoc rungs append:
+
+```text
+; a named preset is ad-hoc - confirm the metered seats above before the run spends
+```
+
+Privilege and egress disclosure, real examples from the preset-rung test fixtures:
+
+```text
+fanout: tools="read,search,write", search_endpoint="https://search.example/{query}", search_key_env="P6_SEARCH_KEY", root="/workspace/review", out_dir="reports/review" (privilege/egress knobs: preset "(built-in defaults)")
+fanout: tools="read,search,write", search_endpoint="https://search.example/{query}", search_key_env="P6_SEARCH_KEY", root="/workspace/review", out_dir="reports/review" (privilege/egress knobs: standing preset "(built-in defaults)")
+```
+
+Only effective preset-supplied `tools`, `search_endpoint`, `search_key_env`, `root`, `out_dir` appear. A flag override removes the corresponding item. The knobs lead the line and the preset label follows them: the FIRST operative clause sits inside the first 80 columns even for the built-in-defaults label; multi-knob lines may continue beyond 80 columns for later clauses, so read the whole line.
+
+Provenance advisories:
+
+```text
+fanout: notice: preset "(built-in defaults)" pins a seat lineup with NO provenance marker (hand-authored or pre-marker record); using it as the store default lineup anyway - advisory only, and a hand-authored pin is not standing approval
+```
+
+```text
+fanout: notice: preset "(built-in defaults)" seats were edited outside the preset editor (stored hash mismatch); using the on-disk lineup anyway - this is advisory, not a seal, and a hand-edited pin is not standing approval
+```
+
+The editor stamps `seats_sha256` on every record it saves, so saving row [1] through the editor refreshes its marker and clears the notice whether or not a field changed. Saving a different preset never rewrites row [1]'s marker, so a hand-planted lineup stays disclosed. A missing or mismatched marker is advisory only: it never blocks a run, a save or the editor, and a pasted matching hash is disclosed-then-silent by design. Notices print only when that pin is the lineup the run adopts; an explicit `--seats` or `--units` run stays silent.
+
+Duplicate seed warning:
+
+```text
+warning: fanout-presets.json holds more than one record named "(built-in defaults)"; keeping the first and ignoring 1 later duplicate record(s)
+```
+
+`summary.json.seat_lineup` records `preset`, `rung`, `seats`, `metered_seats`, `standing`. Skipped seats add `skipped_seats`, `skipped_seat_specs`, and set `degraded`.
+
+### 6.6 Path and record safety
+
+Preset `root` and `out_dir` may be absolute. A complete `..` component on `/` or `\` is refused at save and again when the preset value is adopted. `..cache`, `...` and absolute paths are legal. Explicit flag paths keep their existing contract.
+
+A corrupt presets file loads empty with a warning. The first save after that requires an overwrite acknowledgment naming the path. Control/format characters in a record's name, task, root, out_dir, seats, tools, search_endpoint, search_key_env or any allow_hosts entry drop that record with a warning rather than sanitizing it into another meaning.
+
+---
+
+## 7. Numbered swarm builder
+
+### 7.1 Interactive and non-interactive forms
+
+With no flags on a TTY:
+
+```bash
+agy pro swarm
+```
+
+The builder asks for template, seats, tools, budget and preview. Templates are code review, security audit and custom. Seat input accepts numbers, ranges, p1..p3, saved swarm preset names and explicit specs. Enter/y runs, c prints only, 1-4 edits and q cancels.
+
+Any non-interactive flag means zero prompts, even on a TTY:
+
+```bash
+agy pro swarm --template code-review --seats "1,3,5" --root . \
+  --prompt-file review.txt --tools read,search --timeout 900 --dry-run
+```
+
+| Flag | Meaning |
+|---|---|
+| `--template` | Required: `code-review`, `security-audit`, `custom` |
+| `--seats` | Required unless a standing fanout preset supplies a lineup |
+| `--root` | Workspace, default `.` |
+| `--prompt` | Inline text; default template scaffold |
+| `--prompt-file` | File or `-` for stdin |
+| `--tools` | Overrides template tools |
+| `--task` | Overrides template task |
+| `--timeout` | Positive seconds, default 300 |
+| `--dry-run` | Print the fanout vector, run no seats, exit 0 |
+
+`p1` targets two native + two external, `p2` three external with family rotation, `p3` four mixed. Excluded rows never enter those automatic presets. Saved swarm presets in `~/.agy-pro/swarm-state.json` store numbered selection text and can be selected by name. They are not fanout presets.
+
+### 7.2 Captured dry-run
+
+```console
+$ agy pro swarm --template code-review --seats "native:gemini-3.8-flash-high" --root . --prompt-file README.md --tools read,search --timeout 300 --dry-run
+agy pro fanout --task review --seats native:gemini-3.8-flash-high --root . --timeout 300 --tools read,search --prompt-file README.md --json
+```
+
+No model call occurred. The vector is informational and not guaranteed shell-safe. Execute the `agy pro swarm` form without `--dry-run` after reviewing metered seats. When a standing preset supplies seats and the caller gave none, the vector omits `--seats` so the preset rung remains authoritative.
+
+---
+
+## 8. `agy pro code`: bounded code changes
+
+### 8.1 Choose the right door
+
+Use `agy pro code` when the task needs a bounded real write, engine-owned verification, an independent review and an undo path. Native plan/review defaults are:
+
+```text
+native:gemini-3.8-flash-high,native:claude-sonnet-5-5-high
+```
+
+The writer must be exactly one provider/model. It cannot be native because a native subprocess has no scoped ToolRunner.
+
+### 8.2 Lifecycle and worked route
+
+```text
+ask -> native plan seats -> read plan/reconciliation
+                          │
+                          ▼
+             derive narrow scope from plan
+                          │
+                          ▼
+snapshot -> provider write -> engine verify -> repair (default max 1)
+                          │                     │
+                          │                     └─ failure: exit 1 + rollback hint
+                          ▼
+                  native review seats -> final report
+```
+
+Plan only:
+
+```bash
+agy pro code plan --ask-file request.txt
+```
+
+Run after deriving scope from the plan:
+
+```bash
+agy pro code run --ask-file request.txt \
+  --scope "internal/parser" --writer acme/fast-reasoner \
+  --verify "go build ./..." --verify "go test ./internal/parser" --yes
+```
+
+Standalone write from an existing plan:
+
+```bash
+agy pro code write --plan plan.json --verify "go test ./internal/parser" --yes
+```
+
+Review and rollback:
+
+```bash
+agy pro code review --run reports/code/<ts>
+agy pro code rollback --run reports/code/<ts>
+```
+
+Never invent `--scope .`. Without scope, `code run` stops after plan with exit 0 and prints a scope instruction. `--skip-plan` without scope is exit 2.
+
+### 8.3 Full option reference
+
+| Option | Applies to | Behavior |
+|---|---|---|
+| `--ask`, `--ask-file` | plan, write composition, run | Required request source for composition; mutually exclusive; file `-` reads stdin |
+| `--plan` | write, run | Existing partition plan; run implies `--skip-plan`; exclusive with ask |
+| `--scope` | write, run | Repeatable bounded path/glob; composed write requires at least one |
+| `--writer` | write, run | Exactly one provider seat, no default; native is exit 2 |
+| `--seats` | plan, review, run | Read-only lineup; run shares it across plan and review |
+| `--verify` | write, run | Repeatable command line; all must pass; empty/unbalanced quote is exit 2 |
+| `--max-repairs` | write, run | Default 1, 0 disables repair, negative is exit 2 |
+| `--run` | review, rollback | Required run directory and sole artifact source |
+| `--skip-plan` | run | Skip plan phase |
+| `--root` | all | Workspace, default `.` |
+| `--out` | all | Run directory, default `reports/code/<ts>`; review/rollback requires it to equal `--run` when set |
+| `--timeout` | all | Nonnegative fanout seconds, 0 uses engine default |
+| `--json` | all | One report JSON on stdout; phase streams go to stderr |
+| `--dry-run` | all | Exact commands and disclosures, no snapshot or seat, exit 0 |
+| `--yes` | write/review/run, metered plan | Non-TTY metered consent; rollback accepts and ignores |
+
+Review requires `report.txt`; rollback requires `manifest.json` plus `snapshot/`. A missing report, divergent `--out`/`--run`, stray positional operand or unknown flag is exit 2.
+
+### 8.4 Captured dry-run
+
+This is an abridged excerpt of a real dry-run with a placeholder provider and no model call:
+
+```console
+$ agy pro code run --ask "Add input validation to internal/example" --scope "internal/example" --writer acme/model --verify "go test ./internal/example" --dry-run
+agy pro code plan: dry-run (nothing executed)
+agy pro code write: 1 metered seat(s) - this run spends money
+  seat 1  [provider]  acme/model  (metered API)
+  note: no token/cost cap is enforced on this run
+agy pro code write: dry-run (nothing executed)
+  scope: inter****
+  disclosure: verify executes commands over the working tree, which may include code created by the writer seat in this run
+  budget: 1 verification command(s), 10m0s per command, 1800s for the whole run
+  verify: go test ./internal/example
+  rollback: agy pro code rollback --run reports\code\20261025-214149
+agy pro code review: dry-run (nothing executed)
+agy pro code: dry-run
+files: none changed
+artifacts: reports/code/20261025-214149
+```
+
+Use `--dry-run` before `--yes`. There is no token or dollar cap. The metered echo and your approval are the cost gate.
+
+### 8.5 Verification trust model
+
+Automatic detection is compile-only:
+
+- `go.mod` exists and at least one scope entry names a `.go` file: detect `go build` and `go vet` for that package directory.
+- Directory scopes alone do not trigger detection.
+- No detected verifier produces `unverified`, not a pass.
+- Tests and scripts run only when explicitly supplied with `--verify`.
+
+Each command gets up to 600 seconds. The total verification budget is 1800 seconds across attempts. A command skipped because the total is spent fails closed as `verify-skipped-budget`. Full combined output goes to `verify/attempt-*.log`; memory retains only a bounded tail.
+
+Every verifier gets a sanitized environment. Go toolchain commands additionally get `GOPROXY=off`, `GOTOOLCHAIN=local`, `CGO_ENABLED=0`, so a seat-written module file cannot fetch a dependency or toolchain and cgo cannot invoke a C compiler. The verifier's own code is not network-sandboxed. Use an explicit wrapper only when you knowingly need different behavior.
+
+### 8.6 Snapshot, governance and rollback
+
+The snapshot is a byte copy plus `manifest.json` and a per-run HMAC sidecar. Governance and credential paths are refused. Secret-class files can be withheld and counted in the report. Native plan/review seats are real agy processes with their own tools, so they are measured, not contained. A run with scope snapshots before plan and reports native edits as `native-drift` or `governance-drift`.
+
+Rollback:
+
+- Restores modified/deleted recorded files in place.
+- Moves run-created files to `<run>/rollback-archive/` instead of deleting them.
+- Writes `rollback.json` with restored, archived, unchanged and skipped lists.
+- Never invokes git.
+- Never asks for consent and is idempotent.
+- Leaves locked files in place and reports them.
+
+### 8.7 Report and exit statuses
+
+Human stdout is one bounded report; `--json` is one additive JSON document. It includes phase statuses, diff rows, verify attempts, seats and usage when available, withheld count, native drift, cost and artifacts. A failed write/verification includes the exact rollback command.
+
+| Exit | Meaning |
+|---|---|
+| 0 | Success, explicit `--help`/`-h`, dry-run, plan-only stop, or a degraded phase with artifacts |
+| 1 | Run failure, every-seat failure, or final verification failure |
+| 2 | Usage error, refused consent, refused plan/scope |
+
+`verify-failed`, `write-failed` and `failed` map to 1. `degraded` is a qualification, not automatically a failed run. A completed rollback reports `rolled-back`.
+
+---
+
+## 9. Hybrid native coexistence
+
+Hybrid is not the legacy XOR gateway. It builds a per-session mesh so external models use native agy machinery.
+
+| Profile | What you get | What you do not get |
+|---|---|---|
+| P1 picker coexistence | External models in agy's own `/model` catalog through `/v1internal` and `CLOUD_CODE_URL`; no settings-file write for this path | Subagent spawning on this path |
+| P2 subagent profile | Full toolset including subagents through per-session app-data and `/v1beta` | Subscription Gemini inside that session; external selection happens at launch |
+
+```bash
+agy pro hybrid on p1 --yes
+agy pro hybrid status
+agy pro hybrid check
+agy pro hybrid off --yes
+```
+
+One-launch override:
+
+```bash
+AGY_PRO_HYBRID=p2 agy
+AGY_PRO_HYBRID=off agy
+```
+
+Environment > persisted state > none. An invalid override is ignored rather than silently disabling a saved profile. `on` prevalidates the chosen P1 catalog or P2 settings before saving. `on`/`off` show the state diff and ask for consent. `status` shows persisted, env and effective values plus wirecheck. `check` renders both verdicts and exits 1 when the effective profile is NOGO; no active profile is exit 0. P1 and P2 cannot be combined in one session.
+
+---
+
+## 10. Integrations, profile modes and recovery
+
+### 10.1 Integrations
+
+Integrations owns the statusLine slot and deployed rules, skills, plugins and hooks.
+
+```bash
+agy pro integrations status
+agy pro integrations apply tools --yes
+agy pro integrations apply statusline --yes
+agy pro integrations apply rules --yes
+agy pro integrations retract plugins --yes
+agy pro integrations preset native --yes
+agy pro integrations adopt --yes
+agy pro integrations rollback --yes
+agy pro integrations rollback rules --yes
+agy pro integrations repair --yes
+```
+
+| Verb | Operand behavior |
+|---|---|
+| `status` | No operand; read-only posture and drift report |
+| `apply` | No operand applies pending; one feature or preset applies that target |
+| `retract` | No operand removes all recorded; one feature or preset scopes it |
+| `preset` | Requires `native` or `tools` |
+| `adopt` | Records identical existing bytes without writing them |
+| `rollback` | No operand restores settings.json snapshot |
+| `rollback <feature>` | Restores one of `hook`, `rules`, `plugins`, `skills` pre-install tree |
+| `repair` | Reconciles recorded drift and missing destinations |
+
+`custom` is derived and never accepted as an operand. `rollback statusline` exits 2 and directs you to no-operand rollback. Whole presets cannot be rolled back as one tree. A feature with nothing to roll back prints `Nothing to roll back:` and exits 0 without a gate.
+
+All writes present one exact diff and one `y/N`. Non-interactive stdin requires `--yes` or writes nothing. Steps that already landed are reported if a later step fails. Run only one integrations command at a time: there is no cross-process manifest serialization. Foreign files are never touched.
+
+Captured status excerpt, abridged to omit machine-specific paths and counts:
+
+```text
+agy pro integrations status (read-only)
+feature    intent   engine
+statusline on       slot holds the door's object, unrecorded; apply records it
+hook       on       1 clean
+rules      on       2 clean, 1 drifted, 9 foreign (left alone)
+plugins    on       42 clean, 1 drifted, 8 foreign (left alone)
+skills     on       52 clean, 6 foreign (left alone)
+preset     tools
+```
+
+`unset` intent means no integrations-owned claim, not `off`.
+
+### 10.2 Profile modes
+
+```bash
+agy pro mode
+agy pro mode full --yes
+agy pro mode clean --yes
+agy pro mode restore --yes
+agy pro mode list
+agy pro mode status
+```
+
+Full deploys orchestrator agents, references, profile.json and config.json. Clean restores the minimal profile shape. Switch and restore show a file plan, back up managed entries and require consent. `list`/`backups` and `status` are read-only.
+
+`mode restore` owns only `agents`, `references`, `profile.json`, `config.json`. Rules, skills, plugins, hooks and statusLine belong to integrations. Legacy unrelated entries in an old backup stay in place.
+
+### 10.3 Status and doctor
+
+```bash
+agy pro status
+agy pro doctor
+agy pro doctor --strict
+```
+
+`status` reports mode, default profile, last update/backup, real agy path and configured providers. Doctor checks real agy, shim location, state directories, provider keys and Go.
+
+`--strict` exits 1 only for structural failures: missing real agy or the shim not running from the installed location. Key verdicts `valid`, `invalid`, `indeterminate`, `SKIP` are informational and never control the strict exit code.
+
+Windows BOM-polluted key-name repair:
+
+```bash
+agy pro doctor --fix-keys=all --yes
+agy pro doctor --fix-keys=acme,other --yes
+agy pro doctor --rollback-keys <backup-dir> --yes
+```
+
+Repair writes a DPAPI-encrypted backup before changing names and prints the rollback directory. `--fix-keys` and `--rollback-keys` cannot be combined. Both show the plan and require consent.
+
+---
+
+## 11. Statusline, usage, tokens and dashboard
+
+### 11.1 Statusline and hook
+
+The integrations statusLine command is:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "agy-tokens --hook --raw --write-dashboard",
+    "enabled": true,
+    "stack_with_default": true
+  }
+}
+```
+
+Place it in `~/.gemini/antigravity-cli/settings.json`, or let `agy pro integrations apply tools --yes` manage it. The separate lifecycle hook in `hooks/hooks.json` runs `agy-tokens --hook` under `PostInvocation`.
+
+Badge shape:
+
+```text
+⚡ Turn: 1.2k ($0.0002) | Today: 45.8k ($0.0068) | Cache: 82% | 5h: ▰▰▰▰▱ 79% (4h 10m) | 7d: ▰▱▱▱▱ 21% (3d 20h) | 📊 Dashboard
+```
+
+This is a shape example, not live quota evidence. The quota subsystem queries the local Language Server's `RetrieveUserQuotaSummary` RPC for real 5-hour and 7-day buckets. Responses cache for 30 seconds at `~/.gemini/gemini_quota_cache.json`. Stale/auth-failed live quota falls back to transcript-derived rolling estimates marked `(est)` when available.
+
+### 11.2 Usage and pricing commands
+
+```bash
+agy-tokens
+agy-tokens --yesterday
+agy-tokens --7d
+agy-tokens --30d --currency krw
+agy-tokens --range 2026-10-01..2026-10-26
+agy-tokens --all
+agy-tokens --session
+agy-tokens --session <conversation-id> --json
+agy-tokens --free
+agy-tokens --fresh --json
+agy-tokens --prices --currency krw
+agy-tokens --sync-prices
+agy-tokens --auto-sync
+agy-tokens --sync-quota
+```
+
+| Option | Purpose |
+|---|---|
+| `--today`, `-t` | Default daily summary |
+| `--yesterday`, `-y` | Yesterday |
+| `--7d`, `--week` | 7-day daily table |
+| `--30d`, `--month` | 30-day daily table |
+| `--range A..B` | Custom `YYYY-MM-DD..YYYY-MM-DD` |
+| `--session`, `-s [id]` | Latest or named conversation turns |
+| `--all`, `-a` | All time |
+| `--currency` | `usd`, `krw`, `jpy`, `eur`, `gbp` |
+| `--lang` | UI language; host/user config default otherwise |
+| `--model` | Pricing model override |
+| `--free`, `--no-cost` | Token metrics without cost |
+| `--hook`, `--badge` | PostInvocation JSON badge |
+| `--raw` | Raw badge instead of hook wrapper |
+| `--fresh`, `--no-cache` | Re-parse transcripts |
+| `--json` | Machine output |
+| `--prices` | Current pricing table |
+| `--sync-prices` | Fetch official pricing |
+| `--auto-sync` | Sync if cache is older than 24h |
+| `--sync-quota` | Force live quota refresh |
+| `--no-color` | Disable ANSI color |
+| `--version`, `-v` | Version |
+
+`--help` lists the common options, while the parser also accepts the dashboard options below and GBP. Costs use bundled, synced and user pricing plus heuristics for unknown models. They are estimates.
+
+### 11.3 Dashboard
+
+```bash
+agy-tokens --html --open
+agy-tokens --serve --open
+agy-tokens --serve 8790 --open
+agy-tokens --serve --port 0 --open
+agy-tokens --hook --raw --write-dashboard --no-link
+```
+
+| Option | Behavior |
+|---|---|
+| `--html`, `--dashboard` | Write static dashboard artifacts |
+| `--serve [port]` | Start SSE server, default 8787; 0 chooses a free port |
+| `--port <n>` | Alternate port spelling |
+| `--open` | Open the resulting local page; alone it implies serve |
+| `--no-open` | Suppress opening |
+| `--refresh <sec>` | Browser polling interval |
+| `--write-dashboard` | Hook writes dashboard data in the same sync pass |
+| `--no-link` | Omit dashboard OSC 8 link |
+
+The server binds loopback and exposes `/events` for Server-Sent Events. The page includes 30-day stacked input/cache/output bars, dynamic Y scaling, tooltips, date/model filters and per-turn model/reasoning attribution. Static `file://` uses script polling without CORS errors. Artifacts live under `~/.gemini/antigravity-dashboard/` including `dashboard.html`, `dashboard-data.json`, `dashboard-data.js`, `dashboard-server.json`.
+
+The setup hub's Dashboard screen reads the server record and payload, shows today/7d and the top 3 models by cost, and offers Start server, Refresh and Open in browser. Refresh is a bounded headless `--html --no-open` run. Start uses a guarded detached `--serve --no-open` spawn. Open is enabled only with a known valid loopback port. Stale payloads show a stale message instead of numbers.
+
+### 11.4 Data flow
+
+```text
+transcript/history -> parser + tokenizer -> token_tracker_cache.json
+                                              │
+Language Server -> RetrieveUserQuotaSummary -> gemini_quota_cache.json (30s)
+                                              │
+                                              ▼
+                                           aggregator
+                                     ┌─────────┼─────────┐
+                                     ▼         ▼         ▼
+                                statusline   terminal   HTML dashboard
+                                               reports   + SSE /events
+```
+
+---
+
+## 12. Plugins and lifecycle hooks
+
+### 12.1 Deployment and discovery
+
+`agy pro integrations apply tools --yes` deploys bundled plugins. Manual local install:
+
+```bash
+agy plugin install plugins/agypro_swarm
+agy plugin install plugins/agypro_settings
+agy plugin install plugins/agy_help
+```
+
+Use a repository-relative or absolute path for other plugins. `agy plugin list` and `agy agents` inspect registration. Restart the agy session after adding a plugin because discovery happens at session start.
+
+### 12.2 Feature guide
+
+| Plugin | Invocation | Use and boundary |
+|---|---|---|
+| `agypro_swarm` | `/agypro_swarm:swarm` | Agent-mediated numbered swarm workflow, dry-run, cost confirmation, artifact presentation. Not the full-screen builder |
+| `agypro_settings` | `/setting_agypro` | Agent-mediated non-interactive settings commands. Not the settings TUI |
+| `agy_help` | `/agy_help`, `@agy_help`, `agy --agent agy_help` | Antigravity reference, offline docs, read-only CLI introspection |
+| `code_reviewer` | `@code-reviewer` | Pre-merge read-only review: 8 categories, confidence filtering, P0-P3 gate |
+| `security_reviewer` | `@security-reviewer` | Four inspectors for app vulnerabilities, cloud IAM, credentials, supply chain/MCP |
+| `designer` | `@designer` | SVG, interactive HTML, 3D/WebGL/GLSL, visual QA without MCP |
+| `deep_investigator` | `@deep-investigator` | Read-only multi-source research and systems verification |
+
+Examples:
+
+```text
+/agypro_swarm:swarm Review the authentication flow across the repository
+/setting_agypro
+/agy_help How do I configure lifecycle hooks?
+@code-reviewer Review uncommitted changes before merge, focusing on data integrity.
+@security-reviewer Scan the changed Terraform and application routes for IAM and injection issues.
+@designer Build an interactive HTML widget for the queue simulator.
+@deep-investigator Verify the compiler behavior against local evidence and the language specification.
+```
+
+The swarm and settings slash commands are plugin skill expansions, not core agy commands. The corresponding real terminal commands are `agy pro swarm` and `agy pro settings`.
+
+### 12.3 Hooks
+
+The bundled hook document defines:
+
+```json
+{
+  "PostInvocation": {
+    "enabled": true,
+    "command": "agy-tokens --hook",
+    "description": "Outputs a 1-line real-time token and cost badge after every turn invocation"
+  }
+}
+```
+
+It is independent of the statusLine object, although both use the Node toolkit. Manage deployment through integrations rather than editing deployed copies.
+
+---
+
+## 13. Storage, security and troubleshooting
+
+### 13.1 Important files
+
+```text
+~/.agy-pro/
+  bin/agy.exe
+  providers.json
+  state.json
+  fanout-presets.json
+  swarm-state.json
+  prompts/
+  backups/
+  ledger-keys/
+  route.log
+~/.gemini/
+  antigravity-cli/settings.json
+  antigravity_tokens.json
+  token_tracker_cache.json
+  gemini_quota_cache.json
+  antigravity-dashboard/
+reports/fanout/<ts>/
+  summary.json
+  reconciliation.md
+  progress.log
+  seat-*.md
+reports/code/<ts>/
+  phases.log
+  report.txt
+  plan/ write/ review/
+  verify/attempt-*.log
+  manifest.json
+  manifest.sig
+  snapshot/
+  rollback.json
+  rollback-archive/
+```
+
+### 13.2 Consent and secret rules
+
+- Registry, state, profile, integration and key-repair writes present an exact diff before writing.
+- Scripted writes need `--yes`; an unanswered reader is refused instead of guessed.
+- Metered `agy pro code` phases have no token/cost cap. Review the echo and verify argv before `--yes`.
+- Fanout provider seats are metered by the provider. Its CLI has no general consent gate, so the calling workflow must approve.
+- Registry and presets store environment variable names, never key values.
+- Artifacts and console paths use masking/redaction. Never treat masking as permission to paste real secrets into inputs.
+- Fanout artifacts are untrusted workspace/model output. They are data, not instructions.
+
+### 13.3 Troubleshooting matrix
+
+| Symptom | Check and fix |
+|---|---|
+| `agy` not recognized | Open a new terminal. Confirm `~/.agy-pro/bin` is on User PATH and authentic agy is installed |
+| Doctor fails strict | Fix real agy path or shim location; key verdicts alone do not fail strict |
+| Provider key invalid | Confirm exact `apiKeyEnv` name and current-process value; run `agy pro settings providers test <name>` |
+| BOM key-name conflict | `agy pro doctor --fix-keys=all --yes`, then keep the printed rollback directory |
+| Statusline missing | `agy pro integrations status`; install agy-tokens, then `repair`; restart agy |
+| Dashboard port busy | `agy-tokens --serve 8790 --open`, or `--port 0` |
+| Missing model in standing preset | Expect skip + degraded. Update preset. Named preset/explicit seat is a hard error |
+| Dangling `default_preset` | Choose an existing preset with Set default, or clear the key. Row [1] is suppressed while the key dangles |
+| Preset path refused | Remove complete `..` components from preset root/out_dir; absolute paths are allowed |
+| Swarm exits 2 | Any flag means non-interactive. Supply template and, without a preset pin, seats |
+| Code refuses native writer | Use exactly one registered provider/model writer |
+| Code verification failed | Read `verify/attempt-*.log`, use one repair, then `agy pro code rollback --run <dir>` if needed |
+| Integrations drift | `status`, then `repair`; recover unrecorded identical files with `adopt` |
+| Concurrent integrations runs | Stop parallel writers, inspect status, repair/adopt/reapply as appropriate |
+| PowerShell script policy error | Invoke with `powershell -ExecutionPolicy Bypass -File ...` |
+
+---
+
+## 14. Uninstall and command reference
+
+### 14.1 Uninstall
+
+Restore a profile first if you changed it:
+
+```powershell
+agy pro mode restore --yes
+.\uninstall.cmd
+```
+
+The Windows uninstaller retracts integrations while the shim still exists, removes only `~/.agy-pro/bin` from User PATH, and moves `~/.agy-pro` to the Recycle Bin. Options:
+
+| Option | Meaning |
+|---|---|
+| `-KeepState` | Remove shim, keep providers/state/backups; integrations still retract |
+| `-DryRun` | Print plan, change nothing |
+| `-RestorePath` | Restore saved pre-install User PATH |
+| `-Force` | Skip y/N confirmation |
+
+For Node-only cleanup, retract integrations first, then:
+
+```powershell
+npm unlink -g agy-tools
+```
+
+### 14.2 Compact reference
+
+```bash
+agy pro setup [--wizard] [--yes]
+agy pro mode [full|clean|restore|list|status] [--yes]
+agy pro status
+agy pro models [--all|--json]
+agy pro settings [show [--json]|set <key> <value> [--yes]|providers ...|--panel <id>]
+agy pro config <show|default-profile <prompt|native|gateway>|bridge-tools <spec>> [--yes]
+agy pro fanout [flags]
+agy pro swarm [--template T --seats S --root R --prompt-file F --dry-run]
+agy pro code <plan|write|review|rollback|run> [flags]
+agy pro hybrid <on p1|on p2|off|status|check> [--yes]
+agy pro integrations <status|apply|retract|preset|adopt|rollback|repair> [--yes]
+agy pro doctor [--strict|--fix-keys[=<targets>]|--rollback-keys <dir>] [--yes]
+agy pro version
+agy pro help
+```
+
+The complete authoritative flags are in sections 5 through 11. When a help surface and behavior differ, trust the actual command implementation and report the mismatch rather than assuming a new flag exists.

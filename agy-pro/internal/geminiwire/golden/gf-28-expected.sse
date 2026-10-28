@@ -1,0 +1,4 @@
+data: {"candidates":[{"content":{"role":"model","parts":[{"text":"첫 번째 델타"}]},"index":0}]}
+
+data: {"error":{"code":503,"message":"provider mock-provider: transport failure","status":"UNAVAILABLE"}}
+

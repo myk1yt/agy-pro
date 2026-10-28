@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 560" width="100%" role="img" aria-label="agy pro code lifecycle: ask, plan, scope, write, verify, diff, rollback">
+<title>The agy pro code pipeline</title>
+<defs>
+    <marker id="ah-0d9488" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#0d9488"/>
+    </marker>
+    <marker id="ah-16a34a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#16a34a"/>
+    </marker>
+    <marker id="ah-2563eb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2563eb"/>
+    </marker>
+    <marker id="ah-4b5563" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4b5563"/>
+    </marker>
+    <marker id="ah-9333ea" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#9333ea"/>
+    </marker>
+    <marker id="ah-d97706" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#d97706"/>
+    </marker>
+    <marker id="ah-db2777" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#db2777"/>
+    </marker>
+    <marker id="ah-dc2626" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#dc2626"/>
+    </marker>
+    <marker id="ah-ee4f2e" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#ee4f2e"/>
+    </marker>
+</defs>
+<rect x="0" y="0" width="680" height="560" fill="#ffffff"/>
+<!-- geometry: viewBox 680x560; 20px grid; left margin >= 20; latin 6.5px/char, CJK 13px/char at 13px; box padding >= 20px per side; text 50-bg / 800-fg, borders 600 -->
+<!-- box [1  ask] 380x62: widest line 135.0px, padding 122.5px/side (>=20) -->
+<rect x="20" y="40" width="380" height="62" rx="12" fill="#f9fafb" stroke="#4b5563" stroke-width="1.5"/>
+<!-- width: '1  ask' 6ch x 6.50px = 39.0px -->
+<text x="210.0" y="67.64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#1f2937" text-anchor="middle">1  ask</text>
+<!-- width: 'one sentence, or - -ask-file' 27ch x 5.00px = 135.0px -->
+<text x="210.0" y="82.64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-weight="400" fill="#4b5563" text-anchor="middle">one sentence, or --ask-file</text>
+<!-- box [2  plan  (free)] 380x62: widest line 145.0px, padding 117.5px/side (>=20) -->
+<rect x="20" y="122" width="380" height="62" rx="12" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.5"/>
+<!-- width: '2  plan  (free)' 15ch x 6.50px = 97.5px -->
+<text x="210.0" y="142.64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#166534" text-anchor="middle">2  plan  (free)</text>
+<!-- width: 'native seats: Gemini + Claude' 29ch x 5.00px = 145.0px -->
+<text x="210.0" y="157.64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-weight="400" fill="#16a34a" text-anchor="middle">native seats: Gemini + Claude</text>
+<!-- width: 'on your subscription' 20ch x 5.00px = 100.0px -->
+<text x="210.0" y="171.64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-weight="400" fill="#16a34a" text-anchor="middle">on your subscription</text>
+<polyline points="210,106 210,118" fill="none" stroke="#4b5563" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#ah-4b5563)"/>
+<!-- box [3  scope gate] 380x62: widest line 175.0px, padding 102.5px/side (>=20) -->
+<rect x="20" y="204" width="380" height="62" rx="12" fill="#f9fafb" stroke="#4b5563" stroke-width="1.5"/>
+<!-- width: '3  scope gate' 13ch x 6.50px = 84.5px -->
+<text x="210.0" y="224.64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#1f2937" text-anchor="middle">3  scope gate</text>
+<!-- width: 'root-wide, governed, run-dir scopes' 35ch x 5.00px = 175.0px -->
+<text x="210.0" y="239.64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-weight="400" fill="#4b5563" text-anchor="middle">root-wide, governed, run-dir scopes</text>
+<!-- width: 'are refused before the echo' 27ch x 5.00px = 135.0px -->
+<text x="210.0" y="253.64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-weight="400" fill="#4b5563" text-anchor="middle">are refused before the echo</text>
+<polyline points="210,188 210,200" fill="none" stroke="#4b5563" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#ah-4b5563)"/>
+<!-- box [4  write  (metered)] 380x62: widest line 180.0px, padding 100.0px/side (>=20) -->
+<rect x="20" y="286" width="380" height="62" rx="12" fill="#fff0eb" stroke="#ee4f2e" stroke-width="1.5"/>
+<!-- width: '4  write  (metered)' 19ch x 6.50px = 123.5px -->
+<text x="210.0" y="306.64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#9e341a" text-anchor="middle">4  write  (metered)</text>
+<!-- width: 'one provider seat, one bounded scope' 36ch x 5.00px = 180.0px -->
+<text x="210.0" y="321.64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-weight="400" fill="#ee4f2e" text-anchor="middle">one provider seat, one bounded scope</text>
+<!-- width: 'echo + your GO, no cap exists' 29ch x 5.00px = 145.0px -->
+<text x="210.0" y="335.64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-weight="400" fill="#ee4f2e" text-anchor="middle">echo + your GO, no cap exists</text>
+<polyline points="210,270 210,282" fill="none" stroke="#4b5563" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#ah-4b5563)"/>
+<!-- box [5  verify] 380x62: widest line 170.0px, padding 105.0px/side (>=20) -->
+<rect x="20" y="368" width="380" height="62" rx="12" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.5"/>
+<!-- width: '5  verify' 9ch x 6.50px = 58.5px -->
+<text x="210.0" y="388.64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#166534" text-anchor="middle">5  verify</text>
+<!-- width: 'the engine runs it, not the seat' 32ch x 5.00px = 160.0px -->
+<text x="210.0" y="403.64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-weight="400" fill="#16a34a" text-anchor="middle">the engine runs it, not the seat</text>
+<!-- width: 'compile-only auto, hermetic go env' 34ch x 5.00px = 170.0px -->
+<text x="210.0" y="417.64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-weight="400" fill="#16a34a" text-anchor="middle">compile-only auto, hermetic go env</text>
+<polyline points="210,352 210,364" fill="none" stroke="#4b5563" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#ah-4b5563)"/>
+<!-- box [6  diff] 380x62: widest line 155.0px, padding 112.5px/side (>=20) -->
+<rect x="20" y="450" width="380" height="62" rx="12" fill="#f9fafb" stroke="#4b5563" stroke-width="1.5"/>
+<!-- width: '6  diff' 7ch x 6.50px = 45.5px -->
+<text x="210.0" y="470.64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#1f2937" text-anchor="middle">6  diff</text>
+<!-- width: 'report.txt + phases.log' 23ch x 5.00px = 115.0px -->
+<text x="210.0" y="485.64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-weight="400" fill="#4b5563" text-anchor="middle">report.txt + phases.log</text>
+<!-- width: 'file by file, from the manifest' 31ch x 5.00px = 155.0px -->
+<text x="210.0" y="499.64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-weight="400" fill="#4b5563" text-anchor="middle">file by file, from the manifest</text>
+<polyline points="210,434 210,446" fill="none" stroke="#4b5563" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#ah-4b5563)"/>
+<!-- box [governance files] 236x96: widest line 175.0px, padding 30.5px/side (>=20) -->
+<rect x="424" y="152" width="236" height="96" rx="12" fill="#f9fafb" stroke="#4b5563" stroke-width="1.5" stroke-dasharray="5 4"/>
+<!-- width: 'governance files' 16ch x 6.50px = 104.0px -->
+<text x="542.0" y="189.64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#1f2937" text-anchor="middle">governance files</text>
+<!-- width: 'AGENTS.md, rules/, .agy-pro/, .git/' 35ch x 5.00px = 175.0px -->
+<text x="542.0" y="204.64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-weight="400" fill="#4b5563" text-anchor="middle">AGENTS.md, rules/, .agy-pro/, .git/</text>
+<!-- width: 'refuse ALL seat writes' 22ch x 5.00px = 110.0px -->
+<text x="542.0" y="218.64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-weight="400" fill="#4b5563" text-anchor="middle">refuse ALL seat writes</text>
+<!-- box [rollback  (on fail)] 236x108: widest line 165.0px, padding 35.5px/side (>=20) -->
+<rect x="424" y="345" width="236" height="108" rx="12" fill="#fffbeb" stroke="#d97706" stroke-width="1.5"/>
+<!-- width: 'rollback  (on fail)' 19ch x 6.50px = 123.5px -->
+<text x="542.0" y="381.64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#92400e" text-anchor="middle">rollback  (on fail)</text>
+<!-- width: 'in-place restore + archive' 26ch x 5.00px = 130.0px -->
+<text x="542.0" y="396.64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-weight="400" fill="#d97706" text-anchor="middle">in-place restore + archive</text>
+<!-- width: 'never deletes, never runs git' 29ch x 5.00px = 145.0px -->
+<text x="542.0" y="410.64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-weight="400" fill="#d97706" text-anchor="middle">never deletes, never runs git</text>
+<!-- width: 'agy pro code rollback - -run <dir>' 33ch x 5.00px = 165.0px -->
+<text x="542.0" y="424.64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-weight="400" fill="#d97706" text-anchor="middle">agy pro code rollback --run &lt;dir&gt;</text>
+<polyline points="404,240 420,240" fill="none" stroke="#4b5563" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#ah-4b5563)" stroke-dasharray="5 4"/>
+<polyline points="404,399 420,399" fill="none" stroke="#d97706" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#ah-d97706)"/>
+<!-- width: 'a failed verify exits 1, keeps the writes, and prints the exact undo command' 76ch x 5.50px = 418.0px -->
+<text x="340" y="528" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#4b5563" text-anchor="middle">a failed verify exits 1, keeps the writes, and prints the exact undo command</text>
+</svg>

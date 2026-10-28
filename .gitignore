@@ -1,0 +1,81 @@
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Test and coverage
+coverage/
+.nyc_output/
+test-cache-*.json
+test/test-cache-*.json
+
+# Environment / secrets guard (never commit credential files)
+.env
+.env.*
+*.env
+
+# Cache and local databases
+.gemini/
+*.tmp
+*.temp
+*.bak
+*.log
+*.out
+
+# Scratch working scripts (one-off diagnostics) and env feedback reports — local artifacts
+scratch/
+docs/feedbacks/
+
+# Historical session artifacts, scratch reports & one-off verification files
+docs/*_session_*/
+docs/*-session-*/
+docs/*_session_*
+docs/*-session-*
+docs/*_report*.md
+docs/*-report*.md
+docs/NEW-SESSION-PROMPT*.md
+docs/requirement-checklist*.md
+docs/review-probe.js
+/*-report.md
+/*_report.md
+NEW-SESSION-PROMPT*.md
+requirement-checklist*.md
+
+# Local dev logs and session artifacts: kept on disk, never tracked.
+# reports/ carries per-session fanout/code run output; decisions.md is the
+# append-only local decision log. Neither is product content.
+/reports/
+/decisions.md
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# IDE & Editors
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*.swp
+
+# Retired nested clone of the same upstream (decision D6: one repo). Kept ignored
+# here so the rule ships with the repo instead of living in a machine-local
+# .git/info/exclude entry.
+agy-tools/
+
+# Local build droppings in the Go module root. The shipped fallback binary is the
+# TRACKED agy-pro/bin/agy.exe; anything else named agy.exe/fix-*.exe at the module
+# root is a one-off local build and must never reach the index (CEO 2026-10-26).
+agy-pro/agy.exe
+agy-pro/fix-*.exe

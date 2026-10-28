@@ -1,0 +1,1 @@
+{"error":{"error":{"code":404,"message":"model probe-unknown-model is not served by this adapter","status":"NOT_FOUND"}},"model":"probe-unknown-model","verb":"streamGenerateContent"}

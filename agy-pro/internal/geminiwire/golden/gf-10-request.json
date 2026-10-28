@@ -1,0 +1,1 @@
+{"contents":[{"role":"user","parts":[{"text":"view_file 호출"}]},{"role":"model","parts":[{"functionCall":{"name":"view_file","args":{"path":"main.go","startLine":10}}}]}]}

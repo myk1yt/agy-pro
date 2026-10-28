@@ -1,0 +1,1586 @@
+================================================================================
+Antigravity-cli (agy-tools) Changelog
+================================================================================
+
+================================================================================
+P34 unconditional search redaction, ERROR-result marker, docs truth pass (2026-10-27)
+================================================================================
+
+[Fixed]
+- The `search_web` tool-result redactor is now UNCONDITIONAL. `NewRedactor`
+  always arms the generic credential-shape arms (a bearer / `Authorization`
+  value, `sk-`/`AIza`/AWS ids, PEM blocks) on top of a call's seed list, but the
+  dispatch built it only `if len(seeds) > 0`, so a search whose arguments carried
+  no seedable operand skipped every arm. The reachable case is the native
+  fallback: its answer is CHILD-PRODUCED text that can quote a page carrying an
+  `Authorization: Bearer ...` line, while `{}` arguments seed nothing, so that
+  line reached the seat raw in the model-visible result and error text. With
+  seeds present the treatment is byte-identical to before. The audit log was
+  already covered by the logger's own default redactor; the model-visible sinks
+  were not.
+
+[Changed]
+- An answer accepted from a `status:ERROR` envelope is still served (probe-
+  verified: that path carries real answers) but is now MARKED: the text opens
+  with `[agy status:ERROR] `, so error-envelope prose can no longer pass for
+  ordinary findings. `SUCCESS` envelopes stay unmarked, the marker rides inside
+  the untrusted-content fence as the answer's first line, and the endpoint search
+  path is untouched.
+
+[Docs]
+- `manual.txt`, `README.md`, `MANUAL.ko.md` and `README.ko.md` now state the
+  native search route's real shape: the restricted `agypro-search` child (two web
+  tools, so no file/shell/subagent surface) is the DEFAULT deployed route,
+  installed by installer step 4/6 and shipped in both embedded profiles so a
+  profile switch cannot retract it; a full agy agent child is only the FALLBACK
+  when the asset is absent or its name is unknown to agy, disclosed on the run
+  line. The notice example now prints the shipped clause per route
+  (`search=agy-native (restricted child; subscription per search)` and
+  `search=agy-native (full agy agent child; subscription per search)`).
+- `agy-pro/README.md` section 8 lost its retired `--models` remnants (the example
+  command, the "behaves exactly like `--models`" line, the "cannot be combined"
+  line, and the `--models` reference in the exclusion-list section). P30 removed
+  that flag: `--seats` is the only seat source, and a stored preset record that
+  still carries `models` prints one advisory and the value is ignored.
+
+[Tests]
+- New `TestToolRunnerSearchWebEmptySeedStillRedacts` (agenttools): an empty-source
+  native search whose answer and error text carry `Authorization: Bearer ...`
+  must render `[REDACTED]` in the model-visible result, the error sentence and
+  the audit log. It asserts its own premise (the `{}` arguments seed nothing) and
+  fails when the `len(seeds) > 0` guard is restored.
+- `TestNativeSearchParserSurfacesErrorField` now pins the marker on the accepted
+  ERROR answer and pins the unmarked SUCCESS case beside it;
+  `TestNativeSearchStubResultReachesProviderSeats` asserts the marker end to end
+  (stub subprocess -> parser -> seat tool message), and
+  `TestNativeRunnerSearchUsesLongPromptAndJSON` switched its fixture to a SUCCESS
+  envelope because its subject is the child argv, not the ERROR policy.
+- `TestNativeSearchChildScopeIsDisclosed` docs half was retargeted from the
+  retired unconditional full-agent sentence to the new restricted-default and
+  full-agent-fallback sentences (EN and KO), plus the shipped restricted notice
+  line on all four docs, and now asserts the retired sentence is ABSENT.
+
+================================================================================
+P33 native-search asset survives profile switches; notice keeps the quota cost (2026-10-27)
+================================================================================
+
+[Changed]
+- The native-search agent asset is now PROFILE CONTENT, so `agy pro mode` no
+  longer takes the restricted search route away: `agy pro mode` owns the
+  `~/.gemini/config/agents` tree, and a switch used to retract the asset
+  (deployed by the installer alone), leaving every later fanout run on the
+  full-agent fallback until the installer ran again. Both embedded profiles now
+  ship `agents/agypro-search/AGENT.md` (byte-identical to the installer's source
+  `agy-pro/assets/agents/agypro-search/AGENT.md`), so a switch to `full` keeps
+  the asset beside the profile roster and a switch to `clean` retracts the
+  roster but keeps that one asset.
+- The restricted-route run notice now reads
+  `search=agy-native (restricted child; subscription per search)` instead of
+  `search=agy-native (restricted child: search_web+read_url_content)`. The tool
+  enumeration and the quota-cost clause cannot both fit the 80-column notice
+  (the enumeration alone was exactly 80 columns), and the cost clause is the
+  behaviour an operator has to know before a run. The child's tool pair
+  (`search_web`, `read_url_content`) remains the deployed asset's frontmatter.
+
+================================================================================
+P32 native-search child tool restriction via a deployed agent asset (2026-10-27)
+================================================================================
+
+[Changed]
+- The native search child is now tool-restricted STRUCTURALLY, not only by
+  prompt text: the fanout runner passes `--agent agypro-search` when the
+  deployed asset (`~/.gemini/config/agents/agypro-search/AGENT.md`, repo source
+  `agy-pro/assets/agents/agypro-search/AGENT.md`, tools `search_web` and
+  `read_url_content`) is listed by `agy agents`, and the run notice reads
+  `search=agy-native (restricted child: search_web+read_url_content)`. Without
+  the asset the pre-P32 prompt-restricted argv runs unchanged and the notice
+  keeps the full-agent sentence; a restricted spawn that exits 1 on
+  `unknown agent` falls back ONCE with a single notice, the pre-install probe
+  never fails a run, and the ERROR payload's `error` field is now folded into
+  the search error text. Installer step 4/6 deploys the asset idempotently
+  (identical content is a no-op, a differing file is backed up to
+  `AGENT.md.bak-<utc>` before the overwrite).
+
+================================================================================
+P31 hub display sync, native-search hardening, wizard seed fix (2026-10-27)
+================================================================================
+
+[Changed]
+- Hub fanout rows now print the rungs a run resolves: `fanout.max_turns` shows
+  value and default `500`, `fanout.registry_defaults` shows
+  `n=3 timeout=300 maxTurns=500 tools=read,search` (the timeout figure is read
+  from `fanout.DefaultTimeoutSec`, so it cannot drift), and
+  `native_seat_concurrency` shows the stored value with default `1` instead of
+  the retired `2`. The shared `mode.DefaultNativeSeatConcurrency` contract value
+  stays 2, because it bounds STORED values, not the run rung.
+- A first-time setup-wizard run no longer writes a `defaults` block. The
+  missing-registry branch seeded `n=3 / timeout 120 / maxTurns 10 / tools` and
+  that block reached providers.json through the pre-write re-read, so every run
+  on such a machine bound the RETIRED 120 s / 10-turn rungs and printed two
+  drift notices against the 300/500 engine defaults. The seed is deleted, so a
+  created registry binds nothing and every rung falls through to the engine. A
+  `defaults` block an operator already has is still round-tripped untouched.
+- Run notices for the native search route name the child's scope:
+  `fanout[<rung>] search=agy-native (full agy agent child; subscription per
+  search)`, still one line inside 80 columns.
+- The native search child's prompt frames the seat-supplied query as data and
+  asks the child to stay on web search and URL reading (no local file reads, no
+  commands, no subagents).
+- Synchronized these defaults, the child-scope disclosure and the corrected
+  search copy across manual.txt, MANUAL.ko.md, README.md and README.ko.md.
+
+[Fixed]
+- A native `search_web` answer used to re-enter the seat unfenced and unclamped,
+  up to the 4 MiB stdout cap, while an endpoint render was held to 64 KiB. The
+  native branch is now clamped to the SAME 64 KiB render budget over the whole
+  tool result, fence included, and the answer is wrapped in
+  `<untrusted-web-content source="agy-native">` with a preamble naming it as
+  untrusted web output. The 4 MiB stdout cap stays as the spawn-side guard, and
+  the endpoint and URL-reading paths are byte-identical to before.
+- The real-agy child environment scrub now covers `*_TOKEN`, `*_SECRET` and
+  `*_KEY` names as well as `*_API_KEY`, case-folded and BOM-safe through the
+  existing normalization. `GITHUB_TOKEN` and `AWS_SECRET_ACCESS_KEY` (whose
+  `_key` ending is why the `_key` arm exists) no longer ride into a child. The
+  fixed gateway set and registry key names still scrub, and the two names a
+  child needs are re-appended after the scrub as before. One disclosed side
+  effect: a native child spawned from inside an agy session no longer inherits
+  the parent session's `ANTIGRAVITY_LS_CSRF_TOKEN`.
+- Korean search copy: `묣료` -> `무료`, `그라울딩` -> `그라운딩`, and `폭백` ->
+  `폴백` (13 spots) in the locale catalog and both Korean docs.
+- Search-provider copy states the real terms: Tavily (1,000/month free), Serper
+  (2,500 one-time signup credits, not a monthly allowance), Brave no longer
+  card-free, and Google's Gemini-API grounding route bills an API key with its
+  5,000 free queries/month on the paid tier only and per executed query after
+  that.
+
+[Tests]
+- The fanout test binary forces the default real-agy resolution seam into a
+  deterministic unresolvable state, so the auto-mode search_web exposure matrix
+  (auto/off x resolvable/unresolvable) is environment-independent and pinned;
+  auto + unresolvable must not offer search_web.
+- New pins: the native render clamp and fence (with the endpoint path pinned
+  byte-identical), the `_token`/`_secret`/`_key` scrub set, the notice and
+  four-document child-scope disclosure, and the wizard's first write carrying no
+  pinned defaults rung (with the existing-block round trip pinned beside it).
+  The first three were mutation-proved by reverting each fix in a scratch
+  overlay and watching the named pin fail.
+
+[Known residuals]
+- The structural tool-surface restriction for the search child is NOT shipped.
+  agy's only tool allow-list is an `agent.md` frontmatter selected by
+  `--agent <name>` from a discovery directory, and agy has no tools flag and no
+  config-dir switch, so the restriction cannot be expressed on the spawn argv
+  without writing an agent definition into a protected config directory on every
+  search. The shipped control is prompt text plus disclosure, which is a soft
+  control: the child still holds a full agy agent's surface. If agy grows a
+  tools flag, or an install-time search-only agent definition is adopted, the
+  notice, the manual sentence and the disclosure pin must change with it.
+  Superseded in P32/P33 (2026-10-27): the structural restriction IS shipped now.
+  The agent definition the paragraph above assumes is missing is the adopter: an
+  install-time search-only agent (`agypro-search`, tools `search_web` and
+  `read_url_content`) is deployed by installer step 4/6, and both embedded
+  profiles ship it so `agy pro mode` cannot retract it. The restricted child is
+  therefore the DEFAULT route, the full agy agent is only the fallback (asset
+  absent, or its name unknown to agy), and both are disclosed on one run line.
+  This bullet is kept as written above for the record; P34 brought the operator
+  docs in line with it.
+- The native search child's compliance with the prompt-level restriction is
+  UNVERIFIED: this unit spawned no real agy turn.
+
+================================================================================
+P30 native provider search fallback and legacy models removal (2026-10-27)
+================================================================================
+
+[Changed]
+- Empty fanout `search_endpoint` values now use the native Antigravity search
+  fallback for provider seats by default. Each search runs one headless real-agy
+  turn and consumes Antigravity subscription quota. Explicit endpoints keep the
+  existing HTTP behavior, `search_key_env` alone does not select explicit mode,
+  and `--search-native=auto|off` controls the fallback (default `auto`). Run
+  notices disclose `search=endpoint(host)`, `search=agy-native`, or `search=off`.
+- Removed the legacy fanout preset `models` field, `--models` flag and ladder
+  rung. `seats` is now the only preset seat source, and the preset editor has
+  five zone-B rows. Stored records carrying legacy `models` print one advisory
+  per record; the value is ignored and never echoed.
+- Synchronized the behavior, alternatives and drop-door across manual.txt,
+  MANUAL.ko.md, README.md and README.ko.md.
+
+================================================================================
+P29 fanout engine defaults and preset seat selection (2026-10-26)
+================================================================================
+
+[Changed]
+- Raised fanout's engine default `--max-turns` from 10 to 500 and set the
+  native-seat concurrency fallback from 2 to 1 per owner direction. The
+  `flag > preset > state.json > engine fallback` precedence is unchanged, so
+  a positive stored `native_seat_concurrency` still outranks the fallback.
+- Preset-editor seat rows now show `[x] ` when armed and `[ ] ` when unarmed.
+  Enter still arms a row; Space now also arms or unarms it.
+- Synchronized these defaults and seat-selection instructions across
+  manual.txt, MANUAL.ko.md, README.md and README.ko.md.
+
+================================================================================
+P27 notice masking union, disclosure layout and warning isolation (2026-10-27)
+================================================================================
+
+[Changed]
+- Rebuilt notice operand masking as a measure-then-emit union: credential
+  detection measures the rendered output, including separators-normalized runs,
+  while word-like path components stay readable.
+- Moved the operative privilege/egress knobs ahead of the preset label, keeping
+  the clause within 80 columns even under the built-in-defaults label.
+
+[Fixed]
+- Hardened the chmod-failure warning channel so it can never affect the write
+  path. A lost warning is acceptable; a crashed save is not.
+
+[Known residuals]
+- Corrected in P28: the measured leak boundary is wider than the earlier
+  lowercase-only/letters-only wording. Credential-cased-false rendered runs of
+  >=16 base64-alphabet runes can render raw on the local stderr notice. "/" is
+  a run member, so the window is measured across separators: the flagship
+  13+13=31 form has no segment >=16. This includes PascalCase word-shaped
+  values and lowercase-only splinters with <=2 digit blocks (R1/R2); R11 can
+  strip drive decoration while retaining the run.
+- Sub-floor fragment carry (F-9c/R6): a masked render can retain <16-rune
+  fragments. The pinned root/out_dir example renders
+  key=w****/K7MDENG/bPxRf****. Non-folded separator look-alikes can likewise
+  split reassemblable text into sub-floor windows (R7).
+- Other disclosed boundaries: all-caps names, interleaved lowercase-hex/content
+  ids and two-letter-word chains can be over-masked, fail-safe (R3/R4/R5).
+  R8 records out-of-scope whole-value handling for tools/search_key_env and
+  preset names; R9 is a reconstruction caveat, not a render class; R10 is
+  reapplication non-idempotence, with no second-pass production sink.
+- The leak class is population-mitigated: adjudication measured a
+  natural-population miss of 2.17e-4. Its R1-R11 register is the authoritative
+  detailed list.
+
+================================================================================
+P25/P26 warning delivery, harness cleanup and notice masking (2026-10-26)
+================================================================================
+
+[Fixed]
+- Chmod-failure warnings now use synchronous stderr writes containing only the
+  target path and errno, so an immediate exit cannot drop the warning.
+- Normal, fatal, SIGINT and SIGTERM test exits share bounded child draining and
+  sandbox cleanup with bounded re-delete attempts.
+- Replaced the ambient-environment early-exit pin hook with an internal spawn
+  argument, and pinned SIGINT cleanup plus populated default-sync results.
+- Corrected in P27: the earlier guard revision for location-decorated secret
+  plants was not complete; see the P27 union design and residual disclosure.
+
+================================================================================
+P24 credential-write decoupling and hermetic test cleanup (2026-10-26)
+================================================================================
+
+[Changed]
+- Decoupled post-write chmod failures from successful credential, quota and
+  cache persistence, so a best-effort permission update cannot discard valid
+  written data or change the caller's success result.
+- Removed the test sandbox on normal exit and tightened cleanup against late
+  filesystem activity. Corrected documentation wording to match the shipped
+  behavior.
+
+================================================================================
+P23 credential-write permissions and hermetic test HOME (2026-10-26)
+================================================================================
+
+[Changed]
+- Credential, token, quota and cache writes now request mode 0600, including
+  atomic temporary files and rename-failure fallback writes.
+- The JavaScript test suite creates an isolated temporary HOME before loading
+  configuration, keeping test reads and writes away from the real user profile.
+
+================================================================================
+P22 Go residual fixes (2026-10-26)
+================================================================================
+
+[Fixed]
+- Applied the 80-column drop clause to all ten fields and placed the `(+N more)`
+  overflow count ahead of the field name.
+- Made the first save target win and added the `version --help` usage line.
+- Decided explicit help only after parsing, including correct handling of the
+  `--` terminator, and masked positional components in user-facing notices.
+
+================================================================================
+P14 documentation alignment: presets D hotkey and help exit codes (2026-10-26)
+================================================================================
+
+[Added]
+- The setup-hub presets list `D` hotkey (implemented in P11) is now documented
+  in manual.txt and MANUAL.ko.md: `D` acts on the pinned current selection
+  exactly like the `Delete` action row. On row [1] it opens the same reset gate
+  ("Reset (built-in defaults) to engine defaults? All saved settings are
+  removed."), on an ordinary preset row the same delete gate, and with no
+  selection it prints the established select-first message. Both `d` and `D`
+  are accepted.
+- The exit-code rows now record that explicit `--help`/`-h` exits 0 and prints
+  a `Usage:` line on every `agy pro` verb, including `version` and `help`,
+  while a real bad flag still exits 2.
+
+[Changed]
+- Removed the now-false "no separate D hotkey" sentence from manual.txt:596 and
+  MANUAL.ko.md:598, and marked explicit help as exit 0 in the general exit-code
+  line and the code-door exit-status table of both manuals.
+- Code: none. This unit touched only the five user-facing documents; no Go/JS
+  source, locale catalog, plugin, profile or rules file was changed.
+
+[Verification]
+- Behavior quoted from agy-pro/internal/tui/screen_presets.go:1310-1314 and
+  agy-pro/internal/i18n/locales/en.json:339-343; P11 report carries the full
+  before/after binary evidence (9/9 help paths exit 0, 9/9 bad-flag paths
+  exit 2).
+- Re-run in this unit: `go test ./internal/tui/ -run 'TestPresetsDKey'
+  -count=1` ok; `go test ./cmd/agy/ -run
+  'TestProFlagHelpExitsZeroAndBadFlagsExitTwo|TestParseSwarmFlagsHelpExitsZero'
+  -count=1` ok.
+
+================================================================================
+P10 bilingual user documentation completion (2026-10-26)
+================================================================================
+
+[Added]
+- README.md and README.ko.md now include an operating guide for the setup hub,
+  providers, models, prompts, launcher, bridge tools, fanout, presets, swarm,
+  `agy pro code`, hybrid P1/P2, integrations, modes, diagnostics, plugins and
+  lifecycle hooks, with flag tables and real dry-run captures.
+- manual.txt is now an English-only canonical manual. MANUAL.ko.md is a native
+  Korean manual with the same 14-chapter feature coverage, installation and
+  recovery instructions, ASCII diagrams, output-shape legends and artifact
+  examples. Both manuals include the editable built-in defaults, the full
+  resolution ladder, preset notices, path traversal refusals and the code-door
+  verification/rollback contract.
+- The documentation now captures the actual swarm and code dry-run output, the
+  integrations status shape, a setup-hub navigation map, the fanout lifecycle,
+  the preset-resolution ladder and the code-door lifecycle.
+
+[Changed]
+- Corrected stale model/pricing rows against src/config.js, replaced the
+  bilingual manual.txt with the English canonical copy, documented the current
+  preset-selection privilege/egress notices for named and standing rungs, and
+  clarified that fanout's CLI has no general provider-seat y/N gate: approval
+  belongs to the calling agent, plugin or code workflow.
+- Documented the actual row-[1] reset interaction: the Delete action row opens
+  the confirmation gate. No separate D hotkey exists in the current key
+  dispatcher. This also corrects the shortcut wording in the previous entry;
+  the code behavior itself is unchanged by this documentation unit.
+
+[Verification]
+- `cd agy-pro && go build ./... && go vet ./internal/... && go test ./internal/... -count=1`:
+  26 internal test packages passed, 0 failed; build and vet passed.
+- `npm test`: 296 JavaScript tests passed, 0 failed.
+- Real read-only/dry-run captures used for documentation: swarm composed-vector
+  preview, code plan/run dry-run, integrations status and agy-tokens help.
+
+================================================================================
+Editable built-in fanout defaults (2026-10-26)
+================================================================================
+
+[Added]
+- Row [1] `(built-in defaults)` in the setup hub is now a directly editable
+  preset. Enter opens the editor and Ctrl+S saves only the fields actually set;
+  an empty field still follows its own engine default. Ctrl+A remains an
+  optional copy into a NEW preset, and D resets row [1] to the engine defaults
+  behind the existing confirmation gate. Set default on row [1] is legal but
+  redundant.
+- A bare `agy pro fanout` with no `--seats`, `--preset` or
+  `AGY_PRO_FANOUT_PRESET` consumes row [1]'s saved record. Explicit seats and
+  named presets still outrank it. The reserved name `(built-in defaults)` is
+  refused for ordinary presets, with a localized validation message that does
+  not echo the operand.
+- All 12 UI catalogs now describe the editable row and carry the reserved-name
+  validation message. The obsolete read-only refusal key was removed.
+
+================================================================================
+Fanout seat lineups: pin once in a preset, automatic runs honor it (2026-10-25)
+================================================================================
+
+[Added]
+- Pinned seat lineups in the setup-hub fanout preset editor (internal/tui): the
+  `seats` field is now a structured sub-list instead of one comma string. Each
+  seat is its own row, `+ Add seat` opens the model picker over the live
+  inventory, `Move seat up` / `Move seat down` reorder and `Remove seat` drops
+  one; saving writes the same comma grammar the engine already parsed, so an
+  empty list still means "the engine selects". A save-time warning names a
+  duplicate seat (two identical rows, always checked) and, when the model
+  inventory has been read in this editing session (it is loaded by opening the
+  model picker; without that read there is nothing to compare against and the
+  check is skipped), a seat whose model is no longer in that list. The preset
+  list row shows `seats pinned: N`.
+- `agy pro fanout` drift reporting for a STANDING (store `default_preset`)
+  lineup: a pinned model that vanished from the registry is skipped with one
+  warning per seat, the rest of the lineup runs, and the loss is counted, not
+  hidden. `summary.json` carries `skipped_seats` (count) and
+  `skipped_seat_specs` (masked tokens) only when a seat was lost, `degraded`
+  becomes true, `n_requested` keeps the preset's original lineup size,
+  `reconciliation.md` gains `Skipped Seats: k / n (specs)`, the console banner
+  gains the same row, and `progress.log` carries
+  `[preset "<name>" seat n/m] <spec> skipped (no longer available)` before the
+  first seat starts. All seats drifted fails once, naming the preset. A lineup
+  from a NAMED preset (`--preset` / `AGY_PRO_FANOUT_PRESET`) and an explicit
+  `--seats` lineup are ad-hoc: the same vanished model is a hard error there.
+- A run-level seat-lineup echo on the fanout path, printed for every
+  preset-sourced lineup on stderr: `fanout: seat lineup from preset "<name>"
+  (<rung> rung): N seat(s), M metered provider seat(s) (<seats>)`, with an extra
+  `a named preset is ad-hoc - confirm the metered seats above before the run
+  spends` clause for the `--preset` and `env` rungs. It is the only place an
+  automatic run states which seats it will use and how many of them are metered,
+  because the vector itself carries no `--seats` on that path.
+- `summary.json` records the lineup's provenance: `seat_lineup`
+  (`preset`, `rung`, `seats`, `metered_seats`, `standing`), omitted when no
+  preset supplied the lineup.
+- An advisory provenance marker for the pinned seats: `SavePresets` stamps
+  `seats_sha256` (hex SHA-256 of the stored seats string), and a run that reads
+  the store `default_preset` prints one notice in two arms: the pin carries NO
+  marker (a hand-authored or pre-marker record), or the stored value no longer
+  matches the marker. Both arms are advisory, not a seal: the run uses the
+  on-disk lineup, the notice prints only when that pin is the lineup the run
+  applies, a marker edited to match stays silent, and nothing here blocks the
+  run, the save or the editor.
+- `agy pro swarm` no longer demands `--seats` when the fanout preset pins a
+  lineup: the pin satisfies the requirement, the vector omits the pair, and the
+  dry-run echo states `seat lineup from fanout preset "<name>" (<seats>); no
+  seats were passed, so the preset's lineup applies` on stderr.
+
+[Changed]
+- The seat ladder is unchanged in shape: explicit `--seats` (or `--models`, or a
+  `--units` plan) > the active preset's `seats` pin (`--preset` >
+  `AGY_PRO_FANOUT_PRESET` > the `default_preset` key) > the `providers.json`
+  defaults > the engine's automatic native-first selection. A preset that pins
+  no lineup leaves the automatic selection byte-identical to before.
+- The swarm door defers to that pin ONLY when the caller passes no `--seats`:
+  `RunSpec.Args()` builds the vector WITHOUT the `--seats` pair when the spec
+  carries no seats of its own and a pin exists (new
+  `BuildFanoutArgsPresetLineup` / `BuildFanoutArgsFilePresetLineup`), because
+  repeating the preset's lineup as a flag would outrank the preset rung and
+  reclassify it as an explicit pick. A seat the operator named (the `--seats`
+  flag, a seat picked in the interactive builder) always outranks the preset, and
+  with no pin the seven-flag vector is unchanged element for element. `agy pro
+  code` is deliberately untouched: its plan/write/review phases keep their own
+  explicit, cost-echoed seats.
+- Standing cost approval is scoped to the store `default_preset` rung. A named
+  preset (`--preset` / `AGY_PRO_FANOUT_PRESET`) still resolves its lineup, but it
+  is an ad-hoc choice for that run: its metered seats keep the per-run echo and
+  the caller's go-ahead, and its drift policy is the hard error. A hand edit of
+  `fanout-presets.json` is not standing approval either (the advisory provenance
+  notice reports it, both for a pin with no marker and for a stale marker).
+- A default preset that contradicts itself by pinning BOTH `models` and `seats`
+  (a shape the editor refuses at save time, but a hand edit can write) no longer
+  dead-ends the run at the `--seats and --models cannot be combined` gate: the
+  seat lineup wins, the `models` pin is dropped with one notice, and the run
+  proceeds. An explicit `--models` flag is untouched (flag beats file).
+- Control characters are refused instead of echoed: a seat token carrying a Cc or
+  Cf rune is rejected at `ParseSeatSpecs` (which also makes the editor's
+  `ValidatePresetForSave` refuse it), a preset record whose `seats` / `models` /
+  `tools` carry one is dropped at load with one warning, and every seat/preset
+  echo strips the class as a second line of defense. Stripping at parse is
+  deliberately not an option: a sanitized token is not the token the user asked
+  to run.
+- A degraded run no longer wears the green `All findings verified` banner; it
+  prints a `degraded run (...)` notice instead, and the `agy pro swarm` console
+  table gains a `run status:` footer (degraded word, seated versus requested
+  seats, skipped seats, lineup provenance). A clean run's output is unchanged.
+
+[Unchanged by design]
+- The documented native-first fallback line-up stays exactly as it was; a preset
+  pin is an override, not a replacement for the fallback.
+- An explicitly NAMED preset that conflicts with an explicit flag still errors
+  (exit code 2); only the store-default rung drops a conflicting knob. The
+  `--seats`/`--models` exclusivity, the partition-mode read-only gate and
+  `ValidatePresetForSave`'s rule set are unchanged.
+- Native seat ids are never drift-checked (there is no catalog to check them
+  against at resolution time); an unknown native id still surfaces as a degraded
+  seat inside the summary.
+- The fanout engine has no per-run consent gate for seat lineups, so the echo
+  above is informational for the standing rung and the consent surface for the
+  ad-hoc rungs; nothing was loosened for explicit `--seats` picks and their
+  exclusion advisories are unchanged.
+
+================================================================================
+agy pro code: the zero-MCP multi-model coding door (2026-10-24)
+================================================================================
+
+[Added]
+- `agy pro code` verb (cmd/agy/pro_code.go): plan | write | review | rollback |
+  run over the shipped partition mode of `agy pro fanout`. Native subscription
+  seats plan and review free, one provider seat writes a scoped unit, the engine
+  snapshots the tree before the first write, runs the verification itself with a
+  bounded repair (--max-repairs, default 1), and restores the snapshot on
+  `agy pro code rollback --run <dir>`. Run artifacts land in reports/code/<ts>.
+- `internal/codesnap` (new package): copy-based snapshot, tree diff, and
+  archive-move rollback. The manifest is the only source of truth; a file the run
+  created is MOVED into rollback-archive/ (the package's two removal call sites -
+  the key-store prune and the case-fold probe's own cleanup - cannot reach a
+  workspace file); git is never invoked, imported or parsed.
+- `internal/codework` (new package): plan synthesis with the shipped parser as the
+  validator, engine-owned verification detection and execution, bounded repair,
+  phase orchestration, and the additive-only CodeRunReport (compact human block on
+  stdout, `--json` for the machine document; every document stays byte-stable).
+- Governance and credential write denylist (internal/agenttools/guard.go):
+  `write_file` and `replace_in_file` now refuse agent rules (agents.md, gemini.md,
+  claude.md), the provider registry and its sibling aliases, per-run state,
+  integration and tool settings, and the `rules`, `.agy-pro`, `.gemini` directory
+  components at any depth. Reads and searches are unaffected; the check also
+  follows the symlink-resolved directory chain.
+- Documentation: `agy-pro/docs/code.md` (surface, exit codes, safety model,
+  limitations, quickstart) with claim pins in
+  `internal/codework/docs_claims_test.go`, plus a pointer section in
+  `agy-pro/docs/fanout.md` (section 9).
+
+[Changed]
+- Provider registry restored from the write-enabled factory-reset backup
+  (factory-reset-20261022_162014, sha256
+  d5c02fe6849db4c5d63b7347f0ed81d15fe25ac528626b6b907f2c1b457f69bc), so the four
+  registry models carry the write tools a write unit needs. Live-state step: no
+  repository file changes.
+
+[Unchanged by design]
+- No token or dollar cap exists anywhere in this door. The engine's per-seat
+  iteration limit (defaults.maxTurns) bounds the number of calls, and the report
+  prints no dollar figure because this path has no price table.
+
+[Hardening, review rounds 2-6]
+- Snapshot/snapshot-ledger identity is EXACT (internal/codesnap): whether a
+  walked path is a file the manifest recorded or withheld is decided by the path
+  itself, because the name-class fold merges spellings the filesystem keeps
+  apart. Directory-prefix comparisons fold ASCII case only, and the fold decision
+  is a runtime probe of the operation's root (case-sensitive volumes never see
+  two directories merged; an inconclusive probe folds). A rollback row whose
+  resolved DIRECTORY CHAIN transits a governance/credential directory or VCS
+  metadata refuses the whole manifest (exported as
+  agenttools.ResolvedDirChainRefusal and reused from the write guard's own
+  ancestor walk), and the archive arm refuses to move a file that IS a manifest
+  row under another ASCII case spelling (os.SameFile, reported in skipped[]; since
+  the round-5 fixes below the lookup is an index, so an unrelated hardlink is
+  archived rather than spared).
+- The run-directory claim test is a union of the lexical match on the authored
+  scope and a folded-literal match, with character classes copied verbatim, so a
+  character class such as [A-z] keeps its real coverage. The pre-consent gate in
+  internal/codework applies the same rule - a CALL into that authority since the
+  round-5 fixes at the end of this section - and a strict parity pin holds the two
+  layers together: a case-variant scope aimed at the run directory is now exit 2
+  BEFORE the consent prompt instead of exit 1 after it.
+- Verification environment is decided by what runs, not who named it: a
+  go-toolchain verifier, detected or explicit, runs with GOPROXY=off,
+  GOTOOLCHAIN=local and CGO_ENABLED=0, and an operator-set value for those names
+  is not passed through; the consent echo names the policy from the same
+  predicate. Every other explicit --verify keeps the sanitized environment.
+- Repair-excerpt fencing is capped at 16 backticks, and a wider backtick run is
+  neutralized to a `[N backticks elided]` marker before the fence is measured, so
+  an oversized excerpt keeps both its fence structure and its diagnostic text.
+- Named refusal classes and one fold everywhere: a Win32 stream-syntax scope
+  entry is refused at authoring time with its own class phrase, and the DOS device
+  names, the governance drift watchlist and the plan builder's name mirror all
+  compare through agenttools.Win32NameFold instead of strings.ToLower copies.
+- Documentation honesty pass (agy-pro/docs/code.md): the fold is described as a
+  name-CLASS test that over-refuses a look-alike which is a distinct file (the
+  measured volumes do not collide on ſ/ı/U+212A), file identity is stated as
+  exact, the 8.3 over-refusal band is stated exactly (a `~` tail of one to five
+  digits is refused, six or more is not), and every sentence the shipped code
+  contradicted was rewritten with its pin converted alongside it.
+- Round-5 fixes (FIX-F2, internal/codesnap + internal/codework): the ledger claim
+  scanner is escape-aware and follows Go's own class grammar, is exported once
+  (codesnap.FoldLiteralRuns / LedgerScopeClaims) and is CALLED by the pre-consent
+  gate instead of copied, so the two layers cannot drift again; the case-fold probe
+  now measures a directory inside the operation root (a whole-path flip answered
+  from the mount's parent and could switch the fold off on a case-insensitive
+  workspace) and its answer is cached per root; the archive restraint is indexed by
+  ASCII-folded path, so a run-created hardlink under another name is archived
+  instead of spared; and the consent echo no longer calls the hermetic verifier
+  environment "offline" - it names the trio, what it stops and the fact that the
+  verifier's own code is not network-sandboxed. The scanner is pinned by a
+  differential fuzz against path.Match (898,040 pattern/target pairs across three
+  phases, zero divergence, both fold policies; the alphabet gained the "-" and "~"
+  bytes and a two-byte non-ASCII letter in the round-6 sweep).
+- Round-6 seal (FIX-F1, internal/agenttools): the write guard's resolved-directory
+  arm judges BOTH denylists through the ONE resolver the exported predicate and the
+  rollback preflight also use, so a directory link into .git/.github is refused with
+  the lexical VCS refusal's own shape; a chain that cannot be resolved refuses
+  instead of passing; and the exported predicate resolves the parent chain only,
+  while the scope view keeps the full resolution because replace_in_file reads the
+  file it addresses.
+- Round-6 seal (FIX-F4, internal/codesnap): the undo net can no longer be turned into
+  an installer from a neighbouring run. (a) Every manifest Take writes is bound to
+  its run by `manifest.sig` = HMAC-SHA256 over the manifest bytes under a per-run
+  32-byte key kept in `~/.agy-pro/ledger-keys/<id>` (0700 directory, 0600 file,
+  outside every operation root); LoadManifest/Rollback verify it before believing a
+  row, a hand-edited or forged ledger refuses whole, and a ledger without a sidecar
+  - every run directory written before this binding - refuses as
+  `unsigned ledger (pre-provenance format)` instead of being trusted. The key ID is
+  derived from the ledger's own path, so the manifest stays byte-deterministic and a
+  re-take invalidates the older pair. (b) A scope that could claim ANY existing run
+  ledger under the root refuses the whole take and the whole rollback, not just a
+  scope against this run's own `--out` (the live-reproduced chain: run 2 granted
+  `--scope reports/code/t1/**` rewrote run 1's manifest and snapshot, and the
+  operator's rollback installed attacker bytes). (c) A claim whose INODE is shared
+  with a governance/credential, VCS or secret-class path of the same walk is
+  withheld like a secret, because a hardlink has no alias view for the name arms.
+  (d) The ledger claim tests measure the fold of BOTH the root and the ledger's
+  deepest existing ancestor, so a case-insensitive mount or casefold directory
+  BELOW a byte-exact root can no longer hide the ledger from the fold. Disclosed:
+  over-refusal of a user directory that holds `manifest.json` + `snapshot/`, and
+  pre-provenance run directories are evidence, not restore targets.
+- Round-8 hygiene pass (FIX-G1, internal/codesnap): the fold probe a discovered
+  ledger costs is now GATED - the walk asks the cheap claim test (under the fold-ON
+  policy, a proven superset of every measured verdict) and the ledger fingerprint
+  first, so a case-sensitive volume pays one probe per ledger CANDIDATE instead of
+  one per walked directory (measured on a 17-directory tree: 17 -> 1, and 0 when
+  nothing in scope carries the ledger shape); the key-store index records the
+  RESOLVED ledger directory, so removing the alias spelling a take used (a junction,
+  a subst drive, another ASCII case) can no longer make a live ledger look dead and
+  delete its undo key, and the prune re-stats the recorded directory immediately
+  before the removal to close the stat-to-remove window; the never-deletes pin now
+  counts removal call sites by PREFIX (os.RemoveAll included), so it counts exactly
+  two - the key-store prune and the probe's cleanup of its own throw-away directory -
+  and the doc sentence, rollback.go's mirror and this changelog state that same
+  count. Disclosed rather than fixed: a ledger whose `manifest.json` exceeds the
+  1 MiB fingerprint bound escapes the EARLY cross-run refusal (integrity unaffected -
+  `manifest.sig` and the rollback digest preflight still gate it), and planting a
+  valid-shape pair refuses the PLANTING run's own rollback as well (self-denial),
+  not only the next run's scopes.
+
+Version: 0.10.0
+Release Date: 2026-10-22
+Previous Version: 0.10.9
+
+--------------------------------------------------------------------------------
+[Overview]
+--------------------------------------------------------------------------------
+Follow-up release for the full-screen setup TUI. It closes the defects found by
+using the 0.10.9 TUI on a real Windows console and the gaps that release left
+open: the model form gains the capability fields the registry already stored,
+providers gain an in-place add and edit form whose only write path is the
+exact-diff approval, and the form fields and the prompt editor gain a visible
+caret with the standard editing keys. On a real console the arrow keys no
+longer deadlock behind a window of mouse noise, a multi-line paste no longer
+submits a form early, and the M4 approval gate can no longer be pushed off an
+80x24 frame and answered blind. Credential masking is now one shared policy
+with a recorded boundary instead of per-site patches, and the masking class is
+closed. Every planted test credential moved into a concatenation-built
+contract package. The live providers.json (md5 d17c70ad...) and state.json
+(md5 2d6861d3...) were byte-unchanged across the whole mission.
+
+Pool exclusion is now a user decision instead of a compiled-in rule. The
+hardcoded k3 exclusion gives way to a list the user owns in providers.json,
+one rule governs auto-seating and failover alike, the setup hub becomes the
+only editor and the legacy settings panel a read-only view that routes to it,
+and saved swarm seat presets become selectable by name. An excluded row is
+marked in every list an agent reads, and the agent-facing rules point at that
+marker instead of naming a family to avoid.
+
+[Added]
+- Model form capability fields: the add and edit form gains Thinking, Reasoning
+  effort, Vision, and Video, in that order between the max-output row and the
+  tool allow-list. Reasoning effort accepts a closed set (default, none, low,
+  medium, high, xhigh, max); an empty value means the runtime default, and a
+  value outside the set is refused with the cursor left on the failing field.
+  A key-shaped value is refused by the secret check before the closed-set
+  check and is never echoed. Edit prefills all four fields, the approval diff
+  prints only the fields that changed, and an untouched edit still reads
+  "(no field changes)". Stored flags for an existing model are visible instead
+  of being passed through invisibly.
+- The same four fields in the CLI twins: `model-add-json` and `model-update`
+  print `supportsThinking`, `reasoningEffort`, `supportsVision`, and
+  `supportsVideo` in the approval diff through the shared operand masker.
+  `model-update` re-reads the registry after consent and re-verifies the
+  presented diff before the write, so a change made while the approval was
+  open refuses the write instead of being overwritten.
+- Models list: each row carries the capability note from the stored flags
+  (`vision`, `video`, `thinking(<effort>)`), and the sticky selection starts at
+  none, so a verb pressed with no selection refuses ("Select a model row
+  first.") instead of acting on the first row. The selected row is marked with
+  a solid dot and the cursor is restored by row id after a mutation.
+- Provider add and edit in the TUI: add takes a name, base URL, and key-env
+  name; edit takes the base URL and key-env name only and renders the provider
+  name as a fixed line no keystroke can reach. Both modes show the read-only
+  providers.json defaults block and end at the M4 approval, which states the
+  exact diff (`+ field: value`, `  field: before -> after`, or
+  "(no field changes)") and the atomic 0600 write before anything is written.
+  A missing, ambiguous, or unreadable provider refuses every save before an
+  approval opens. The write is an in-place edit that leaves the model list and
+  every key value untouched.
+- Caret and text editing: Left and Right move the caret, Home and End jump,
+  Delete removes forward, and typing inserts at the caret, on the form fields
+  and in the prompt editor. The caret is drawn in-line: reverse video (SGR
+  7/27) on the color tiers, a `|` marker with one-cell tail truncation on
+  plain, and no application escape bytes on plain. No hardware cursor is used.
+- The user-owned pool-exclusion list: providers.json carries
+  `defaults.excludeModels`, a sibling of the still-reserved `excludeFamilies`.
+  An entry names a provider (every model of it), a model id (that model under
+  any provider), a provider/model pair (both sides must match), or
+  `family:<name>`, which reproduces one of the built-in default entries
+  exactly. The key absent or null applies the built-in default entry
+  `family:k3`; an explicit empty list excludes nothing.
+- Exclusion markers in the lists an agent reads: the swarm seat list and
+  `agy pro models --all` mark an excluded row `excluded (exclusion list)`, and
+  `agy pro models --json` carries the field `excluded` for the same row, so the
+  user's decision is read from the inventory instead of inferred from a model
+  name.
+- Exclusion editing in the setup hub: `agy pro setup` edits the list behind the
+  exact-diff approval modal, with a stale-base re-check, so the same gate that
+  guards every other providers.json write guards this one.
+- Seat presets by name: a saved swarm seat preset is selectable by name in the
+  seat-selection grammar, alongside numbers, ranges, and p1/p2/p3. An unknown
+  name-shaped token is refused by name at the interactive seat step.
+- The integrations command surface: `agy pro integrations
+  status|apply|retract|preset|adopt|rollback|repair` owns the rules, skills,
+  plugins, hooks and statusLine slot the engine deploys. Every writing verb
+  composes one plan, prints its exact diff and asks once (`y/N`); a
+  non-interactive stdin must pass `--yes`, and the exit codes are 0 ok, 1
+  runtime error or refusal, 2 usage error. Features are `statusline`, `hook`,
+  `rules`, `plugins`, `skills`; presets are `native` and `tools` (`custom` is
+  derived from the toggles and refused as an operand). The deployed `hook`
+  document spells its one command field inline (`"command": "agy-tokens --hook"`,
+  a shell and documents only `type`, `command` and `timeout`.
+- The Integrations screen's action rows now carry per-row descriptions in all
+  twelve languages, the picker rows (Preset, Rollback) are marked with `>>`, and a
+  ten-topic manual browser opens from Help (Enter on the guide section): plain-
+  language pages for every hub surface plus the CLI, scroll-clean at 80x24.
+- The hub's Integrations screen and its hub row: per-feature intent plus engine
+  posture, the preset picker, apply pending, retract all, adopt, rollback and
+  repair, each behind the same single approval modal. The Integrations row lands
+  at 9 and Exit moves to 10, so the footer advertises the list's `0`-prefix
+  compose gesture.
+- The rollback operand grammar: `agy pro integrations rollback` still restores
+  `settings.json` from its snapshot chain, and `rollback <feature>`
+  (`hook`, `rules`, `plugins`, `skills`) now restores that one content feature's
+  pre-install deploy tree behind the same single consent while recording no
+  `state.json` intent row, because restored bytes are not a posture the user
+  stated. `rollback statusline` exits 2 and names the no-operand settings door,
+  `rollback native|tools` (and `custom`) is refused because a whole posture has
+  no single pre-install tree, and two operands is a usage error. The hub's
+  Rollback row opens the same choice as a picker: `settings.json` plus the four
+  content features.
+
+[Changed]
+- `agy pro setup` opens the TUI only when both stdin and stdout are consoles. A
+  piped stdin now degrades to the line-mode wizard instead of opening a TUI
+  that cannot accept text.
+- The settings row that told the user to run `agy pro setup` from inside the
+  TUI now names the in-TUI route (Hub > Providers > Add provider) and keeps
+  `agy pro setup --wizard` and `providers add-interactive` as the terminal
+  alternatives.
+- Root Esc asks before exiting: the second Esc exits and any other key
+  cancels, while the hub Quit row still exits on one key.
+- The base footer legend is fitted to the frame width: the full legend when it
+  fits, the compact one below that, and the `Ctrl+C exit` reminder never leaves
+  the line.
+- Messages are labelled by kind at the screens that set them, so a success no
+  longer renders in the warning color. A message no longer follows the user to
+  the next screen.
+- Minor screen fixes: the hub keeps its cursor across a rebuild, the doctor
+  hint names the refresh key and the settings path, the help overlay closes
+  only on Esc, q, or Enter (and says so), and the first-run language footer
+  states the rows-past-9 clause.
+- The line-mode vocabulary gains `r`, so the doctor refresh gesture also works
+  off console.
+- One exclusion rule in every path: auto-seating and failover skip an excluded
+  entry, and an explicit pick (a number, a range, or a seat spec) is honored
+  with a warning while nothing is rejected. The previous exit-2 refusal of a
+  numbered pick that named an excluded row is removed.
+- The legacy `agy pro settings` panel and `agy pro settings show` render the
+  list read-only with a route to the hub, and the panel is deprecated: it
+  keeps working, prints a deprecation notice naming `agy pro setup`, and
+  routes the user to the hub.
+- The agent-facing rules no longer hardcode a k3 family ban: the workspace
+  AGENTS.md, rules/AGENTS.md, and the agypro_swarm plugin tell an agent to read
+  the user's exclusion list, or the marker in `agy pro models --all`, instead
+  of assuming a fixed family ban.
+- Product docs describe the shipped behavior: agy-pro/docs/fanout.md,
+  agy-pro/docs/swarm-hybrid.md, agy-pro/README.md, manual.txt, and MANUAL.ko.md
+  carry the corrected sentences, and the doc-claim tests pin them.
+- The root installers hand the Antigravity deployment to the Go engine. The
+  `configure-statusline.js` and `configure-customizations.js` steps and the
+  banner that claimed the statusLine is "automatically configured" are gone;
+  one guarded call replaces them, `agy pro integrations apply tools --yes`. On
+  a machine without the `agy-tokens` launcher the statusline step is skipped
+  with a note and the call still exits 0; `agy pro integrations status` reports
+  that posture and `agy pro integrations repair` completes the step once the
+  launcher exists. A machine without `agy` on `PATH` gets that exact command
+  printed and the install continues; a failing call stops the install with
+  exit 1.
+- `agy pro mode restore` copies back only the mode-managed register (`agents`,
+  `references`, `profile.json`, `config.json`). Legacy `rules/`, `skills/` and
+  `plugins/` entries inside an old backup are left in place with a transcript
+  line naming `agy pro integrations` as their owner.
+- `uninstall.ps1` retracts the deployed integrations first, while the shim still
+  exists, so the files in the Gemini config tree reach
+  `<AGY_PRO_HOME>/backups/<ts>_retract/` instead of being orphaned.
+- Dead seam removed: `settings.Core.RunWizard`, `Deps.RunWizard` and the
+  `NewCore` nil-defaulting are gone. Every live wizard door already binds the
+  gated entry point directly, so the seam had zero production callers.
+
+[Fixed]
+- Arrow keys dead on a real console: the reader returned "consume 0" forever
+  when the first 32 queued records were all mouse noise, so every key behind
+  them, arrows and digits alike, was unreachable. The reader now drains the
+  noise window, the takeover clears ENABLE_MOUSE_INPUT, normalizes
+  ENABLE_VIRTUAL_TERMINAL_INPUT, and sets ENABLE_WINDOW_INPUT, and Ctrl+C
+  restores both console modes. The same full-window livelock is fixed in the
+  older settings console reader.
+- Multi-line paste submitting a form early: a pasted newline arrives as a CR,
+  which mapped to Enter, submitted the form, and leaked the rest of the paste
+  into the next surface including the approval modal. The reader now detects a
+  paste burst and holds the interior newlines. Both gates also hold any answer
+  typed within 25 ms of opening until the next key arrives, so a leaked
+  remainder cannot confirm a registry write.
+- The M3/M4 approval modal could sit entirely off-frame at 80x24 whenever the
+  body filled the page, while the gate still swallowed every key, so the only
+  providers.json write path could be approved blind. The composer now reserves
+  the rows the modal, the message and the footer need, and the modal replaces
+  the body instead of falling off the frame.
+- The 105-cell base footer wrapped at 80 columns and cost a row the painter
+  could not erase; the legend is now fitted to the width.
+- Approval summaries and message lines are clamped to the frame width at the
+  shared composition point, with a priority cut that keeps the modal and the
+  legend.
+- Lists on the presets and prompts screens, the providers list, and the preset
+  editor host window were sized from fixed arithmetic and lost their own hint
+  and the base footer when full; the page size now derives from the frame
+  height.
+- The banner height gate follows plan-v2 again (full block at 30 rows and
+  above, short block at 22 and above, wordmark below), so the footer legend is
+  no longer cut on 24-27 row consoles.
+- A console resize is applied to the frame geometry through App.Resize and a
+  full repaint, instead of being latched and never used.
+- The remote model-list decode strip now removes the full Cc and Cf classes
+  (providers.FetchRemoteModels), so no bidi or format residual survives in the
+  edit buffer.
+
+[Security]
+- One shared masking policy for the registry-slot class
+  (internal/providers/slotpolicy.go): both twins and the in-scope display sinks
+  delegate to it, no enumerated per-site lists remain in either twin, and the
+  classifier's validate step now covers Cc and Cf. The class is closed, landed
+  across four rotated review swarms, and the stop rule fired twice.
+- The masking round closed the census's seven open sites: the two-arm word/wide
+  split that rendered a decorated credential raw at the banner and the
+  `models --json` display-name sinks, the Zl/Zp URL part arms, the fanout
+  worker error operands, the bridge JSON error payloads, the fanout CLI preset
+  scalar, the preset name and numbers on the settings surfaces, and the
+  agenttools log refusal. Two closures filed by the review swarm landed with
+  them: the swarm preset twin and the percent-encoded path and Opaque segments.
+- The host label is now classified raw and decoded-when-legal through
+  url.PathUnescape (not the form decoder, so a literal `+` stays a base64
+  rune), which closes the doubled-encoding hole at all three ingest doors.
+- Test fixtures: every planted credential moved to
+  internal/testfixtures/planted.go, where each value is a concatenation-built
+  constant byte-identical to the literal it replaced; roughly 100 test files
+  and 11 production files' doc comments reference the constants, and the
+  14-alternative pattern scan over the tracked tree returns zero. Runtime byte
+  identity was proven three independent ways: per-line reconstruction, a
+  scanner-based attribution census, and a runtime value audit.
+
+[Limits]
+- Masking boundary as measured: the host arm refuses single and double encoding
+  and accepts triple, the path arm refuses double and accepts triple, Opaque
+  refuses single and accepts double and triple, and the userinfo, query and
+  fragment arms accept double. Also open and recorded: the `%252`-suffixed host
+  door miss, the raw-only probe seed reader, the display-side MaskBaseURL
+  part-rule gap, the stale renders at providers.go:84 and wizard.go:525, the
+  view.go:404 load-error echo, and the variant-C slash boundary, which is a
+  product decision. No further unit is dispatched for the class without a user
+  word.
+- Caret scope: no horizontal scroll past the frame width, so a caret past the
+  edge keeps its true cell and paints nothing; no caret glyph in an RTL
+  session; the preset editor consumes Right as a close request, so only Left
+  moves the caret there.
+- Console-only behavior stays the user's manual pass. The mouse sweep, IME,
+  physical Ctrl+C mode restore, per-terminal glyph rendering, and
+  real-clipboard paste timing are not claimed as visually verified (T1-T7 and
+  M1-M15).
+
+[Tests]
+- Corpus-parity guard: the CLI test's drift guard against the TUI model-form
+  corpus now resolves `testfixtures.<Name>` references from a go/parser AST,
+  so a comment that merely names a constant can no longer satisfy a dropped
+  row. The three existing failure paths and the missing-row check still fire,
+  and the new negative direction is proven by mutation.
+- Synthetic-shape guard: a new test inventories all 54 constants in the
+  contract package and requires each value to be provably synthetic, either by
+  shape (40 constants) or by an explicitly reviewed exact-value pin (14
+  constants). A companion self-guard scans the contract file and the guard
+  itself with the provider pattern gate and reports an exact file position, so
+  a contiguous provider-key spelling cannot land there. A real credential
+  added in concatenation form fails the inventory test.
+- The launcher picker test's Windows-only SysProcAttr use is split behind build
+  tags, which restores `go vet` on linux and darwin.
+
+[Verification]
+- `go build ./...`, `go vet ./...` (also on GOOS=linux and GOOS=darwin), and
+  `go test ./... -count=1 -p 1`: 22 test packages ok, 0 FAIL on that tree; the
+  linux and darwin cross-builds pass.
+- Blind-qa (single instance, headless through a Windows pseudo-console): 0 FAIL
+  on every gate it could run, 1 PARTIAL by the headless rule for the
+  console-only items. Observed live: exactly one SGR 7/27 pair per color frame
+  at the correct cell and the `|` marker with zero application escape bytes
+  across a 12,398-byte plain capture; the 25 ms window holds a 20 ms
+  console-paced y while a paced y writes exactly the presented diff; a piped
+  stdin degrades to the line wizard.
+- Review: rotated 4+4 double-blind swarms (four code and four security seats)
+  per code-changing round; the final state is code P0=0/P1=0 and security
+  CRITICAL=0/HIGH=0.
+- Live registry checksums (providers.json md5 d17c70ad..., state.json md5
+  2d6861d3...) unchanged across the mission.
+- Release gate re-run for the exclusion work: `go build ./...`,
+  `go vet ./...` on the native host and under GOOS=linux and GOOS=darwin, both
+  cross-builds, and `go test ./... -count=1 -p 1`: 23 test packages ok,
+  0 FAIL. The provider-pattern gate reports zero in both of its forms, a
+  headless blind-qa pass ran against the real CLI, and two double-blind review
+  cycles (code and security) closed at P0=0/P1=0 and CRITICAL=0/HIGH=0.
+
+Version: 0.10.9
+Release Date: 2026-10-18
+Previous Version: 0.10.8
+
+--------------------------------------------------------------------------------
+[Overview]
+--------------------------------------------------------------------------------
+Full-screen setup TUI for agy-pro: `agy pro setup` is now the single door to an
+interactive configuration surface that covers everything the agy pro features
+need, so nothing has to be configured inside agy. On a raw-console host the
+command opens the TUI (banner splash, first-run language screen, then the hub);
+on a non-console host (pipe, non-Windows TTY, mintty) it runs the existing
+line-mode wizard byte-identically, so scripted callers are unaffected. `agy pro
+setup --wizard` forces the classic wizard on any host, and any other setup
+argument fails closed with the masked operand, the help text, and exit code 2.
+Bare `agy pro help` advertises the TUI prominently. The hub manages providers,
+per-model add/update/delete behind an exact-diff approval gate (the only write
+path to providers.json), fanout presets, prompt authoring, and settings. New CLI
+twins `agy pro settings providers model-add-json|model-update|model-delete`
+mirror the model ops. The TUI ships with 12 UI languages, honest RTL scope for
+Arabic (logical-order text plus mirrored layout; no bidi shaping, no mid-string
+truncation, no inline RTL editing), a four-tier color banner (truecolor / 256 /
+16 / plain ASCII, NO_COLOR and AGY_PRO_COLOR aware), a persisted launcher-menu
+toggle (AGY_LAUNCHER still wins entirely when set), and fanout prompt authoring
+(prompts/ directory plus AGY_PRO_PROMPTS_DIR and AGY_PRO_SEAT_PREAMBLE). The
+fanout run config now resolves through a documented ladder: CLI flag >
+AGY_PRO_FANOUT_PRESET / active preset (--preset or the store default) >
+providers.json defaults block (consumed, read-only) > engine default, with a
+one-time stderr notice when the stored defaults drift from the engine defaults
+(timeoutSeconds 120 vs 300 is surfaced, never silently normalized).
+
+[Added]
+- `agy pro setup` full-screen setup TUI (Windows console hosts): banner splash
+  with a four-tier color degrade (truecolor, 256, 16-color bands, plain ASCII
+  figure; NO_COLOR forces plain, AGY_PRO_COLOR overrides the tier, and the
+  banner is suppressed entirely on non-console stdout), a first-run language
+  screen (12 languages, numbered rows plus arrows, persisted via state.json and
+  applied on the next frame with no restart), and a hub with numbered rows for
+  providers, models, fanout presets, prompts, settings, doctor, help, language,
+  and quit. Digits and arrows+Enter both work on every list.
+- Provider and model management in the TUI: model-level add, update, and delete
+  inside each provider, with an M4 approval modal showing the exact mutation
+  diff (provider, model count before/after, per-field changes) before any
+  providers.json write; every registry write goes through that approval gate.
+- CLI twins for the model ops: `agy pro settings providers model-add-json
+  <name> <file|->`, `model-update <name> <model-id> <file|->`, and
+  `model-delete <name> <model-id>`.
+- UI language selection: `agy pro settings set language <code>` and a settings
+  row (Appearance section), on top of the first-run language screen. 12-language
+  closed set (en, zh-Hans, zh-Hant, ko, ja, ru, hi, de, fr, it, vi, ar) with a
+  catalog fallback chain (requested language, then en, then the key ID, never
+  empty). Arabic renders logical-order strings with deterministic mirrored
+  layout; visual bidi reordering, Arabic shaping, mid-string truncation of
+  Arabic, and inline RTL cursor editing are documented as NOT provided. Hindi
+  rows are single-column (no fixed-width Devanagari columns, no cell
+  truncation); Vietnamese is NFC-precomposed by authoring rule. No language
+  env override in v1.
+- Fanout preset management in the TUI (named presets in
+  ~/.agy-pro/fanout-presets.json with a store-level default preset), consumed
+  by the new `--preset <name>` fanout flag and the AGY_PRO_FANOUT_PRESET env
+  var. Run-config resolution ladder per field: CLI flag > active preset >
+  providers.json defaults block (n, timeoutSeconds, maxTurns, tools; read-only,
+  tokenBudget/excludeFamilies stay reserved) > engine default. An explicitly
+  selected missing preset is a usage error (exit 2); a dangling store default
+  only warns. Defaults-block drift is surfaced, never normalized: one stderr
+  line per drifted field names the field, the stored value, and the engine
+  default (the live file's timeoutSeconds 120 vs engine 300 is the known
+  drift). A configured timeout from the preset or defaults rung counts as
+  explicit and is honored exactly (no --units auto-scaling).
+- Prompt authoring in the TUI: per-task prompt slots (review, security,
+  plan-audit, research, ideas, custom) plus the native seat-role preamble, stored
+  as one file per slot under ~/.agy-pro/prompts/ (0600, atomic). Resolution per
+  slot: AGY_PRO_PROMPTS_DIR (directory-only redirection) and
+  AGY_PRO_SEAT_PREAMBLE (inline seat preamble) over the slot file over the
+  compiled default; a slot with no override resolves byte-identically to the
+  compiled constant, so existing byte-identity pins stay green. An empty slot
+  file is a resolution error, never a silent empty prompt.
+- Launcher-menu persistence: state.json `launcher_menu` ("1"/"0") with a
+  settings row (show/hide, honest source column) and Core.Set accepting
+  on|off|1|0|true|false. Precedence: a non-empty AGY_LAUNCHER wins entirely
+  (today's opt-in semantics); the stored value decides only when the env is
+  unset or empty; absent means off.
+- `agy pro setup` degrade and guardrails: non-console hosts run the existing
+  line wizard byte-identically (no language step, English only, transcript pins
+  unchanged); unknown setup arguments exit 2 with a masked stderr line plus
+  help; `agy pro settings providers add-interactive` (alias `wizard`) is
+  unchanged.
+
+[Changed]
+- `agy pro help` and the bare `agy pro` help print a prominent plain-text block
+  advertising `agy pro setup` as the full-screen setup TUI, plus the `--wizard`
+  escape; the setup command row is rewritten. Six pre-existing substring-pinned
+  help lines are untouched.
+- `agy pro setup` with no arguments now dispatches on host capability (TUI on a
+  raw console, wizard elsewhere) instead of always starting the wizard.
+- Display-string cleanup: the pre-existing em-dash characters in the help
+  header line, the launcher banner line, and the settings panel wizard message
+  are replaced with hyphens (house rule: no em-dash in user-facing strings).
+
+[Limits]
+- The setup TUI targets Windows console hosts; macOS/Linux keep the CLI surface
+  and the line-mode wizard (coexistence, not replacement). The TUI is verified
+  by scripted key-injection tests and structural checks; the banner geometry
+  choice and per-language spot-check are the user's visual pass.
+- Arabic: logical-order text and mirrored layout only; no visual bidi, no
+  shaping, no mid-string truncation, no inline RTL editing. Hindi: single-
+  column rows only. Language selector rows 10-12 use arrows+Enter in v1
+  (single-key digits cover 1-9).
+- `run_command` stays OUT (separate held user decision, unchanged).
+- `go test -race` is not runnable on the dev machine (no C compiler) - an
+  environmental degradation, not a PASS.
+
+[Verification]
+- `go build ./...`, `go vet ./...`, `go test ./... -count=1 -p 1`: all
+  packages ok, 0 FAIL.
+- Docs drift-pins green: internal/fanout/docs_claims_test.go,
+  internal/swarm/docs_claims_test.go, and the providers docs claims test.
+- Docs updated: MANUAL.ko.md (setup TUI chapter), README.md, README.ko.md,
+  agy-pro/docs/fanout.md (resolution ladder and --preset), agy-pro/README.md
+  and agy-pro/docs/bridge-architecture.md (banner quote sync).
+
+Version: 0.10.8
+Release Date: 2026-10-17
+Previous Version: 0.10.7
+
+--------------------------------------------------------------------------------
+[Overview]
+--------------------------------------------------------------------------------
+Provider-seat tool parity (B4) for the fanout swarm, all default OFF: partition
+units can now opt into write per plan unit, and provider seats can be given two
+run-level network tools. A plan unit carrying `"write": true` gives that unit's
+PROVIDER seat `write_file`/`replace_in_file`, confined by the same lexical AND
+symlink-resolved scope rule as reads (refusal is error-shaped and model-visible);
+there is no CLI-wide write switch, native partition seats stay refused, and
+`run_command` remains OUT (held for a separate user decision). The repeatable
+`--allow-host` flag enables `read_url_content` (GET only, https only with a
+loopback http exception, no headers or auth, redirect cap 3 with per-redirect
+re-validation, 512 KiB body cap, text content types only; an empty allow-list
+refuses every call), and `--search-endpoint` / `--search-key-env` enable
+`search_web` (endpoint template with one `{query}` placeholder, key referenced
+by env-var NAME only and read at call time into the Authorization header, honest
+not-configured error when no source is configured, never a fake result). Every
+capability defaults OFF: with no allow-list and no search source the wire stays
+byte-identical to a pre-B4 run. Which provider models gain these tools in the
+live registry (`providers.json`) is presented for explicit user approval after
+convergence and is not part of this release. Docs updated: `agy-pro/docs/fanout.md`,
+`agy-pro/docs/swarm-hybrid.md`, and the `agypro_swarm` plugin docs.
+
+[Added]
+- Per-unit write opt-in for partition mode: the plan `Unit` gains an optional
+  `write` field (JSON `"write"`, default false). A `write: true` unit's provider
+  seat gets `AllowWrite` and a write-capable tool list via a deliberate per-unit
+  carve-out of the run-level read-only clamp; a `write: false` unit carries no
+  write tools. Write confinement reuses the read scope boundary: the target's
+  lexical path AND its symlink-resolved path (closest-existing-ancestor
+  resolution for not-yet-existing files) must both stay inside the unit scope,
+  refused error-shaped through the same seeded redaction machinery as reads.
+  Native partition seats stay refused (also for write units) before any
+  subprocess spawns; written output paths ride the existing claim walk and the
+  named-conflict policy (two write units claiming one path fail the run).
+- `agy pro fanout --allow-host <host>` (repeatable): the host allow-list for
+  the new `read_url_content` provider-seat tool. Matching is lowercase with the
+  port ignored; an empty list refuses every call (fail closed).
+- `read_url_content`: GET-only fetch for provider seats. https only (http for
+  loopback hosts only), userinfo refused, no custom headers or auth material,
+  redirect cap 3 with every redirect target re-validated against the scheme and
+  allow-list gates, 512 KiB body truncation with a note, text-family content
+  types only (an absent or unparsable content type is refused), fixed 30s
+  tool-layer budget, and URL-component redaction seeding for the tool audit
+  log. Exposed on a seat only when the run listed at least one host.
+- `agy pro fanout --search-endpoint <url>` / `--search-key-env <name>`: the
+  run-level search source for the new `search_web` provider-seat tool. The
+  endpoint is a template with one `{query}` placeholder (query escaped before
+  substitution; the endpoint itself passes the https/loopback/userinfo gate);
+  the key is referenced by env-var NAME only, read at call time, and travels in
+  the Authorization Bearer header as its single sink (never the URL, the
+  arguments, or an error string).
+- `search_web`: one generic JSON backend for provider seats. Non-2xx refused
+  naming the status; an over-512 KiB body refused (not truncated, since a
+  truncated JSON document cannot parse); results render from the first array of
+  objects (up to 10 items); an unparseable body is an error, never a fabricated
+  empty success. With no endpoint configured the tool returns a clear
+  not-configured error and stays out of the advertised schema. Exposed on a
+  seat only when the run configured a source.
+- Exposure wiring: when a run enables the allow-list and/or the search source,
+  EVERY provider seat (cross-verification and partition alike, write-unit
+  carve-out included) gains the corresponding tool and runner configuration;
+  native seats never build this runner. With both off the seat tool list and
+  the wire are byte-identical to a pre-B4 run.
+
+[Limits]
+- `run_command` for provider seats and all partition seats stays OUT; it is
+  held for a separate user decision (unchanged).
+- Registry enablement (which provider models gain write_file/replace_in_file/
+  read_url_content/search_web under `capabilities.allowedTools` in
+  `providers.json`) is a separate explicit user approval AFTER B4 convergence;
+  a registry model whose allowedTools filter does not list a tool refuses it at
+  the model-level check until then.
+- `read_url_content` sends no auth material of its own; allow-listed hosts that
+  need credentials are unreachable through it by design.
+- `go test -race` is not runnable on the dev machine (no C compiler) - an
+  environmental degradation, not a PASS.
+
+[Verification]
+- `go build ./...`, `go vet ./...`, `go test ./... -count=1 -p 1`: all test
+  packages ok, 0 FAIL.
+- New pins (both directions, mutation-verified): scoped writer accepts in-scope
+  writes and refuses out-of-scope and symlink-alias writes; the write-unit
+  carve-out, the native refusal, and the default-off clamp each fail their pin
+  when mutated; the allow-list gate, the redirect re-validation, the audit-log
+  redaction seeding, and the exposure-only-with-allow-list order each fail their
+  pin when mutated; the not-configured error, the key-by-env-NAME transport, and
+  the exposure-only-with-source order each fail their pin when mutated. The docs
+  drift-pins stay green.
+
+Version: 0.10.7
+Release Date: 2026-10-17
+Previous Version: 0.10.6
+
+--------------------------------------------------------------------------------
+[Overview]
+--------------------------------------------------------------------------------
+Partition mode for the fanout swarm: a run can now be decomposed into disjoint
+work units up front, executed as one provider seat per unit, and merged into a
+single deliverable. The plan is a JSON file (`--units <planfile>`): each unit
+carries an id, title, scope globs, and a deliverable, optionally its own seat
+spec and prompt body. Partition runs are read-only by construction (write/exec
+tools are refused), each seat's path-reading tools are bounded to its unit's
+scope, and native seats are refused (the read-only slice cannot confine a
+subprocess seat). After the seats finish, the merge step concatenates the
+per-unit work products into `merged.md`, expands every unit's scope into its
+concrete claimed-file list, and runs the authoritative disjointness scan: any
+overlap, missing deliverable, or merge-verification failure FAILS the run
+(fail-on-conflict) with the merged artifact and the conflict report still
+written for inspection. Per-unit attribution rides in summary.json (the
+`partition` manifest block) and the per-seat `unit_id`. The partition default
+wall-clock budget scales with the plan (300s + 120s per unit, capped at
+3600s); an explicit `--timeout` is honored exactly, and cross-verification
+runs keep the flat 300s default. Docs updated: `agy-pro/docs/fanout.md`,
+`agy-pro/docs/swarm-hybrid.md`, and the `agypro_swarm` plugin docs.
+
+[Added]
+- `agy pro fanout --units <planfile>`: PARTITION mode. One PROVIDER seat per
+  plan unit, all units concurrent. The plan is a JSON array of units
+  (`id`, `title`, `scope`, `deliverable` required; `seat`, `body` optional);
+  ParsePlan rejects missing fields, duplicate ids, root-wide or bare-wildcard
+  scopes, and any scope overlap it can prove. Mutually exclusive with
+  `--prompt`/`--prompt-file`/`--seats`/`--models` (exit 2).
+- Scoped read-only boundary: partition seats force the read-only tool slice
+  (the CLI refuses `--units` with `--tools write/exec`, and the engine clamps
+  a library caller the same way), and each seat's ToolRunner is bounded to its
+  unit's scope (guard.go PathInScope, fail closed on walk entries). Native
+  partition seats are refused with a clear error (held for the write-
+  capability decision, work item B4).
+- Merge step: `merged.md` (the single deliverable, units concatenated in plan
+  order), the claimed-file expansion, the authoritative overlap scan, a
+  three-check merge verification, the human-readable partition report at the
+  `reconciliation.md` path, and the `partition` manifest block in
+  summary.json (mode/status/artifact/units/conflicts/verification). Fail-on-
+  conflict: the run fails instead of silently merging overlapping units.
+- Per-unit attribution: `SeatResult.UnitID` flows to summary.json and the
+  partition report (attribution only, never into a request); unit prompts are
+  the shared seat preamble plus the unit body, so cross-unit prefix caching
+  survives.
+- Partition timeout scaling: with `--units` and no explicit `--timeout`, the
+  default deadline is 300s + 120s per unit, capped at 3600s; an explicit
+  `--timeout` wins exactly; cross-verification keeps 300s byte-for-byte.
+  Provider partition seats run uncapped-concurrent (one goroutine per unit);
+  there is deliberately no provider concurrency cap (a cap would serialize
+  independent units and slow the wall clock; the swarm deadline is the
+  bound), and the native-seat semaphore is irrelevant because native seats
+  are refused in partition mode.
+
+[Limits]
+- Partition mode is provider-seats-only and read-only; granting write/exec to
+  partition seats (work item B4) remains HELD for the user decision.
+- The merge-time disjointness scan is lexical (glob expansion over the
+  workspace); it cannot see semantic overlaps (two units editing the same
+  behavior through different files).
+- `go test -race` is not runnable on the dev machine (no C compiler) - an
+  environmental degradation, not a PASS.
+
+[Verification]
+- `go build ./...`, `go vet ./...`, `go test ./... -count=1 -p 1`: all test
+  packages ok, 0 FAIL.
+- B7 timeout scaling pinned and mutation-verified (per-unit budget, clamp,
+  and the CLI explicit-`--timeout` seam each kill their pin when mutated);
+  B5/B6 merge + conflict pins and the docs drift-pins stay green.
+
+Version: 0.10.6
+Release Date: 2026-10-15
+Previous Version: 0.10.5
+
+--------------------------------------------------------------------------------
+[Overview]
+--------------------------------------------------------------------------------
+Native coexistence: registered external providers now run inside agy's own
+native session, with no agent mediation, behind two per-session profiles the
+user picks with `agy pro hybrid on p1|on p2`. Profile P1 ("picker coexistence")
+lists externals in agy's own /model catalog on agy's own 11-tool engine with
+zero settings writes; profile P2 ("subagent profile") attaches the full 13-tool
+set including the subagent family and runs a subagent `inherit` on the external
+session model. One session is one client path - a proven binary fact, not a
+design choice. The release also ships the shared mesh/codec/settings core, a
+wirecheck drift gate that fails closed to a native session, and M4 hardening of
+the existing gateway bridge. Honest limits are stated plainly in the docs, not
+hidden (see [Limits]).
+
+[Added]
+- Native-coexistence front doors: `agy pro hybrid on p1|on p2|off|status|check`
+  plus the `AGY_PRO_HYBRID=p1|p2|off` launch override (env beats the persisted
+  value). P1 execs the real agy behind a per-session `/v1internal` mesh via
+  `CLOUD_CODE_URL` (externals in agy's own /model catalog on agy's own 11-tool
+  engine, no settings file written). P2 execs agy in gemini mode via a
+  per-session `--app_data_dir` + `GOOGLE_GEMINI_BASE_URL` (full 13-tool set
+  incl. the subagent family, a subagent `inherit` runs on the external session
+  model, externals selected at launch via the launcher picker or `--model`). A
+  native/static id is served only if that exact id is in the registry (billed to
+  the configured provider), else a clear 404 naming the model - never a silent
+  substitution.
+- Shared core: internal/mesh (per-spawn supervisor, ephemeral loopback port,
+  health gate, lifetime tied to the child agy), internal/geminiwire +
+  internal/wireadp + internal/openaiup (both wires, id-paired functionResponse,
+  SSE framing), internal/agysettings (per-session app-data regime, managed-key
+  ledger, byte-identical rollback), internal/hybrid (catalog composition:
+  synthesized enums, agent_model_sorts membership, display_name, max_tokens
+  floor, fail-closed collision policy).
+- internal/wirecheck: per-profile canaries plus a version pin on the resolved
+  real binary, and a GO/NOGO verdict that gates the launcher (NOGO => native
+  fallback with a clear notice; version drift proceeds with a surfaced notice).
+- Credential safety: provider keys resolved in-process by NAME only, never in
+  the child env / logs / settings; the child env scrubs every `*_API_KEY`-shaped
+  name plus the registry names; the P2 mesh authenticates the child with a
+  per-spawn 64-hex nonce; agy's keyring bearer is received passively on P1 and
+  discarded, never forwarded.
+
+[Hardened]
+- M4 gateway bridge (still the XOR, tool-less escape hatch on agy 1.3.5):
+  streaming during tool turns, cross-turn cumulative usage on the synthesized
+  answer, a main-child env scrub closing the known asymmetry, and a 32 MB
+  outbound body cap that fails loudly without contacting the provider (never
+  silently truncated).
+
+[Limits]
+- One session cannot have both the picker (P1) and subagents (P2); the user
+  picks one per session.
+- Per-subagent external model binding is impossible on agy 1.3.5; `inherit` is
+  the mechanism.
+- Subscription Gemini + externals in one picker needs the M1 relay
+  (approval-gated), which is NOT in this release.
+- The G8 TUI gate is 시각 미검증 (UNVERIFIED) pending the manual test script;
+  the automated gates G4/G5/G6/G10 carry live print-mode evidence, and G11
+  (auto-update restart) is NOT-TESTED with reason (no update was available to
+  trigger).
+- `go test -race` is not runnable on the dev machine (no C compiler) - an
+  environmental degradation, not a PASS.
+
+[Verification]
+- `go build ./...`, `go vet ./...`, `go test ./... -count=1 -p 1`: 19 test
+  packages ok, 0 FAIL (`profiles` has no test files).
+- Live gates against real agy v1.3.5: G4 (P1 sandbox e2e), G5 (P2 sandbox e2e),
+  G6 (one real-provider print run per profile; both live providers HTTP 200 on
+  all four profile x provider cells), G10 (error classes 401/429/5xx/mid-stream
+  + retry-storm detector; worst case 4 requests in any 40 s window vs a
+  >10 threshold).
+
+Version: 0.10.5
+Release Date: 2026-10-14
+Previous Version: 0.10.4
+
+--------------------------------------------------------------------------------
+[Overview]
+--------------------------------------------------------------------------------
+Swarm inside the agy TUI plus the launcher [2] hang fix. The hybrid swarm is now
+reachable from inside an agy chat session through the `/agypro_swarm:swarm`
+plugin slash command (numbered seats, cost-confirmed dry-run echo, artifact
+findings in chat), the launcher [2] model picker no longer hangs the real agy
+child (root cause: the picker handed the child a relay pipe as stdin while the
+child's stdout was the console), and the profile config.json plugin map ships
+in the object form agy's protojson parser accepts.
+
+[Added]
+- `/agypro_swarm:swarm` plugin command (plugins/agypro_swarm): an agent-mediated
+  workflow that reads the combined inventory (`agy pro models --all`), collects
+  template/seats/tools/timeout/task through numbered menus, echoes the resolved
+  `agy pro swarm --dry-run` command with a per-seat cost note and an explicit
+  go/no-go, then runs the real swarm and presents summary.json /
+  reconciliation.md / seat-*.md findings in chat. Plugin commands are
+  namespaced by agy's plugin system, so the invocation is
+  `/agypro_swarm:swarm` (a plain `/swarm` is not a core command).
+- skills/swarm/SKILL.md mirror so the workflow is discoverable from `/skills`
+  and the model side (the same pattern as agypro_settings).
+
+[Fixed]
+- Launcher [2] hang: after the model picker the real agy child never rendered.
+  Root cause (reproduced headlessly against a real hidden console): the picker
+  read its selection through the shared stdin relay and handed the child the
+  relay pipe as stdin; agy's TUI blocks reading a pipe stdin while its stdout
+  is a console, so the session sat silent forever (0-byte language-server log).
+  The picker now reads its line through the console path (multi-digit capable,
+  nothing consumed until the line is complete), so the child inherits the
+  console directly - the configuration every other route already used.
+- Picker cancel/invalid feedback: an empty answer and an unparseable answer
+  both state the outcome and the grammar instead of failing silently
+  ("invalid selection ... (want a number 1-14, a range like 3-5, or a preset
+  p1-p3); continuing with External Models (bridge)").
+- Profile config.json plugins map: ships `{"<dir>": {"enabled": true}}` instead
+  of a bare boolean, which agy's config parser rejected ("unexpected token
+  true"), silently dropping every plugin enablement record.
+
+[Security]
+- The swarm dry-run echo no longer inlines the task prompt: when the prompt
+  arrives via --prompt-file the echoed (and executed) fanout command references
+  the file, so untrusted prompt text can never ride a copy-pasteable shell line.
+  The command body labels the echo "information only - NEVER execute or paste",
+  names the --prompt-file swarm form as the only real-run command, binds the
+  shell-safe charset to EVERY interpolated operand (seats, template, --task,
+  --tools, provider names, --root), confines --root to the workspace without an
+  explicit confirmation, and warns that --tools bounds provider seats only
+  while native seats run the agy default tool surface.
+
+[Tests]
+- Fail-without-fix pins: the console-path picker must leave the relay untouched
+  (rel.Used() == false), a console timeout cancels with a message, every cancel
+  states its outcome, the console line reader folds each record exactly once
+  across ticks (slow typing), accumulates every text key including non-ASCII,
+  honors repeat counts for text and Backspace, pairs UTF-16 surrogates, and
+  consumes nothing on timeout; the file-path echo must reference --prompt-file;
+  the profile config.json plugin values must parse as {"enabled": bool} with
+  keys naming real plugin directories; the plugin lint pins the honesty label,
+  XOR boundary, cost confirmation, dry-run-first, untrusted-data and
+  shell-safety rules and the SKILL.md mirror.
+
+Version: 0.10.4
+Release Date: 2026-10-13
+Previous Version: 0.10.3
+
+--------------------------------------------------------------------------------
+[Overview]
+--------------------------------------------------------------------------------
+agy-pro hybrid swarm model UX delivery (commits on main, 2026-10-12..13). One
+swarm now mixes Antigravity native models and registered external providers,
+each seat its own agent, with a combined inventory/picker, a numbered swarm
+builder, a settings surface, and owner-only masked reporting. Verified by a
+four-round double-blind review swarm (code + security) plus a live mixed run.
+
+[Added]
+- Native fanout seats: `--seats "native:<id>,<prov>/<model>"` runs real-agy
+  subprocesses beside provider seats (2-cap concurrency, kind:native
+  provenance, failover with k3 exclusion, all-native runs tolerate a missing
+  registry). Live-verified: a mixed 2-seat run completed 2/2 with a provider
+  HTTP 401 failing over to a second registered provider.
+- Combined inventory/picker: `agy pro models --all` / `--json`, launcher [2]
+  picker sub-menu, env-scrubbed cached native catalog fetch.
+- Numbered swarm builder: `agy pro swarm` interactive (numbered only in the
+  happy path) plus non-interactive flags (--template/--seats/--root/--prompt/
+  --prompt-file/--tools/--task/--timeout/--dry-run).
+- Settings: `/setting_agypro` plugin command and `agy pro settings` full-screen
+  TUI (native keybindings; non-Windows degrades to line mode).
+- U7 community banner at interactive launcher startup only (never in -p/piped/
+  machine output). U8 API-key masking: first 5 runes + `****` at every display
+  sink (wizard input, confirmations, lists, settings, logs, reports, JSON).
+
+[Security]
+- One shared masking authority in internal/providers: the decorated-secret
+  classifier, per-token flag seeds at CLI flag sites, mask-before-sanitize
+  ordering, and the registry-slot masker (family / reasoning-effort display
+  slots mask location-shaped values too). summary.json / seat reports /
+  reconciliation.md written owner-only; key-shaped values never serialize raw.
+- Registry stays permissive by design; display masks are the backstop. The
+  user's real API keys and provider registry live outside the repository.
+
+[Verification]
+- `go build ./... && go vet ./... && go test ./... -count=1`: 12 packages ok.
+- Final gate: 4 code + 4 security double-blind reviewers per round across four
+  rounds on the fix batches; every confirmed finding fixed and pinned with a
+  fail-without-fix test before the next round; final round reconciled PASS
+  (code P0=0/P1=0, security CRITICAL=0/HIGH=0).
+- Live probes (headless, --print-timeout pinned at 300s): models --all,
+  mixed-seat dry-run, and a 2-seat mixed run (native success, provider 401
+  failover, artifacts written).
+
+Version: 0.10.3
+Release Date: 2026-09-12
+Previous Version: 0.10.2
+
+--------------------------------------------------------------------------------
+[Overview]
+--------------------------------------------------------------------------------
+This release permanently eliminates the Go Language Server TLS handshake error
+("client sent an HTTP request to an HTTPS server") in src/gemini-quota.js.
+Previously, when the Language Server was running on an HTTPS endpoint without
+a CSRF token or when an RPC call returned an authentication failure (HTTP 401),
+fetchLiveGeminiQuota attempted a plaintext HTTP fallback on the same port,
+triggering Go Language Server TLS handshake errors in the console.
+In this release:
+1. When candidate ports respond over HTTPS (or TLS handshake succeeds),
+   plaintext HTTP fallback is strictly blocked and the protocols loop breaks
+   immediately for that port.
+2. When no CSRF token is available (!csrfToken), unauthenticated Language Server
+   RPC calls are gracefully skipped, preventing futile network requests, 401 logs,
+   and TLS handshake issues while preserving honest fallback diagnostics.
+
+--------------------------------------------------------------------------------
+[Detailed Changes & Differences from 0.10.2]
+--------------------------------------------------------------------------------
+
+1. HTTPS Port Fallback Protection (src/gemini-quota.js)
+   - Introduced confirmed HTTPS port detection (_detectedHttpsPorts):
+     * When any response is received over HTTPS or socket.once('secureConnect')
+       fires, the port is marked as HTTPS.
+     * When proto === 'https' completes with an HTTPS response (whether 200, 401,
+       403, or any HTTP status code) or TLS handshake succeeded, the protocols
+       loop immediately breaks for that candidate port. Plaintext HTTP fallback
+       is never attempted on confirmed HTTPS ports.
+     * makeRpcRequest guards against plaintext HTTP calls to confirmed HTTPS ports,
+       immediately rejecting with ERR_HTTP_BLOCKED_ON_HTTPS without socket emission.
+
+2. Graceful Unauthenticated Probe Skip (src/gemini-quota.js)
+   - When !csrfToken (no CSRF token found in CLI args or environment variables),
+     unauthenticated Language Server RPC calls are gracefully skipped.
+   - Sets auth failure diagnostics ('HTTP 401 (missing CSRF token)') without
+     sending zero-benefit network requests that are guaranteed to fail with 401.
+
+3. Test Suite Expansion (test/run-tests.js)
+   - Added unit test: fetchLiveGeminiQuota should NEVER attempt plaintext HTTP
+     fallback on a port that responded via HTTPS (asserts 0 clientError/TLS errors).
+   - Added unit test: fetchLiveGeminiQuota should gracefully skip unauthenticated
+     RPC probe when csrfToken is missing (asserts 0 requests made, clean auth_failure).
+   - Test suite pass rate: 210 passed, 0 failed (100% pass rate).
+
+4. Version Bump (package.json)
+   - Bumped version to 0.10.3.
+
+5. Zero External Dependency Invariant
+   - Built purely with Node.js standard built-ins (http, https, crypto, child_process, fs, path).
+
+--------------------------------------------------------------------------------
+
+Version: 0.10.2
+Release Date: 2026-09-12
+Previous Version: 0.10.1
+
+--------------------------------------------------------------------------------
+[Overview]
+--------------------------------------------------------------------------------
+This release fixes statusline badge wrapping behavior in hook and subprocess
+environments (such as Antigravity CLI's statusLine integration). Previously,
+when process.stdout.columns was unavailable or stdout was not a TTY, the formatter
+fell back to an arbitrary 100-column width limit, causing normal badges containing
+the Dashboard link (📊 대시보드) to wrap onto a second line with Dashboard isolated.
+The formatter now defaults strictly to 1 single line in hook/subprocess/non-TTY
+environments, and only wraps to 2 lines when terminal columns are genuinely
+known and too narrow.
+
+--------------------------------------------------------------------------------
+[Detailed Changes & Differences from 0.10.1]
+--------------------------------------------------------------------------------
+
+1. Terminal Width Resolution & Non-TTY Single-Line Default (src/formatter.js)
+   - Updated resolveBadgeWidth():
+     * Respects process.env.COLUMNS when explicitly provided.
+     * Evaluates process.stdout.columns ONLY when process.stdout.isTTY is true and
+       positive finite columns are available.
+     * Falls back to Infinity instead of 100 in non-TTY, piped, or hook subprocess
+       environments.
+   - Guarded wrapBadgeSegments() against non-finite or non-positive widths to ensure
+     clean single-line rendering by default.
+   - Prevents premature line breaks that previously pushed the Dashboard link segment
+     down to line 2 during routine Antigravity statusLine invocations.
+
+2. Test Suite Expansion (test/run-tests.js)
+   - Added REQ-1f: Verified resolveBadgeWidth returns Infinity when COLUMNS is unset
+     and stdout is not a TTY.
+   - Added REQ-1g: Verified renderRealTimeBadge defaults to 1 single line in hook/
+     subprocess (non-TTY) environments, retaining the Dashboard link inline.
+   - Added REQ-1h: Verified renderRealTimeBadge wraps into 2 physical lines when
+     stdout.isTTY is true and stdout.columns is narrow (< total width).
+   - Test suite pass rate: 208 passed, 0 failed (100% pass rate).
+
+3. Version Bump (package.json)
+   - Bumped version to 0.10.2.
+
+4. Zero External Dependency Invariant
+   - Built purely with Node.js standard built-ins.
+
+--------------------------------------------------------------------------------
+
+Version: 0.10.1
+Release Date: 2026-09-12
+Previous Version: 0.10.0
+
+--------------------------------------------------------------------------------
+[Overview]
+--------------------------------------------------------------------------------
+This release introduces real-time quota fallback and CSRF token discovery across
+both the interactive terminal statusline (formatter.js) and the web dashboard
+(html-report.js). When Language Server live quota is stale (>5m) or encounters
+an authentication rejection (HTTP 401), the application seamlessly falls back
+to local transcript rolling quota (rollingUsage: 5h and 7d sliding windows)
+instead of freezing on outdated snapshot data.
+
+--------------------------------------------------------------------------------
+[Detailed Changes & Differences from 0.10.0]
+--------------------------------------------------------------------------------
+
+1. Environment Variable CSRF Token Discovery (src/gemini-quota.js)
+   - Updated parseCommandLine() to inspect process.env.ANTIGRAVITY_CSRF_TOKEN
+     and process.env.CSRF_TOKEN when --csrf_token / --csrf-token flag is absent
+     from the process command line.
+   - Preserves command-line arguments as first priority when explicitly present.
+   - Solves the Language Server v0.2+ issue where the server process no longer
+     exposes --csrf_token in its command-line arguments.
+
+2. Cache Staleness & Diagnostics Flagging (src/gemini-quota.js)
+   - In getCachedGeminiQuota(), the cache age is evaluated against a 5-minute TTL
+     (STALE_RETRY_AFTER_MS = 300,000ms).
+   - If the snapshot age exceeds 5 minutes, or if lastError.kind === 'auth_failure',
+     the returned object is explicitly stamped with isStale: true and isFresh: false.
+   - Enables upstream callers (statusline, hook runner, web dashboard) to
+     differentiate between live fresh quota and obsolete/unauthenticated snapshots.
+
+3. Statusline Seamless Fallback to Real-Time Rolling Quota (src/formatter.js)
+   - In renderRealTimeBadge(), when geminiQuota is stale (isStale === true or
+     lastError.kind === 'auth_failure') and badgeData.rollingUsage is available,
+     the badge bypasses the frozen Language Server cache snapshot.
+   - Renders live 5h and 7d quotas from local session transcripts using the
+     rollingUsage metrics (remain5hPercent, remain7dPercent) annotated with '(est)'.
+   - Retains backward compatibility: if rollingUsage is not provided, continues
+     rendering the cached snapshot with staleness markers ('*' for stale, '!' for
+     auth failure).
+
+4. Web Dashboard Seamless Fallback (src/html-report.js)
+   - In the client-side renderQuota(r, gq) renderer, checks whether geminiQuota is
+     stale or auth-failed via isStaleGq.
+   - When stale or auth-failed, falls back gracefully to rollingUsage ('r') to
+     render live 5h and 7d quota cards with the ESTIMATE badge and real-time usage
+     meters instead of displaying obsolete multi-hour-old data.
+
+5. Version Bump (package.json)
+   - Version updated from 0.10.0 (and legacy 0.0.1 in repository metadata) to 0.10.1.
+
+6. Verification & Test Suite Expansion (test/run-tests.js)
+   - Added unit test: parseCommandLine token discovery from ANTIGRAVITY_CSRF_TOKEN
+     and CSRF_TOKEN with CLI priority preservation.
+   - Added unit test: getCachedGeminiQuota staleness flagging (isStale: true) on
+     age >= 5m or HTTP 401 auth_failure.
+   - Added unit test: renderRealTimeBadge fallback to rollingUsage with '(est)'.
+   - Test suite pass rate: 205 passed, 0 failed (100% pass rate).
+
+7. Zero External Dependency Invariant
+   - Strictly maintained zero external runtime dependencies using Node.js
+     core modules only (fs, path, http, https, child_process).
+
+================================================================================

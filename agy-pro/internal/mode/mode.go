@@ -1,0 +1,854 @@
+// Package mode manages profile switching between full-stack (orchestrator rules,
+// specialized subagent skills, and plugins) and clean (minimal vanilla) profiles.
+// All switches are atomic, non-destructive, and automatically backed up.
+package mode
+
+import (
+	"bufio"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	"agypro/internal/paths"
+	"agypro/internal/providers"
+	"agypro/profiles"
+)
+
+const (
+	ModeFull  = "full"
+	ModeClean = "clean"
+)
+
+// Default launch profiles stored in State.DefaultProfile. They control what
+// a plain `agy` invocation does before the real binary runs:
+// prompt shows the interactive fast launcher, native runs straight through,
+// gateway starts the local LLM bridge without asking.
+const (
+	ProfilePrompt  = "prompt"
+	ProfileNative  = "native"
+	ProfileGateway = "gateway"
+)
+
+// DefaultBridgeTools is the tool allow-list the bridge tool loop exposes when
+// neither AGY_PRO_BRIDGE_TOOLS nor the stored bridge_tools key is set: the
+// read-only, search-only surface. write and exec stay opt-in.
+const DefaultBridgeTools = "read,search"
+
+// BridgeToolsNone is the stored bridge_tools value that disables the tool loop
+// entirely (agy sees plain passthrough).
+const BridgeToolsNone = "none"
+
+// DefaultNativeSeatConcurrency is the default cap on simultaneously running
+// native (real-agy subprocess) fanout seats; excess native seats queue
+// (contract §2.3).
+const DefaultNativeSeatConcurrency = 2
+
+// HybridProfileNone is the canonical "no hybrid profile" value returned by
+// EffectiveHybridProfile for a missing, blank, or unrecognized stored key.
+const HybridProfileNone = "none"
+
+// DefaultLanguage is the fallback UI language code when the stored language
+// key is missing, blank, or unrecognized.
+const DefaultLanguage = "en"
+
+// LauncherMenuOn and LauncherMenuOff are the canonical stored launcher_menu
+// toggle values: "1" shows the fast launcher menu, "0" hides it. The values
+// are strings (not bool) so an explicit off round-trips through omitempty.
+const (
+	LauncherMenuOn  = "1"
+	LauncherMenuOff = "0"
+)
+
+// IntegrationToggleOn and IntegrationToggleOff are the canonical stored values
+// of the five per-feature integration toggles. The words are "on"/"off" rather
+// than the launcher menu's "1"/"0" because the feature and toggle vocabulary is
+// what internal/integrations declares and what the CLI verbs print. They are
+// strings (not bool) for the same reason as the launcher menu: an explicit off
+// must round-trip through omitempty, distinct from an absent key.
+const (
+	IntegrationToggleOn  = "on"
+	IntegrationToggleOff = "off"
+)
+
+// IntegrationPresetNative, IntegrationPresetTools and IntegrationPresetCustom
+// are the canonical stored values of the composed integrations preset: the same
+// three words internal/integrations declares as PresetNative/PresetTools/
+// PresetCustom. They are repeated here instead of imported because this package
+// is the state layer and must not import the engine (that would drag the
+// deployment engine's dependencies into every reader of state.json). The
+// spellings are pinned in both directions by internal/settings' tests, so the
+// repetition cannot drift.
+const (
+	IntegrationPresetNative = "native"
+	IntegrationPresetTools  = "tools"
+	IntegrationPresetCustom = "custom"
+)
+
+// ValidLanguage reports whether s names one of the 12 supported UI language
+// codes (case-insensitive, surrounding whitespace ignored).
+func ValidLanguage(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "en", "zh-hans", "zh-hant", "ko", "ja", "ru", "hi", "de", "fr", "it", "vi", "ar":
+		return true
+	}
+	return false
+}
+
+// NormalizeLanguage canonicalizes a user-supplied language code against the
+// closed 12-code set (case-insensitive, surrounding whitespace ignored).
+// Unknown or blank values fall back to DefaultLanguage.
+func NormalizeLanguage(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "zh-hans":
+		return "zh-Hans"
+	case "zh-hant":
+		return "zh-Hant"
+	case "ko":
+		return "ko"
+	case "ja":
+		return "ja"
+	case "ru":
+		return "ru"
+	case "hi":
+		return "hi"
+	case "de":
+		return "de"
+	case "fr":
+		return "fr"
+	case "it":
+		return "it"
+	case "vi":
+		return "vi"
+	case "ar":
+		return "ar"
+	default:
+		return DefaultLanguage
+	}
+}
+
+// MaxNativeSeatConcurrency is the upper bound of the native-seat concurrency
+// clamp (contract §2.3). The stored value AND the --max-native flag share it.
+const MaxNativeSeatConcurrency = 8
+
+// ClampNativeSeatConcurrency bounds one native-seat concurrency value to
+// DefaultNativeSeatConcurrency..MaxNativeSeatConcurrency (contract §2.3). It
+// is the ONE shared choke point for every concurrency source: the state.json
+// path (EffectiveNativeSeatConcurrency) and the --max-native flag path both
+// route through it, so an out-of-range value can never widen the native-seat
+// pool (A1: `--max-native 100` binds to 8, `--max-native 0`/negative falls
+// back to the default 2).
+func ClampNativeSeatConcurrency(v int) int {
+	if v <= 0 {
+		return DefaultNativeSeatConcurrency
+	}
+	if v > MaxNativeSeatConcurrency {
+		return MaxNativeSeatConcurrency
+	}
+	return v
+}
+
+// ValidProfile reports whether s names a supported default launch profile.
+func ValidProfile(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case ProfilePrompt, ProfileNative, ProfileGateway:
+		return true
+	}
+	return false
+}
+
+// NormalizeProfile canonicalizes a user-supplied profile name.
+// Unknown values fall back to ProfilePrompt.
+func NormalizeProfile(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case ProfileNative:
+		return ProfileNative
+	case ProfileGateway:
+		return ProfileGateway
+	default:
+		return ProfilePrompt
+	}
+}
+
+// DefaultManagedItems is the closed register of top-level entries under the
+// Gemini config directory that a profile switch owns: each is moved to the
+// timestamped backup before being replaced, and removed when the active profile
+// does not deploy it. It is the ONE authority for that set - Switch, Restore,
+// LoadState and the CLI/TUI file plans all derive from it, so adding or removing
+// an owner here moves every door at once.
+//
+// Ownership is partitioned by DESTINATION, one owner per path (P5-3 pick record
+// items 1 and 5, constraints 4 and 5):
+//
+//   - mode owns agents, references, profile.json and config.json. They ship with
+//     the embedded full profile, so a switch redeploys them.
+//   - internal/integrations owns rules, skills, plugins and the hooks file, so
+//     none of them may appear here. hooks was already outside this set; the
+//     reason is now ownership rather than "leave it alone" - the integrations
+//     engine deploys and retracts it, and pick 5 rejected pulling it back in
+//     because that re-couples the two orthogonal axes. agy-native files
+//     (import_manifest.json, .migrated) stay untouched by both owners.
+//
+// Both halves of that partition are in force since P5-3 T7. The RETRACTION half
+// is this register: a switch backs up and removes only the entries above, so it
+// never moves an integrations-owned tree out of the engine's way (the hybrid
+// merge-vs-replace damage class). The DEPLOY half is the walk source: the
+// embedded profiles/full and profiles/clean trees no longer carry rules/, skills/
+// or plugins/ - T7 moved them to profiles/tools/, which the integrations engine
+// deploys - so a switch lays down nothing inside a tree the engine owns.
+// TestManagedSetRetractionLeavesIntegrationsOwnedTrees and
+// TestProfileWalkLeavesIntegrationsOwnedTreesAlone pin the two halves.
+var DefaultManagedItems = []string{
+	"agents",
+	"references",
+	"profile.json",
+	"config.json",
+}
+
+// State represents the serialized agy-pro configuration state in ~/.agy-pro/state.json.
+type State struct {
+	CurrentMode  string    `json:"current_mode"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	LastBackup   string    `json:"last_backup,omitempty"`
+	ManagedItems []string  `json:"managed_items"`
+	// DefaultProfile is the plain-`agy` launch profile (prompt|native|gateway).
+	// Additive key: state files written before it existed keep loading and
+	// re-saving with the original four keys intact.
+	DefaultProfile string `json:"default_profile,omitempty"`
+	// BridgeTools is the gateway tool-loop allow-list ("read,search,write,exec"
+	// subset, canonical order, or "none"). Additive key with the same
+	// forward-compatibility contract as DefaultProfile: absent means
+	// DefaultBridgeTools at run time.
+	BridgeTools string `json:"bridge_tools,omitempty"`
+	// NativeSeatConcurrency caps how many native (real-agy subprocess)
+	// fanout seats run at the same time; excess native seats queue
+	// (contract §2.3). Additive key with the same forward-compatibility
+	// contract as DefaultProfile: absent means DefaultNativeSeatConcurrency.
+	NativeSeatConcurrency int `json:"native_seat_concurrency,omitempty"`
+	// HybridProfile is the persisted native-coexistence profile ("p1" or "p2";
+	// empty for none). Additive key with the same forward-compatibility
+	// contract as DefaultProfile: a state file written before it existed keeps
+	// loading and re-saving without the key. The AGY_PRO_HYBRID environment
+	// override takes precedence over this persisted value; the precedence is
+	// resolved by hybrid.ResolveProfile, not by EffectiveHybridProfile (which
+	// reads the persisted value only).
+	HybridProfile string `json:"hybrid_profile,omitempty"`
+	// Language is the persisted UI language code (one of the closed 12-code
+	// set). Additive key with the same forward-compatibility contract as
+	// DefaultProfile: a state file written before it existed keeps loading
+	// and re-saving without the key; absent means DefaultLanguage at run time.
+	Language string `json:"language,omitempty"`
+	// LauncherMenu is the persisted launcher-menu toggle ("1" shows, "0"
+	// hides; stored as a string so an explicit off round-trips). Additive key
+	// with the same forward-compatibility contract as DefaultProfile: absent
+	// means no stored decision and the AGY_LAUNCHER env opt-in alone decides.
+	// The AGY_LAUNCHER environment override takes precedence over this stored
+	// value; that precedence is resolved by the launcher, not by
+	// EffectiveLauncherMenu (which reads the persisted value only).
+	LauncherMenu string `json:"launcher_menu,omitempty"`
+	// IntegrationPreset is the persisted composed integrations preset
+	// ("native"|"tools"|"custom": the three words internal/integrations
+	// declares). Additive key with the same forward-compatibility contract as
+	// DefaultProfile: a state file written before it existed keeps loading and
+	// re-saving without the key. An ABSENT key is the legacy posture - no
+	// integrations-owned intent is claimed, which is exactly how every build
+	// before P5-3 behaved - and is deliberately distinct from an explicit
+	// preset the user chose. Any other stored value is refused at the SET door
+	// (internal/settings Core.Set) and tolerated-but-inert on read
+	// (NormalizeIntegrationPreset drops it) instead of being reinterpreted.
+	IntegrationPreset string `json:"integration_preset,omitempty"`
+	// IntegrationStatusline, IntegrationHook, IntegrationRules,
+	// IntegrationPlugins and IntegrationSkills are the persisted per-feature
+	// integrations toggles (IntegrationToggleOn/IntegrationToggleOff). Same
+	// additive and absent-means-legacy contract as IntegrationPreset; an
+	// explicit "off" is a different posture from an absent key. They are five
+	// separate keys rather than one list so that a hand-edited state file, a
+	// pre-write diff and a stale-base re-verify each name exactly one row.
+	IntegrationStatusline string `json:"integration_statusline,omitempty"`
+	IntegrationHook       string `json:"integration_hook,omitempty"`
+	IntegrationRules      string `json:"integration_rules,omitempty"`
+	IntegrationPlugins    string `json:"integration_plugins,omitempty"`
+	IntegrationSkills     string `json:"integration_skills,omitempty"`
+}
+
+// EffectiveDefaultProfile returns the stored launch profile, or ProfilePrompt
+// when the key is missing (pre-existing state files) or unrecognized.
+func (s *State) EffectiveDefaultProfile() string {
+	if s == nil {
+		return ProfilePrompt
+	}
+	return NormalizeProfile(s.DefaultProfile)
+}
+
+// EffectiveBridgeTools returns the stored tool-loop allow-list, or
+// DefaultBridgeTools when the key is missing (pre-existing state files) or
+// blank. The stored value is validated by the config subcommand before it is
+// saved; the launcher still re-parses it fail-closed at run time.
+func (s *State) EffectiveBridgeTools() string {
+	if s == nil {
+		return DefaultBridgeTools
+	}
+	if trimmed := strings.TrimSpace(s.BridgeTools); trimmed != "" {
+		return trimmed
+	}
+	return DefaultBridgeTools
+}
+
+// EffectiveNativeSeatConcurrency returns the stored native-seat concurrency
+// cap bounded by the shared clamp (contract §2.3): a missing/invalid key falls
+// back to DefaultNativeSeatConcurrency, and every value is clamped to 1..8 by
+// ClampNativeSeatConcurrency - the same helper the --max-native flag path
+// routes through (A1).
+func (s *State) EffectiveNativeSeatConcurrency() int {
+	if s == nil {
+		return DefaultNativeSeatConcurrency
+	}
+	return ClampNativeSeatConcurrency(s.NativeSeatConcurrency)
+}
+
+// EffectiveHybridProfile returns the stored native-coexistence profile
+// normalized to "p1" or "p2", or HybridProfileNone when the key is missing
+// (pre-existing state files), blank, or unrecognized. It reads the persisted
+// value only; the AGY_PRO_HYBRID environment override is layered on top by
+// hybrid.ResolveProfile. The alias set matches hybrid.ParseProfile so a
+// hand-edited state file carrying "picker"/"subagent" still normalizes.
+func (s *State) EffectiveHybridProfile() string {
+	if s == nil {
+		return HybridProfileNone
+	}
+	switch strings.ToLower(strings.TrimSpace(s.HybridProfile)) {
+	case "p1", "picker", "1":
+		return "p1"
+	case "p2", "subagent", "2":
+		return "p2"
+	default:
+		return HybridProfileNone
+	}
+}
+
+// EffectiveLanguage returns the stored UI language code normalized against
+// the closed 12-code set, or DefaultLanguage when the key is missing
+// (pre-existing state files), blank, or unrecognized.
+func (s *State) EffectiveLanguage() string {
+	if s == nil {
+		return DefaultLanguage
+	}
+	return NormalizeLanguage(s.Language)
+}
+
+// EffectiveLauncherMenu returns the stored launcher-menu toggle normalized to
+// LauncherMenuOn ("1") or LauncherMenuOff ("0"), or "" when the key is
+// absent, blank, or invalid. The empty return distinguishes "no stored
+// decision" from an explicit off: only the launcher layers the AGY_LAUNCHER
+// env override on top of this persisted value.
+func (s *State) EffectiveLauncherMenu() string {
+	if s == nil {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(s.LauncherMenu)) {
+	case LauncherMenuOn, "on", "true":
+		return LauncherMenuOn
+	case LauncherMenuOff, "off", "false":
+		return LauncherMenuOff
+	default:
+		return ""
+	}
+}
+
+// NormalizeIntegrationToggle canonicalizes one stored per-feature integration
+// toggle against the closed on/off set and returns "" when the value is absent,
+// blank, or unrecognized. The empty return is the legacy posture - nothing
+// integrations-owned is claimed for that feature - and stays distinct from an
+// explicit IntegrationToggleOff, the same contract EffectiveLauncherMenu holds.
+// The alias set is the launcher menu's (on/1/true, off/0/false) so a hand-edited
+// state file still reads, and unrecognized values are inert rather than
+// reinterpreted. It is a package function, not an Effective* method, because
+// the five feature keys share this one value domain and five near-identical
+// methods would say nothing extra: callers read
+// NormalizeIntegrationToggle(st.IntegrationRules).
+func NormalizeIntegrationToggle(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case IntegrationToggleOn, "1", "true":
+		return IntegrationToggleOn
+	case IntegrationToggleOff, "0", "false":
+		return IntegrationToggleOff
+	default:
+		return ""
+	}
+}
+
+// NormalizeIntegrationPreset canonicalizes one stored integrations preset
+// against the closed native/tools/custom set and returns "" when the value is
+// absent, blank, or unrecognized (the same legacy posture and inert-on-read
+// tolerance as NormalizeIntegrationToggle). The CLI settings store is the SET
+// door that refuses an unrecognized value; this function never decides what to
+// deploy, it only reports what the user asked for.
+func NormalizeIntegrationPreset(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case IntegrationPresetNative:
+		return IntegrationPresetNative
+	case IntegrationPresetTools:
+		return IntegrationPresetTools
+	case IntegrationPresetCustom:
+		return IntegrationPresetCustom
+	default:
+		return ""
+	}
+}
+
+// LoadState reads the state file. If missing, returns a default state.
+func LoadState() (*State, error) {
+	stateFile, err := paths.AgyProStateFile()
+	if err != nil {
+		return nil, err
+	}
+
+	data, err := os.ReadFile(stateFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &State{
+				CurrentMode:  "clean",
+				UpdatedAt:    time.Now().UTC(),
+				ManagedItems: append([]string(nil), DefaultManagedItems...),
+			}, nil
+		}
+		return nil, fmt.Errorf("failed to read state file %q: %w", stateFile, err)
+	}
+
+	var state State
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nil, fmt.Errorf("failed to parse state file %q: %w", stateFile, err)
+	}
+	// The register is the single authority (see DefaultManagedItems): a stored
+	// manifest is REPLACED, not merged, because an entry the register no longer
+	// lists is an entry whose destination moved to another owner - P5-3 handed
+	// rules, skills and plugins to internal/integrations - and a claim that
+	// outlives the move would describe a destination two owners write. A union
+	// would also keep a pre-partition state file reporting them as mode-owned in
+	// `mode status` and in the settings managed_items row until the next switch.
+	// Nothing is written to disk here; the next Switch persists the register.
+	state.ManagedItems = append([]string(nil), DefaultManagedItems...)
+	return &state, nil
+}
+
+// stateFilePerm is the mode state.json is written with (A10): owner-only, the
+// same 0600 the swarm preset store and the fanout reports use. The file holds
+// no secrets, but there is no reason for it to be world-readable either.
+const stateFilePerm = 0o600
+
+// atomicWriteFile is the state-writer seam; tests intercept it to assert the
+// requested mode (Windows does not round-trip mode bits through Stat).
+var atomicWriteFile = paths.AtomicWriteFile
+
+// SaveState saves state to ~/.agy-pro/state.json atomically.
+func SaveState(state *State) error {
+	stateFile, err := paths.AgyProStateFile()
+	if err != nil {
+		return err
+	}
+
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to serialize state: %w", err)
+	}
+
+	return atomicWriteFile(stateFile, append(data, '\n'), stateFilePerm)
+}
+
+// Switch switches the active profile in ~/.gemini/config to targetMode ("full" or "clean").
+// If targetMode is empty, prompts the user via in/out.
+func Switch(targetMode string, in io.Reader, out io.Writer) error {
+	mode := strings.ToLower(strings.TrimSpace(targetMode))
+
+	// Interactive prompt if mode not given
+	if mode == "" {
+		fmt.Fprintln(out, "===========================================================")
+		fmt.Fprintln(out, "  agy-pro Profile Switcher")
+		fmt.Fprintln(out, "===========================================================")
+		fmt.Fprintln(out, "Select environment profile mode:")
+		fmt.Fprintln(out, "  1. full-stack     (VP Orchestrator rules, specialized agent skills & plugins)")
+		fmt.Fprintln(out, "  2. default (clean) (Minimal clean baseline environment)")
+		fmt.Fprint(out, "Choice [1/2]: ")
+
+		reader := bufio.NewReader(in)
+		line, err := reader.ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return fmt.Errorf("failed reading choice: %w", err)
+		}
+		choice := strings.TrimSpace(line)
+		switch choice {
+		case "1", "full", "full-stack":
+			mode = ModeFull
+		case "2", "clean", "default":
+			mode = ModeClean
+		default:
+			// A10b: the pasted line is echoed back, so it goes through the
+			// same mask every other key display uses - a secret pasted by
+			// mistake must never be printed raw.
+			return fmt.Errorf("invalid selection: %q (must be 1 or 2)", providers.MaskSecret(choice))
+		}
+	} else {
+		switch mode {
+		case "1", "full", "full-stack":
+			mode = ModeFull
+		case "2", "clean", "default":
+			mode = ModeClean
+		default:
+			// A10b: same masking for the non-interactive spelling, which
+			// echoes the raw argv value.
+			return fmt.Errorf("unknown mode: %q (supported: full, clean)", providers.MaskSecret(mode))
+		}
+	}
+
+	configDir, err := paths.GeminiConfigDir()
+	if err != nil {
+		return err
+	}
+	backupBase, err := paths.AgyProBackups()
+	if err != nil {
+		return err
+	}
+
+	// 1. Prepare timestamped backup directory (unique per switch: two
+	// switches within the same second must not share one snapshot dir). The
+	// snapshot is owner-only (paths.BackupDirPerm): it holds the user's own
+	// configuration bytes, and no other local account has a reason to read it.
+	backupDir := uniqueBackupDir(filepath.Join(backupBase, paths.NewBackupTimestamp()))
+	if err := os.MkdirAll(backupDir, paths.BackupDirPerm); err != nil {
+		return fmt.Errorf("failed to create backup directory %q: %w", backupDir, err)
+	}
+
+	// 2. Move existing managed items to backup (NEVER permanently delete)
+	backedUpCount := 0
+	for _, item := range DefaultManagedItems {
+		itemPath := filepath.Join(configDir, item)
+		if fi, err := os.Stat(itemPath); err == nil {
+			if _, moveErr := paths.MoveToBackup(itemPath, backupDir); moveErr != nil {
+				return fmt.Errorf("failed to backup %q: %w", itemPath, moveErr)
+			}
+			backedUpCount++
+			_ = fi
+		}
+	}
+
+	// 3. Deploy new profile assets from embedded templates
+	profileFS, err := profiles.GetProfileFS(mode)
+	if err != nil {
+		return fmt.Errorf("failed to load profile %q: %w", mode, err)
+	}
+
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		return fmt.Errorf("failed to create config dir %q: %w", configDir, err)
+	}
+
+	err = fs.WalkDir(profileFS, ".", func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path == "." {
+			return nil
+		}
+		destPath := filepath.Join(configDir, path)
+
+		if d.IsDir() {
+			return os.MkdirAll(destPath, 0o755)
+		}
+
+		data, readErr := fs.ReadFile(profileFS, path)
+		if readErr != nil {
+			return fmt.Errorf("failed to read embedded file %q: %w", path, readErr)
+		}
+
+		return paths.AtomicWriteFile(destPath, data, 0o644)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to deploy profile files: %w", err)
+	}
+
+	// 4. Update and persist state
+	state, err := LoadState()
+	if err != nil {
+		// A corrupt state file must not abort an already-applied switch:
+		// fall back to a fresh state; the lines below rewrite every field
+		// the switch owns.
+		state = &State{}
+	}
+	state.CurrentMode = mode
+	state.UpdatedAt = time.Now().UTC()
+	if backedUpCount > 0 {
+		state.LastBackup = backupDir
+	}
+	state.ManagedItems = append([]string(nil), DefaultManagedItems...)
+
+	if err := SaveState(state); err != nil {
+		return fmt.Errorf("failed to update state: %w", err)
+	}
+
+	fmt.Fprintf(out, "[SUCCESS] Switched mode to: %s\n", mode)
+	if backedUpCount > 0 {
+		fmt.Fprintf(out, "          Previous configuration backed up to: %s\n", backupDir)
+	}
+	fmt.Fprintf(out, "          Config directory: %s\n", configDir)
+	return nil
+}
+
+// Status prints the current profile mode state without touching the
+// configuration. It is the read-only counterpart of Switch and the handler
+// for `agy pro mode status`.
+func Status(out io.Writer) error {
+	state, err := LoadState()
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintln(out, "===========================================================")
+	fmt.Fprintln(out, "  agy-pro Profile Mode Status")
+	fmt.Fprintln(out, "===========================================================")
+	fmt.Fprintf(out, "Current Mode : %s\n", state.CurrentMode)
+	updated := state.UpdatedAt.Format("2006-01-02 15:04:05 MST")
+	if state.UpdatedAt.IsZero() {
+		updated = "unknown"
+	}
+	fmt.Fprintf(out, "Last Updated : %s\n", updated)
+	if state.LastBackup != "" {
+		fmt.Fprintf(out, "Last Backup  : %s\n", state.LastBackup)
+	}
+	fmt.Fprintf(out, "Manifest     : %s\n", strings.Join(state.ManagedItems, ", "))
+	if configDir, err := paths.GeminiConfigDir(); err == nil {
+		fmt.Fprintf(out, "Config Dir   : %s\n", configDir)
+	}
+
+	backups, err := ListBackups()
+	if err != nil {
+		fmt.Fprintf(out, "Backups      : unavailable (%v)\n", err)
+	} else if len(backups) == 0 {
+		fmt.Fprintln(out, "Backups      : none")
+	} else {
+		fmt.Fprintf(out, "Backups      : %d available (latest: %s)\n", len(backups), backups[len(backups)-1])
+	}
+	return nil
+}
+
+// managedItemOwner reports whether item is a top-level entry the managed
+// register owns (DefaultManagedItems). Restore's copy-back is its one caller:
+// the snapshot half of a restore and the move-aside half must answer "does this
+// entry belong to the mode layer?" from the same closed register, or the two
+// halves disagree about which destinations a restore may write.
+//
+// The comparison folds case because the copy-back resolves its source with
+// filepath.Join + os.Stat, and Win32 stats case-INSENSITIVELY: a backup entry
+// named AGENTS is copied to agents/. A byte-exact answer here would report that
+// entry as "left in place" in the transcript while the same run wrote it, and
+// the CLI/TUI plans (same folded predicate) would understate the write set.
+// On a case-sensitive filesystem the fold can only overstate the set for a
+// hand-renamed entry, which is the safe direction: the consent shows more than
+// the copy-back finds, and the copy-back skips what is absent.
+func managedItemOwner(item string) bool {
+	for _, managed := range DefaultManagedItems {
+		if strings.EqualFold(managed, item) {
+			return true
+		}
+	}
+	return false
+}
+
+// lastBackupInsideBackups reports whether a recorded last_backup names a
+// directory inside the agy-pro backup tree. It is the lexical gate
+// integrations.backupSourceInside puts on a manifest backup_ref, applied to the
+// state file: state.json is user-editable, and a restore copies bytes it finds
+// there, so the source must be an archive this program produced under
+// ~/.agy-pro/backups.
+//
+// A relative, blank or outside value answers false; so does a value whose
+// spelling differs from the backups root only by case on Windows (filepath.Rel
+// is byte-exact there, so the prefix test fails closed - availability only).
+func lastBackupInsideBackups(ref string) (bool, error) {
+	backupsRoot, err := paths.AgyProBackups()
+	if err != nil {
+		return false, err
+	}
+	trimmed := strings.TrimSpace(ref)
+	if trimmed == "" || !filepath.IsAbs(trimmed) {
+		return false, nil
+	}
+	cleanRef := filepath.Clean(trimmed)
+	root := filepath.Clean(backupsRoot)
+	rel, err := filepath.Rel(root, cleanRef)
+	if err != nil {
+		return false, nil
+	}
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return false, nil
+	}
+	return true, nil
+}
+
+// Restore restores the latest backup from ~/.agy-pro/backups into
+// ~/.gemini/config. Both halves of the operation derive from DefaultManagedItems:
+// the live entries the register owns are moved aside into a pre-restore backup,
+// and the snapshot copies back ONLY the entries the register still lists (T9).
+//
+// The narrowing is per managed item, not per backup: a backup taken before the
+// P5-3 destination partition also carries rules/, skills/ and plugins/, whose
+// destinations the integrations engine owns now. Re-laying those would overwrite
+// an engine-owned file with stale snapshot bytes - the hybrid merge-vs-replace
+// damage class - and leave the engine reporting drift that only a re-apply can
+// repair. So an entry the register does not cover is left where it is and named
+// in the restore transcript; the snapshot itself is never modified.
+//
+// The recorded last_backup is containment-checked against the backups root
+// before anything moves (lastBackupInsideBackups).
+func Restore(out io.Writer) error {
+	state, err := LoadState()
+	if err != nil {
+		return err
+	}
+
+	// The recorded source must be an archive this program wrote. An outside
+	// value is refused (not replaced by the newest in-tree snapshot): the
+	// presented plan names the source it resolved and reverify re-reads that same
+	// directory, so copying a different one after consent would make the write
+	// disagree with the approved plan, which is the divergence the narrowed
+	// register exists to close.
+	backupDir := state.LastBackup
+	if backupDir != "" {
+		inside, insideErr := lastBackupInsideBackups(backupDir)
+		if insideErr != nil {
+			return insideErr
+		}
+		if !inside {
+			return fmt.Errorf("last_backup in state.json (%s) is not inside the agy-pro backups directory, so it is not an archive this verb restores from; nothing written (run `agy pro mode status` to see the backups that exist)", backupDir)
+		}
+	}
+	if backupDir == "" || !dirExists(backupDir) {
+		// Discover latest backup directory by timestamp
+		backupBase, err := paths.AgyProBackups()
+		if err != nil {
+			return err
+		}
+		entries, err := os.ReadDir(backupBase)
+		if err != nil || len(entries) == 0 {
+			return errors.New("no previous backups found to restore")
+		}
+
+		var dirs []string
+		for _, e := range entries {
+			if e.IsDir() {
+				dirs = append(dirs, filepath.Join(backupBase, e.Name()))
+			}
+		}
+		if len(dirs) == 0 {
+			return errors.New("no previous backups found to restore")
+		}
+		sort.Strings(dirs)
+		backupDir = dirs[len(dirs)-1]
+	}
+
+	configDir, err := paths.GeminiConfigDir()
+	if err != nil {
+		return err
+	}
+
+	// Move current active items into a pre-restore backup
+	preRestoreDir := uniqueBackupDir(filepath.Join(filepath.Dir(backupDir), paths.NewBackupTimestamp()+"_pre_restore"))
+	for _, item := range DefaultManagedItems {
+		activePath := filepath.Join(configDir, item)
+		if _, err := os.Stat(activePath); err == nil {
+			_, _ = paths.MoveToBackup(activePath, preRestoreDir)
+		}
+	}
+
+	// Restore items from backupDir, register entries only (T9). The register is
+	// walked (not the backup directory) so the copy order is fixed by the same
+	// enumeration the move-aside above used, and an entry the register does not
+	// own is skipped by name rather than by filesystem enumeration order.
+	entries, err := os.ReadDir(backupDir)
+	if err != nil {
+		return fmt.Errorf("failed to read backup directory %q: %w", backupDir, err)
+	}
+
+	restoredCount := 0
+	for _, item := range DefaultManagedItems {
+		src := filepath.Join(backupDir, item)
+		if _, statErr := os.Stat(src); statErr != nil {
+			continue // this snapshot carries no copy of that entry
+		}
+		dst := filepath.Join(configDir, item)
+		if err := paths.CopyRecursive(src, dst); err != nil {
+			return fmt.Errorf("failed to restore %q: %w", item, err)
+		}
+		restoredCount++
+	}
+	// os.ReadDir is name-sorted, so the skip report is deterministic too.
+	var skipped []string
+	for _, entry := range entries {
+		if !managedItemOwner(entry.Name()) {
+			skipped = append(skipped, entry.Name())
+		}
+	}
+
+	state.CurrentMode = "restored"
+	state.UpdatedAt = time.Now().UTC()
+	state.LastBackup = preRestoreDir
+	_ = SaveState(state)
+
+	fmt.Fprintf(out, "[SUCCESS] Restored %d items from: %s\n", restoredCount, backupDir)
+	fmt.Fprintf(out, "          Active config: %s\n", configDir)
+	if len(skipped) > 0 {
+		fmt.Fprintf(out, "          Left in place (not a mode-managed item): %s\n", strings.Join(skipped, ", "))
+		fmt.Fprintf(out, "          Those destinations belong to `agy pro integrations`: re-apply with `agy pro integrations apply`\n")
+	}
+	return nil
+}
+
+// ListBackups returns all available backup directories sorted chronologically.
+func ListBackups() ([]string, error) {
+	backupBase, err := paths.AgyProBackups()
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(backupBase)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	var results []string
+	for _, e := range entries {
+		if e.IsDir() {
+			results = append(results, filepath.Join(backupBase, e.Name()))
+		}
+	}
+	sort.Strings(results)
+	return results, nil
+}
+
+func dirExists(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.IsDir()
+}
+
+// uniqueBackupDir returns path with a numeric suffix appended when it already
+// exists, so switches or restores occurring within the same second never
+// share (and thereby interleave) one backup directory. The suffix keeps
+// lexical order aligned with chronological order for ListBackups and for
+// Restore's latest-backup discovery.
+func uniqueBackupDir(path string) string {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return path
+	}
+	for i := 2; ; i++ {
+		candidate := fmt.Sprintf("%s_%d", path, i)
+		if _, err := os.Stat(candidate); os.IsNotExist(err) {
+			return candidate
+		}
+	}
+}

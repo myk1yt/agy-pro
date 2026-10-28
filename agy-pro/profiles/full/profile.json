@@ -1,0 +1,20 @@
+{
+  "name": "full",
+  "displayName": "Full-Stack Orchestrator Profile",
+  "description": "Full-stack VP of Engineering profile with 9 specialized agents, 4-model double-blind fanout swarm, and Arbiter reconciliation rules",
+  "version": "1.0.0",
+  "managed": [
+    "agents/agypro-search/AGENT.md",
+    "agents/architect/AGENT.md",
+    "agents/blind-qa/AGENT.md",
+    "agents/code-reviewer/AGENT.md",
+    "agents/debug-specialist/AGENT.md",
+    "agents/designer/AGENT.md",
+    "agents/readiness-auditor/AGENT.md",
+    "agents/release-inspector/AGENT.md",
+    "agents/research/AGENT.md",
+    "agents/security-reviewer/AGENT.md",
+    "references/visual-qa-rubric.md",
+    "profile.json"
+  ]
+}

@@ -1,0 +1,132 @@
+{
+  "version": 3,
+  "generatedAt": "2026-10-21T09:15:00.000Z",
+  "currency": "usd",
+  "lang": "en",
+  "isRtl": false,
+  "model": "claude-sonnet-5-5-high",
+  "models": [
+    {
+      "model": "claude-sonnet-5-5-high",
+      "displayName": "claude-sonnet-5-5-high",
+      "totalTokens": 1240000,
+      "inputTokens": 700000,
+      "cachedTokens": 240000,
+      "outputTokens": 300000,
+      "cacheHitRate": 25.5319,
+      "costUsd": 12.480123,
+      "cacheSavingsUsd": 0.912,
+      "sessions": 14,
+      "turns": 96
+    },
+    {
+      "model": "gemini-3.8-flash-high",
+      "displayName": "gemini-3.8-flash-high",
+      "totalTokens": 480000,
+      "inputTokens": 300000,
+      "cachedTokens": 120000,
+      "outputTokens": 60000,
+      "cacheHitRate": 28.5714,
+      "costUsd": 2.110455,
+      "cacheSavingsUsd": 0.211,
+      "sessions": 9,
+      "turns": 41
+    }
+  ],
+  "daily": [
+    {
+      "date": "2026-10-20",
+      "sessions": 6,
+      "turns": 33,
+      "inputTokens": 210000,
+      "cachedTokens": 80000,
+      "outputTokens": 90000,
+      "totalTokens": 380000,
+      "cacheHitRate": 27.5862,
+      "costUsd": 3.441,
+      "cacheSavingsUsd": 0.3
+    },
+    {
+      "date": "2026-10-21",
+      "sessions": 4,
+      "turns": 21,
+      "inputTokens": 130000,
+      "cachedTokens": 52000,
+      "outputTokens": 61000,
+      "totalTokens": 243000,
+      "cacheHitRate": 28.5714,
+      "costUsd": 2.0875,
+      "cacheSavingsUsd": 0.18
+    }
+  ],
+  "summaries": {
+    "today": {
+      "totalSessions": 4,
+      "totalTurns": 21,
+      "inputTokens": 130000,
+      "cachedTokens": 52000,
+      "outputTokens": 61000,
+      "totalTokens": 243000,
+      "cacheHitRate": 28.5714,
+      "costUsd": 2.0875,
+      "cacheSavingsUsd": 0.18,
+      "period": "today",
+      "dateStr": "2026-10-21"
+    },
+    "yesterday": {
+      "totalSessions": 6,
+      "totalTurns": 33,
+      "inputTokens": 210000,
+      "cachedTokens": 80000,
+      "outputTokens": 90000,
+      "totalTokens": 380000,
+      "cacheHitRate": 27.5862,
+      "costUsd": 3.441,
+      "cacheSavingsUsd": 0.3,
+      "period": "yesterday",
+      "dateStr": "2026-10-20"
+    },
+    "last7d": {
+      "totalSessions": 18,
+      "totalTurns": 104,
+      "inputTokens": 760000,
+      "cachedTokens": 300000,
+      "outputTokens": 310000,
+      "totalTokens": 1370000,
+      "cacheHitRate": 28.3019,
+      "costUsd": 11.902,
+      "cacheSavingsUsd": 1.02,
+      "period": "7d",
+      "dateRange": "2026-10-15..2026-10-21"
+    },
+    "last30d": {
+      "totalSessions": 41,
+      "totalTurns": 288,
+      "inputTokens": 2100000,
+      "cachedTokens": 840000,
+      "outputTokens": 890000,
+      "totalTokens": 3830000,
+      "cacheHitRate": 28.5714,
+      "costUsd": 34.221,
+      "cacheSavingsUsd": 3.01,
+      "period": "30d",
+      "dateRange": "2026-09-22..2026-10-21"
+    }
+  },
+  "cacheStats": {
+    "totalSessions": 41,
+    "parsedCount": 3,
+    "cachedCount": 38,
+    "elapsedMs": 214
+  },
+  "geminiQuota": {
+    "remainPercent": 63,
+    "remainingFraction": 0.63,
+    "modelLabel": "Gemini Quota Pool",
+    "resetFormatted": "2h 14m",
+    "resetInSeconds": 8040,
+    "isFresh": true,
+    "isStale": false,
+    "ageMs": 12000
+  }
+}

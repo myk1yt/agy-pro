@@ -1,0 +1,10 @@
+{
+  "name": "clean",
+  "displayName": "Clean Baseline Profile",
+  "description": "Minimal baseline Antigravity CLI profile with pure native configuration and only the mode switcher skill",
+  "version": "1.0.0",
+  "managed": [
+    "agents/agypro-search/AGENT.md",
+    "profile.json"
+  ]
+}

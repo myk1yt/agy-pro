@@ -1,0 +1,1 @@
+{"messages":[{"role":"user","content":"두 도구 병렬 호출"},{"role":"assistant","tool_calls":[{"id":"call_0","type":"function","function":{"name":"view_file","arguments":"{\"path\":\"a.go\"}"}},{"id":"call_1","type":"function","function":{"name":"run_command","arguments":"{\"commandLine\":\"ls\"}"}}]}],"notes":null,"params":{},"surface_thoughts":false,"tool_choice":null,"tools":null}

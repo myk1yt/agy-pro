@@ -1,0 +1,1 @@
+[{"candidates":[{"content":{"role":"model","parts":[{"text":"길이 초과"}]},"finishReason":"MAX_TOKENS","index":0}]},{"candidates":[{"content":{"role":"model","parts":[{"text":"안전 필터"}]},"finishReason":"SAFETY","index":0}]},{"candidates":[{"content":{"role":"model","parts":[{"text":"이유 없음"}]},"finishReason":"STOP","index":0}]}]

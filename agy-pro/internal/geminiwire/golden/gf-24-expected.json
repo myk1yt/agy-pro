@@ -1,0 +1,1 @@
+[{"candidates":[{"content":{"role":"model","parts":[{"text":"답변입니다"}]},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":120,"candidatesTokenCount":30,"totalTokenCount":150,"thoughtsTokenCount":12,"cachedContentTokenCount":64}},{"candidates":[{"content":{"role":"model","parts":[{"text":"사용량 없음"}]},"finishReason":"STOP","index":0}]}]

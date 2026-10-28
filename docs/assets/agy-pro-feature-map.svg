@@ -1,0 +1,116 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 516" width="100%" role="img" aria-label="agy pro feature map: orchestrate, observe, control">
+<title>What agy pro contains, grouped by what it does</title>
+<defs>
+    <marker id="ah-0d9488" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#0d9488"/>
+    </marker>
+    <marker id="ah-16a34a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#16a34a"/>
+    </marker>
+    <marker id="ah-2563eb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2563eb"/>
+    </marker>
+    <marker id="ah-4b5563" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4b5563"/>
+    </marker>
+    <marker id="ah-9333ea" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#9333ea"/>
+    </marker>
+    <marker id="ah-d97706" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#d97706"/>
+    </marker>
+    <marker id="ah-db2777" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#db2777"/>
+    </marker>
+    <marker id="ah-dc2626" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#dc2626"/>
+    </marker>
+    <marker id="ah-ee4f2e" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#ee4f2e"/>
+    </marker>
+</defs>
+<rect x="0" y="0" width="680" height="516" fill="#ffffff"/>
+<!-- geometry: viewBox 680x516; 20px grid; left margin >= 20; latin 6.5px/char, CJK 13px/char at 13px; box padding >= 20px per side; text 50-bg / 800-fg, borders 600 -->
+<!-- box [agy pro] 260x64: widest line 143.0px, padding 58.5px/side (>=20) -->
+<rect x="210" y="36" width="260" height="64" rx="12" fill="#f9fafb" stroke="#4b5563" stroke-width="1.5"/>
+<!-- width: 'agy pro' 7ch x 7.50px = 52.5px -->
+<text x="340.0" y="64.7" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="600" fill="#1f2937" text-anchor="middle">agy pro</text>
+<!-- width: 'one shim over the real agy' 26ch x 5.50px = 143.0px -->
+<text x="340.0" y="80.7" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#4b5563" text-anchor="middle">one shim over the real agy</text>
+<rect x="20" y="152" width="196" height="292" rx="14" fill="#faf5ff" stroke="#9333ea" stroke-width="1.5"/>
+<!-- width: 'ORCHESTRATE' 11ch x 5.50px = 60.5px -->
+<text x="40" y="180" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="700" fill="#9333ea" text-anchor="start">ORCHESTRATE</text>
+<!-- width: 'more than one model' 19ch x 5.00px = 95.0px -->
+<text x="40" y="200" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-weight="400" fill="#9333ea" text-anchor="start">more than one model</text>
+<!-- box [fanout swarm] 180x64: widest line 123.5px, padding 28.2px/side (>=20) -->
+<rect x="28" y="216" width="180" height="64" rx="9" fill="#faf5ff" stroke="#9333ea" stroke-width="1.5"/>
+<!-- width: 'fanout swarm' 12ch x 5.50px = 66.0px -->
+<text x="118.0" y="244.33" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="600" fill="#6b21a8" text-anchor="middle">fanout swarm</text>
+<!-- width: 'parallel seats, reconciled' 26ch x 4.75px = 123.5px -->
+<text x="118.0" y="258.83000000000004" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="9.5" font-weight="400" fill="#9333ea" text-anchor="middle">parallel seats, reconciled</text>
+<!-- box [code door] 180x64: widest line 109.2px, padding 35.4px/side (>=20) -->
+<rect x="28" y="292" width="180" height="64" rx="9" fill="#faf5ff" stroke="#9333ea" stroke-width="1.5"/>
+<!-- width: 'code door' 9ch x 5.50px = 49.5px -->
+<text x="118.0" y="320.33" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="600" fill="#6b21a8" text-anchor="middle">code door</text>
+<!-- width: 'plan free, write scoped' 23ch x 4.75px = 109.2px -->
+<text x="118.0" y="334.83" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="9.5" font-weight="400" fill="#9333ea" text-anchor="middle">plan free, write scoped</text>
+<!-- box [hybrid seats] 180x64: widest line 128.2px, padding 25.9px/side (>=20) -->
+<rect x="28" y="368" width="180" height="64" rx="9" fill="#faf5ff" stroke="#9333ea" stroke-width="1.5"/>
+<!-- width: 'hybrid seats' 12ch x 5.50px = 66.0px -->
+<text x="118.0" y="396.33" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="600" fill="#6b21a8" text-anchor="middle">hybrid seats</text>
+<!-- width: 'native + providers together' 27ch x 4.75px = 128.2px -->
+<text x="118.0" y="410.83" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="9.5" font-weight="400" fill="#9333ea" text-anchor="middle">native + providers together</text>
+<polyline points="340,100 340,126 118,126 118,146" fill="none" stroke="#9333ea" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#ah-9333ea)" stroke-dasharray="5 4"/>
+<rect x="242" y="152" width="196" height="292" rx="14" fill="#f0fdfa" stroke="#0d9488" stroke-width="1.5"/>
+<!-- width: 'OBSERVE' 7ch x 5.50px = 38.5px -->
+<text x="262" y="180" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="700" fill="#0d9488" text-anchor="start">OBSERVE</text>
+<!-- width: 'what a run costs' 16ch x 5.00px = 80.0px -->
+<text x="262" y="200" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-weight="400" fill="#0d9488" text-anchor="start">what a run costs</text>
+<!-- box [statusline badge] 180x64: widest line 95.0px, padding 42.5px/side (>=20) -->
+<rect x="250" y="216" width="180" height="64" rx="9" fill="#f0fdfa" stroke="#0d9488" stroke-width="1.5"/>
+<!-- width: 'statusline badge' 16ch x 5.50px = 88.0px -->
+<text x="340.0" y="244.33" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="600" fill="#115e59" text-anchor="middle">statusline badge</text>
+<!-- width: 'per turn, day, model' 20ch x 4.75px = 95.0px -->
+<text x="340.0" y="258.83000000000004" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="9.5" font-weight="400" fill="#0d9488" text-anchor="middle">per turn, day, model</text>
+<!-- box [quota 5h / 7d] 180x64: widest line 85.5px, padding 47.2px/side (>=20) -->
+<rect x="250" y="292" width="180" height="64" rx="9" fill="#f0fdfa" stroke="#0d9488" stroke-width="1.5"/>
+<!-- width: 'quota 5h / 7d' 13ch x 5.50px = 71.5px -->
+<text x="340.0" y="320.33" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="600" fill="#115e59" text-anchor="middle">quota 5h / 7d</text>
+<!-- width: '1:1 Gemini buckets' 18ch x 4.75px = 85.5px -->
+<text x="340.0" y="334.83" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="9.5" font-weight="400" fill="#0d9488" text-anchor="middle">1:1 Gemini buckets</text>
+<!-- box [dashboard :8787] 180x64: widest line 99.8px, padding 40.1px/side (>=20) -->
+<rect x="250" y="368" width="180" height="64" rx="9" fill="#f0fdfa" stroke="#0d9488" stroke-width="1.5"/>
+<!-- width: 'dashboard :8787' 15ch x 5.50px = 82.5px -->
+<text x="340.0" y="396.33" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="600" fill="#115e59" text-anchor="middle">dashboard :8787</text>
+<!-- width: 'pure-SVG charts, live' 21ch x 4.75px = 99.8px -->
+<text x="340.0" y="410.83" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="9.5" font-weight="400" fill="#0d9488" text-anchor="middle">pure-SVG charts, live</text>
+<polyline points="340,100 340,126 340,126 340,146" fill="none" stroke="#0d9488" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#ah-0d9488)" stroke-dasharray="5 4"/>
+<rect x="464" y="152" width="196" height="292" rx="14" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+<!-- width: 'CONTROL' 7ch x 5.50px = 38.5px -->
+<text x="484" y="180" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="700" fill="#2563eb" text-anchor="start">CONTROL</text>
+<!-- width: 'what is deployed' 16ch x 5.00px = 80.0px -->
+<text x="484" y="200" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-weight="400" fill="#2563eb" text-anchor="start">what is deployed</text>
+<!-- box [setup hub TUI] 180x64: widest line 85.5px, padding 47.2px/side (>=20) -->
+<rect x="472" y="216" width="180" height="64" rx="9" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+<!-- width: 'setup hub TUI' 13ch x 5.50px = 71.5px -->
+<text x="562.0" y="244.33" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="600" fill="#1e40af" text-anchor="middle">setup hub TUI</text>
+<!-- width: 'providers, presets' 18ch x 4.75px = 85.5px -->
+<text x="562.0" y="258.83000000000004" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="9.5" font-weight="400" fill="#2563eb" text-anchor="middle">providers, presets</text>
+<!-- box [model registry] 180x64: widest line 90.2px, padding 44.9px/side (>=20) -->
+<rect x="472" y="292" width="180" height="64" rx="9" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+<!-- width: 'model registry' 14ch x 5.50px = 77.0px -->
+<text x="562.0" y="320.33" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="600" fill="#1e40af" text-anchor="middle">model registry</text>
+<!-- width: 'plus exclusion list' 19ch x 4.75px = 90.2px -->
+<text x="562.0" y="334.83" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="9.5" font-weight="400" fill="#2563eb" text-anchor="middle">plus exclusion list</text>
+<!-- box [integrations] 180x64: widest line 109.2px, padding 35.4px/side (>=20) -->
+<rect x="472" y="368" width="180" height="64" rx="9" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+<!-- width: 'integrations' 12ch x 5.50px = 66.0px -->
+<text x="562.0" y="396.33" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="600" fill="#1e40af" text-anchor="middle">integrations</text>
+<!-- width: 'consent deploy, retract' 23ch x 4.75px = 109.2px -->
+<text x="562.0" y="410.83" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="9.5" font-weight="400" fill="#2563eb" text-anchor="middle">consent deploy, retract</text>
+<polyline points="340,100 340,126 562,126 562,146" fill="none" stroke="#2563eb" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#ah-2563eb)" stroke-dasharray="5 4"/>
+<!-- width: 'Every verb runs from plain chat: the master holds the standing' 62ch x 5.50px = 341.0px -->
+<text x="340" y="470" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#4b5563" text-anchor="middle">Every verb runs from plain chat: the master holds the standing</text>
+<!-- width: 'auto-route rules, so no slash commands get typed.' 49ch x 5.50px = 269.5px -->
+<text x="340" y="487" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#4b5563" text-anchor="middle">auto-route rules, so no slash commands get typed.</text>
+</svg>

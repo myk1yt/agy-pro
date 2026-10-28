@@ -1,0 +1,14 @@
+{
+    "version":  "1.0.0",
+    "name":  "security_reviewer",
+    "description":  "Lead Security Reviewer orchestrating specialized domain subagents for pre-commit audits: OWASP/CWE, Secrets/Credentials, Cloud/IaC, and Antigravity MCP privileges.",
+    "author":  "myk1yt",
+    "keywords":  [
+                     "antigravity",
+                     "security",
+                     "agents",
+                     "owasp",
+                     "iam"
+                 ],
+    "license":  "MIT"
+}

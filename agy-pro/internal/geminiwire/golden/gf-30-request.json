@@ -1,0 +1,1 @@
+{"models":[{"name":"models/probe-gemini","displayName":"Probe Gemini","description":"<stand-in registry description>","inputTokenLimit":1048576,"outputTokenLimit":65536},{"name":"models/probe-blade","displayName":"Probe Blade","description":"<stand-in registry description>","inputTokenLimit":200000,"outputTokenLimit":8192}]}

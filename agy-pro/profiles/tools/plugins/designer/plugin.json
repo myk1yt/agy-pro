@@ -1,0 +1,18 @@
+{
+  "name": "designer",
+  "version": "1.0.0",
+  "description": "Zero-MCP Self-Contained Design Specialist for mathematically precise inline SVG, interactive in-chat sci-widgets, web-native 3D/GLSL canvas, cyberpunk D3 topology, and self-contained visual QA loops.",
+  "author": "myk1yt",
+  "keywords": [
+    "antigravity",
+    "designer",
+    "design",
+    "svg",
+    "sci-widget",
+    "3d",
+    "webgl",
+    "cyberpunk",
+    "visual-qa"
+  ],
+  "license": "MIT"
+}

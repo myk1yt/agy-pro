@@ -1,0 +1,16 @@
+data: {"id":"chatcmpl-gf22","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-gf22","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_content":"계획을 세웁니다"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-gf22","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"파일을 "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-gf22","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"읽겠습니다 🚀"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-gf22","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_gf22","type":"function","function":{"name":"view_file","arguments":"{\"path\""}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-gf22","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":":\"한국어.md\"}"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-gf22","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":120,"completion_tokens":30,"total_tokens":150,"completion_tokens_details":{"reasoning_tokens":12},"prompt_tokens_details":{"cached_tokens":64}}}
+
+data: "[DONE]"
+

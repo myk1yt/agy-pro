@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 480" width="100%" role="img" aria-label="Safety layers around an agy pro code write run">
+<title>Five layers between a seat and your working tree</title>
+<defs>
+    <marker id="ah-0d9488" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#0d9488"/>
+    </marker>
+    <marker id="ah-16a34a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#16a34a"/>
+    </marker>
+    <marker id="ah-2563eb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2563eb"/>
+    </marker>
+    <marker id="ah-4b5563" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4b5563"/>
+    </marker>
+    <marker id="ah-9333ea" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#9333ea"/>
+    </marker>
+    <marker id="ah-d97706" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#d97706"/>
+    </marker>
+    <marker id="ah-db2777" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#db2777"/>
+    </marker>
+    <marker id="ah-dc2626" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#dc2626"/>
+    </marker>
+    <marker id="ah-ee4f2e" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#ee4f2e"/>
+    </marker>
+</defs>
+<rect x="0" y="0" width="680" height="480" fill="#ffffff"/>
+<!-- geometry: viewBox 680x480; 20px grid; left margin >= 20; latin 6.5px/char, CJK 13px/char at 13px; box padding >= 20px per side; text 50-bg / 800-fg, borders 600 -->
+<rect x="20" y="36" width="640" height="348" rx="16" fill="#ffffff" stroke="#4b5563" stroke-width="1.5" stroke-dasharray="6 5"/>
+<!-- width: '1  consent gate: y/N on every metered seat, masked echo, no cap claimed' 71ch x 6.00px = 426.0px -->
+<text x="40" y="62" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f2937" text-anchor="start">1  consent gate: y/N on every metered seat, masked echo, no cap claimed</text>
+<rect x="56" y="82" width="568" height="282" rx="14" fill="#fffbeb" stroke="#d97706" stroke-width="1.5"/>
+<!-- width: '2  scope: dual-view globs, one bounded path per write unit' 58ch x 6.00px = 348.0px -->
+<text x="76" y="108" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#92400e" text-anchor="start">2  scope: dual-view globs, one bounded path per write unit</text>
+<rect x="92" y="128" width="496" height="216" rx="12" fill="#fff0eb" stroke="#ee4f2e" stroke-width="1.5"/>
+<!-- width: '3  governance denylist: AGENTS.md, rules/, .agy-pro/, .git/' 59ch x 6.00px = 354.0px -->
+<text x="112" y="154" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#9e341a" text-anchor="start">3  governance denylist: AGENTS.md, rules/, .agy-pro/, .git/</text>
+<rect x="128" y="174" width="424" height="150" rx="12" fill="#f9fafb" stroke="#4b5563" stroke-width="1.5"/>
+<!-- width: '4  snapshot + rollback: byte copy first,' 40ch x 6.00px = 240.0px -->
+<text x="148" y="200" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f2937" text-anchor="start">4  snapshot + rollback: byte copy first,</text>
+<!-- width: '     created files archived, never deleted' 42ch x 6.00px = 252.0px -->
+<text x="148" y="218" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#4b5563" text-anchor="start">     created files archived, never deleted</text>
+<!-- box [5  provenance] 352x76: widest line 175.0px, padding 88.5px/side (>=20) -->
+<rect x="164" y="232" width="352" height="76" rx="12" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.5"/>
+<!-- width: '5  provenance' 13ch x 6.50px = 84.5px -->
+<text x="340.0" y="259.64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#166534" text-anchor="middle">5  provenance</text>
+<!-- width: 'manifest.sig = HMAC over the ledger' 35ch x 5.00px = 175.0px -->
+<text x="340.0" y="274.64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-weight="400" fill="#16a34a" text-anchor="middle">manifest.sig = HMAC over the ledger</text>
+<!-- width: 'a forged baseline refuses whole' 31ch x 5.00px = 155.0px -->
+<text x="340.0" y="288.64" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10" font-weight="400" fill="#16a34a" text-anchor="middle">a forged baseline refuses whole</text>
+<!-- width: 'each layer refuses on its own, so one missed check is not the whole story' 73ch x 5.50px = 401.5px -->
+<text x="340" y="418" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#4b5563" text-anchor="middle">each layer refuses on its own, so one missed check is not the whole story</text>
+</svg>
