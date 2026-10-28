@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; connect-src 'none';">
+  <title>Harmonic Resonance Sandbox</title>
+  <style>
+    :root {
+      --bg-primary: #0b0f19;
+      --bg-surface: #111827;
+      --border-color: #1f2937;
+      --text-main: #f3f4f6;
+      --text-muted: #9ca3af;
+      --accent: #00f0ff;
+      --accent-glow: rgba(0, 240, 255, 0.25);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg-primary);
+      color: var(--text-main);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace, sans-serif;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      padding: 16px;
+    }
+
+    .widget-container {
+      width: 100%;
+      max-width: 680px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5), 0 0 15px var(--accent-glow);
+    }
+
+    .header-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 18px;
+      background: rgba(255, 255, 255, 0.02);
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .header-title {
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--accent);
+    }
+
+    .header-badge {
+      font-size: 10px;
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 9999px;
+      background: rgba(0, 240, 255, 0.1);
+      border: 1px solid var(--accent);
+      color: var(--accent);
+    }
+
+    .canvas-wrapper {
+      position: relative;
+      width: 100%;
+      height: 280px;
+      background: radial-gradient(circle at center, #131d31 0%, #080c14 100%);
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    .hud-overlay {
+      position: absolute;
+      top: 10px;
+      left: 12px;
+      font-size: 11px;
+      font-family: monospace;
+      color: var(--text-muted);
+      background: rgba(11, 15, 25, 0.75);
+      padding: 4px 8px;
+      border-radius: 6px;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      pointer-events: none;
+    }
+
+    .hud-overlay span {
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    .controls-panel {
+      padding: 16px 18px;
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 14px;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .control-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .control-label {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-muted);
+    }
+
+    .control-val {
+      font-family: monospace;
+      color: var(--accent);
+    }
+
+    input[type="range"] {
+      -webkit-appearance: none;
+      width: 100%;
+      height: 5px;
+      background: #1f2937;
+      border-radius: 3px;
+      outline: none;
+      cursor: pointer;
+    }
+
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 15px;
+      height: 15px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 8px var(--accent);
+      cursor: pointer;
+      transition: transform 0.1s ease;
+    }
+
+    input[type="range"]::-webkit-slider-thumb:hover {
+      transform: scale(1.2);
+    }
+
+    .actions-bar {
+      padding: 12px 18px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: rgba(255, 255, 255, 0.01);
+    }
+
+    .btn-group {
+      display: flex;
+      gap: 8px;
+    }
+
+    button {
+      background: #1e293b;
+      color: var(--text-main);
+      border: 1px solid #334155;
+      padding: 6px 14px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    button:hover {
+      background: #334155;
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    button.active {
+      background: var(--accent);
+      color: #0b0f19;
+      border-color: var(--accent);
+      box-shadow: 0 0 10px var(--accent-glow);
+    }
+
+    .theme-selector {
+      display: flex;
+      gap: 6px;
+    }
+
+    .theme-dot {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      cursor: pointer;
+      border: 2px solid transparent;
+      transition: transform 0.15s;
+    }
+
+    .theme-dot:hover {
+      transform: scale(1.2);
+    }
+
+    .theme-dot.active {
+      border-color: #fff;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="widget-container">
+    <!-- Header -->
+    <div class="header-bar">
+      <div class="header-title">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="9"/>
+          <path d="M12 3v18"/>
+          <path d="M3 12h18"/>
+        </svg>
+        Harmonic Resonance Simulator
+      </div>
+      <div class="header-badge">60 FPS SCI-WIDGET</div>
+    </div>
+
+    <!-- Simulation Canvas -->
+    <div class="canvas-wrapper">
+      <canvas id="simCanvas"></canvas>
+      <div class="hud-overlay">
+        FPS: <span id="hudFps">60.0</span> &nbsp;|&nbsp;
+        Nodes: <span id="hudNodes">80</span> &nbsp;|&nbsp;
+        Energy: <span id="hudEnergy">1.24 J</span>
+      </div>
+    </div>
+
+    <!-- Sliders -->
+    <div class="controls-panel">
+      <div class="control-group">
+        <div class="control-label">
+          <span>Frequency (주파수)</span>
+          <span class="control-val" id="lblFrequency">2.0 Hz</span>
+        </div>
+        <input type="range" id="paramFrequency" min="0.5" max="5.0" step="0.1" value="2.0">
+      </div>
+
+      <div class="control-group">
+        <div class="control-label">
+          <span>Amplitude (진폭)</span>
+          <span class="control-val" id="lblAmplitude">60 px</span>
+        </div>
+        <input type="range" id="paramAmplitude" min="10" max="110" step="1" value="60">
+      </div>
+
+      <div class="control-group">
+        <div class="control-label">
+          <span>Particle Density (밀도)</span>
+          <span class="control-val" id="lblCount">80 nodes</span>
+        </div>
+        <input type="range" id="paramCount" min="20" max="160" step="5" value="80">
+      </div>
+
+      <div class="control-group">
+        <div class="control-label">
+          <span>Propagation Speed (전파 속도)</span>
+          <span class="control-val" id="lblSpeed">1.2x</span>
+        </div>
+        <input type="range" id="paramSpeed" min="0.2" max="3.0" step="0.1" value="1.2">
+      </div>
+    </div>
+
+    <!-- Actions & Palette -->
+    <div class="actions-bar">
+      <div class="btn-group">
+        <button id="btnPlayPause" class="active">Pause</button>
+        <button id="btnReset">Reset</button>
+      </div>
+
+      <div class="theme-selector">
+        <div class="theme-dot active" data-color="#00f0ff" style="background:#00f0ff" title="Cyber Cyan"></div>
+        <div class="theme-dot" data-color="#a855f7" style="background:#a855f7" title="Plasma Violet"></div>
+        <div class="theme-dot" data-color="#10b981" style="background:#10b981" title="Solar Emerald"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('simCanvas');
+    const ctx = canvas.getContext('2d');
+
+    // Controls
+    const paramFrequency = document.getElementById('paramFrequency');
+    const paramAmplitude = document.getElementById('paramAmplitude');
+    const paramCount = document.getElementById('paramCount');
+    const paramSpeed = document.getElementById('paramSpeed');
+
+    const lblFrequency = document.getElementById('lblFrequency');
+    const lblAmplitude = document.getElementById('lblAmplitude');
+    const lblCount = document.getElementById('lblCount');
+    const lblSpeed = document.getElementById('lblSpeed');
+
+    const hudFps = document.getElementById('hudFps');
+    const hudNodes = document.getElementById('hudNodes');
+    const hudEnergy = document.getElementById('hudEnergy');
+
+    const btnPlayPause = document.getElementById('btnPlayPause');
+    const btnReset = document.getElementById('btnReset');
+    const themeDots = document.querySelectorAll('.theme-dot');
+
+    let isRunning = true;
+    let themeColor = '#00f0ff';
+    let phase = 0;
+    let lastTime = performance.now();
+    let frameCount = 0;
+    let lastFpsUpdate = performance.now();
+
+    let animationFrameId = null;
+
+    function resize() {
+      const dpr = window.devicePixelRatio || 1;
+      const rect = canvas.getBoundingClientRect();
+      canvas.width = Math.floor(rect.width * dpr);
+      canvas.height = Math.floor(rect.height * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      if (!isRunning) drawFrame(0);
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    function onParameterChange() {
+      if (!isRunning) {
+        drawFrame(0);
+      }
+    }
+
+    // Slider Event Listeners
+    paramFrequency.addEventListener('input', (e) => {
+      lblFrequency.textContent = Number(e.target.value).toFixed(1) + ' Hz';
+      onParameterChange();
+    });
+    paramAmplitude.addEventListener('input', (e) => {
+      lblAmplitude.textContent = e.target.value + ' px';
+      onParameterChange();
+    });
+    paramCount.addEventListener('input', (e) => {
+      lblCount.textContent = e.target.value + ' nodes';
+      hudNodes.textContent = e.target.value;
+      onParameterChange();
+    });
+    paramSpeed.addEventListener('input', (e) => {
+      lblSpeed.textContent = Number(e.target.value).toFixed(1) + 'x';
+      onParameterChange();
+    });
+
+    btnPlayPause.addEventListener('click', () => {
+      isRunning = !isRunning;
+      btnPlayPause.textContent = isRunning ? 'Pause' : 'Play';
+      btnPlayPause.classList.toggle('active', isRunning);
+
+      if (isRunning) {
+        lastTime = performance.now();
+        lastFpsUpdate = performance.now();
+        frameCount = 0;
+        animationFrameId = requestAnimationFrame(render);
+      } else {
+        if (animationFrameId) {
+          cancelAnimationFrame(animationFrameId);
+          animationFrameId = null;
+        }
+        hudFps.textContent = '0.0';
+      }
+    });
+
+    btnReset.addEventListener('click', () => {
+      phase = 0;
+      paramFrequency.value = 2.0;
+      lblFrequency.textContent = '2.0 Hz';
+      paramAmplitude.value = 60;
+      lblAmplitude.textContent = '60 px';
+      paramCount.value = 80;
+      lblCount.textContent = '80 nodes';
+      hudNodes.textContent = '80';
+      paramSpeed.value = 1.2;
+      lblSpeed.textContent = '1.2x';
+      onParameterChange();
+    });
+
+    themeDots.forEach(dot => {
+      dot.addEventListener('click', () => {
+        themeDots.forEach(d => d.classList.remove('active'));
+        dot.classList.add('active');
+        themeColor = dot.getAttribute('data-color');
+        document.documentElement.style.setProperty('--accent', themeColor);
+        document.documentElement.style.setProperty('--accent-glow', themeColor + '40');
+        onParameterChange();
+      });
+    });
+
+    function drawFrame(dt) {
+      if (dt > 0) {
+        const speed = parseFloat(paramSpeed.value);
+        phase += dt * speed * 3.0;
+      }
+
+      const rect = canvas.getBoundingClientRect();
+      const width = rect.width;
+      const height = rect.height;
+      const centerY = height / 2;
+
+      ctx.clearRect(0, 0, width, height);
+
+      // Grid Lines
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.04)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, centerY);
+      ctx.lineTo(width, centerY);
+      ctx.stroke();
+
+      const count = parseInt(paramCount.value, 10);
+      const freq = parseFloat(paramFrequency.value);
+      const amp = parseFloat(paramAmplitude.value);
+
+      hudEnergy.textContent = (amp * 0.02 * freq).toFixed(2) + ' J';
+
+      const points = [];
+      const step = width / (count - 1);
+
+      // Calculate Wave Points
+      for (let i = 0; i < count; i++) {
+        const x = i * step;
+        const normX = i / (count - 1);
+        const y = centerY + Math.sin(normX * Math.PI * freq * 2 + phase) * amp
+                          + Math.sin(normX * Math.PI * freq * 4 - phase * 0.5) * (amp * 0.25);
+        points.push({ x, y });
+      }
+
+      // Draw Wave Filament
+      ctx.beginPath();
+      ctx.moveTo(points[0].x, points[0].y);
+      for (let i = 1; i < count; i++) {
+        const xc = (points[i].x + points[i - 1].x) / 2;
+        const yc = (points[i].y + points[i - 1].y) / 2;
+        ctx.quadraticCurveTo(points[i - 1].x, points[i - 1].y, xc, yc);
+      }
+      ctx.strokeStyle = themeColor;
+      ctx.lineWidth = 2.5;
+      ctx.shadowColor = themeColor;
+      ctx.shadowBlur = 10;
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+
+      // Draw Glow Nodes
+      for (let i = 0; i < count; i++) {
+        const p = points[i];
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Subtle vertical projection lines
+        if (i % 4 === 0) {
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(p.x, centerY);
+          ctx.lineTo(p.x, p.y);
+          ctx.stroke();
+        }
+      }
+    }
+
+    function render(currentTime) {
+      if (!isRunning) return;
+
+      const dt = Math.min((currentTime - lastTime) / 1000, 0.1);
+      lastTime = currentTime;
+
+      frameCount++;
+      if (currentTime - lastFpsUpdate >= 500) {
+        const fps = ((frameCount * 1000) / (currentTime - lastFpsUpdate)).toFixed(1);
+        hudFps.textContent = fps;
+        frameCount = 0;
+        lastFpsUpdate = currentTime;
+      }
+
+      drawFrame(dt);
+
+      animationFrameId = requestAnimationFrame(render);
+    }
+
+    animationFrameId = requestAnimationFrame(render);
+
+    // Lifecycle Teardown API
+    window.destroyWidget = function() {
+      if (animationFrameId) {
+        cancelAnimationFrame(animationFrameId);
+        animationFrameId = null;
+      }
+      isRunning = false;
+      window.removeEventListener('resize', resize);
+    };
+  </script>
+</body>
+</html>

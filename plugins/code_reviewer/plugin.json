@@ -1,0 +1,16 @@
+{
+  "name": "code_reviewer",
+  "version": "1.0.0",
+  "description": "Pre-Merge Diff Reviewer and deterministic quality gate plugin for Google Antigravity CLI, featuring a 4-stage review pipeline and zero-tolerance P0-P3 verdicts.",
+  "author": "myk1yt",
+  "keywords": [
+    "antigravity",
+    "code-reviewer",
+    "code-review",
+    "quality-gate",
+    "taxonomy",
+    "pre-merge",
+    "audit"
+  ],
+  "license": "MIT"
+}

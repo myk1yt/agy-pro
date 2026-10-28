@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; connect-src 'none';">
+  <title>Procedural 3D Shader Canvas</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: #060913;
+      color: #e2e8f0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace, sans-serif;
+      overflow: hidden;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+    }
+
+    .canvas-container {
+      position: relative;
+      width: 100%;
+      height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      cursor: grab;
+    }
+
+    canvas:active {
+      cursor: grabbing;
+    }
+
+    .hud {
+      position: absolute;
+      top: 20px;
+      left: 24px;
+      background: rgba(10, 15, 30, 0.75);
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      padding: 12px 18px;
+      border-radius: 10px;
+      font-size: 12px;
+      color: #94a3b8;
+      pointer-events: none;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+    }
+
+    .hud-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: #38bdf8;
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .hud-metric {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      margin-top: 3px;
+    }
+
+    .hud-metric span {
+      color: #f1f5f9;
+      font-family: monospace;
+      font-weight: 600;
+    }
+
+    .instruction {
+      position: absolute;
+      bottom: 20px;
+      color: #64748b;
+      font-size: 11px;
+      text-align: center;
+      pointer-events: none;
+      letter-spacing: 0.5px;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="canvas-container">
+    <canvas id="glCanvas"></canvas>
+
+    <div class="hud">
+      <div class="hud-title">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="12 2 2 7 12 12 22 7 12 2"/>
+          <polyline points="2 17 12 22 22 17"/>
+          <polyline points="2 12 12 17 22 12"/>
+        </svg>
+        Procedural WebGL Engine
+      </div>
+      <div class="hud-metric">FPS: <span id="valFps">60.0</span></div>
+      <div class="hud-metric">SDF Steps: <span>64 (Raymarch)</span></div>
+      <div class="hud-metric">Resolution: <span id="valRes">1920x1080</span></div>
+    </div>
+
+    <div class="instruction">
+      DRAG TO ORBIT 3D SCENE &bull; 60 FPS ZERO-BLENDER WEBGL
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('glCanvas');
+    let gl = canvas.getContext('webgl');
+
+    if (!gl) {
+      alert('WebGL is not supported by your browser.');
+    }
+
+    const valFps = document.getElementById('valFps');
+    const valRes = document.getElementById('valRes');
+
+    // Vertex Shader Source
+    const vsSource = `
+      attribute vec2 a_position;
+      void main() {
+        gl_Position = vec4(a_position, 0.0, 1.0);
+      }
+    `;
+
+    // Fragment Shader Source (Raymarching SDF Gyro-Torus)
+    const fsSource = `
+      precision highp float;
+      uniform vec2 u_resolution;
+      uniform float u_time;
+      uniform vec2 u_mouse;
+
+      // Rotation matrix around Y axis
+      mat2 rot(float a) {
+        float s = sin(a), c = cos(a);
+        return mat2(c, -s, s, c);
+      }
+
+      // Signed Distance to a Torus
+      float sdTorus(vec3 p, vec2 t) {
+        vec2 q = vec2(length(p.xz) - t.x, p.y);
+        return length(q) - t.y;
+      }
+
+      // Signed Distance to a Gyroid-like morphing field
+      float map(vec3 p) {
+        // Apply interactive mouse rotation
+        p.yz *= rot((u_mouse.y - 0.5) * 2.0);
+        p.xz *= rot(u_time * 0.4 + (u_mouse.x - 0.5) * 3.0);
+
+        // Nested toroids
+        float t1 = sdTorus(p, vec2(1.2, 0.28));
+        
+        vec3 p2 = p;
+        p2.xy *= rot(1.57 + u_time * 0.3);
+        float t2 = sdTorus(p2, vec2(1.0, 0.22));
+
+        // Smooth minimum
+        float k = 0.2;
+        float h = clamp(0.5 + 0.5 * (t2 - t1) / k, 0.0, 1.0);
+        float d = mix(t2, t1, h) - k * h * (1.0 - h);
+
+        // Subtle displacement noise
+        d += sin(p.x * 6.0 + u_time * 2.0) * cos(p.y * 6.0) * sin(p.z * 6.0) * 0.04;
+        return d;
+      }
+
+      // Calculate Surface Normal
+      vec3 calcNormal(vec3 p) {
+        const float eps = 0.002;
+        return normalize(vec3(
+          map(p + vec3(eps, 0, 0)) - map(p - vec3(eps, 0, 0)),
+          map(p + vec3(0, eps, 0)) - map(p - vec3(0, eps, 0)),
+          map(p + vec3(0, 0, eps)) - map(p - vec3(0, 0, eps))
+        ));
+      }
+
+      void main() {
+        vec2 uv = (gl_FragCoord.xy - 0.5 * u_resolution.xy) / u_resolution.y;
+
+        // Camera setup
+        vec3 ro = vec3(0.0, 0.0, -3.5);
+        vec3 rd = normalize(vec3(uv, 1.3));
+
+        // Raymarching loop
+        float t = 0.0;
+        float hit = 0.0;
+        for (int i = 0; i < 64; i++) {
+          vec3 p = ro + rd * t;
+          float d = map(p);
+          if (d < 0.002) {
+            hit = 1.0;
+            break;
+          }
+          t += d;
+          if (t > 15.0) break;
+        }
+
+        // Shading & Lighting
+        vec3 col = vec3(0.02, 0.04, 0.08); // Background tone
+
+        if (hit > 0.5) {
+          vec3 p = ro + rd * t;
+          vec3 n = calcNormal(p);
+
+          // Light sources
+          vec3 lightPos1 = vec3(2.0, 3.0, -2.0);
+          vec3 lightDir1 = normalize(lightPos1 - p);
+          float diff1 = max(dot(n, lightDir1), 0.0);
+
+          vec3 lightPos2 = vec3(-2.0, -2.0, -1.0);
+          vec3 lightDir2 = normalize(lightPos2 - p);
+          float diff2 = max(dot(n, lightDir2), 0.0);
+
+          // Specular Blinn-Phong
+          vec3 viewDir = normalize(ro - p);
+          vec3 halfDir = normalize(lightDir1 + viewDir);
+          float spec = pow(max(dot(n, halfDir), 0.0), 32.0);
+
+          // Fresnel Rim Light
+          float fresnel = pow(1.0 - max(dot(n, viewDir), 0.0), 3.0);
+
+          // Palette synthesis
+          vec3 baseColor = 0.5 + 0.5 * cos(u_time * 0.3 + p.xyx + vec3(0.0, 2.0, 4.0));
+          col = baseColor * (diff1 * 0.8 + 0.2) + vec3(0.2, 0.7, 1.0) * diff2 * 0.5;
+          col += vec3(1.0) * spec * 0.9;
+          col += vec3(0.0, 0.9, 1.0) * fresnel * 0.8;
+        }
+
+        // Vignette
+        col *= 1.0 - 0.3 * length(uv);
+
+        gl_FragColor = vec4(col, 1.0);
+      }
+    `;
+
+    // Compile Shader Helper
+    function createShader(glCtx, type, source) {
+      const shader = glCtx.createShader(type);
+      glCtx.shaderSource(shader, source);
+      glCtx.compileShader(shader);
+      if (!glCtx.getShaderParameter(shader, glCtx.COMPILE_STATUS)) {
+        console.error('Shader compilation failed:', glCtx.getShaderInfoLog(shader));
+        glCtx.deleteShader(shader);
+        return null;
+      }
+      return shader;
+    }
+
+    let program = null;
+    let positionBuffer = null;
+    let uResLoc = null;
+    let uTimeLoc = null;
+    let uMouseLoc = null;
+
+    function initShadersAndBuffers() {
+      if (!gl) return;
+      const vertexShader = createShader(gl, gl.VERTEX_SHADER, vsSource);
+      const fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, fsSource);
+
+      program = gl.createProgram();
+      gl.attachShader(program, vertexShader);
+      gl.attachShader(program, fragmentShader);
+      gl.linkProgram(program);
+
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        console.error('Program linking failed:', gl.getProgramInfoLog(program));
+      }
+      gl.useProgram(program);
+
+      // Quad Buffer
+      positionBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+        -1, -1,
+         1, -1,
+        -1,  1,
+        -1,  1,
+         1, -1,
+         1,  1,
+      ]), gl.STATIC_DRAW);
+
+      const aPositionLoc = gl.getAttribLocation(program, 'a_position');
+      gl.enableVertexAttribArray(aPositionLoc);
+      gl.vertexAttribPointer(aPositionLoc, 2, gl.FLOAT, false, 0, 0);
+
+      // Uniform Locations
+      uResLoc = gl.getUniformLocation(program, 'u_resolution');
+      uTimeLoc = gl.getUniformLocation(program, 'u_time');
+      uMouseLoc = gl.getUniformLocation(program, 'u_mouse');
+    }
+
+    initShadersAndBuffers();
+
+    // Mouse Tracking
+    let mouse = { x: 0.5, y: 0.5 };
+    let isDragging = false;
+
+    window.addEventListener('mousedown', () => isDragging = true);
+    window.addEventListener('mouseup', () => isDragging = false);
+    window.addEventListener('mousemove', (e) => {
+      if (isDragging) {
+        mouse.x = e.clientX / window.innerWidth;
+        mouse.y = 1.0 - (e.clientY / window.innerHeight);
+      }
+    });
+
+    // Touch Support
+    window.addEventListener('touchmove', (e) => {
+      if (e.touches.length > 0) {
+        mouse.x = e.touches[0].clientX / window.innerWidth;
+        mouse.y = 1.0 - (e.touches[0].clientY / window.innerHeight);
+      }
+    }, { passive: true });
+
+    // Throttled Resize Handler
+    function resize() {
+      if (!gl) return;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const maxRes = 1920;
+      let targetW = Math.floor(window.innerWidth * dpr);
+      let targetH = Math.floor(window.innerHeight * dpr);
+      if (Math.max(targetW, targetH) > maxRes) {
+        const scale = maxRes / Math.max(targetW, targetH);
+        targetW = Math.floor(targetW * scale);
+        targetH = Math.floor(targetH * scale);
+      }
+      canvas.width = Math.max(320, targetW);
+      canvas.height = Math.max(240, targetH);
+      gl.viewport(0, 0, canvas.width, canvas.height);
+      if (program && uResLoc) {
+        gl.uniform2f(uResLoc, canvas.width, canvas.height);
+      }
+      valRes.textContent = `${canvas.width}x${canvas.height}`;
+    }
+
+    let resizePending = false;
+    if (typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver(() => {
+        if (!resizePending) {
+          resizePending = true;
+          requestAnimationFrame(() => {
+            resize();
+            resizePending = false;
+          });
+        }
+      });
+      observer.observe(canvas);
+    } else {
+      window.addEventListener('resize', resize);
+    }
+    resize();
+
+    // Context Loss & Restoration Listeners
+    let animationFrameId = null;
+
+    canvas.addEventListener('webglcontextlost', (event) => {
+      event.preventDefault();
+      if (animationFrameId) {
+        cancelAnimationFrame(animationFrameId);
+        animationFrameId = null;
+      }
+      console.warn('[WebGL] Context lost. Pausing render loop.');
+    }, false);
+
+    canvas.addEventListener('webglcontextrestored', () => {
+      console.info('[WebGL] Context restored. Re-initializing shaders.');
+      gl = canvas.getContext('webgl');
+      initShadersAndBuffers();
+      resize();
+      lastTime = performance.now();
+      animationFrameId = requestAnimationFrame(render);
+    }, false);
+
+    // Render Loop
+    let lastTime = performance.now();
+    let frameCount = 0;
+    let lastFpsUpdate = performance.now();
+
+    function render(currentTime) {
+      if (!gl || !program) return;
+
+      frameCount++;
+      if (currentTime - lastFpsUpdate >= 500) {
+        const fps = ((frameCount * 1000) / (currentTime - lastFpsUpdate)).toFixed(1);
+        valFps.textContent = fps;
+        frameCount = 0;
+        lastFpsUpdate = currentTime;
+      }
+
+      gl.uniform1f(uTimeLoc, currentTime * 0.001);
+      gl.uniform2f(uMouseLoc, mouse.x, mouse.y);
+
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      animationFrameId = requestAnimationFrame(render);
+    }
+    animationFrameId = requestAnimationFrame(render);
+  </script>
+</body>
+</html>
