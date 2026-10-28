@@ -1,0 +1,55 @@
+{
+  "name": "agy-tools",
+  "version": "0.10.3",
+  "description": "Zero-dependency Developer Toolkit & Token/Cost Dashboard for Antigravity CLI and Gemini/Claude LLM workflows",
+  "main": "src/index.js",
+  "bin": {
+    "agy-tools": "./bin/agy-tools.js",
+    "agy-dashboard": "./bin/agy-dashboard.js",
+    "agy-tokens": "./bin/agy-tokens.js",
+    "antigravity-tools": "./bin/agy-tools.js"
+  },
+  "scripts": {
+    "start": "node bin/agy-tools.js",
+    "dashboard": "node bin/agy-dashboard.js",
+    "test": "node test/run-tests.js",
+    "sync-rules": "node scripts/lib/configure-rules.js",
+    "sync-customizations": "node scripts/lib/configure-customizations.js"
+  },
+  "keywords": [
+    "antigravity",
+    "agy-tools",
+    "agy-dashboard",
+    "gemini",
+    "claude",
+    "cost-tracker",
+    "dashboard",
+    "cli",
+    "developer-tools",
+    "zero-dependency",
+    "i18n"
+  ],
+  "author": "kim,yong-tai",
+  "license": "MIT",
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/myk1yt/agy-tools.git"
+  },
+  "files": [
+    "bin",
+    "src",
+    "scripts",
+    "rules",
+    "plugins",
+    "skills",
+    "hooks",
+    "data",
+    "docs",
+    "LICENSE",
+    "README.md",
+    "README.ko.md"
+  ]
+}

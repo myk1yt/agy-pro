@@ -1,0 +1,4 @@
+{
+  "name": "agypro_settings",
+  "description": "Settings session for agy-pro (G4): drives the non-interactive `agy pro settings` verbs (config, providers, mode, doctor, swarm presets) as a numbered-menu conversation. Plugin slash command /setting_agypro - it never contains or launches the full-screen TUI; that is `agy pro settings` run by the user in their own terminal."
+}

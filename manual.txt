@@ -1,0 +1,583 @@
+================================================================================
+                    agy-pro User Manual / 사용 설명서
+      High-Performance Antigravity Shim, Swarm Fanout & Mode Manager
+================================================================================
+
+[ 목차 / Table of Contents ]
+--------------------------------------------------------------------------------
+[ 한국어 (Korean) ]
+1. 초보자를 위한 1초 원클릭 초간편 설치 방법
+2. 모드 전환 방법 (풀스택 모드 vs 클린 모드)
+3. 대화형 터미널 설정 마법사 및 실시간 연결 테스트 (agy pro setup)
+4. 멀티모델 병렬 스웜 팬아웃 (agy pro fanout, 하이브리드 네이티브 좌석)
+5. 번호로 고르는 스웜 빌더 · 통합 모델 목록 · 설정 패널 (agy pro swarm / models --all / settings)
+6. 시스템 상태 진단 및 안전 복구 (agy pro doctor & restore)
+7. 주요 명령어 요약 가이드
+
+[ English ]
+1. One-Click Instant Installation for Beginners
+2. Mode Switching Guide (Full-Stack vs Clean)
+3. Interactive Setup Wizard & Live Connection Testing (agy pro setup)
+4. Multi-Model Swarm Fanout (agy pro fanout, hybrid native seats)
+5. Numbered Swarm Builder, Combined Model List & Settings Panel (agy pro swarm / models --all / settings)
+6. System Diagnostics & Safe Recovery (agy pro doctor & restore)
+7. Command Reference Summary
+
+================================================================================
+                              [ 한국어 가이드 ]
+================================================================================
+
+--------------------------------------------------------------------------------
+1. 초보자를 위한 1초 원클릭 초간편 설치 방법
+--------------------------------------------------------------------------------
+agy-pro는 코딩이나 시스템 설정을 잘 모르는 초보자도 마우스 클릭 한 번으로
+모든 환경을 자동으로 구축할 수 있도록 설계되었습니다.
+
+[설치 단계]
+  0) 가장 쉬운 방법 (복사-붙여넣기): 폴더를 미리 받아둘 필요 없이, PowerShell 창에
+     아래 한 줄을 그대로 붙여넣으면 git 유무를 자동으로 판별해 설치까지 끝납니다.
+     (git이 있으면 브랜치 클론 후 install.cmd 실행, 없으면 ZIP을 %TEMP%에 풀어 install.ps1 실행)
+
+       powershell -NoProfile -ExecutionPolicy Bypass -Command "if (Get-Command git -ErrorAction SilentlyContinue) { cmd /c 'git clone -b feature/agy-pro https://github.com/myk1yt/agy-tools.git && cd agy-tools && install.cmd' } else { iwr 'https://codeload.github.com/myk1yt/agy-tools/zip/refs/heads/feature/agy-pro' -OutFile '$env:TEMP\agy-tools-agy-pro.zip' -UseBasicParsing; Expand-Archive -Path '$env:TEMP\agy-tools-agy-pro.zip' -DestinationPath '$env:TEMP\agy-tools-agy-pro' -Force; & (Resolve-Path '$env:TEMP\agy-tools-agy-pro\*\install.ps1').Path }"
+
+     * 위 원라인 명령은 GitHub의 feature/agy-pro 브랜치 '현재 상태'를 내려받습니다.
+       아직 push하지 않은 로컬 커밋은 내려받는 내용에 포함되지 않습니다.
+  1) 탐색기에서 Antigravity-cli 프로젝트 폴더를 엽니다.
+  2) 편한 방식으로 설치를 실행합니다 (아래 두 가지 방법 모두 지원):
+     - 방법 A (탐색기 마우스 더블클릭): 폴더 안의 `install.cmd` 파일을 마우스로 '더블클릭'합니다.
+     - 방법 B (터미널 명령어 실행): PowerShell 또는 CMD 창에서 `.\install.cmd` 또는 `.\install.ps1` 입력.
+  3) 설치 스크립트가 다음 작업을 100% 전자동으로 수행합니다:
+     - Go 언어 툴체인이 없거나 1.22 미만인 경우 최신 버전 자동 다운로드 및 무설치 구성
+     - agy-pro 고성능 네이티브 바이너리(agy.exe) 자동 컴파일 및 빌드
+       (빌드 실패 시 저장소에 포함된 사전 빌드 바이너리로 자동 대체, 출처 고지 표시)
+     - 사용자 홈 디렉토리(`%USERPROFILE%\.agy-pro\bin`)에 바이너리 배치
+     - Windows 시스템 사용자 환경변수(PATH)의 최상단(우선순위 1위)에 자동 등록
+       (수정 직전의 기존 PATH 값과 레지스트리 타입을
+        `%USERPROFILE%\.agy-pro\backups\path-<타임스탬프>.json`에 백업하고 복원 명령을 화면에 출력)
+     - 시스템 진단(Doctor --strict) 자동 실행 및 정상 작동 여부 검증
+  4) 설치가 끝나면 "Installation Completed Successfully!" 메시지가 표시됩니다.
+     이어서 "Run the external model setup wizard now? (y/N)" 질문에 y를 입력하면
+     외부 모델 설정 마법사(`agy pro setup`)가 곧바로 이어서 실행됩니다.
+     더블클릭으로 실행한 경우 창이 바로 꺼지지 않고 "Press any key to continue . . ." 프롬프트가 대기합니다.
+     아무 키나 눌러 종료한 뒤, 새로 터미널 창을 열면 즉시 `agy` 명령어를 사용할 수 있습니다!
+
+[지우기 단계 / 설치 제거]
+  PowerShell 창에 아래 한 줄을 붙여넣으면 설치 제거 스크립트를 내려받아 실행합니다.
+  (무엇을 지울지 먼저 보여주고 y/N 확인을 기다립니다)
+
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr 'https://raw.githubusercontent.com/myk1yt/agy-tools/feature/agy-pro/agy-pro/scripts/uninstall.ps1' -OutFile '$env:TEMP\agy-pro-uninstall.ps1' -UseBasicParsing; & '$env:TEMP\agy-pro-uninstall.ps1'"
+
+  - 이미 저장소를 클론해 둔 경우에는 폴더 안의 `uninstall.cmd`를 더블클릭하거나
+    터미널에서 `.\uninstall.cmd`를 실행하면 됩니다.
+  - 사용자 PATH에서 `~/.agy-pro/bin` 항목만 제거하고(다른 항목과 레지스트리 값 종류는
+    그대로 유지), `~/.agy-pro` 폴더 전체는 '휴지통'으로 이동합니다.
+    영구 삭제하지 않으므로 실수해도 탐색기 휴지통에서 되돌릴 수 있습니다.
+  - 옵션: `-KeepState`(shim만 제거하고 providers.json/state.json/백업은 유지),
+    `-DryRun`(계획만 출력하고 아무것도 바꾸지 않음),
+    `-RestorePath`(설치 전에 저장한 사용자 PATH 백업을 복원),
+    `-Force`(y/N 확인 생략).
+  - 프로필을 바꿨다면 지우기 전에 `agy pro mode restore`를 먼저 실행하세요.
+  - 콘솔이 없는 실행(파이프 입력, 예약 작업)에서는 확인 질문이 자동으로 'no'가 되므로
+    실수로 설치가 지워지지 않습니다.
+
+* 기존 설치되어 있던 원본 Antigravity는 손상되지 않으며, `agy.exe` 심(Shim)이
+  기존의 모든 명령어를 100% 투명하게 자동 위임(Pass-through)합니다.
+
+
+--------------------------------------------------------------------------------
+2. 모드 전환 방법 (/mode 명령 및 터미널 agy pro mode)
+--------------------------------------------------------------------------------
+agy-pro는 사용 환경에 따라 두 가지 프로필 모드를 자유롭게 전환할 수 있습니다:
+- 풀스택 모드 (FULL): 35개 이상의 확장 에이전트 규칙, 전문 스킬셋, 오케스트레이터 활성화
+- 클린 모드 (CLEAN): Antigravity 본연의 기본 경량 상태 유지
+
+[모드 전환 실행 방법]
+  방법 A. 터미널에서 직접 전환:
+    - 대화형 선택 메뉴 열기:
+        agy pro mode
+    - 풀스택 모드로 즉시 전환:
+        agy pro mode full
+    - 기본 클린 모드로 즉시 전환:
+        agy pro mode clean
+    - 백업된 이전 상태로 원상 복구:
+        agy pro mode restore
+
+  방법 B. Antigravity 채팅 세션 내에서 슬래시 명령어로 전환:
+    - 채팅창에 `/mode` 입력 후 원하는 프로필을 선택할 수 있습니다.
+
+[자동 백업 기능]
+모드를 변경할 때마다 기존 `~/.gemini` 설정은 타임스탬프가 찍힌 백업 폴더
+(`~/.agy-pro/backups/`)에 자동으로 안전하게 보관되므로 데이터 유실 걱정이 없습니다.
+
+
+--------------------------------------------------------------------------------
+3. 대화형 터미널 마법사 및 실시간 연결 테스트 (agy pro setup)
+--------------------------------------------------------------------------------
+OpenRouter, DeepSeek, Groq, Mistral 등 외부 최신 모델을 클릭과 엔터 몇 번으로
+손쉽게 연결하고, 실시간 API 핑/레이턴시 테스트까지 한 번에 완료할 수 있습니다.
+
+[실행 방법]
+  터미널에서 다음 명령어를 입력합니다:
+    agy pro setup
+
+[마법사 진행 단계]
+  1) Provider 이름 입력 (예: deepseek, openrouter, groq, openai)
+  2) API Base URL 확인 (기본 권장 URL이 자동으로 제시되며 Enter로 수락 가능)
+  3) API 키 환경변수 이름 지정 (예: DEEPSEEK_API_KEY)
+  4) API 키 값 입력 (입력 시 Windows 사용자 환경변수에 영구 저장 지원).
+     입력 중에도 6번째 글자부터는 `*`로만 표시되고, 이후 확인 문구에도
+     앞 5글자 + `****` 형태로만 표시됩니다 (5글자 이하는 `****`).
+  5) 모델 ID 및 패밀리 지정 (예: deepseek-chat, deepseek-reasoner 등)
+  6) 모델 지원 기능 선택 (함수 호출/에이전트 도구 지원, Vision, Reasoning)
+  7) ⚡ [실시간 연결 테스트 (Live Probe)]:
+     - 마법사가 즉시 해당 API 엔드포인트로 핑 요청을 전송합니다.
+     - 응답 성공 시: 레이턴시(ms)와 함께 초록색 체크마크(✅)가 표시됩니다.
+     - 실패 시: 에러 원인이 출력되며, 즉시 URL이나 API 키를 수정하여 재시도할 수 있습니다.
+  8) 모든 정보는 환경변수 참조 방식으로 `~/.agy-pro/providers.json`에 저장됩니다.
+     API 키 값 자체는 파일에 저장되지 않고 환경변수(Windows 사용자 환경변수)에만
+     기록됩니다. (API Secret 직접 하드코딩 금지)
+     키가 표시되는 모든 곳(마법사 확인 문구, 프로바이더 목록, 설정 패널,
+     `agy pro doctor` 계열 출력)은 앞 5글자 + `****` 마스크만 사용합니다.
+
+
+--------------------------------------------------------------------------------
+4. 멀티모델 병렬 스웜 팬아웃 (agy pro fanout, 하이브리드 네이티브 좌석)
+--------------------------------------------------------------------------------
+단일 AI 모델의 환각(Hallucination)이나 편향을 방지하기 위해 여러 공급자(Provider)의
+이종 모델들에게 동시에 질문을 전송하고, 결과를 교차 검증(Reconciliation)합니다.
+
+[실행 방법 예시]
+  - 기본 팬아웃 실행 (--prompt):
+      agy pro fanout --prompt "프로젝트 아키텍처 보안 취약점을 정밀 검토해줘"
+  - 특정 모델 지정 (--models, 프로바이더/모델ID 형식):
+      agy pro fanout --prompt "리팩토링 제안" --models "deepseek/deepseek-chat,openai/gpt-4o"
+  - 에이전트 도구 활성화 (--tools, 허용 집합: read,search,write,exec):
+      agy pro fanout --prompt "src/ 디렉토리 내의 버그를 조사해줘" --tools read,search
+  - 모델 수와 태스크 유형 지정 (--n, --task review|security|plan-audit|research|ideas|custom):
+      agy pro fanout --prompt "설계 검토" --task review --n 3
+  - 하이브리드 좌석 (--seats: 실제 agy 서브프로세스 + 외부 프로바이더를 한 스웜에):
+      agy pro fanout --prompt "설계 검토" --seats "native:gemini-3.8-flash-high,nw/glm-5.3-flash,bigmodel/glm-4.6"
+      * `native:<모델ID>` 좌석은 실제 agy를 서브프로세스로 실행합니다. 안티그래비티 구독 쿼터를
+        쓰므로 중간에 레이트 리밋이 걸릴 수 있습니다. 동시 실행 수는 기본 2개이며 `--max-native`
+        또는 `agy pro settings set native-seat-concurrency <1..8>`로 바꿉니다. 실패한 네이티브
+        좌석은 다른 모델로 대체(failover)되지 않고 '실패 좌석'으로 집계되며, 스웜은 계속 진행됩니다
+        (사유 표시: `reason=quota`, `reason=timeout` 등).
+      * `--seats`와 `--models`는 함께 쓸 수 없습니다(오류, 종료 코드 2).
+
+[결과 출력 예시]
+  팬아웃이 완료되면 터미널에 스웜 종합 요약이 출력됩니다:
+    Seats Evaluated:       3 / 3
+    Degraded Mode:         false
+    Confirmed Issues:      2
+    Disputed Issues:       1
+  - 산출물은 `reports/fanout/<타임스탬프>/` 아래 생성됩니다:
+      reconciliation.md : 모델 간 교차 검증 리포트 (불일치 항목은 메인 에이전트 판정 대상으로 표시,
+                          각 항목에 `arbitration:` 한 줄로 판정 근거를 기록)
+      summary.json      : 기계 판독용 요약 (JSON)
+      seat-N-*.md       : 좌석별 원문 리포트 (네이티브 좌석은 `Kind: native` + 쿼터 표기)
+  - 전체 스웜이 합의에 도달하면 "All findings verified across swarm models." 메시지가 표시됩니다.
+
+[게이트웨이 도구 루프 (외부 모델이 파일을 읽고 검색하게 하기)]
+  외부 모델을 게이트웨이로 쓸 때도 같은 도구를 쓸 수 있습니다. `agy`는 도구 호출을
+  보내지도 실행하지도 않으므로, agy-pro 브릿지가 대신 도구를 붙여 호출하고 실행한 뒤
+  최종 답변 텍스트만 `agy`에 돌려줍니다. 기본값은 읽기 전용(`read,search`)이라
+  모델이 워크스페이스를 읽고 검색만 할 수 있고, 파일 수정(`write`)과 명령 실행(`exec`)은
+  필요할 때만 직접 켭니다. 작업 기준 폴더는 `agy`를 실행한 디렉터리이며, 켠 상태는
+  `agy pro config show`로 언제든 확인할 수 있습니다.
+      agy pro config bridge-tools read,search        # 기본값: 읽기 전용 (파일 읽기/검색)
+      agy pro config bridge-tools read,search,write  # 파일 수정까지 허용
+      agy pro config bridge-tools read,search,write,exec  # 명령 실행까지 허용
+      agy pro config bridge-tools none               # 도구 루프 끄기 (순수 통과)
+      agy pro config show                            # 현재 설정 확인 (Bridge Tools 줄)
+  도구를 쓰는 턴은 오래 걸릴 수 있으므로 일회성 실행에는 `agy --print-timeout 300s`를
+  붙이길 권장합니다(도구 루프 자체 상한은 240초).
+
+
+--------------------------------------------------------------------------------
+5. 번호로 고르는 스웜 빌더 · 통합 모델 목록 · 설정 패널
+   (agy pro swarm / models --all / settings)
+--------------------------------------------------------------------------------
+[1] 통합 모델 목록 보기 (네이티브 + 외부)
+      agy pro models --all      # 번호가 붙은 전체 목록 (예: [ 1] gemini-3.8-flash-high ... [native])
+      agy pro models --json     # 같은 목록을 JSON으로 출력
+      agy pro models            # 기존 출력 (프로바이더/모델/기능) 그대로
+  - `[native]` 그룹은 실제 agy 모델 카탈로그(agy 1.3.3 기준 18개)이고, 그 뒤에 등록한
+    프로바이더가 providers.json 순서대로 이어집니다. API 키 환경변수가 비어 있으면
+    `(key missing)`으로 표시됩니다.
+  - 인자 없는 `agy`를 실행하면 뜨는 2초 런처에서 [2]를 누르면 같은 번호 목록이 열립니다.
+    네이티브 번호를 고르면 브릿지 없이 실제 agy가 실행되고, 외부 번호를 고르면 브릿지가 켜집니다.
+  - 런처가 뜰 때 커뮤니티 안내가 한 줄 출력됩니다:
+      Visit https://www.reddit.com/r/GoogleAntigravityCLI/! A space for antigravity-cli users. Remember r/GoogleAntigravityCLI
+    이 줄은 대화형 런처에서만 나옵니다. `-p` 일회성 실행, 파이프 입력, `agy pro` 하위 명령,
+    기계 판독 출력(summary.json, models --json)에는 나오지 않습니다.
+  - 안티그래비티 세션 안의 `/model` 팝업은 여전히 전부 아니면 전무(네이티브 XOR 외부)입니다.
+    네이티브 모델과 브릿지 모델을 한 팝업에 함께 넣는 것은 바이너리 차원에서 불가능합니다.
+    세션 안에서 가장 가까운 방법은 `google`(AI Studio) 프리셋을 등록한 뒤
+    `agy pro config default-profile gateway`로 두는 것이고(Gemini 2.5 + 외부 모델 동시 표시),
+    네이티브까지 포함한 전체 목록은 agy-pro 계층(`agy pro models --all`, 런처 [2], `agy pro swarm`)에서 봅니다.
+
+[2] 번호로 스웜 만들기 (권장 경로)
+      agy pro swarm
+  - 순서: [1] 템플릿 번호 (1 Code Review / 2 Security Audit / 3 Custom) → [2] 좌석 번호
+    (예: `1,3,5`, 범위 `2-4`, 프리셋 `p1`~`p3`) → [3] 도구·예산 확인 → [4] 실행 전 미리보기.
+  - 프리셋: p1 = 네이티브 2 + 외부 2, p2 = 외부 3 (패밀리 로테이션), p3 = 혼합 4
+    (네이티브 flash + pro + 외부 2). 입력 없이 Enter만 눌러도 기본 프리셋(p1)이 적용됩니다.
+  - 실행 전에 실제로 실행될 `agy pro fanout ...` 명령이 그대로 출력됩니다. Enter/y = 실행,
+    c = 명령만 출력, 1-4 = 해당 항목 수정, q = 취소.
+  - k3 패밀리 모델은 `excluded (pool policy)`로 표시되고 자동 배정에서 제외됩니다.
+  - CI/파워유저용 플래그 경로 (플래그를 하나라도 주면 질문 없이 실행, 필수 입력이 없으면 종료 코드 2):
+      agy pro swarm --template code-review --seats "1,3,5" --root .
+      agy pro swarm --template security-audit --seats "native:gemini-3.8-flash-high,nw/glm-5.3-flash" --dry-run
+
+[3] 설정 패널 (agy pro settings) 과 세션 내 플러그인 명령 (/setting_agypro)
+      agy pro settings             # 전체 화면 설정 패널 (TUI). 사용자 터미널에서 직접 실행
+      agy pro settings --panel p4  # 특정 패널로 바로 열기
+      agy pro settings show [--json] | set <키> <값> | providers ... | mode ... | doctor ...
+  - 패널: [1] Launch & Profile, [2] Models & Providers, [3] Bridge Tools & Budgets,
+    [4] Swarm & Fanout, [5] Diagnostics & Keys, [6] Install & Update, [7] Environment Variables.
+  - `agy pro settings set`으로 바꿀 수 있는 키는 default-profile, bridge-tools,
+    native-seat-concurrency(1~8)입니다. 브릿지 도구 예산(8턴/240초/60초/도구당 30초/턴당 16회)은
+    컴파일 상수라 읽기 전용으로 표시됩니다.
+  - `/setting_agypro`는 **플러그인 슬래시 명령**입니다 (`/agy_help`와 같은 종류).
+    설치: `agy plugin install plugins/agypro_settings` (슬래시 이름은 파일 이름에서 옵니다).
+    이 명령은 위의 비대화형 `agy pro settings ...` 명령들을 번호 메뉴로 실행해 주는
+    에이전트 워크플로이며, 전체 화면 TUI를 포함하거나 실행하지 않습니다. TUI는 사용자가
+    자기 터미널에서 `agy pro settings`를 직접 실행해 여는 별개 화면입니다.
+    플러그인을 새로 설치한 뒤에는 `agy` 세션을 다시 시작해야 슬래시 명령이 인식됩니다.
+  - API 키는 어디에서나 앞 5글자 + `****`로만 표시됩니다 (5글자 이하는 `****`). 마법사에서
+    키를 입력할 때도 6번째 글자부터는 `*`로만 표시됩니다.
+
+
+--------------------------------------------------------------------------------
+6. 상태 진단 및 안전 복구 (agy pro doctor & restore)
+--------------------------------------------------------------------------------
+문제가 생기거나 환경 상태를 점검하고 싶을 때는 진단 도구를 실행하세요.
+
+[시스템 자가 진단 (Doctor)]
+  터미널에 다음 명령어를 입력합니다:
+    agy pro doctor
+
+  점검 항목:
+  - 원본 Antigravity 바이너리 존재 여부 및 버전
+  - agy-pro 심(Shim) 실행 경로 및 설치 위치(~/.agy-pro/bin) 일치 여부
+  - agy-pro 홈/설정 디렉터리 및 기본 프로필 상태
+  - 등록된 외부 Provider API 키 실측 probe 결과 (valid/invalid/indeterminate/SKIP,
+    마스킹 표시: 앞 5글자 + `****`)
+  - Go 언어 툴체인 상태
+
+  참고: `agy pro doctor --strict`는 구조 문제(원본 agy 부재, 심이
+  ~/.agy-pro/bin에서 실행되지 않는 등 PATH 미등록 상태)에서만 종료 코드 1로
+  실패합니다. API 키 probe 결과(valid/invalid)는 표시용일 뿐 종료 코드에
+  영향을 주지 않습니다. (설치 스크립트는 --strict 결과로 성공/실패를 판정합니다.)
+
+[긴급 복구 및 초기화]
+  - 이전 설정으로 되돌리기:
+      agy pro mode restore
+  - 전체 상태 한눈에 확인하기:
+      agy pro status
+
+
+--------------------------------------------------------------------------------
+7. 주요 명령어 요약 가이드
+--------------------------------------------------------------------------------
+  agy pro setup          : 외부 AI 모델 및 API 키 연동 대화형 마법사
+  agy pro mode           : 대화형 프로필 모드 선택 (Full-Stack / Clean)
+  agy pro mode full      : 풀스택(에이전트 35종+스킬셋) 모드로 전환
+  agy pro mode clean     : 기본(클린 Antigravity) 모드로 전환
+  agy pro mode restore   : 가장 최근 백업본으로 모드 복구
+  agy pro status         : 현재 활성화된 모드 및 설정 상태 출력
+  agy pro models --all   : 네이티브+외부 통합 모델 목록 (번호 표시)
+  agy pro swarm          : 번호로 템플릿·좌석을 고르는 스웜 빌더 (미리보기 후 실행)
+  agy pro fanout --prompt "<질문>" : 멀티모델 병렬 스웜 질의 및 종합 결과 생성
+  agy pro fanout --seats "native:<모델>,<프로바이더>/<모델>" : 하이브리드 스웜 (네이티브 좌석 포함)
+  agy pro settings       : 전체 화면 설정 패널 (TUI). 세션 안에서는 플러그인 명령 /setting_agypro
+  agy pro doctor         : 시스템 진단 및 도구체인 상태 검사
+  agy pro config bridge-tools <read,search,write,exec|none> : 외부 모델 도구 루프 설정 (기본 read,search)
+  agy pro config show    : 시작 프로필, 프로필 모드, 도구 루프 설정 확인
+  agy pro help           : 사용 가능한 전체 도움말 확인
+  agy <일반명령어>       : 원본 Antigravity CLI로 100% 투명 실행
+
+
+================================================================================
+                            [ ENGLISH GUIDE ]
+================================================================================
+
+--------------------------------------------------------------------------------
+1. One-Click Instant Installation for Beginners
+--------------------------------------------------------------------------------
+agy-pro is engineered for effortless zero-friction setup, even for beginners
+with no prior programming or CLI experience.
+
+[Installation Steps]
+  0) Easiest route (copy & paste): no download needed beforehand. Paste this ONE
+     line into a PowerShell window; it detects git automatically and installs
+     either way (with git: clone the branch and run install.cmd; without git:
+     unzip the branch ZIP into %TEMP% and run install.ps1).
+
+       powershell -NoProfile -ExecutionPolicy Bypass -Command "if (Get-Command git -ErrorAction SilentlyContinue) { cmd /c 'git clone -b feature/agy-pro https://github.com/myk1yt/agy-tools.git && cd agy-tools && install.cmd' } else { iwr 'https://codeload.github.com/myk1yt/agy-tools/zip/refs/heads/feature/agy-pro' -OutFile '$env:TEMP\agy-tools-agy-pro.zip' -UseBasicParsing; Expand-Archive -Path '$env:TEMP\agy-tools-agy-pro.zip' -DestinationPath '$env:TEMP\agy-tools-agy-pro' -Force; & (Resolve-Path '$env:TEMP\agy-tools-agy-pro\*\install.ps1').Path }"
+
+     * This one-liner installs from the CURRENT state of the feature/agy-pro
+       branch on GitHub, so local commits that are not pushed yet are not included.
+  1) Open the Antigravity-cli project directory in Windows File Explorer.
+  2) Run the installer using either convenient method:
+     - Method A (File Explorer Double-Click): Double-click `install.cmd`.
+     - Method B (Terminal Command): Run `.\install.cmd` or `.\install.ps1` in PowerShell / Command Prompt.
+  3) The installer automatically and silently handles everything:
+     - Detects or downloads a portable Go toolchain if none is present or the
+       installed one is older than Go 1.22 (the version agy-pro requires).
+     - Compiles the high-performance native agy-pro shim binary (`agy.exe`).
+       If compilation fails, the prebuilt binary shipped in the repository is
+       used instead and its origin is announced.
+     - Places `agy.exe` inside `%USERPROFILE%\.agy-pro\bin`.
+     - Prepends `~/.agy-pro/bin` to the top priority of Windows User PATH.
+       The previous PATH value and its registry kind are backed up to
+       `%USERPROFILE%\.agy-pro\backups\path-<timestamp>.json` first, and the
+       restore command is printed on screen.
+     - Runs `agy pro doctor --strict` to verify system operational readiness.
+  4) When finished, "Installation Completed Successfully!" will be displayed.
+     The installer then asks "Run the external model setup wizard now? (y/N)";
+     answering `y` continues straight into the setup wizard (`agy pro setup`).
+     When run via double-click, a "Press any key to continue . . ." prompt keeps the window open so you can review results.
+     Press any key to finish, open any new terminal window, and type `agy` right away!
+
+[Uninstall / Removal]
+  Paste this ONE line into a PowerShell window: it downloads the uninstaller and
+  runs it (it shows what it will remove, then waits for your y/N confirmation).
+
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr 'https://raw.githubusercontent.com/myk1yt/agy-tools/feature/agy-pro/agy-pro/scripts/uninstall.ps1' -OutFile '$env:TEMP\agy-pro-uninstall.ps1' -UseBasicParsing; & '$env:TEMP\agy-pro-uninstall.ps1'"
+
+  - Already cloned the repository? Double-click `uninstall.cmd` inside the folder,
+    or run `.\uninstall.cmd` in a terminal.
+  - It removes only the `~/.agy-pro/bin` entry from the Windows User PATH (every
+    other entry and the registry value kind are kept) and moves the whole
+    `~/.agy-pro` folder to the Recycle Bin, so a mistaken run can be undone.
+  - Options: `-KeepState` (remove the shim, keep providers.json/state.json/backups),
+    `-DryRun` (print the plan, change nothing),
+    `-RestorePath` (restore the User PATH backup taken before the install),
+    `-Force` (skip the y/N confirmation).
+  - Switched profiles earlier? Run `agy pro mode restore` BEFORE uninstalling.
+  - A run without an interactive console (piped input, scheduled task) answers
+    "no" automatically, so it cannot wipe the installation by accident.
+
+* Your existing Antigravity installation remains completely intact. The agy
+  shim seamlessly proxies all native flags and commands transparently.
+
+
+--------------------------------------------------------------------------------
+2. Mode Switching Guide (Full-Stack vs Clean)
+--------------------------------------------------------------------------------
+Switch between development environments with zero manual file copying:
+- FULL MODE: Enables 35+ specialized agent rules, curated skillsets, & orchestrators.
+- CLEAN MODE: Keeps vanilla, lightweight Antigravity default profile.
+
+[How to Switch Modes]
+  Option A. In the terminal:
+    - Open interactive mode switcher:
+        agy pro mode
+    - Instantly switch to Full-Stack mode:
+        agy pro mode full
+    - Instantly switch to Clean mode:
+        agy pro mode clean
+    - Restore from previous backup:
+        agy pro mode restore
+
+  Option B. Inside an Antigravity prompt session:
+    - Type `/mode` to trigger the profile selector.
+
+[Automatic Backups]
+Every switch creates an atomic, timestamped backup inside `~/.agy-pro/backups/`,
+guaranteeing you can revert at any time with complete peace of mind.
+
+
+--------------------------------------------------------------------------------
+3. Interactive Setup Wizard & Live Connection Testing (agy pro setup)
+--------------------------------------------------------------------------------
+Connect external OpenAI-compatible models (DeepSeek, OpenRouter, Groq, etc.)
+with guided interactive prompts and instant live health checking.
+
+[How to Run]
+  Execute in terminal:
+    agy pro setup
+
+[Wizard Workflow]
+  1) Enter Provider name (e.g., deepseek, openrouter, groq, openai).
+  2) Confirm or customize Base URL (smart defaults provided automatically).
+  3) Enter API key environment variable name (e.g., DEEPSEEK_API_KEY).
+  4) Enter API key value (optionally saved directly into Windows User Environment).
+  5) Configure Model ID and family (e.g., deepseek-chat, gpt-4o).
+  6) Toggle model capabilities (Tools/Function calling, Vision, Reasoning).
+  7) ⚡ [Live Connection Probe]:
+     - The wizard sends an instant real-time test ping to the provider endpoint.
+     - Success: Displays latency in milliseconds with a green checkmark (✅).
+     - Failure: Displays error details and lets you reconfigure on the spot.
+  8) Saves configuration into `~/.agy-pro/providers.json`; API key values are
+     stored only in environment variables (Windows User Environment on
+     Windows), never inside the file.
+
+
+--------------------------------------------------------------------------------
+4. Multi-Model Swarm Fanout (agy pro fanout, hybrid native seats)
+--------------------------------------------------------------------------------
+Eliminate single-model blind spots and hallucination by broadcasting prompts
+simultaneously to heterogeneous models, then cross-verifying the results
+(Reconciliation).
+
+[Command Examples]
+  - Basic fanout query (--prompt):
+      agy pro fanout --prompt "Analyze potential race conditions in Go channels"
+  - Target specific models (--models, provider/modelID format):
+      agy pro fanout --prompt "Refactor SQL query" --models "deepseek/deepseek-chat,openai/gpt-4o"
+  - Enable local agentic tool execution (--tools, allowed set: read,search,write,exec):
+      agy pro fanout --prompt "Investigate codebase for deprecated APIs" --tools read,search
+  - Seat count and task type (--n, --task review|security|plan-audit|research|ideas|custom):
+      agy pro fanout --prompt "Review this design" --task review --n 3
+  - Hybrid seats (--seats: real agy subprocess seats + external providers in ONE swarm):
+      agy pro fanout --prompt "Review this design" --seats "native:gemini-3.8-flash-high,nw/glm-5.3-flash,bigmodel/glm-4.6"
+      * `native:<model-id>` runs the real agy binary as a subprocess seat (Antigravity
+        subscription quota; rate limits can hit mid-swarm). Native seats run at most 2 at a
+        time by default; change that with `--max-native` or
+        `agy pro settings set native-seat-concurrency <1..8>`. A failed native seat does not
+        fail over: it is reported as a failed seat (reason shown: `reason=quota`,
+        `reason=timeout`, or the exit code with a redacted stderr tail) and the swarm continues.
+      * `--seats` and `--models` cannot be combined (error, exit code 2).
+
+[Result Output Example]
+  When the swarm completes, the terminal prints a summary:
+    Seats Evaluated:       3 / 3
+    Degraded Mode:         false
+    Confirmed Issues:      2
+    Disputed Issues:       1
+  - Artifacts are written under `reports/fanout/<timestamp>/`:
+      reconciliation.md : cross-model verification report (disputed findings require
+                          main-agent arbitration; each item records its ruling on an
+                          `arbitration:` line)
+      summary.json      : machine-readable summary (each seat carries `kind`: native | provider)
+      seat-N-*.md       : per-seat raw report (native seats add a `Kind: native` and quota row)
+  - When every seat agrees, "All findings verified across swarm models." is printed.
+
+[Gateway Tool Loop (let external models read and search your files)]
+  External models get the same tool actions when they run through the gateway.
+  `agy` neither sends nor executes tool calls, so the agy-pro bridge attaches
+  tools, runs the returned calls locally, and hands `agy` only the final text.
+  The default is read-only (`read,search`): the model can read and search the
+  workspace but cannot change it. File edits (`write`) and command execution
+  (`exec`) stay opt-in. The workspace root is the directory you started `agy`
+  in, and `agy pro config show` prints the current setting any time.
+      agy pro config bridge-tools read,search        # default: read-only
+      agy pro config bridge-tools read,search,write  # also allow file edits
+      agy pro config bridge-tools read,search,write,exec  # also allow commands
+      agy pro config bridge-tools none               # disable the loop
+      agy pro config show                            # prints the Bridge Tools line
+  Tool turns can run longer than the default print timeout, so add
+  `agy --print-timeout 300s` to live one-shot runs (the loop ceiling is 240s).
+
+
+--------------------------------------------------------------------------------
+5. Numbered Swarm Builder, Combined Model List & Settings Panel
+   (agy pro swarm / models --all / settings)
+--------------------------------------------------------------------------------
+[1] Combined model list (native + external)
+      agy pro models --all      # numbered list (e.g. [ 1] gemini-3.8-flash-high ... [native])
+      agy pro models --json     # the same list as JSON
+      agy pro models            # unchanged legacy output (providers / models / capabilities)
+  - The `[native]` group is the real agy model catalog (18 models on agy 1.3.3), followed by your
+    providers in providers.json order. A provider whose API-key environment variable is unset is
+    marked `(key missing)`.
+  - In the 2-second launcher (bare `agy`), `[2]` opens the same numbered list: a native number
+    runs real agy with no bridge, an external number starts the bridge.
+  - The launcher also prints one community line at startup:
+      Visit https://www.reddit.com/r/GoogleAntigravityCLI/! A space for antigravity-cli users. Remember r/GoogleAntigravityCLI
+    That line appears in the interactive launcher only. It never appears in `-p` one-shot runs,
+    piped input, `agy pro` subcommands, or machine output (summary.json, models --json).
+  - Inside an agy session, `/model` stays an all-or-nothing switch (native XOR external): native and
+    bridge models cannot share one popover. The closest in-session equivalent is registering the
+    `google` (AI Studio) preset and setting `agy pro config default-profile gateway` (Gemini 2.5 +
+    external models together). The full native + external list lives at the agy-pro layer:
+    `agy pro models --all`, launcher [2], `agy pro swarm`.
+
+[2] Build a swarm by number (recommended path)
+      agy pro swarm
+  - Steps: [1] template number (1 Code Review / 2 Security Audit / 3 Custom) -> [2] seat numbers
+    (e.g. `1,3,5`, a range `2-4`, or a preset `p1`..`p3`) -> [3] tools & budget -> [4] preview.
+  - Presets: p1 = 2 native + 2 external, p2 = 3 external (family-rotated), p3 = 4 mixed
+    (native flash + native pro + 2 external). Pressing Enter alone accepts the default preset (p1).
+  - The exact `agy pro fanout ...` command is printed before anything runs. Enter/y = run,
+    c = print only, 1-4 = edit that field, q = cancel.
+  - k3-family models are marked `excluded (pool policy)` and are never auto-seated.
+  - Power-user / CI flag path (any flag means zero prompts; missing required input exits 2):
+      agy pro swarm --template code-review --seats "1,3,5" --root .
+      agy pro swarm --template security-audit --seats "native:gemini-3.8-flash-high,nw/glm-5.3-flash" --dry-run
+
+[3] Settings panel (agy pro settings) and the in-session plugin command (/setting_agypro)
+      agy pro settings             # full-screen settings panel (TUI); run it in your own terminal
+      agy pro settings --panel p4  # deep-link one panel
+      agy pro settings show [--json] | set <key> <value> | providers ... | mode ... | doctor ...
+  - Panels: [1] Launch & Profile, [2] Models & Providers, [3] Bridge Tools & Budgets,
+    [4] Swarm & Fanout, [5] Diagnostics & Keys, [6] Install & Update, [7] Environment Variables.
+  - Keys accepted by `agy pro settings set`: default-profile, bridge-tools,
+    native-seat-concurrency (1..8). The bridge tool budgets (8 turns / 240s wall / 60s turn /
+    30s per tool / 16 calls per turn) are compile-time constants shown read-only.
+  - `/setting_agypro` is a **plugin slash command** (the same class as `/agy_help`).
+    Install it with `agy plugin install plugins/agypro_settings` (the slash name comes from the
+    file name). It is an agent-mediated workflow that runs the non-interactive
+    `agy pro settings ...` verbs behind numbered menus; it does NOT contain or launch the
+    full-screen TUI. The TUI is a separate surface you open yourself with `agy pro settings`.
+    A newly installed plugin directory is discovered on the next `agy` session start.
+  - API keys are always displayed as the first 5 characters + `****` (5 characters or fewer render
+    as `****`). While typing a key in the wizard, characters after the 5th echo as `*`.
+
+
+--------------------------------------------------------------------------------
+6. System Diagnostics & Safe Recovery (agy pro doctor & restore)
+--------------------------------------------------------------------------------
+Diagnose issues and restore previous states effortlessly.
+
+[System Doctor Diagnostics]
+  Run in terminal:
+    agy pro doctor
+
+  Checks:
+  - Real underlying agy binary presence and version
+  - agy-pro shim binary path and whether it runs from the installed
+    location (~/.agy-pro/bin)
+  - agy-pro home/config directories and default profile state
+  - Registered external provider API keys, verified with a real upstream
+    probe (valid/invalid/indeterminate/SKIP, masked display: first 5 characters + `****`)
+  - Go toolchain configuration
+
+  Note: `agy pro doctor --strict` exits with code 1 only for structural
+  problems (real agy missing, shim not running from ~/.agy-pro/bin, i.e. a
+  missing PATH registration). Provider-key probe verdicts are informational
+  only and never change the exit code. (The installer gates on the --strict
+  result.)
+
+[Recovery Commands]
+  - Restore last working profile:
+      agy pro mode restore
+  - View current status summary:
+      agy pro status
+
+
+--------------------------------------------------------------------------------
+7. Command Reference Summary
+--------------------------------------------------------------------------------
+  agy pro setup          : Interactive provider and API key setup wizard
+  agy pro mode           : Interactive profile switcher
+  agy pro mode full      : Activate full-stack profile (35+ agents & skillsets)
+  agy pro mode clean     : Activate clean default profile
+  agy pro mode restore   : Restore previous profile from backup
+  agy pro status         : Display current profile mode and provider status
+  agy pro models --all   : Combined native + external model list (numbered)
+  agy pro swarm          : Numbered swarm builder (template + seats, preview, then run)
+  agy pro fanout --prompt "<q>" : Run multi-model swarm fanout with synthesis
+  agy pro fanout --seats "native:<model>,<provider>/<model>" : Hybrid swarm (native seats included)
+  agy pro settings       : Full-screen settings panel (TUI). Inside a session use the plugin command /setting_agypro
+  agy pro doctor         : Run diagnostic health check
+  agy pro config bridge-tools <read,search,write,exec|none> : Tool loop for external models (default read,search)
+  agy pro config show    : Show startup profile, profile mode, and tool-loop setting
+  agy pro help           : View full CLI help
+  agy <arguments>        : 100% transparent pass-through to underlying agy CLI
+
+================================================================================
+                    Enjoy supercharged Antigravity with agy-pro!
+================================================================================

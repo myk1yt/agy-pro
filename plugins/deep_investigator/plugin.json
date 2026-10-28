@@ -1,0 +1,19 @@
+{
+  "name": "deep_investigator",
+  "version": "1.0.0",
+  "description": "Deep Investigator plugin for Google Antigravity CLI unifying Kimi-grade Web Research Discipline (Publisher Independence, Claims Register, XML Sandboxing) with Low-Level Systems Engineering (4-Tier verification for C++, Rust, TypeScript, C#, UB prevention, AOT trimming, cancellation safety).",
+  "author": "myk1yt",
+  "keywords": [
+    "antigravity",
+    "deep-investigator",
+    "research",
+    "systems-engineering",
+    "verification",
+    "rust",
+    "cpp",
+    "typescript",
+    "csharp",
+    "investigation"
+  ],
+  "license": "MIT"
+}

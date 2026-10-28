@@ -1,0 +1,108 @@
+<svg viewBox="0 0 680 440" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <defs>
+    <!-- Drop Shadow Filter for Cards -->
+    <filter id="card-shadow" x="-8%" y="-8%" width="116%" height="120%" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#0F172A" flood-opacity="0.08"/>
+    </filter>
+
+    <!-- Arrowhead Markers -->
+    <marker id="arrow-purple" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#9333EA"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#2563EB"/>
+    </marker>
+    <marker id="arrow-teal" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#0D9488"/>
+    </marker>
+
+    <!-- Linear Gradients for Surface Highlights -->
+    <linearGradient id="header-grad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#1E40AF"/>
+      <stop offset="100%" stop-color="#6B21A8"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background Canvas Frame -->
+  <rect width="680" height="440" rx="14" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1.5"/>
+
+  <!-- Diagram Header Bar -->
+  <rect x="24" y="24" width="632" height="48" rx="8" fill="url(#header-grad)"/>
+  <text x="44" y="49" font-size="15" font-weight="700" fill="#FFFFFF" dominant-baseline="central">Designer Pipeline: 680px Architecture (설계 파이프라인)</text>
+  <rect x="526" y="34" width="114" height="28" rx="14" fill="#FFFFFF" fill-opacity="0.2"/>
+  <text x="583" y="48" font-size="11" font-weight="600" fill="#FFFFFF" text-anchor="middle" dominant-baseline="central">ZERO-MCP SPEC</text>
+
+  <!-- Group 1: Connectors (Painted underneath cards to avoid z-index collisions) -->
+  <g id="connectors" fill="none" stroke-width="2">
+    <!-- Stage 1 to Stage 2 -->
+    <path d="M 218 175 L 254 175" stroke="#9333EA" marker-end="url(#arrow-purple)"/>
+    <!-- Stage 2 to Stage 3 -->
+    <path d="M 444 175 L 480 175" stroke="#2563EB" marker-end="url(#arrow-blue)"/>
+    <!-- Feedback Loop: Stage 3 back to Stage 2 -->
+    <path d="M 570 230 C 570 310, 350 310, 350 240" stroke="#0D9488" stroke-dasharray="5 3" marker-end="url(#arrow-teal)"/>
+  </g>
+
+  <!-- Group 2: Stage 1 - Ingestion & Contract (Purple Family) -->
+  <g id="stage-1" transform="translate(34, 100)" filter="url(#card-shadow)">
+    <!-- Main Card Body: Width calculated via (chars * 6.5) + (hangul * 13) + padding -->
+    <rect width="184" height="150" rx="10" fill="#FAF5FF" stroke="#E9D5FF" stroke-width="1.5"/>
+    <!-- Stage Pill Badge -->
+    <rect x="14" y="14" width="76" height="22" rx="11" fill="#E9D5FF"/>
+    <text x="52" y="25" font-size="11" font-weight="700" fill="#6B21A8" text-anchor="middle" dominant-baseline="central">STAGE 1</text>
+    <!-- Title & Subtitle -->
+    <text x="14" y="56" font-size="14" font-weight="700" fill="#6B21A8" dominant-baseline="central">User Intent (입력)</text>
+    <text x="14" y="78" font-size="12" fill="#6B21A8" fill-opacity="0.85" dominant-baseline="central">design.md Pre-Contract</text>
+    <line x1="14" y1="94" x2="170" y2="94" stroke="#E9D5FF" stroke-width="1"/>
+    <!-- Feature Items -->
+    <circle cx="20" cy="112" r="3" fill="#9333EA"/>
+    <text x="30" y="112" font-size="11.5" fill="#6B21A8" dominant-baseline="central">680px Viewport Scope</text>
+    <circle cx="20" cy="130" r="3" fill="#9333EA"/>
+    <text x="30" y="130" font-size="11.5" fill="#6B21A8" dominant-baseline="central">Color Matrix Mapping</text>
+  </g>
+
+  <!-- Group 3: Stage 2 - Mathematical Engine (Blue Family) -->
+  <g id="stage-2" transform="translate(260, 100)" filter="url(#card-shadow)">
+    <rect width="184" height="150" rx="10" fill="#EFF6FF" stroke="#BFDBFE" stroke-width="1.5"/>
+    <rect x="14" y="14" width="76" height="22" rx="11" fill="#BFDBFE"/>
+    <text x="52" y="25" font-size="11" font-weight="700" fill="#1E40AF" text-anchor="middle" dominant-baseline="central">STAGE 2</text>
+    <text x="14" y="56" font-size="14" font-weight="700" fill="#1E40AF" dominant-baseline="central">Vector Engine (조판)</text>
+    <text x="14" y="78" font-size="12" fill="#1E40AF" fill-opacity="0.85" dominant-baseline="central">Pure SVG / Math Layout</text>
+    <line x1="14" y1="94" x2="170" y2="94" stroke="#BFDBFE" stroke-width="1"/>
+    <circle cx="20" cy="112" r="3" fill="#2563EB"/>
+    <text x="30" y="112" font-size="11.5" fill="#1E40AF" dominant-baseline="central">Width: char * 6.5px / 13px</text>
+    <circle cx="20" cy="130" r="3" fill="#2563EB"/>
+    <text x="30" y="130" font-size="11.5" fill="#1E40AF" dominant-baseline="central">+20px Padding Invariant</text>
+  </g>
+
+  <!-- Group 4: Stage 3 - Visual QA Verification (Teal Family) -->
+  <g id="stage-3" transform="translate(486, 100)" filter="url(#card-shadow)">
+    <rect width="160" height="150" rx="10" fill="#F0FDFA" stroke="#99F6E4" stroke-width="1.5"/>
+    <rect x="14" y="14" width="76" height="22" rx="11" fill="#99F6E4"/>
+    <text x="52" y="25" font-size="11" font-weight="700" fill="#115E59" text-anchor="middle" dominant-baseline="central">STAGE 3</text>
+    <text x="14" y="56" font-size="14" font-weight="700" fill="#115E59" dominant-baseline="central">Visual QA (검증)</text>
+    <text x="14" y="78" font-size="12" fill="#115E59" fill-opacity="0.85" dominant-baseline="central">4-Point Defect Audit</text>
+    <line x1="14" y1="94" x2="146" y2="94" stroke="#99F6E4" stroke-width="1"/>
+    <circle cx="20" cy="112" r="3" fill="#0D9488"/>
+    <text x="30" y="112" font-size="11.5" fill="#115E59" dominant-baseline="central">Clipping &amp; Collision</text>
+    <circle cx="20" cy="130" r="3" fill="#0D9488"/>
+    <text x="30" y="130" font-size="11.5" fill="#115E59" dominant-baseline="central">WCAG AAA Contrast</text>
+  </g>
+
+  <!-- Group 5: Bottom Feedback Badge & Legend -->
+  <g id="feedback-legend" transform="translate(34, 344)">
+    <rect width="612" height="66" rx="8" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+    
+    <!-- Status Indicator Icon -->
+    <circle cx="28" cy="33" r="12" fill="#F0FDFA" stroke="#0D9488" stroke-width="1.5"/>
+    <path d="M 23 33 L 27 37 L 34 29" fill="none" stroke="#0D9488" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    
+    <text x="52" y="26" font-size="13" font-weight="700" fill="#0F172A" dominant-baseline="central">Closed Feedback Loop (폐루프 자동 보정)</text>
+    <text x="52" y="46" font-size="11.5" fill="#475569" dominant-baseline="central">If any visual defect is detected in Stage 3, coordinates and padding auto-adjust back in Stage 2.</text>
+
+    <!-- Color Legend Pills -->
+    <rect x="520" y="14" width="78" height="18" rx="9" fill="#F0FDFA" stroke="#99F6E4"/>
+    <text x="559" y="23" font-size="10" font-weight="600" fill="#115E59" text-anchor="middle" dominant-baseline="central">Pass: 100%</text>
+    <rect x="520" y="36" width="78" height="18" rx="9" fill="#EFF6FF" stroke="#BFDBFE"/>
+    <text x="559" y="45" font-size="10" font-weight="600" fill="#1E40AF" text-anchor="middle" dominant-baseline="central">Budget: 3/15</text>
+  </g>
+</svg>
