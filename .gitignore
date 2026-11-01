@@ -18,6 +18,7 @@ test/test-cache-*.json
 
 # Cache and local databases
 .gemini/
+.agents/
 *.tmp
 *.temp
 *.bak
@@ -29,6 +30,7 @@ scratch/
 docs/feedbacks/
 
 # Historical session artifacts, scratch reports & one-off verification files
+docs/context/
 docs/*_session_*/
 docs/*-session-*/
 docs/*_session_*
