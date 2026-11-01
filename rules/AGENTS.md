@@ -29,6 +29,18 @@
   3. Architectural choices, security models, or system performance trade-offs
   Master MUST automatically engage `deep-investigator` alongside other domain specialists without requiring explicit user prompts or slash commands.
 
+
+### 1.5 Reconnaissance & Fact Swarm Invariant (Flash-Lite Massive Parallel)
+- **Scope Distinction (Analysis vs. Reconnaissance)**:
+  - *Deep Analysis / Causal Architecture*: High-complexity trade-offs, root-cause debugging, or cross-boundary refactoring MUST route to high-reasoning models (`deep-investigator`, `architect`, `research`) using `Model: 'flash'` or `'pro'`.
+  - *Fact Reconnaissance / Online Material Research / Codebase Symbol Scan*: Pure reference lookup, API documentation scraping, package version checks, or scanning multiple directories for symbol occurrences (non-analytic) MUST route to the Flash-Lite Swarm.
+- **Batch Spawning Invariant ($ge 3 \sim 8$ Parallel Seats)**:
+  - Master MUST NEVER run sequential or single-agent lookups for broad fact-finding.
+  - Master MUST decompose search targets into 3–8 granular boundaries (e.g., target URLs/libraries, documentation sections, distinct directory trees, or specific keywords).
+  - Master dispatches the entire batch simultaneously in a **SINGLE turn** via `invoke_subagent` explicitly setting `Model: 'flash_lite'`.
+- **Single-Turn Synthesis & Context Shield**:
+  - Each `flash_lite` subagent executes concurrently with near-zero latency and minimal token consumption, returning isolated factual findings.
+  - Master aggregates all parallel findings in 1 turn without conversational round-trips or context window pollution.
 ---
 
 ## 2. Specialized Specialist Toolbox & Boundaries
