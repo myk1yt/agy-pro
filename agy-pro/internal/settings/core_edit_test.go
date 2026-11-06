@@ -27,7 +27,7 @@ import (
 func editFixture() *providers.Registry {
 	off := false
 	return &providers.Registry{
-		Defaults: providers.Defaults{N: 3, TimeoutSeconds: 900, Tools: "read,search", TokenBudget: 120000},
+		Defaults: providers.Defaults{N: 3, TimeoutSeconds: 900, MaxTurns: 42, Tools: "read,search", TokenBudget: 120000},
 		Providers: []providers.Provider{
 			{
 				Name:      "acme",

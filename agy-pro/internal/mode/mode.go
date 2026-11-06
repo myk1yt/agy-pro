@@ -103,7 +103,12 @@ func ValidLanguage(s string) bool {
 
 // NormalizeLanguage canonicalizes a user-supplied language code against the
 // closed 12-code set (case-insensitive, surrounding whitespace ignored).
-// Unknown or blank values fall back to DefaultLanguage.
+// BCP-47 suffixes resolve by primary subtag ("ko-KR" -> "ko", "zh-TW" ->
+// "zh-Hant"); unknown or blank values fall back to DefaultLanguage. The
+// subtag fallback MUST stay in parity with i18n.Normalize: the persisted
+// state passes through this normalizer before the TUI layer runs its own,
+// and a drift would show one language in the hub row and another in the
+// rendered strings.
 func NormalizeLanguage(s string) string {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "zh-hans":
@@ -128,9 +133,19 @@ func NormalizeLanguage(s string) string {
 		return "vi"
 	case "ar":
 		return "ar"
-	default:
-		return DefaultLanguage
 	}
+	base := strings.SplitN(strings.ReplaceAll(strings.TrimSpace(s), "_", "-"), "-", 2)[0]
+	switch strings.ToLower(base) {
+	case "ko", "ja", "ru", "hi", "de", "fr", "it", "vi", "ar":
+		return strings.ToLower(base)
+	case "zh":
+		lower := strings.ToLower(s)
+		if strings.Contains(lower, "hant") || strings.Contains(lower, "-tw") || strings.Contains(lower, "-hk") {
+			return "zh-Hant"
+		}
+		return "zh-Hans"
+	}
+	return DefaultLanguage
 }
 
 // MaxNativeSeatConcurrency is the upper bound of the native-seat concurrency

@@ -15,13 +15,12 @@ import (
 	"agypro/internal/settings"
 )
 
-// English fallbacks for catalog keys this screen resolves. Every key named
-// below carries an entry in all twelve locale files, so a lookup never has to
-// fall back to English or to the key ID, and each const stays as the fallback
-// for a catalog lacking the translation. Every lookup passes the KEY named in
-// the const's own comment, never the const text itself: Bundle.T and Tf are
-// literal-name lookups, so handing one of them a fallback sentence reaches no
-// catalog entry and prints English in every locale.
+// English fallbacks for catalog keys this screen resolves. Every key carries
+// an entry in all twelve locale files; the consts stay as the readable fallback
+// missingOr serves when a catalog entry is absent. Every lookup passes the KEY
+// named in the const's own comment, never the const text itself: Bundle.T and
+// Tf are literal-name lookups, so handing one of them a fallback sentence
+// reaches no catalog entry and prints English in every locale.
 // TestProvidersFallbackConstsResolveInAllLocales gates both halves of that
 // claim (entry present per locale, key never handed back).
 const (
@@ -40,7 +39,9 @@ const (
 	// catalog-resolved, fallback kept: providers.form.empty_hint
 	providersFormEmptyHint = `Use the "{{action}}" row below to register one.`
 	// catalog-resolved, fallback kept: providers.msg.select_provider
-	providersMsgSelectProvider = "Select a provider row first."
+	providersMsgSelectProvider = "Move to a provider row to select it (Space pins it), then choose this action again."
+	// catalog-resolved, fallback kept: providers.form.edit_target
+	providersFormEditTarget = "Edit ● {{name}}"
 )
 
 // providersListChrome is the non-list line count of the composed frame around
@@ -308,6 +309,27 @@ func (s *ProvidersScreen) syncMarker() {
 			s.rows[i].Label = label
 		}
 	}
+	s.syncEditTarget()
+}
+
+// editTargetLabel names the provider the Edit verb will open. With no selected
+// target it stays the bare verb, matching Test and Delete; once a row is marked,
+// the same masked identity and marker appear in the verb itself.
+func (s *ProvidersScreen) editTargetLabel() string {
+	if p, ok := s.selectedProvider(); ok {
+		return fillHubSlots(missingOr(s.bundle, "providers.form.edit_target", providersFormEditTarget),
+			map[string]string{"name": providers.MaskSlot(p.Name)})
+	}
+	return missingOr(s.bundle, "providers.form.edit", providersFormEdit)
+}
+
+func (s *ProvidersScreen) syncEditTarget() {
+	for i := range s.rows {
+		if s.rows[i].ID == providersRowIDEdit {
+			s.rows[i].Label = s.editTargetLabel()
+			return
+		}
+	}
 }
 
 // reload re-reads the registry and rebuilds the rows. A missing file is the
@@ -411,8 +433,8 @@ func (s *ProvidersScreen) reloadIfChanged() {
 // sticky-target verbs Test, Edit, and Delete. Add and Edit are the in-TUI
 // registration and repair doors (decision 1A); Delete stays last so the danger
 // row sits furthest from the entity rows. The verb rows carry no provider
-// operand (the label is the bare verb), so the row set no longer grows with the
-// registry: the target is the sticky-selected provider row, marked with "●" so
+// operand, so the row set no longer grows with the registry. Edit names the
+// selected provider in its label; the target is the sticky-selected provider row, marked with "●" so
 // the object an action will hit is never invisible (the models screen's buildRows
 // shape).
 //
@@ -444,7 +466,7 @@ func (s *ProvidersScreen) rebuild() {
 			rows = append(rows,
 				Row{ID: providersRowIDTestAll, Label: missingOr(s.bundle, "providers.action.test_all", providersActionTestAll)},
 				Row{ID: providersRowIDTest, Label: s.bundle.T("providers.action.test")},
-				Row{ID: providersRowIDEdit, Label: missingOr(s.bundle, "providers.form.edit", providersFormEdit)},
+				Row{ID: providersRowIDEdit, Label: s.editTargetLabel()},
 				Row{ID: providersRowIDDelete, Label: s.bundle.T("providers.action.delete")},
 			)
 		}

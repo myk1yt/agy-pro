@@ -345,6 +345,20 @@ func TestWizardGate_StaleRegistryRefuses(t *testing.T) {
 			},
 			want: "appeared in providers.json",
 		},
+		{
+			name: "timeoutSeconds drifted",
+			drifted: func(reg *Registry) {
+				reg.Defaults.TimeoutSeconds = 120
+			},
+			want: "defaults.timeoutSeconds changed on disk",
+		},
+		{
+			name: "maxTurns drifted",
+			drifted: func(reg *Registry) {
+				reg.Defaults.MaxTurns = 10
+			},
+			want: "defaults.maxTurns changed on disk",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			provPath := wizardGateHome(t)
@@ -358,7 +372,7 @@ func TestWizardGate_StaleRegistryRefuses(t *testing.T) {
 				if calls == 1 {
 					return LoadFrom(path)
 				}
-				reg := &Registry{Defaults: Defaults{N: 3, TimeoutSeconds: 120, MaxTurns: 10, Tools: "read,search"}}
+				reg := &Registry{Defaults: Defaults{N: 3, Tools: "read,search"}}
 				tc.drifted(reg)
 				return reg, nil
 			}
@@ -524,19 +538,11 @@ func TestWizardGate_NoConsentLineWithoutAPersistableKey(t *testing.T) {
 	}
 }
 
-// P31-B item 7 (follow-up from coder-p31a-report.md): the first-time wizard
-// write used to marshal a phantom `defaults` block seeded from
-// loadWizardRegistry's missing-file branch (N:3 / timeout 120 / maxTurns 10 /
-// tools read,search). Those literals are the RETIRED engine defaults: the fanout
-// CLI ladder reads the block ("defaults" rung in cli.go) and would bind
-// timeout 120 / max_turns 10 for every run on that machine, plus print two drift
-// notices against the 300/500 engine defaults. The seed is gone, so a first-time
-// write carries an empty block and every rung falls through to the engine.
-//
-// The second half is the boundary: a defaults block the operator (or an older
-// file) already carries is still round-tripped untouched, so this fix removes a
-// phantom seed without ever stripping a real value.
-func TestWizardFirstWriteCarriesNoStaleDefaultsRung(t *testing.T) {
+func TestWizardRunDefaultsSeedAndPreserve(t *testing.T) {
+	const (
+		timeoutSeedLine = "Sets defaults.timeoutSeconds to 7200 (2 hours) (was: unset, engine fallback 300s)"
+		turnsSeedLine   = "Sets defaults.maxTurns to 500 (was: unset, engine fallback 500)"
+	)
 	readDefaults := func(t *testing.T, path string) map[string]any {
 		t.Helper()
 		raw, err := os.ReadFile(path)
@@ -551,42 +557,18 @@ func TestWizardFirstWriteCarriesNoStaleDefaultsRung(t *testing.T) {
 		}
 		return doc.Defaults
 	}
-	runWizard := func(t *testing.T, key string) {
+	runWizard := func(t *testing.T, key string) string {
 		t.Helper()
 		var out bytes.Buffer
 		if err := InteractiveSetupWizardWithGate(strings.NewReader(wizardGateScript(t, key, "")), &out, WizardOptions{Yes: true}); err != nil {
 			t.Fatalf("wizard returned error: %v\nOutput: %s", err, out.String())
 		}
+		return out.String()
 	}
-
-	t.Run("first write pins no rung", func(t *testing.T) {
-		provPath := wizardGateHome(t)
-		store := newMockEnvStore()
-		wizardGateEnvSeams(t, store)
-		runWizard(t, wizardGateKey0006)
-
-		defaults := readDefaults(t, provPath)
-		for _, key := range []string{"n", "timeoutSeconds", "maxTurns", "tools"} {
-			if v, ok := defaults[key]; ok {
-				t.Errorf("a first-time wizard write pinned defaults.%s=%v; the engine defaults must stay unbound", key, v)
-			}
-		}
-		reg, err := LoadFrom(provPath)
-		if err != nil {
-			t.Fatalf("the written registry does not load: %v", err)
-		}
-		if reg.Defaults.TimeoutSeconds != 0 || reg.Defaults.MaxTurns != 0 || reg.Defaults.N != 0 || reg.Defaults.Tools != "" {
-			t.Errorf("loaded defaults = %+v; want the zero block (no pinned rung)", reg.Defaults)
-		}
-	})
-
-	t.Run("an existing block is preserved", func(t *testing.T) {
-		provPath := wizardGateHome(t)
-		store := newMockEnvStore()
-		wizardGateEnvSeams(t, store)
-
+	writeSeed := func(t *testing.T, path string, defaults Defaults) {
+		t.Helper()
 		seeded := &Registry{
-			Defaults: Defaults{TimeoutSeconds: 180, MaxTurns: 250, Tools: "read"},
+			Defaults: defaults,
 			Providers: []Provider{{
 				Name: "groq", BaseURL: closedLoopbackBaseURL(t) + "/v1", APIKeyEnv: "GROQ_API_KEY",
 				Models: []Model{{ID: "llama-3.3-70b"}},
@@ -599,20 +581,116 @@ func TestWizardFirstWriteCarriesNoStaleDefaultsRung(t *testing.T) {
 		if err != nil {
 			t.Fatalf("seed marshal: %v", err)
 		}
-		if err := WriteFileAtomic(provPath, append(data, '\n'), 0o600); err != nil {
+		if err := WriteFileAtomic(path, append(data, '\n'), 0o600); err != nil {
 			t.Fatalf("seed write: %v", err)
 		}
-		runWizard(t, wizardGateKey0007)
+	}
+
+	t.Run("first write seeds and discloses both run knobs", func(t *testing.T) {
+		provPath := wizardGateHome(t)
+		store := newMockEnvStore()
+		wizardGateEnvSeams(t, store)
+		transcript := runWizard(t, wizardGateKey0006)
+
+		defaults := readDefaults(t, provPath)
+		if got := defaults["timeoutSeconds"]; got != float64(DefaultRunTimeoutSeconds) {
+			t.Errorf("defaults.timeoutSeconds = %v; want %d", got, DefaultRunTimeoutSeconds)
+		}
+		if got := defaults["maxTurns"]; got != float64(DefaultRunMaxTurns) {
+			t.Errorf("defaults.maxTurns = %v; want %d", got, DefaultRunMaxTurns)
+		}
+		for _, key := range []string{"n", "tools"} {
+			if v, ok := defaults[key]; ok {
+				t.Errorf("first write invented defaults.%s=%v", key, v)
+			}
+		}
+		for _, line := range []string{timeoutSeedLine, turnsSeedLine} {
+			if !strings.Contains(transcript, line) {
+				t.Errorf("consent transcript missing %q:\n%s", line, transcript)
+			}
+		}
+	})
+
+	t.Run("existing run knobs and unrelated defaults are preserved", func(t *testing.T) {
+		provPath := wizardGateHome(t)
+		store := newMockEnvStore()
+		wizardGateEnvSeams(t, store)
+		writeSeed(t, provPath, Defaults{N: 4, TimeoutSeconds: 180, MaxTurns: 250, Tools: "read", TokenBudget: 123})
+		transcript := runWizard(t, wizardGateKey0007)
 
 		reg, err := LoadFrom(provPath)
 		if err != nil {
 			t.Fatalf("the written registry does not load: %v", err)
 		}
-		if reg.Defaults.TimeoutSeconds != 180 || reg.Defaults.MaxTurns != 250 || reg.Defaults.Tools != "read" {
-			t.Errorf("defaults = %+v; an existing operator block must survive the wizard write", reg.Defaults)
+		want := Defaults{N: 4, TimeoutSeconds: 180, MaxTurns: 250, Tools: "read", TokenBudget: 123}
+		if reg.Defaults.N != want.N || reg.Defaults.TimeoutSeconds != want.TimeoutSeconds || reg.Defaults.MaxTurns != want.MaxTurns || reg.Defaults.Tools != want.Tools || reg.Defaults.TokenBudget != want.TokenBudget {
+			t.Errorf("defaults = %+v; want operator values %+v", reg.Defaults, want)
+		}
+		if strings.Contains(transcript, "Sets defaults.timeoutSeconds") || strings.Contains(transcript, "Sets defaults.maxTurns") {
+			t.Errorf("a populated knob produced a seeding disclosure:\n%s", transcript)
 		}
 		if len(reg.Providers) != 2 {
 			t.Errorf("providers = %d; want the seeded groq record plus the added one", len(reg.Providers))
 		}
 	})
+
+	t.Run("only the missing knob is seeded", func(t *testing.T) {
+		provPath := wizardGateHome(t)
+		store := newMockEnvStore()
+		wizardGateEnvSeams(t, store)
+		writeSeed(t, provPath, Defaults{TimeoutSeconds: 900})
+		transcript := runWizard(t, wizardGateKey0008)
+
+		reg, err := LoadFrom(provPath)
+		if err != nil {
+			t.Fatalf("the written registry does not load: %v", err)
+		}
+		if reg.Defaults.TimeoutSeconds != 900 || reg.Defaults.MaxTurns != DefaultRunMaxTurns {
+			t.Errorf("defaults = %+v; want timeout 900 and maxTurns %d", reg.Defaults, DefaultRunMaxTurns)
+		}
+		if strings.Contains(transcript, "Sets defaults.timeoutSeconds") || !strings.Contains(transcript, turnsSeedLine) {
+			t.Errorf("partial seeding disclosure is wrong:\n%s", transcript)
+		}
+	})
+}
+
+func TestWizardRunDefaultsSeedReverifiedRegistry(t *testing.T) {
+	provPath := filepath.Join(t.TempDir(), "providers.json")
+	oldReload := wizardRegistryReload
+	calls := 0
+	wizardRegistryReload = func(path string) (*Registry, error) {
+		calls++
+		if calls == 1 {
+			return &Registry{Defaults: Defaults{N: 1}}, nil
+		}
+		return &Registry{Defaults: Defaults{N: 9, Tools: "read", TokenBudget: 99}}, nil
+	}
+	t.Cleanup(func() { wizardRegistryReload = oldReload })
+
+	prov := Provider{Name: "example", BaseURL: "https://example.test/v1", Models: []Model{{ID: "example-model"}}}
+	plan, err := composeWizardWritePlan(provPath, prov, wizardPendingKey{})
+	if err != nil {
+		t.Fatalf("compose plan: %v", err)
+	}
+	reg, err := plan.reverify()
+	if err != nil {
+		t.Fatalf("reverify plan: %v", err)
+	}
+	var out bytes.Buffer
+	if err := plan.apply(reg, &out, func(name string) string { return name }); err != nil {
+		t.Fatalf("apply plan: %v", err)
+	}
+	written, err := LoadFrom(provPath)
+	if err != nil {
+		t.Fatalf("load written registry: %v", err)
+	}
+	if written.Defaults.N != 9 || written.Defaults.Tools != "read" || written.Defaults.TokenBudget != 99 {
+		t.Errorf("defaults = %+v; the write did not use the re-verified registry", written.Defaults)
+	}
+	if written.Defaults.TimeoutSeconds != DefaultRunTimeoutSeconds || written.Defaults.MaxTurns != DefaultRunMaxTurns {
+		t.Errorf("defaults = %+v; run knobs were not seeded on the re-verified registry", written.Defaults)
+	}
+	if plan.base.Defaults.N != 1 || plan.base.Defaults.TimeoutSeconds != 0 || plan.base.Defaults.MaxTurns != 0 {
+		t.Errorf("presentation base was mutated: %+v", plan.base.Defaults)
+	}
 }

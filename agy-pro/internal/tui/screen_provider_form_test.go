@@ -19,7 +19,7 @@ import (
 // provider with a two-model list (so an edit can prove the model list survives
 // byte-identical) and a populated defaults block (so the read-only block has
 // rows). The defaults block is the rung the phase-2 fanout ladder consumes; the
-// form must display it and never write it.
+// form must display it and preserve every user-set knob when an add writes.
 func providerFormFixtureReg() *providers.Registry {
 	return &providers.Registry{
 		Providers: []providers.Provider{{
@@ -118,8 +118,8 @@ func providerFormAddKeys(name, baseURL, env string) []Key {
 
 // TestProviderFormAddEndToEnd drives the full add flow: field entry, the M4
 // approval diff with the exact record fields, the read-only defaults block, y
-// writing through Core.ProviderAdd, the sibling provider byte-identical, the
-// success message, and the pop back to the caller.
+// writing through the hub's defaults-seeding add path, the sibling provider
+// byte-identical, the success message, and the pop back to the caller.
 func TestProviderFormAddEndToEnd(t *testing.T) {
 	app, path := newProviderFormTestApp(t, providerFormFixtureReg(), "add", "")
 	siblingBefore, _ := json.Marshal(providerFormFixtureReg().Providers[0])
@@ -206,6 +206,15 @@ func TestProviderFormAddWithoutDefaults(t *testing.T) {
 	if !strings.Contains(out, "+ apiKeyEnv: (empty)") {
 		t.Fatalf("empty env diff line missing; frames:\n%s", out)
 	}
+	appr, ok := app.Modal().(*Approval)
+	if !ok {
+		t.Fatalf("modal = %T, want *Approval", app.Modal())
+	}
+	summary := strings.Join(appr.Body(120), "\n")
+	if !strings.Contains(summary, "Also fills missing run defaults") ||
+		!strings.Contains(summary, "timeoutSeconds=7200, maxTurns=500") {
+		t.Fatalf("defaults-seed disclosure missing; summary:\n%s", summary)
+	}
 	app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyYes}})
 	reg, err := providers.LoadFrom(path)
 	if err != nil {
@@ -214,6 +223,137 @@ func TestProviderFormAddWithoutDefaults(t *testing.T) {
 	p, ok := reg.Provider("first")
 	if !ok || p.BaseURL != "http://127.0.0.1:8080/v1" || p.APIKeyEnv != "" {
 		t.Fatalf("added provider = %+v (ok %v)", p, ok)
+	}
+	if reg.Defaults.TimeoutSeconds != 7200 || reg.Defaults.MaxTurns != 500 {
+		t.Fatalf("seeded run defaults = %+v, want timeoutSeconds=7200 and maxTurns=500", reg.Defaults)
+	}
+}
+
+// TestProviderFormAddSeedsOnlyMissingRunDefaults pins the write-side boundary:
+// one user-owned knob and every unrelated defaults field survive, while only the
+// absent knob is filled. The approval discloses the resulting values, not a
+// blanket reset to the two built-in numbers.
+func TestProviderFormAddSeedsOnlyMissingRunDefaults(t *testing.T) {
+	reg := providerFormFixtureReg()
+	reg.Defaults.TimeoutSeconds = 900
+	reg.Defaults.MaxTurns = 0
+	app, path := newProviderFormTestApp(t, reg, "add", "")
+	app.CaptureRun(&ScriptedKeys{Keys: providerFormAddKeys("partial-defaults", "https://partial.example/v1", "PARTIAL_API_KEY")})
+	appr, ok := app.Modal().(*Approval)
+	if !ok {
+		t.Fatalf("modal = %T, want *Approval", app.Modal())
+	}
+	summary := strings.Join(appr.Body(120), "\n")
+	if !strings.Contains(summary, "timeoutSeconds=900, maxTurns=500") || strings.Contains(summary, "timeoutSeconds=7200") {
+		t.Fatalf("partial seed disclosure moved a user-owned knob; summary:\n%s", summary)
+	}
+	app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyYes}})
+	after, err := providers.LoadFrom(path)
+	if err != nil {
+		t.Fatalf("reload registry: %v", err)
+	}
+	if after.Defaults.TimeoutSeconds != 900 || after.Defaults.MaxTurns != 500 {
+		t.Fatalf("partial defaults seed = %+v, want timeoutSeconds=900 and maxTurns=500", after.Defaults)
+	}
+	if after.Defaults.N != 3 || after.Defaults.Tools != "read,search" || after.Defaults.TokenBudget != 90000 {
+		t.Fatalf("unrelated defaults moved: %+v", after.Defaults)
+	}
+}
+
+// TestProviderFormAddDefaultsCommitReverification pins the add-mode defaults
+// half of the approval contract. The no-drift write persists exactly the two run
+// knobs the approval disclosed. Any change to either presented base knob while
+// the approval is open refuses the write, including losing an already-complete
+// defaults block (where comparing only the seeded result would miss the drift).
+func TestProviderFormAddDefaultsCommitReverification(t *testing.T) {
+	t.Run("no drift writes the disclosed knobs", func(t *testing.T) {
+		reg := providerFormFixtureReg()
+		reg.Defaults.TimeoutSeconds = 900
+		reg.Defaults.MaxTurns = 0
+		app, path := newProviderFormTestApp(t, reg, "add", "")
+		app.CaptureRun(&ScriptedKeys{Keys: providerFormAddKeys("approved-defaults", "https://approved.example/v1", "APPROVED_KEY")})
+		appr, ok := app.Modal().(*Approval)
+		if !ok {
+			t.Fatalf("modal = %T, want *Approval", app.Modal())
+		}
+		summary := strings.Join(appr.Body(120), "\n")
+		if !strings.Contains(summary, "timeoutSeconds=900, maxTurns=500") {
+			t.Fatalf("approval did not disclose the expected seed; summary:\n%s", summary)
+		}
+
+		app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyYes}})
+		after, err := providers.LoadFrom(path)
+		if err != nil {
+			t.Fatalf("reload registry: %v", err)
+		}
+		if after.Defaults.TimeoutSeconds != 900 || after.Defaults.MaxTurns != 500 {
+			t.Fatalf("written defaults = timeoutSeconds:%d maxTurns:%d, want the disclosed 900/500",
+				after.Defaults.TimeoutSeconds, after.Defaults.MaxTurns)
+		}
+		if _, ok := after.Provider("approved-defaults"); !ok {
+			t.Fatal("the no-drift approved provider was not written")
+		}
+	})
+
+	cases := []struct {
+		name     string
+		initial  providers.Defaults
+		external providers.Defaults
+	}{
+		{
+			name:     "timeoutSeconds changed",
+			initial:  providers.Defaults{TimeoutSeconds: 900},
+			external: providers.Defaults{TimeoutSeconds: 901},
+		},
+		{
+			name:     "maxTurns changed",
+			initial:  providers.Defaults{TimeoutSeconds: 900},
+			external: providers.Defaults{TimeoutSeconds: 900, MaxTurns: 25},
+		},
+		{
+			name:     "defaults block appeared",
+			initial:  providers.Defaults{},
+			external: providers.Defaults{TimeoutSeconds: 900, MaxTurns: 25},
+		},
+		{
+			name:     "complete defaults block disappeared",
+			initial:  providers.Defaults{TimeoutSeconds: 7200, MaxTurns: 500},
+			external: providers.Defaults{},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := providerFormFixtureReg()
+			reg.Defaults = tc.initial
+			app, path := newProviderFormTestApp(t, reg, "add", "")
+			app.CaptureRun(&ScriptedKeys{Keys: providerFormAddKeys("stale-defaults", "https://stale.example/v1", "STALE_KEY")})
+			if _, ok := app.Modal().(*Approval); !ok {
+				t.Fatalf("modal = %T, want *Approval", app.Modal())
+			}
+
+			external := providerFormFixtureReg()
+			external.Defaults = tc.external
+			external.Path = path
+			data, err := json.MarshalIndent(external, "", "  ")
+			if err != nil {
+				t.Fatalf("marshal external registry: %v", err)
+			}
+			if err := providers.WriteFileAtomic(path, append(data, '\n'), 0o600); err != nil {
+				t.Fatalf("write external registry: %v", err)
+			}
+			stale := providerFormDisk(t, path)
+
+			out := app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyYes}})
+			if !strings.Contains(out, "The run defaults changed on disk since this form opened") {
+				t.Fatalf("stale-defaults refusal missing; frames:\n%s", out)
+			}
+			if got := providerFormDisk(t, path); string(got) != string(stale) {
+				t.Fatal("providers.json changed after the stale-defaults refusal")
+			}
+			if app.Depth() != 2 {
+				t.Fatalf("depth = %d, want 2 (the form stays open)", app.Depth())
+			}
+		})
 	}
 }
 
@@ -236,6 +376,7 @@ func TestProviderFormEditPrefillAndFixedName(t *testing.T) {
 	for _, want := range []string{
 		"Edit Provider",
 		"Provider (fixed) : acme",
+		"The name is fixed identity",
 		"https://acme.example/v1",
 		"ACME_KEY",
 	} {
@@ -450,20 +591,6 @@ func TestProviderFormValidationRefusals(t *testing.T) {
 			},
 			full: "or use a known provider key variable such as GEMINI_API_KEY",
 		},
-		{
-			name: "pasted key value",
-			keys: func(*providerFormScreen) []Key {
-				keys := append(providerFormType("acme-new"), KeyTab)
-				keys = append(keys, providerFormType("https://api.acme.example/v1")...)
-				keys = append(keys, KeyTab)
-				keys = append(keys, providerFormType(providerFormPastedKeyValue)...)
-				return append(keys, KeyEnter)
-			},
-			wants: []string{
-				"The API key env field holds an environment-variable NAME",
-			},
-			full: "looks like key material and was refused (value hidden)",
-		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -613,14 +740,34 @@ func TestProviderFormApprovalSwallowsNonAnswerKeys(t *testing.T) {
 	}
 }
 
-// TestProviderFormSecretValueNeverRenders pins the masking discipline: a key
-// VALUE pasted into the apiKeyEnv field is refused by name, and the value never
-// appears raw in a frame, in the message line, or in a diff line.
+// TestProviderFormSecretValueNeverRenders drives pasted-key conversion through
+// the real Save and approval path. Before y the grid and diff contain only the
+// derived NAME and no environment write occurs; y sets both environment stores
+// through seams and the registry still contains no key VALUE.
 func TestProviderFormSecretValueNeverRenders(t *testing.T) {
-	const secret = providerFormSecretValue
+	const secret = providerFormPastedKeyValue
+	const derived = "ACME_NEW_API_KEY"
+	t.Setenv(derived, "")
+	oldSetenv, oldPersist, oldPersists := providerFormSetenv, providerFormPersistUserEnv, providerFormPersistsUserEnv
+	t.Cleanup(func() {
+		providerFormSetenv, providerFormPersistUserEnv, providerFormPersistsUserEnv = oldSetenv, oldPersist, oldPersists
+	})
+	sessionCalls, persistCalls := 0, 0
+	var sessionName, sessionValue, persistName, persistValue string
+	providerFormSetenv = func(name, value string) error {
+		sessionCalls++
+		sessionName, sessionValue = name, value
+		return os.Setenv(name, value)
+	}
+	providerFormPersistsUserEnv = func() bool { return true }
+	providerFormPersistUserEnv = func(name, value string) error {
+		persistCalls++
+		persistName, persistValue = name, value
+		return nil
+	}
+
 	app, path := newProviderFormTestApp(t, providerFormFixtureReg(), "add", "")
 	before := providerFormDisk(t, path)
-
 	keys := append(providerFormType("acme-new"), KeyTab)
 	keys = append(keys, providerFormType("https://api.acme.example/v1")...)
 	keys = append(keys, KeyTab)
@@ -628,36 +775,199 @@ func TestProviderFormSecretValueNeverRenders(t *testing.T) {
 	out := app.CaptureRun(&ScriptedKeys{Keys: keys})
 
 	if strings.Contains(out, secret) {
-		t.Fatalf("a frame rendered the pasted key value raw:\n%s", out)
+		t.Fatal("a frame rendered the pasted key value raw")
 	}
 	if !strings.Contains(out, "sk-li****") {
 		t.Fatalf("the apiKeyEnv grid row was not masked; frames:\n%s", out)
 	}
-	// The field itself still holds the raw value so the user can edit it; only
-	// the frame is masked. The message line refuses it without echoing.
 	scr := providerFormScreenOf(t, app)
 	if scr.trimAPIKeyEnv() != secret {
-		t.Fatalf("form value = %q, want the typed value (editing stays raw)", scr.trimAPIKeyEnv())
+		t.Fatal("the editable field did not retain the pasted value before Save")
 	}
-	if strings.Contains(scr.messageLine(), secret) {
-		t.Fatalf("message line echoed the key value: %q", scr.messageLine())
+	if msg := scr.messageLine(); !strings.Contains(msg, derived) || strings.Contains(msg, secret) {
+		t.Fatal("the live conversion hint did not name only the derived environment variable")
 	}
 
-	out = app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyEnter}})
-	if !strings.Contains(out, "The API key env field holds an environment-variable NAME") {
-		t.Fatalf("secret refusal missing; frames:\n%s", out)
+	out = app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyEnter, KeyTab, KeyEnter}})
+	appr, ok := app.Modal().(*Approval)
+	if !ok {
+		t.Fatalf("modal = %T, want *Approval after key conversion", app.Modal())
 	}
-	if msg := scr.messageLine(); !strings.Contains(msg, "looks like key material and was refused (value hidden)") {
-		t.Fatalf("secret refusal message = %q", msg)
+	summary := strings.Join(appr.Body(120), "\n")
+	for _, want := range []string{
+		"+ apiKeyEnv: " + derived,
+		"Sets " + derived + " in this process's environment",
+		"HKCU\\Environment",
+	} {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("conversion approval missing %q; summary:\n%s", want, summary)
+		}
 	}
-	if strings.Contains(out, secret) {
-		t.Fatalf("a frame rendered the pasted key value raw:\n%s", out)
+	if strings.Contains(out, secret) || strings.Contains(summary, secret) {
+		t.Fatal("the converted frame or approval rendered the pasted key value")
 	}
-	if _, isApproval := app.Modal().(*Approval); isApproval {
-		t.Fatalf("modal = %T, want no approval (the secret refusal blocks it)", app.Modal())
+	if scr.trimAPIKeyEnv() != derived || scr.pendingKeyName != derived || scr.pendingKeyValue != secret {
+		t.Fatal("Save did not replace the field with the derived NAME and stash the key")
+	}
+	if sessionCalls != 0 || persistCalls != 0 {
+		t.Fatal("opening the approval wrote an environment variable before consent")
 	}
 	if got := providerFormDisk(t, path); string(got) != string(before) {
-		t.Fatal("providers.json changed after the secret refusal")
+		t.Fatal("providers.json changed before the approval was answered")
+	}
+
+	app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyYes}})
+	if sessionCalls != 1 || persistCalls != 1 {
+		t.Fatalf("environment writes = session %d, persistent %d; want 1/1", sessionCalls, persistCalls)
+	}
+	if sessionName != derived || sessionValue != secret || persistName != derived || persistValue != secret {
+		t.Fatal("the approved key did not reach both environment seams under the derived NAME")
+	}
+	reg, err := providers.LoadFrom(path)
+	if err != nil {
+		t.Fatalf("reload registry: %v", err)
+	}
+	p, ok := reg.Provider("acme-new")
+	if !ok || p.APIKeyEnv != derived {
+		t.Fatal("the registry did not retain the derived environment NAME")
+	}
+	if strings.Contains(string(providerFormDisk(t, path)), secret) {
+		t.Fatal("the pasted key VALUE reached providers.json")
+	}
+}
+
+// TestProviderFormProvableLongEnvNameStaysName pins the F2 precedence fix: an
+// exported env NAME that is long enough to also satisfy LooksLikeAPIKey must
+// NOT be converted (the NAME text is not a secret), and approval writes the
+// NAME into the registry without touching the environment seams.
+func TestProviderFormProvableLongEnvNameStaysName(t *testing.T) {
+	const name = "ACME_PROVISIONING_TOKEN_KEY" // 27 chars: LooksLikeAPIKey true
+	t.Setenv(name, "real-value-from-environment")
+	oldSetenv, oldPersist := providerFormSetenv, providerFormPersistUserEnv
+	t.Cleanup(func() { providerFormSetenv, providerFormPersistUserEnv = oldSetenv, oldPersist })
+	providerFormSetenv = func(name, value string) error { t.Fatal("session env seam called for a NAME"); return nil }
+	providerFormPersistUserEnv = func(name, value string) error { t.Fatal("persist env seam called for a NAME"); return nil }
+
+	app, path := newProviderFormTestApp(t, providerFormFixtureReg(), "add", "")
+	keys := append(providerFormType("acme-new"), KeyTab)
+	keys = append(keys, providerFormType("https://api.acme.example/v1")...)
+	keys = append(keys, KeyTab)
+	keys = append(keys, providerFormType(name)...)
+	keys = append(keys, KeyEnter, KeyTab, KeyEnter)
+	app.CaptureRun(&ScriptedKeys{Keys: keys})
+
+	scr := providerFormScreenOf(t, app)
+	if scr.trimAPIKeyEnv() != name {
+		t.Fatalf("field = %q, want the NAME kept verbatim", scr.trimAPIKeyEnv())
+	}
+	if scr.pendingKeyValue != "" || scr.pendingKeyName != "" {
+		t.Fatal("a provable NAME stashed a pending key value")
+	}
+	if _, ok := app.Modal().(*Approval); !ok {
+		t.Fatalf("modal = %T, want *Approval", app.Modal())
+	}
+	app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyYes}})
+	reg, err := providers.LoadFrom(path)
+	if err != nil {
+		t.Fatalf("reload registry: %v", err)
+	}
+	p, ok := reg.Provider("acme-new")
+	if !ok || p.APIKeyEnv != name {
+		t.Fatalf("registry apiKeyEnv = %q, want the provable NAME", p.APIKeyEnv)
+	}
+	if got := os.Getenv(name); got != "real-value-from-environment" {
+		t.Fatal("the environment value behind the NAME was overwritten")
+	}
+}
+
+// TestProviderFormDigitLeadingNameRefusesKeyConversion pins the round-2 P2: a
+// provider name whose derived env NAME is invalid (a digit head fails the
+// load-time envNameRe charset) must NOT convert a pasted key, because the
+// environment variable written under that NAME could never be referenced by the
+// registry. Save-time validation refuses and nothing is written anywhere.
+func TestProviderFormDigitLeadingNameRefusesKeyConversion(t *testing.T) {
+	const secret = providerFormPastedKeyValue
+	oldSetenv, oldPersist := providerFormSetenv, providerFormPersistUserEnv
+	t.Cleanup(func() { providerFormSetenv, providerFormPersistUserEnv = oldSetenv, oldPersist })
+	providerFormSetenv = func(name, value string) error { t.Fatal("session env seam called for an invalid derived NAME"); return nil }
+	providerFormPersistUserEnv = func(name, value string) error { t.Fatal("persist env seam called for an invalid derived NAME"); return nil }
+
+	app, path := newProviderFormTestApp(t, providerFormFixtureReg(), "add", "")
+	before := providerFormDisk(t, path)
+	keys := append(providerFormType("9router"), KeyTab)
+	keys = append(keys, providerFormType("https://api.9router.example/v1")...)
+	keys = append(keys, KeyTab)
+	keys = append(keys, providerFormType(secret)...)
+	keys = append(keys, KeyEnter, KeyTab, KeyEnter)
+	out := app.CaptureRun(&ScriptedKeys{Keys: keys})
+	if _, ok := app.Modal().(*Approval); ok {
+		t.Fatalf("approval opened for a key under an invalid derived NAME; frames:\n%s", out)
+	}
+	if got := providerFormDisk(t, path); string(got) != string(before) {
+		t.Fatal("providers.json changed despite the refused conversion")
+	}
+}
+
+// TestProviderFormEditConvertsPastedKey proves the same conversion on the edit
+// door: the fixed identity and model list survive, only apiKeyEnv changes in the
+// registry, and edit mode does not seed defaults or emit their disclosure.
+func TestProviderFormEditConvertsPastedKey(t *testing.T) {
+	const secret = providerFormPastedKeyValue
+	const derived = "ACME_API_KEY"
+	t.Setenv(derived, "")
+	oldSetenv := providerFormSetenv
+	t.Cleanup(func() { providerFormSetenv = oldSetenv })
+	calls := 0
+	providerFormSetenv = func(name, value string) error {
+		calls++
+		if name != derived || value != secret {
+			t.Fatal("the edit commit passed the wrong operands to the session environment seam")
+		}
+		return os.Setenv(name, value)
+	}
+
+	app, path := newProviderFormTestApp(t, providerFormFixtureReg(), "edit", "acme")
+	scr := providerFormScreenOf(t, app)
+	keys := []Key{KeyTab}
+	keys = append(keys, providerFormClear(scr.form.Value(1))...)
+	keys = append(keys, providerFormType(secret)...)
+	keys = append(keys, KeyTab, KeyTab, KeyEnter)
+	out := app.CaptureRun(&ScriptedKeys{Keys: keys})
+	appr, ok := app.Modal().(*Approval)
+	if !ok {
+		t.Fatalf("modal = %T, want *Approval", app.Modal())
+	}
+	summary := strings.Join(appr.Body(120), "\n")
+	if !strings.Contains(summary, "apiKeyEnv: ACME_KEY -> "+derived) ||
+		!strings.Contains(summary, "Sets "+derived+" in this process's environment") {
+		t.Fatalf("edit conversion disclosure missing; summary:\n%s", summary)
+	}
+	if strings.Contains(summary, "fills missing run defaults") {
+		t.Fatalf("edit mode unexpectedly disclosed a defaults seed; summary:\n%s", summary)
+	}
+	if strings.Contains(out, secret) || strings.Contains(summary, secret) {
+		t.Fatal("the edit conversion rendered the pasted key VALUE")
+	}
+	if calls != 0 {
+		t.Fatal("the edit approval set the environment before y")
+	}
+	app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyYes}})
+	if calls != 1 {
+		t.Fatalf("session environment calls = %d, want 1", calls)
+	}
+	reg, err := providers.LoadFrom(path)
+	if err != nil {
+		t.Fatalf("reload registry: %v", err)
+	}
+	p := reg.Providers[0]
+	if p.Name != "acme" || p.BaseURL != "https://acme.example/v1" || p.APIKeyEnv != derived || len(p.Models) != 2 {
+		t.Fatal("edit conversion changed the wrong provider fields or dropped models")
+	}
+	if reg.Defaults.TimeoutSeconds != 120 || reg.Defaults.MaxTurns != 10 {
+		t.Fatalf("edit conversion moved defaults: %+v", reg.Defaults)
+	}
+	if strings.Contains(string(providerFormDisk(t, path)), secret) {
+		t.Fatal("the edit conversion wrote the pasted key VALUE to providers.json")
 	}
 }
 
@@ -905,7 +1215,7 @@ func TestProviderFormPlainTierEmitsNoEscapes(t *testing.T) {
 const providerFormSecretValue = "sk-" + "live-" + "0123456789abcdefXYZ"
 
 // providerFormPastedKeyValue is the shorter synthetic key VALUE pasted into the
-// apiKeyEnv field by the refusal pins. Same concatenation discipline.
+// apiKeyEnv field by the conversion pin. Same concatenation discipline.
 const providerFormPastedKeyValue = "sk-" + "live-" + "0123456789abcdef"
 
 // TestProviderFormSecretShapedFieldsRefused is the FIX-A pin: a key VALUE pasted

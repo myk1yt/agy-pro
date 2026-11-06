@@ -73,7 +73,7 @@ func NewCore(deps Deps) *Core {
 		deps.LoadReg = providers.Load
 	}
 	if deps.SaveReg == nil {
-		deps.SaveReg = func(reg *providers.Registry) error { return saveRegistryFile(reg) }
+		deps.SaveReg = SaveRegistry
 	}
 	if deps.AuditKeys == nil {
 		deps.AuditKeys = func(reg *providers.Registry, opts providers.AuditOptions) []providers.KeyAudit {
@@ -104,6 +104,23 @@ func NewCore(deps Deps) *Core {
 		deps.RestoreMode = mode.Restore
 	}
 	return &Core{deps: deps}
+}
+
+// SaveRegistry is the raw atomic save primitive for a caller with an already
+// re-verified registry. Run-default seeding is a provider-ADD policy (the
+// moment a registry gains its first provider), not a property of every
+// registry write: edits, renames, deletes, model verbs, and the exclusion
+// editor keep an untouched save byte-identical and never move defaults the
+// user already owns.
+func SaveRegistry(reg *providers.Registry) error {
+	return saveRegistryFile(reg)
+}
+
+func (c *Core) saveRegistryWithRunDefaults(reg *providers.Registry) error {
+	if reg != nil {
+		reg.Defaults = providers.EnsureRunDefaults(reg.Defaults)
+	}
+	return c.deps.SaveReg(reg)
 }
 
 // Set writes one settings key. Supported keys (contract §2.9, plus the
@@ -282,7 +299,7 @@ func (c *Core) ProviderAdd(spec ProviderSpec) error {
 	if err := providers.UpsertProvider(reg, p); err != nil {
 		return err
 	}
-	return c.deps.SaveReg(reg)
+	return c.saveRegistryWithRunDefaults(reg)
 }
 
 // ProviderTest probes a provider's key/endpoint via the audit path.
@@ -371,9 +388,11 @@ var (
 // record handed to it (registry_ops.go:118-124), so a caller that passes only
 // the two edited fields silently drops that provider's models. ProviderEdit
 // never calls UpsertProvider and never builds a replacement provider record; it
-// mutates reg.Providers[idx] field by field and saves through the same seam as
-// ProviderAdd/ProviderRename/ProviderDelete (deps.SaveReg -> saveRegistryFile ->
-// providers.WriteFileAtomic: whole file, 0600, temp file + rename).
+// mutates reg.Providers[idx] field by field and saves through the RAW
+// SaveRegistry path like ProviderRename/ProviderDelete: run-default seeding is
+// a provider-ADD policy (saveRegistryWithRunDefaults is called only by
+// ProviderAdd), so an edit never introduces a defaults block the consent
+// surface did not disclose.
 //
 // APIKeyEnv carries an environment-variable NAME. A key VALUE pasted into the
 // slot is refused by the same guard the add-json twin and UpsertProvider use

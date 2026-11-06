@@ -709,16 +709,55 @@ func (t *TUI) addJSON(it Item, path string) error {
 	if err != nil {
 		return err
 	}
+	defaults, err := t.panelRunDefaultsSnapshot()
+	if err != nil {
+		return err
+	}
 	t.pending = &pendingConfirm{
 		item:     it,
 		operands: append(providers.FlagSeedOperands(spec.Name, spec.BaseURL), providers.FlagSeedOperands(spec.APIKeyEnv)...),
-		body:     panelProviderAddDiff(base, spec),
+		body:     append(panelProviderAddDiff(base, spec), panelRunDefaultsSeedDiff(defaults)...),
 		run: func() error {
 			if err := t.core.panelProviderReverify(base, "agy pro settings providers add-json"); err != nil {
 				return err
 			}
+			if err := t.panelRunDefaultsReverify(defaults, "agy pro settings providers add-json"); err != nil {
+				return err
+			}
 			return t.core.ProviderAdd(spec)
 		},
+	}
+	return nil
+}
+
+const panelRunDefaultsSeedLine = "Also fills missing run defaults in providers.json: timeoutSeconds=%d, maxTurns=%d (existing values are kept)."
+
+func panelRunDefaultsSeedDiff(before providers.Defaults) []string {
+	seeded := providers.EnsureRunDefaults(before)
+	if seeded.TimeoutSeconds == before.TimeoutSeconds && seeded.MaxTurns == before.MaxTurns {
+		return nil
+	}
+	return panelBody([]string{fmt.Sprintf(panelRunDefaultsSeedLine, seeded.TimeoutSeconds, seeded.MaxTurns)})
+}
+
+func (t *TUI) panelRunDefaultsSnapshot() (providers.Defaults, error) {
+	reg, err := t.core.loadRegistry()
+	if err != nil {
+		return providers.Defaults{}, err
+	}
+	return reg.Defaults, nil
+}
+
+func (t *TUI) panelRunDefaultsReverify(before providers.Defaults, verb string) error {
+	after, err := t.panelRunDefaultsSnapshot()
+	if err != nil {
+		return errors.New("providers.json could not be re-read before the write, so the presented run-defaults diff could not be re-verified; nothing written")
+	}
+	if after.TimeoutSeconds != before.TimeoutSeconds {
+		return fmt.Errorf("defaults.timeoutSeconds changed on disk between the presentation and the write, so the presented diff is stale; nothing written (re-run %s after reviewing the current defaults)", verb)
+	}
+	if after.MaxTurns != before.MaxTurns {
+		return fmt.Errorf("defaults.maxTurns changed on disk between the presentation and the write, so the presented diff is stale; nothing written (re-run %s after reviewing the current defaults)", verb)
 	}
 	return nil
 }

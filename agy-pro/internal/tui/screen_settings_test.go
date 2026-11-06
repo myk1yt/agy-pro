@@ -795,6 +795,58 @@ func TestSettingsScreenAddJSONPrompt(t *testing.T) {
 	}
 }
 
+func TestSettingsScreenAddJSONRunDefaultsDisclosure(t *testing.T) {
+	spec := settings.ProviderSpec{Name: "beta", BaseURL: "https://beta.example.com", APIKeyEnv: "AGY_P11_SET_KEY"}
+	for _, tc := range []struct {
+		name     string
+		defaults providers.Defaults
+		want     string
+		present  bool
+	}{
+		{name: "missing", want: "Also fills missing run defaults in providers.json: timeoutSeconds=7200, maxTurns=500 (existing values are kept).", present: true},
+		{name: "partial", defaults: providers.Defaults{TimeoutSeconds: 900}, want: "timeoutSeconds=900, maxTurns=500", present: true},
+		{name: "present", defaults: providers.Defaults{TimeoutSeconds: 900, MaxTurns: 42}, want: "Also fills missing run defaults", present: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newSettingsTestCore(t)
+			h.reg.Defaults = tc.defaults
+			if err := h.persistReg(h.reg); err != nil {
+				t.Fatal(err)
+			}
+			app := newSettingsApp(h)
+			scr := app.Top().(*settingsScreen)
+			scr.approveProviderAdd("providers.add.label", spec, "beta.json", app)
+			modal := app.Modal()
+			if modal == nil {
+				t.Fatalf("approval did not open: %s", app.Message())
+			}
+			body := strings.Join(modal.Body(110), "\n")
+			if got := strings.Contains(body, tc.want); got != tc.present {
+				t.Fatalf("seed disclosure presence = %v, want %v; body:\n%s", got, tc.present, body)
+			}
+		})
+	}
+}
+
+func TestSettingsScreenAddJSONRunDefaultsDriftRefuses(t *testing.T) {
+	h := newSettingsTestCore(t)
+	app := newSettingsApp(h)
+	scr := app.Top().(*settingsScreen)
+	spec := settings.ProviderSpec{Name: "beta", BaseURL: "https://beta.example.com", APIKeyEnv: "AGY_P11_SET_KEY"}
+	scr.approveProviderAdd("providers.add.label", spec, "beta.json", app)
+	h.reg.Defaults.TimeoutSeconds = 901
+	if err := h.persistReg(h.reg); err != nil {
+		t.Fatal(err)
+	}
+	app.Step(KeyYes)
+	if findProvider(h.reg, "beta") != nil {
+		t.Fatal("provider add landed after the disclosed defaults changed")
+	}
+	if !strings.Contains(app.Message(), "run defaults changed on disk") {
+		t.Fatalf("message = %q; want stale-defaults refusal", app.Message())
+	}
+}
+
 // TestSettingsScreenAddJSONReplaceApproval pins the wholesale-replace hazard:
 // a spec whose name matches a registered provider must render the before/
 // after model counts AND both diff lines in the approval body, so a silent

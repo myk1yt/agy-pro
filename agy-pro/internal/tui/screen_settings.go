@@ -92,6 +92,10 @@ const (
 	settingsApprovalReplace = "Replace provider {{name}} wholesale: the current entry and its whole model list are discarded."
 	// catalog-resolved, fallback kept: settings.approval.rename
 	settingsApprovalRename = "Rename provider {{old}} to {{new}}; the model list carries over unchanged."
+	// catalog-resolved, fallback kept: providers.form.approval.defaults_seed
+	settingsApprovalDefaultsSeed = "Also fills missing run defaults in providers.json: timeoutSeconds={{timeout}}, maxTurns={{turns}} (existing values are kept)."
+	// catalog-resolved, fallback kept: settings.approval.stale_defaults
+	settingsApprovalStaleDefaults = "The run defaults changed on disk after this approval opened. Nothing was written; review the current defaults and try again."
 	// catalog-resolved, fallback kept: settings.approval.fix_keys
 	settingsApprovalFixKeys = "Repair BOM-variant key names for {{target}}; an entry is rewritten only when its clean name probes dead and a BOM variant probes valid."
 	// catalog-resolved, fallback kept: settings.approval.fix_keys_write
@@ -731,9 +735,13 @@ func (s *settingsScreen) approveProviderAdd(label string, spec settings.Provider
 			}),
 		}
 	}
+	summary = appendRunDefaultsSeed(summary, s.bundle, reg.Defaults)
 	a.ShowModal(NewApproval(s.bundle.T("providers.add.title"), summary, func(approved bool) {
 		if !approved {
 			a.SetMessage(missingOr(s.bundle, "settings.msg.cancelled", settingsMsgCancelled))
+			return
+		}
+		if !reverifyApprovalRunDefaults(a, s.bundle, reg.Defaults) {
 			return
 		}
 		if err := s.core.ProviderAdd(spec); err != nil {
@@ -743,6 +751,34 @@ func (s *settingsScreen) approveProviderAdd(label string, spec settings.Provider
 		s.reload()
 		a.SetMessage("[SUCCESS] " + label)
 	}))
+}
+
+func appendRunDefaultsSeed(summary []string, b *i18n.Bundle, before providers.Defaults) []string {
+	seeded := providers.EnsureRunDefaults(before)
+	if seeded.TimeoutSeconds == before.TimeoutSeconds && seeded.MaxTurns == before.MaxTurns {
+		return summary
+	}
+	return append(summary, fillHubSlots(missingOr(b, "providers.form.approval.defaults_seed", settingsApprovalDefaultsSeed), map[string]string{
+		"timeout": strconv.Itoa(seeded.TimeoutSeconds),
+		"turns":   strconv.Itoa(seeded.MaxTurns),
+	}))
+}
+
+func reverifyApprovalRunDefaults(a *App, b *i18n.Bundle, before providers.Defaults) bool {
+	reg, err := providers.Load()
+	if err != nil && !errors.Is(err, os.ErrNotExist) && !errors.Is(err, providers.ErrNotConfigured) {
+		a.SetMessage(b.Tf("err.load_failed", map[string]string{"err": providers.MaskOperand(err.Error())}))
+		return false
+	}
+	after := providers.Defaults{}
+	if reg != nil {
+		after = reg.Defaults
+	}
+	if after.TimeoutSeconds != before.TimeoutSeconds || after.MaxTurns != before.MaxTurns {
+		a.SetMessage(missingOr(b, "settings.approval.stale_defaults", settingsApprovalStaleDefaults))
+		return false
+	}
+	return true
 }
 
 // renameProvider opens the M4 approval modal with the exact mutation summary
@@ -1854,6 +1890,7 @@ type excludeModelsScreen struct {
 	rows     []Row
 	entries  []string
 	base     settings.ExcludeModelsBase
+	defaults providers.Defaults
 	armed    int
 	loadErr  string
 	app      *App
@@ -1888,6 +1925,7 @@ func (s *excludeModelsScreen) reload() {
 		s.loadErr = providers.MaskOperand(err.Error())
 	}
 	s.base = settings.ExcludeModelsBaseFromDefaults(defaults)
+	s.defaults = defaults
 	// settings.ExcludeModelsSeed is the one seed source (no local copy of the
 	// seed spelling lives here): it returns the stored entries verbatim, or, when
 	// the key is absent, the single entry settings.ExcludeModelsBuiltinRule
@@ -2129,8 +2167,10 @@ func containsExcludeEntry(list []string, entry string) bool {
 // Core re-checks the same base again): a list that moved while the diff was on
 // screen is refused and the editor reloads, so an external edit is never
 // silently reverted. A read failure refuses too, because the write would
-// otherwise run without the check. Every error echo is masked, seeded with the
-// entry operands.
+// otherwise run without the check. The run knobs (timeoutSeconds/maxTurns) are
+// deliberately NOT re-checked here: this write never reads or mutates them, so
+// knob drift must not refuse a legal exclusion edit (the add doors own that
+// gate). Every error echo is masked, seeded with the entry operands.
 func (s *excludeModelsScreen) commit(next []string, a *App) {
 	seeds := s.seedOperands()
 	defaults := providers.Defaults{}

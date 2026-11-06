@@ -878,18 +878,10 @@ func composeWizardWritePlan(targetPath string, prov Provider, key wizardPendingK
 // or ErrNotConfigured from a helper) is an empty registry; anything else is a
 // real read error and refuses.
 //
-// P31-B item 7: this branch used to seed Defaults{N:3, TimeoutSeconds:120,
-// MaxTurns:10, Tools:"read,search"} into the returned registry. Those literals
-// were the pre-P29 engine defaults, and they were NOT inert: the registry this
-// function returns is the one reverify() hands to apply(), which marshals it
-// straight to providers.json, so a first-time wizard run wrote a `defaults`
-// block pinning timeout 120 / max_turns 10. The fanout CLI ladder reads that
-// block (cli.go "defaults" rung) and would then bind 120/10 for every run on
-// that machine and print two drift notices against the 300/500 engine defaults.
-// An empty block means every rung falls through to the engine defaults, which is
-// what a registry written without a defaults block has always meant - so the
-// seed is deleted rather than aligned, and a new wizard-created file carries an
-// empty (omitempty-struct) block that binds nothing.
+// Run defaults are not seeded in this read helper: the consent diff and drift
+// check both need the exact on-disk base. apply() seeds only the re-verified
+// registry through EnsureRunDefaults, binding missing knobs to 7200/500 without
+// moving operator values or writing defaults from a stale pre-consent copy.
 func loadWizardRegistry(path string) (*Registry, error) {
 	reg, err := wizardRegistryReload(path)
 	if err == nil {
@@ -918,9 +910,10 @@ func wizardFindProvider(reg *Registry, name string) *Provider {
 // diff renders the composed write: the provider action sentence, the model
 // count before/after, the atomic-0600 sentence, the removed/added provider
 // lines (the shapes the CLI provider gate and the hub's M4 provider approvals
-// use), and the key-persist lines. Every operand is delegated to the shared
-// masking authorities (MaskSlot for registry slots, MaskBaseURL for the
-// endpoint, MaskOperand for an environment NAME); no value is ever rendered.
+// use), any run-default seeding, and the key-persist lines. Every operand is
+// delegated to the shared masking authorities (MaskSlot for registry slots,
+// MaskBaseURL for the endpoint, MaskOperand for an environment NAME); no value
+// is ever rendered.
 func (p *wizardWritePlan) diff() []string {
 	lines := []string{}
 	name := wizardProvLabel(p.prov.Name)
@@ -939,6 +932,12 @@ func (p *wizardWritePlan) diff() []string {
 		lines = append(lines, "- "+wizardProviderLine(p.before))
 	}
 	lines = append(lines, "+ "+wizardProviderLine(p.prov))
+	if p.base.Defaults.TimeoutSeconds <= 0 {
+		lines = append(lines, fmt.Sprintf("Sets defaults.timeoutSeconds to %d (2 hours) (was: unset, engine fallback 300s)", DefaultRunTimeoutSeconds))
+	}
+	if p.base.Defaults.MaxTurns <= 0 {
+		lines = append(lines, fmt.Sprintf("Sets defaults.maxTurns to %d (was: unset, engine fallback 500)", DefaultRunMaxTurns))
+	}
 	return append(lines, p.envLines()...)
 }
 
@@ -1024,6 +1023,8 @@ func wizardConsent(reader *bufio.Reader, out io.Writer, plan *wizardWritePlan, o
 //
 //   - add: the name is still absent;
 //   - replace: the record is still the exact record the diff described;
+//   - run defaults: both timeoutSeconds and maxTurns still match the presented
+//     base, whether either knob was already set or will be seeded;
 //   - key persist: the presented presence of the variable name (clean name and
 //     BOM variants) is unchanged, compared only when both reads are observable.
 func (p *wizardWritePlan) reverify() (*Registry, error) {
@@ -1040,6 +1041,12 @@ func (p *wizardWritePlan) reverify() (*Registry, error) {
 		return nil, fmt.Errorf("provider %s disappeared from providers.json between the presentation and the write, so the presented diff is stale; nothing written (re-run the setup wizard after reviewing the current registry)", name)
 	case p.present && !reflect.DeepEqual(*cur, p.before):
 		return nil, fmt.Errorf("provider %s changed on disk between the presentation and the write, so the presented diff is stale; nothing written (re-run the setup wizard after reviewing the current record)", name)
+	}
+	if reg.Defaults.TimeoutSeconds != p.base.Defaults.TimeoutSeconds {
+		return nil, fmt.Errorf("defaults.timeoutSeconds changed on disk between the presentation and the write, so the presented diff is stale; nothing written (re-run the setup wizard after reviewing the current defaults)")
+	}
+	if reg.Defaults.MaxTurns != p.base.Defaults.MaxTurns {
+		return nil, fmt.Errorf("defaults.maxTurns changed on disk between the presentation and the write, so the presented diff is stale; nothing written (re-run the setup wizard after reviewing the current defaults)")
 	}
 	if p.key.set {
 		fresh := wizardEnvProbe(p.key.name)
@@ -1065,8 +1072,8 @@ func equalWizardStrings(a, b []string) bool {
 
 // apply performs the composed write, in the presented order: the user
 // environment persist first (a failure there is reported and does not abort the
-// registry write, the pre-P5-1 contract), then the provider upsert into the
-// re-verified registry, validated and written atomically.
+// registry write, the pre-P5-1 contract), then run-default seeding and the
+// provider upsert into the re-verified registry, validated and written atomically.
 func (p *wizardWritePlan) apply(reg *Registry, out io.Writer, envEcho func(string) string) error {
 	if p.key.set {
 		if err := wizardPersistUserEnv(p.key.name, p.key.value); err != nil {
@@ -1075,6 +1082,7 @@ func (p *wizardWritePlan) apply(reg *Registry, out io.Writer, envEcho func(strin
 			fmt.Fprintf(out, "✅ Saved %s to Windows User Environment.\n", envEcho(p.key.name))
 		}
 	}
+	reg.Defaults = EnsureRunDefaults(reg.Defaults)
 	updated := false
 	for i := range reg.Providers {
 		if strings.EqualFold(reg.Providers[i].Name, p.prov.Name) {
@@ -1132,29 +1140,10 @@ func promptCustomModel(r *bufio.Reader, w io.Writer, modelID string) (Model, err
 
 	var allowedTools []string
 	if supportsTools {
-		// The prompt spells out the token mapping because the four --tools
-		// tokens are not the whole universe: write covers BOTH write tools,
-		// and search_web/read_url_content have no token at all (the engine
-		// offers them per run via --search-endpoint / --allow-host, and a
-		// grant by name is what the runner's model-level filter checks).
-		// The Enter default is the shared add-path grant set (the runtime
-		// universe minus run_command), so the wizard and the setup hub's model
-		// form seed a new model with the same tools; exec stays a typed opt-in.
-		toolsPrompt := "Allowed tools for this model (comma list of tool names; fanout --tools " +
-			"read,search,write,exec; read,search = read_file,list_dir,grep,glob; " +
-			"write = write_file,replace_in_file; exec = run_command; " +
-			"search_web and read_url_content have no token and are offered per run - " +
-			"and write/exec only take effect for tools listed here)"
-		toolsListStr, _ := promptLine(r, w, toolsPrompt, strings.Join(DefaultAllowedTools, ","))
-		for _, t := range strings.Split(toolsListStr, ",") {
-			t = strings.TrimSpace(t)
-			if t == "" {
-				continue
-			}
-			if err := wizardFieldRefused("model tool name", t); err != nil {
-				return Model{}, err
-			}
-			allowedTools = append(allowedTools, t)
+		var err error
+		allowedTools, err = promptWizardAllowedTools(r, w)
+		if err != nil {
+			return Model{}, err
 		}
 	}
 
@@ -1198,6 +1187,93 @@ func promptCustomModel(r *bufio.Reader, w io.Writer, modelID string) (Model, err
 		MaxOutputTokens: maxOut,
 		Capabilities:    caps,
 	}, nil
+}
+
+func promptWizardAllowedTools(r *bufio.Reader, w io.Writer) ([]string, error) {
+	execRow := len(DefaultAllowedTools) + 1
+	customRow := execRow + 1
+
+	// The four --tools tokens are not the whole tool universe: write covers
+	// both write tools, and the two network tools are granted by name after
+	// being offered per run via --search-endpoint / --allow-host.
+	fmt.Fprintln(w, "Allowed tools for this model:")
+	for i, tool := range DefaultAllowedTools {
+		fmt.Fprintf(w, "  %d) %s\n", i+1, tool)
+	}
+	fmt.Fprintf(w, "  %d) run_command (opt-in exec; grants shell command execution)\n", execRow)
+	fmt.Fprintf(w, "  %d) Custom (type comma list)\n", customRow)
+	fmt.Fprintln(w, "fanout --tools mapping: read,search = read_file,list_dir,grep,glob; write = write_file,replace_in_file; exec = run_command.")
+	fmt.Fprintln(w, "search_web and read_url_content have no --tools token; write/exec only take effect for tools listed here.")
+
+selectionLoop:
+	for {
+		selection, _ := promptLineDisplay(r, w,
+			"Select tools (numbers such as 1,3,5, ranges such as 1-3, 'all' including exec, or the Custom row)",
+			strings.Join(DefaultAllowedTools, ","), "")
+		var selected []string
+		switch {
+		case selection == "":
+			selected = append(selected, DefaultAllowedTools...)
+		case strings.EqualFold(selection, "all"):
+			selected = append(selected, DefaultAllowedTools...)
+			selected = append(selected, "run_command")
+		case selection == strconv.Itoa(customRow) || strings.EqualFold(selection, "c") || strings.EqualFold(selection, "custom"):
+			toolsList, _ := promptLine(r, w, "Custom allowed tools (comma list of tool names)", strings.Join(DefaultAllowedTools, ","))
+			for _, tool := range strings.Split(toolsList, ",") {
+				if tool = strings.TrimSpace(tool); tool != "" {
+					selected = append(selected, tool)
+				}
+			}
+		default:
+			picks := make([]bool, execRow)
+			for _, token := range strings.Split(selection, ",") {
+				start, end, ok := wizardToolSelectionRange(token, execRow)
+				if !ok {
+					fmt.Fprintln(w, "Invalid tool selection; use listed numbers, ranges, 'all', or the Custom row.")
+					continue selectionLoop
+				}
+				for row := start; row <= end; row++ {
+					picks[row-1] = true
+				}
+			}
+			for i, tool := range DefaultAllowedTools {
+				if picks[i] {
+					selected = append(selected, tool)
+				}
+			}
+			if picks[execRow-1] {
+				selected = append(selected, "run_command")
+			}
+		}
+		for _, tool := range selected {
+			if err := wizardFieldRefused("model tool name", tool); err != nil {
+				return nil, err
+			}
+		}
+		return selected, nil
+	}
+}
+
+func wizardToolSelectionRange(token string, maxRow int) (int, int, bool) {
+	parts := strings.Split(strings.TrimSpace(token), "-")
+	if len(parts) < 1 || len(parts) > 2 {
+		return 0, 0, false
+	}
+	start, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+	if err != nil {
+		return 0, 0, false
+	}
+	end := start
+	if len(parts) == 2 {
+		end, err = strconv.Atoi(strings.TrimSpace(parts[1]))
+		if err != nil {
+			return 0, 0, false
+		}
+	}
+	if start < 1 || end < start || end > maxRow {
+		return 0, 0, false
+	}
+	return start, end, true
 }
 
 // DeriveTags automatically assigns tags based on model capabilities:

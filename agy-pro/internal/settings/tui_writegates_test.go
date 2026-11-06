@@ -117,6 +117,11 @@ func TestPanelDiffWordingMatchesCatalog(t *testing.T) {
 			got:  fmt.Sprintf(panelRemovedLine, "X"),
 			want: fill("modal.approval.diff_removed", "{{line}}", "X"),
 		},
+		{
+			name: "providers.form.approval.defaults_seed",
+			got:  fmt.Sprintf(panelRunDefaultsSeedLine, 7200, 500),
+			want: fill(fill("providers.form.approval.defaults_seed", "{{timeout}}", "7200"), "{{turns}}", "500"),
+		},
 	}
 	for _, c := range cases {
 		if c.got != c.want {
@@ -315,6 +320,50 @@ func TestU5aProviderGateRendersExactDiff(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestPanelProviderGateRunDefaultsDisclosure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "spec.json")
+	if err := os.WriteFile(path, []byte(`{"name":"gamma","baseURL":"https://gamma.example/v1","apiKeyEnv":"GAMMA_KEY","models":[{"id":"g1"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name     string
+		defaults providers.Defaults
+		want     string
+		present  bool
+	}{
+		{name: "missing", want: "Also fills missing run defaults in providers.json: timeoutSeconds=7200, maxTurns=500 (existing values are kept).", present: true},
+		{name: "partial", defaults: providers.Defaults{TimeoutSeconds: 900}, want: "timeoutSeconds=900, maxTurns=500", present: true},
+		{name: "present", defaults: providers.Defaults{TimeoutSeconds: 900, MaxTurns: 42}, want: "Also fills missing run defaults", present: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tui, f := newGateTUI(t)
+			f.reg.Defaults = tc.defaults
+			armWith(t, tui, "providers.add_json", path)
+			body := frameBody(tui)
+			if got := strings.Contains(body, tc.want); got != tc.present {
+				t.Fatalf("seed disclosure presence = %v, want %v; body:\n%s", got, tc.present, body)
+			}
+		})
+	}
+}
+
+func TestPanelProviderGateRunDefaultsDriftRefuses(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "spec.json")
+	if err := os.WriteFile(path, []byte(`{"name":"gamma","baseURL":"https://gamma.example/v1","apiKeyEnv":"GAMMA_KEY","models":[{"id":"g1"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tui, f := newGateTUI(t)
+	armWith(t, tui, "providers.add_json", path)
+	f.reg.Defaults.MaxTurns = 41
+	tui.Step(KeyYes)
+	if f.saved != 0 {
+		t.Fatalf("stale defaults write called SaveReg %d times", f.saved)
+	}
+	if !strings.Contains(tui.message, "defaults.maxTurns changed on disk") {
+		t.Fatalf("message = %q; want stale-defaults refusal", tui.message)
+	}
 }
 
 // TestU5aProviderGateDiffIsMasked: the diff is a transcript, so every slot in it

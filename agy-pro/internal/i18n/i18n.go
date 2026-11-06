@@ -143,6 +143,9 @@ func (b *Bundle) Tn(key string, n int) string {
 }
 
 // Normalize maps a user-supplied code onto the closed set, case-insensitive.
+// BCP-47 suffixes resolve by primary subtag: "ko-KR", "ja_JP", "de-DE" all
+// normalize to their catalog; a bare "zh" (or a region-only "zh-CN") falls to
+// the Simplified catalog, while "hant"/"tw"/"hk" spellings keep Traditional.
 // Unknown codes normalize to "en".
 func Normalize(code string) string {
 	code = strings.TrimSpace(code)
@@ -150,6 +153,19 @@ func Normalize(code string) string {
 		if strings.EqualFold(l.Code, code) {
 			return l.Code
 		}
+	}
+	base := strings.SplitN(strings.ReplaceAll(code, "_", "-"), "-", 2)[0]
+	for _, l := range registry {
+		if strings.EqualFold(l.Code, base) {
+			return l.Code
+		}
+	}
+	if strings.EqualFold(base, "zh") {
+		lower := strings.ToLower(code)
+		if strings.Contains(lower, "hant") || strings.Contains(lower, "-tw") || strings.Contains(lower, "-hk") {
+			return "zh-Hant"
+		}
+		return "zh-Hans"
 	}
 	return defaultLang
 }

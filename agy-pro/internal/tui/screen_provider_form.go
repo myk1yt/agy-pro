@@ -3,8 +3,10 @@ package tui
 import (
 	"errors"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
+	"testing"
 
 	"agypro/internal/cellwidth"
 	"agypro/internal/i18n"
@@ -48,21 +50,17 @@ const (
 // it, the separator above the base footer, and the base footer itself = 4) plus
 // the body chrome (the grid or the read-only name line plus its grid rows = 3,
 // the blank under the grid, the defaults block title, the blank under the block,
-// the Save row, and the blank + hint pair = 9). The one-off rows this frame may
-// add (a load/not-found line, a live validation message, the app message block)
-// are counted per frame in chrome(), exactly like editorChrome in the preset
+// the Save row, and the blank + hint pair = 9). Edit mode's fixed-name note and
+// the one-off rows this frame may add (a load/not-found line, a live validation
+// message, the app message block) are counted per frame in chrome(), exactly like editorChrome in the preset
 // editor. At 80x24 the value leaves 11 defaults rows, so the whole block renders
 // without paging; a shorter frame pages it instead of letting the composer cut
 // the Save row or the hint off the tail.
 const providerFormChrome = 13
 
 // English fallbacks for the catalog keys this screen resolves through missingOr.
-// Every one of them is a providers.form.* / providers.validation.* key (plus
-// the two providers.add.* prompts the form shares with the console), and each
-// resolves in all twelve locales. The const stays as the fallback so a catalog
-// lacking the translation still renders this screen: missingOr answers from the
-// catalog when the key resolves and from the const otherwise, so no call site
-// needs to change when a locale file is reworked.
+// Every key this screen uses resolves in all twelve locales; the consts stay as
+// the readable fallback missingOr serves when a catalog entry is absent.
 const (
 	// catalog-resolved, fallback kept: providers.add.title
 	missingProviderFormTitleAdd = "Add Provider"
@@ -79,9 +77,9 @@ const (
 	// catalog-resolved, fallback kept: providers.form.hint
 	missingProviderFormHint = "Enter opens the approval diff · Tab walks the fields, the defaults block, and Save · Esc asks to discard unsaved edits"
 	// catalog-resolved, fallback kept: providers.form.defaults.title
-	missingProviderFormDefaultsTitle = "providers.json defaults (read-only, never written by this form)"
+	missingProviderFormDefaultsTitle = "providers.json defaults (read-only fields; Add seeds missing run limits)"
 	// catalog-resolved, fallback kept: providers.form.defaults.empty
-	missingProviderFormDefaultsEmpty = "(no defaults block in providers.json; engine defaults apply)"
+	missingProviderFormDefaultsEmpty = "(no defaults block in providers.json; Add seeds timeoutSeconds=7200 and maxTurns=500)"
 	// catalog-resolved, fallback kept: providers.form.approval.edit
 	missingProviderFormApprovalEdit = "Edits provider {{name}} in place: base URL and key env NAME only. Its model list and every key value are untouched."
 	// catalog-resolved, fallback kept: providers.form.diff_added
@@ -109,6 +107,8 @@ const (
 	missingProviderFormDiskCheckFailed = "providers.json could not be re-read, so the on-disk check did not run. Nothing was written; close and reopen the form and retry."
 	// catalog-resolved, fallback kept: providers.form.stale_base
 	missingProviderFormStaleBase = "The provider changed on disk since this form opened. Close and reopen the form; nothing was written."
+	// catalog-resolved, fallback kept: providers.form.stale_defaults
+	missingProviderFormStaleDefaults = "The run defaults changed on disk since this form opened, so the approved diff is stale. Close and reopen the form; nothing was written."
 	// catalog-resolved, fallback kept: providers.form.discard_title
 	missingProviderFormDiscardTitle = "Discard unsaved edits?"
 	// catalog-resolved, fallback kept: providers.form.discard_body
@@ -131,22 +131,34 @@ const (
 	missingProviderFormAPIKeyEnvInvalid = "API key env-var NAME must name an environment variable (set it, or use a known provider key variable such as GEMINI_API_KEY). A key value is never stored."
 	// catalog-resolved, fallback kept: providers.validation.api_key_env_secret
 	missingProviderFormAPIKeyEnvSecret = "The API key env field holds an environment-variable NAME, never a key. This value looks like key material and was refused (value hidden)."
+	// catalog-resolved, fallback kept: providers.form.api_key_conversion
+	missingProviderFormAPIKeyConversion = "Save converts this pasted key into environment variable {{name}}; providers.json stores the NAME only (value hidden)."
+	// catalog-resolved, fallback kept: providers.form.approval.key_persist
+	missingProviderFormApprovalKeyPersist = "Sets {{name}} in this process's environment and, on Windows, in HKCU\\Environment (the key value is never printed or written to providers.json)."
+	// catalog-resolved, fallback kept: providers.form.approval.defaults_seed
+	missingProviderFormApprovalDefaultsSeed = "Also fills missing run defaults in providers.json: timeoutSeconds={{timeout}}, maxTurns={{turns}} (existing values are kept)."
+	// catalog-resolved, fallback kept: providers.form.name_fixed_note
+	missingProviderFormNameFixedNote = "The name is fixed identity: models and other settings resolve by it. Edit the base URL or key env NAME below."
+	// catalog-resolved, fallback kept: providers.form.env_persist_failed
+	missingProviderFormEnvPersistFailed = "Windows user-environment persist failed for {{name}}. This process's environment was set."
+	// catalog-resolved, fallback kept: providers.form.env_session_failed
+	missingProviderFormEnvSessionFailed = "Could not set {{name}} in this process's environment. providers.json was not written."
 )
 
 // providerFormScreen is the provider add/edit form (decision 1A). It mirrors
 // the CLI twin's add-json validation (cmd/agy/pro_settings.go add-json ->
-// settings.ParseProviderSpecJSON -> Core.ProviderAdd -> providers.UpsertProvider),
-// so a provider reachable through the console is reachable here with the same
-// rules.
+// settings.ParseProviderSpecJSON -> providers.UpsertProvider), so a provider
+// reachable through the console is reachable here with the same rules.
 //
 // The field grid is the shared Form. Above it, edit mode renders the fixed
 // provider name as a read-only line. Below it sits the read-only defaults block
 // (the rung phase 2 taught the fanout ladder to consume) and the Save row. Enter
 // on Save does NOT write: it opens the M4 Approval modal with the exact
-// mutation summary, and only y reaches the Core verbs (ProviderAdd in add mode,
-// ProviderEdit in edit mode). apiKeyEnv carries an environment-variable NAME;
-// a pasted key VALUE is refused by the twin's own guard
-// (providers.ValidateAPIKeyEnvName) and is never rendered raw.
+// mutation summary. In add mode y upserts the provider and fills missing run
+// defaults in one atomic write; in edit mode y reaches Core.ProviderEdit.
+// apiKeyEnv carries an environment-variable NAME. A pasted key VALUE is held
+// only in screen state, converted to its derived NAME before the approval, and
+// written to the environment only after y; it is never rendered raw.
 //
 // The name and baseURL fields carry the same never-persist-a-VALUE rule, at the
 // ingest door instead of the display door: a value the grid or the M4 diff would
@@ -175,6 +187,9 @@ type providerFormScreen struct {
 	loadErr   string // masked load / not-found line; also blocks every save
 	orig      providers.Provider
 	origFound bool
+
+	pendingKeyName  string
+	pendingKeyValue string
 
 	defList *stepList // read-only providers.Defaults window
 
@@ -464,6 +479,9 @@ func excludeModelsFormNote(entries []string) string {
 // composer gives them their own section (a separator plus the line).
 func (s *providerFormScreen) chrome(a *App) int {
 	chrome := providerFormChrome
+	if s.mode == providerFormModeEdit {
+		chrome++
+	}
 	if s.loadErr != "" {
 		chrome++
 	}
@@ -495,6 +513,7 @@ func (s *providerFormScreen) Draw(a *App) []string {
 		// it; MaskSlot is the one authority that reads that class.
 		line := "  " + missingOr(s.b, "providers.form.name_fixed", missingProviderFormNameFixed) + " : " + providers.MaskSlot(s.recordName())
 		lines = append(lines, cellwidth.Truncate(line, w))
+		lines = append(lines, cellwidth.Truncate("  "+missingOr(s.b, "providers.form.name_fixed_note", missingProviderFormNameFixedNote), w))
 	}
 	lines = append(lines, s.renderGrid(w)...)
 
@@ -556,8 +575,15 @@ func (s *providerFormScreen) messageLine() string {
 			return s.secretMessage()
 		}
 	case pfAPIKeyEnv:
-		if env := s.trimAPIKeyEnv(); env != "" && providers.LooksLikeAPIKey(env) {
-			return missingOr(s.b, "providers.validation.api_key_env_secret", missingProviderFormAPIKeyEnvSecret)
+		env := s.trimAPIKeyEnv()
+		alreadyConverted := s.pendingKeyValue != "" && env == s.pendingKeyName
+		// F2: the conversion hint waits for the NAME proof too, so a long
+		// exported NAME that also satisfies LooksLikeAPIKey is not announced
+		// as a conversion (prepareAPIKeyEnv keeps it as the NAME).
+		if env != "" && !alreadyConverted && providers.LooksLikeAPIKey(env) && providers.ValidateAPIKeyEnvName(env) != nil {
+			derived := providers.DefaultEnvNameFor(s.trimName())
+			return fillHubSlots(missingOr(s.b, "providers.form.api_key_conversion", missingProviderFormAPIKeyConversion),
+				map[string]string{"name": s.shownEnv(derived)})
 		}
 	}
 	return ""
@@ -738,7 +764,8 @@ func (s *providerFormScreen) askDiscard() {
 }
 
 // trySave validates every field, then opens the M4 Approval modal with the exact
-// mutation summary. Enter here does NOT write; only y reaches the Core verbs.
+// mutation summary. Enter here does NOT write; only y applies the approved
+// registry and environment changes.
 func (s *providerFormScreen) trySave() {
 	a := s.app
 	if a == nil {
@@ -751,6 +778,9 @@ func (s *providerFormScreen) trySave() {
 		return
 	}
 	for i := 0; i < s.form.Len(); i++ {
+		if s.gridOf[i] == pfAPIKeyEnv {
+			s.prepareAPIKeyEnv()
+		}
 		f := s.form.Field(i)
 		if f.Validate == nil {
 			continue
@@ -777,6 +807,61 @@ func (s *providerFormScreen) trySave() {
 	}))
 }
 
+// prepareAPIKeyEnv converts a pasted key VALUE into its derived environment NAME
+// before validation and before any approval text is composed. The value stays in
+// pendingKeyValue, outside the grid, diff, and registry. An already converted
+// field is recognized before LooksLikeAPIKey because a long derived NAME can
+// itself satisfy that heuristic; editing the field to another name drops the
+// pending value instead of persisting a stale key on a later approval.
+//
+// F2 (confirmed by the round-1 verification seat): the conversion must not
+// fire before the NAME proof. A long exported NAME (e.g. a 27-char
+// OPENROUTER_PROVISIONING_KEY) satisfies LooksLikeAPIKey too, and persisting
+// its literal text as the secret under the derived name would corrupt the
+// session env and HKCU. providers.ValidateAPIKeyEnvName is the shared NAME
+// authority (charset, then the name proves itself: set in the environment or
+// a known provider key variable), so a provable NAME wins over the key-shape
+// heuristic and keeps the field untouched.
+func (s *providerFormScreen) prepareAPIKeyEnv() {
+	raw := s.trimAPIKeyEnv()
+	if s.mode == providerFormModeEdit && s.pendingKeyValue == "" && raw == strings.TrimSpace(s.orig.APIKeyEnv) {
+		return
+	}
+	setEnv := func(name string) {
+		values := s.form.Snapshot()
+		values[s.idx(pfAPIKeyEnv)] = name
+		s.form.Restore(values)
+	}
+	if s.pendingKeyValue != "" && raw == s.pendingKeyName {
+		if derived := providers.DefaultEnvNameFor(s.trimName()); derived != s.pendingKeyName {
+			s.pendingKeyName = derived
+			setEnv(derived)
+		}
+		return
+	}
+	if providers.ValidateAPIKeyEnvName(raw) == nil {
+		s.pendingKeyName = ""
+		s.pendingKeyValue = ""
+		return
+	}
+	if providers.LooksLikeAPIKey(raw) {
+		// Convert only when the derived NAME is itself a valid env variable:
+		// a digit-leading provider name derives a NAME the load-time charset
+		// (envNameRe) rejects, and persisting the key under it would write an
+		// environment variable the registry can never reference. The fall-through
+		// leaves the field as-is so save-time validation refuses with the usual
+		// key-material sentence.
+		if derived := providers.DefaultEnvNameFor(s.trimName()); providers.ValidateAPIKeyEnvName(derived) == nil {
+			s.pendingKeyName = derived
+			s.pendingKeyValue = raw
+			setEnv(derived)
+			return
+		}
+	}
+	s.pendingKeyName = ""
+	s.pendingKeyValue = ""
+}
+
 // approvalSummary composes the M4 diff. Add mode signs the new record's three
 // fields; edit mode signs the two editable fields against the form-open snapshot
 // (changed fields only, or the no-changes marker), plus the model count, which
@@ -801,7 +886,7 @@ func (s *providerFormScreen) approvalSummary() []string {
 			counts(0, 0),
 			s.b.T("modal.approval.body"),
 		}
-		return append(summary, s.addedDiffLines()...)
+		return s.withSideEffectDisclosures(summary, s.addedDiffLines())
 	}
 	summary := []string{
 		fillHubSlots(missingOr(s.b, "providers.form.approval.edit", missingProviderFormApprovalEdit), map[string]string{
@@ -814,7 +899,36 @@ func (s *providerFormScreen) approvalSummary() []string {
 		counts(len(s.orig.Models), len(s.orig.Models)),
 		s.b.T("modal.approval.body"),
 	}
-	return append(summary, s.changedDiffLines()...)
+	return s.withSideEffectDisclosures(summary, s.changedDiffLines())
+}
+
+// withSideEffectDisclosures puts every non-field side effect behind the same y
+// answer as the registry diff. Only environment NAMES and numeric defaults are
+// interpolated; the pending key VALUE never enters the approval body.
+func (s *providerFormScreen) withSideEffectDisclosures(summary, diff []string) []string {
+	summary = append(summary, diff...)
+	if s.pendingKeyValue != "" {
+		summary = append(summary, fillHubSlots(
+			missingOr(s.b, "providers.form.approval.key_persist", missingProviderFormApprovalKeyPersist),
+			map[string]string{"name": s.shownEnv(s.pendingKeyName)}))
+	}
+	if defaults, seeded := s.runDefaultsSeed(); seeded {
+		summary = append(summary, fillHubSlots(
+			missingOr(s.b, "providers.form.approval.defaults_seed", missingProviderFormApprovalDefaultsSeed),
+			map[string]string{
+				"timeout": strconv.Itoa(defaults.TimeoutSeconds),
+				"turns":   strconv.Itoa(defaults.MaxTurns),
+			}))
+	}
+	return summary
+}
+
+func (s *providerFormScreen) runDefaultsSeed() (providers.Defaults, bool) {
+	if s.mode != providerFormModeAdd {
+		return s.reg.Defaults, false
+	}
+	seeded := providers.EnsureRunDefaults(s.reg.Defaults)
+	return seeded, seeded.TimeoutSeconds != s.reg.Defaults.TimeoutSeconds || seeded.MaxTurns != s.reg.Defaults.MaxTurns
 }
 
 // addedDiffLines renders one "+ field: value" line per written field. The name
@@ -989,16 +1103,27 @@ func providerBaseURLRefused(raw string) bool {
 	return probe.Validate() != nil
 }
 
-// validateAPIKeyEnv mirrors the twin's apiKeyEnv rule by delegation:
-// providers.ValidateAPIKeyEnvName is the exact guard settings.ParseProviderSpecJSON
-// runs (spec.go:34-38) and Core.ProviderEdit re-runs (core.go:374-378). An empty
-// value is accepted: the twin treats the field as optional (spec.go:33), and an
-// empty env means the provider needs no key. The refusal never echoes the value;
-// providers.LooksLikeAPIKey only PICKS the message (key material vs. an
-// unprovable name), it never decides validity.
+// validateAPIKeyEnv accepts a key-shaped value for prepareAPIKeyEnv to convert
+// at the Save boundary. An already converted NAME is accepted even when it is
+// longer than the twin's forward-reference limit: the approved os.Setenv happens
+// before the Core/provider write, which then proves that NAME through LookupEnv.
+// Every other value keeps the twin's validation and its value-free refusal.
 func (s *providerFormScreen) validateAPIKeyEnv(v string) error {
 	env := strings.TrimSpace(v)
-	if env == "" {
+	originalEditValue := s.mode == providerFormModeEdit && s.pendingKeyValue == "" && env == strings.TrimSpace(s.orig.APIKeyEnv)
+	if env == "" || (!originalEditValue && providers.LooksLikeAPIKey(env)) {
+		// A key-shaped value is acceptable only when conversion can stash it
+		// under a derived NAME the registry accepts. A digit-leading provider
+		// name derives a NAME the load-time charset rejects, and prepareAPIKeyEnv
+		// declines that conversion too, so the paste must refuse here instead of
+		// opening an approval that could only error on y.
+		if !originalEditValue && providers.LooksLikeAPIKey(env) &&
+			providers.ValidateAPIKeyEnvName(providers.DefaultEnvNameFor(s.trimName())) != nil {
+			return errors.New(missingOr(s.b, "providers.validation.api_key_env_secret", missingProviderFormAPIKeyEnvSecret))
+		}
+		return nil
+	}
+	if s.pendingKeyValue != "" && env == s.pendingKeyName {
 		return nil
 	}
 	if err := providers.ValidateAPIKeyEnvName(env); err != nil {
@@ -1011,34 +1136,45 @@ func (s *providerFormScreen) validateAPIKeyEnv(v string) error {
 }
 
 // errProviderFormDiskCheck is the "the re-read failed, so the check could not
-// run" refusal, shared by both commit gates: the add-mode duplicate check
-// (FIX-F) and the edit-mode stale comparison (FIX-I). It carries no operand: the
-// load error text may name a path, and the form already renders the class
-// without it.
-var errProviderFormDiskCheck = errors.New("provider form: registry could not be re-read")
+// run" refusal, shared by both commit gates: the add-mode duplicate/defaults
+// check (FIX-F/F3) and the edit-mode stale comparison (FIX-I). It carries no
+// operand: the load error text may name a path, and the form already renders the
+// class without it.
+var (
+	errProviderFormDiskCheck     = errors.New("provider form: registry could not be re-read")
+	errProviderFormDefaultsStale = errors.New("provider form: run defaults changed on disk")
+)
 
-// nameExistsOnDisk reloads the registry and reports whether name is already
-// there. It closes the window between form-open validation and the approved
-// write: an external add of the same name would otherwise turn this form's
-// ProviderAdd into a silent replace (UpsertProvider semantics).
+// addOnDiskState reloads the registry and re-verifies the complete add-mode
+// approval base. The name must still be absent, and both raw run knobs must
+// still equal the form-open values whose EnsureRunDefaults result the approval
+// disclosed. Comparing the raw knobs, rather than only the seeded result, also
+// catches a complete defaults block disappearing when its values already equal
+// the built-in seed.
 //
-// A load failure now fails CLOSED (FIX-F): the old "report false" answer widened
-// the duplicate-replace window to every transient I/O or corrupt-file window,
-// because false is indistinguishable from "the name is free". The caller refuses
-// the add with a named message and writes nothing. A missing registry is not a
-// failure: pre-setup is the normal add-mode state (providers.Load answers
-// os.ErrNotExist, the same rule Core.loadRegistry and NewProviderFormScreen
-// apply), so the first provider can still be created into an empty home.
-func (s *providerFormScreen) nameExistsOnDisk(name string) (bool, error) {
+// The returned registry is the one the write must use, so no second load can
+// move the base after this check. A missing registry is the normal pre-setup add
+// case. Every other load failure fails closed, as does either knob drifting.
+func (s *providerFormScreen) addOnDiskState(name string) (bool, *providers.Registry, error) {
 	reg, err := providers.Load()
-	switch {
-	case err == nil:
-		return findProviderCI(reg, name) != nil, nil
-	case errors.Is(err, os.ErrNotExist), errors.Is(err, providers.ErrNotConfigured):
-		return false, nil
-	default:
-		return false, errProviderFormDiskCheck
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, providers.ErrNotConfigured) {
+			reg = &providers.Registry{}
+		} else {
+			return false, nil, errProviderFormDiskCheck
+		}
 	}
+	if reg == nil {
+		reg = &providers.Registry{}
+	}
+	if findProviderCI(reg, name) != nil {
+		return true, nil, nil
+	}
+	if reg.Defaults.TimeoutSeconds != s.reg.Defaults.TimeoutSeconds ||
+		reg.Defaults.MaxTurns != s.reg.Defaults.MaxTurns {
+		return false, nil, errProviderFormDefaultsStale
+	}
+	return false, reg, nil
 }
 
 // baseOnDiskState reloads the registry and reports the edit gate's verdict plus
@@ -1086,18 +1222,72 @@ func (s *providerFormScreen) baseOnDiskState() (bool, *providers.Provider, error
 	return p.BaseURL != s.orig.BaseURL || p.APIKeyEnv != s.orig.APIKeyEnv, p, nil
 }
 
+var (
+	providerFormSetenv          = os.Setenv
+	providerFormPersistUserEnv  = providers.PersistUserEnvFor
+	providerFormPersistsUserEnv = func() bool { return runtime.GOOS == "windows" && !testing.Testing() }
+)
+
+// applyPendingKey performs the environment half of an approved write. Session
+// failure refuses the registry write; a persistent-store warning does not, which
+// mirrors the wizard. Neither path renders the key value or the underlying error,
+// whose text is outside this screen's masking authority.
+func (s *providerFormScreen) applyPendingKey() (string, error) {
+	if s.pendingKeyValue == "" {
+		return "", nil
+	}
+	if err := providerFormSetenv(s.pendingKeyName, s.pendingKeyValue); err != nil {
+		return "", errors.New(fillHubSlots(
+			missingOr(s.b, "providers.form.env_session_failed", missingProviderFormEnvSessionFailed),
+			map[string]string{"name": s.shownEnv(s.pendingKeyName)}))
+	}
+	if providerFormPersistsUserEnv() {
+		if err := providerFormPersistUserEnv(s.pendingKeyName, s.pendingKeyValue); err != nil {
+			return fillHubSlots(
+				missingOr(s.b, "providers.form.env_persist_failed", missingProviderFormEnvPersistFailed),
+				map[string]string{"name": s.shownEnv(s.pendingKeyName)}), nil
+		}
+	}
+	return "", nil
+}
+
+// providerFormAddWithDefaults is the hub add write. It applies the provider and
+// fills only absent run knobs in one atomic write against the registry snapshot
+// that addOnDiskState just verified, so the approval covers the exact mutation.
+func providerFormAddWithDefaults(reg *providers.Registry, spec settings.ProviderSpec) error {
+	if reg == nil {
+		reg = &providers.Registry{}
+	}
+	if err := providers.UpsertProvider(reg, providers.Provider{
+		Name: spec.Name, BaseURL: spec.BaseURL, APIKeyEnv: spec.APIKeyEnv, Models: spec.Models,
+	}); err != nil {
+		return err
+	}
+	reg.Defaults = providers.EnsureRunDefaults(reg.Defaults)
+	// Marshal and atomic-0600 write converge on the settings package's raw save
+	// primitive (the F6 reconciliation): the form composes the seeded registry
+	// and its consent gates, but the bytes move through the one save helper
+	// every Core write ends in.
+	return settings.SaveRegistry(reg)
+}
+
 // commit runs the approved write and pops back to the caller with the success
 // message. This is the ONLY write path out of the form. Add mode refuses a name
-// that appeared on disk while the approval was open (a replace, not an add) and
-// refuses when that check could not run at all; edit mode refuses a record that
-// moved on disk (the stale-base gate) and refuses when that comparison could not
-// run (FIX-I).
+// that appeared on disk while the approval was open (a replace, not an add), a
+// run-defaults change that makes the disclosed seed stale, and a failed on-disk
+// check; edit mode refuses a record that moved on disk (the stale-base gate) and
+// a failed comparison (FIX-I). Both modes apply a pasted key only after those
+// checks pass.
 func (s *providerFormScreen) commit(a *App) {
 	if s.mode == providerFormModeAdd {
 		name := s.trimName()
-		exists, err := s.nameExistsOnDisk(name)
+		exists, reg, err := s.addOnDiskState(name)
 		if err != nil {
-			a.SetMessage(s.b.T("common.error") + ": " + missingOr(s.b, "providers.form.disk_check_failed", missingProviderFormDiskCheckFailed))
+			message := missingOr(s.b, "providers.form.disk_check_failed", missingProviderFormDiskCheckFailed)
+			if errors.Is(err, errProviderFormDefaultsStale) {
+				message = missingOr(s.b, "providers.form.stale_defaults", missingProviderFormStaleDefaults)
+			}
+			a.SetMessage(s.b.T("common.error") + ": " + message)
 			s.rearmGuard(a)
 			return
 		}
@@ -1106,7 +1296,13 @@ func (s *providerFormScreen) commit(a *App) {
 			s.rearmGuard(a)
 			return
 		}
-		err = s.core.ProviderAdd(settings.ProviderSpec{
+		warning, err := s.applyPendingKey()
+		if err != nil {
+			a.SetMessage(s.b.T("common.error") + ": " + err.Error())
+			s.rearmGuard(a)
+			return
+		}
+		err = providerFormAddWithDefaults(reg, settings.ProviderSpec{
 			Name:      name,
 			BaseURL:   s.trimBaseURL(),
 			APIKeyEnv: s.trimAPIKeyEnv(),
@@ -1116,13 +1312,18 @@ func (s *providerFormScreen) commit(a *App) {
 			s.rearmGuard(a)
 			return
 		}
+		s.pendingKeyValue = ""
 		a.Pop()
 		// The success sentence opens with the localized common.success label so
 		// the message line paints the success role (user decision D7-7B); the
 		// error paths above prefix common.error the same way.
-		a.SetMessage(s.b.T("common.success") + ": " + fillHubSlots(
+		message := s.b.T("common.success") + ": " + fillHubSlots(
 			missingOr(s.b, "providers.form.saved_add", missingProviderFormSavedAdd),
-			map[string]string{"name": providers.MaskSlot(name)}))
+			map[string]string{"name": providers.MaskSlot(name)})
+		if warning != "" {
+			message += " " + warning
+		}
+		a.SetMessage(message)
 		return
 	}
 	changed, onDisk, gateErr := s.baseOnDiskState()
@@ -1135,6 +1336,12 @@ func (s *providerFormScreen) commit(a *App) {
 	}
 	if changed {
 		a.SetMessage(s.b.T("common.error") + ": " + missingOr(s.b, "providers.form.stale_base", missingProviderFormStaleBase))
+		s.rearmGuard(a)
+		return
+	}
+	warning, keyErr := s.applyPendingKey()
+	if keyErr != nil {
+		a.SetMessage(s.b.T("common.error") + ": " + keyErr.Error())
 		s.rearmGuard(a)
 		return
 	}
@@ -1153,6 +1360,7 @@ func (s *providerFormScreen) commit(a *App) {
 		s.rearmGuard(a)
 		return
 	}
+	s.pendingKeyValue = ""
 	a.Pop()
 	sentence := missingProviderFormSavedEdit
 	key := "providers.form.saved_edit"
@@ -1160,9 +1368,13 @@ func (s *providerFormScreen) commit(a *App) {
 		sentence = missingProviderFormUnchangedEdit
 		key = "providers.form.unchanged_edit"
 	}
-	a.SetMessage(s.b.T("common.success") + ": " + fillHubSlots(
+	message := s.b.T("common.success") + ": " + fillHubSlots(
 		missingOr(s.b, key, sentence),
-		map[string]string{"name": providers.MaskSlot(s.recordName())}))
+		map[string]string{"name": providers.MaskSlot(s.recordName())})
+	if warning != "" {
+		message += " " + warning
+	}
+	a.SetMessage(message)
 }
 
 // providerFormGuard is the transparent dirty-form gate (the model form's

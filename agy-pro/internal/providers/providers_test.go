@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -1087,7 +1088,7 @@ func TestInteractiveSetupWizard_RefusesDecoratedModelFields(t *testing.T) {
 		},
 		{
 			name:      "decorated tool name",
-			lines:     []string{"acme-fast", "", "", "", "Y", plant + ",read_file"},
+			lines:     []string{"acme-fast", "", "", "", "Y", fmt.Sprint(len(DefaultAllowedTools) + 2), plant + ",read_file"},
 			wantField: "model tool name",
 		},
 	}
@@ -1127,7 +1128,7 @@ func TestInteractiveSetupWizard_RefusesDecoratedModelFields(t *testing.T) {
 			"mock-dummy-key-789",
 			"acme-fast",
 			"acme",
-			"", "", "Y", "read_file,list_dir",
+			"", "", "Y", fmt.Sprint(len(DefaultAllowedTools) + 2), "read_file,list_dir",
 			"N", "N", "N",
 		}, "\n") + "\n"
 		out := &bytes.Buffer{}
@@ -1671,6 +1672,16 @@ func TestInteractiveSetupWizard_DefaultToolsPromptSeedsSharedAddSet(t *testing.T
 	if !strings.Contains(out.String(), "["+want+"]") {
 		t.Errorf("tools prompt does not offer the shared default %q:\n%s", want, out.String())
 	}
+	for i, tool := range DefaultAllowedTools {
+		if row := fmt.Sprintf("  %d) %s\n", i+1, tool); !strings.Contains(out.String(), row) {
+			t.Errorf("tools menu is missing row %q:\n%s", row, out.String())
+		}
+	}
+	for _, row := range []string{"run_command (opt-in exec;", "Custom (type comma list)"} {
+		if !strings.Contains(out.String(), row) {
+			t.Errorf("tools menu is missing %q:\n%s", row, out.String())
+		}
+	}
 
 	reg, err := LoadFrom(provPath)
 	if err != nil {
@@ -1685,6 +1696,38 @@ func TestInteractiveSetupWizard_DefaultToolsPromptSeedsSharedAddSet(t *testing.T
 	}
 	if m.Capabilities.ToolPermitted("run_command") {
 		t.Error("ToolPermitted(run_command) = true; exec must stay an explicit opt-in")
+	}
+}
+
+func TestPromptCustomModelToolSelection(t *testing.T) {
+	customRow := fmt.Sprint(len(DefaultAllowedTools) + 2)
+	execRow := fmt.Sprint(len(DefaultAllowedTools) + 1)
+	allTools := append(append([]string{}, DefaultAllowedTools...), "run_command")
+	for _, tc := range []struct {
+		name      string
+		answers   []string
+		wantTools []string
+	}{
+		{name: "Enter accepts default without exec", answers: []string{""}, wantTools: DefaultAllowedTools},
+		{name: "numbered picks", answers: []string{"1,3,5"}, wantTools: []string{DefaultAllowedTools[0], DefaultAllowedTools[2], DefaultAllowedTools[4]}},
+		{name: "range picks", answers: []string{"1-3"}, wantTools: DefaultAllowedTools[:3]},
+		{name: "all explicitly includes exec", answers: []string{"all"}, wantTools: allTools},
+		{name: "exec row is an explicit opt-in", answers: []string{execRow}, wantTools: []string{"run_command"}},
+		{name: "custom row accepts unlisted comma names", answers: []string{customRow, "read_file,custom_tool"}, wantTools: []string{"read_file", "custom_tool"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			answers := []string{"", "", "", "Y"}
+			answers = append(answers, tc.answers...)
+			answers = append(answers, "N", "N", "N")
+			var out bytes.Buffer
+			m, err := promptCustomModel(bufio.NewReader(strings.NewReader(strings.Join(answers, "\n")+"\n")), &out, "tool-selection-model")
+			if err != nil {
+				t.Fatalf("promptCustomModel returned error: %v\nOutput: %s", err, out.String())
+			}
+			if got, want := strings.Join(m.Capabilities.AllowedTools, ","), strings.Join(tc.wantTools, ","); got != want {
+				t.Errorf("AllowedTools = %q; want %q", got, want)
+			}
+		})
 	}
 }
 

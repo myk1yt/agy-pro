@@ -16,8 +16,16 @@ func TestNormalizeCodes(t *testing.T) {
 		"AR":      "ar",
 		"":        "en",
 		"xx":      "en",
-		"fr-FR":   "en",
 		"pt":      "en",
+		// BCP-47 region/script suffixes resolve by primary subtag: a real
+		// OS-locale shape must reach its catalog instead of falling to English.
+		"ko-KR": "ko",
+		"ja_JP": "ja",
+		"fr-FR": "fr",
+		"de-DE": "de",
+		"zh-CN": "zh-Hans",
+		"zh-TW": "zh-Hant",
+		"zh-HK": "zh-Hant",
 	}
 	for in, want := range cases {
 		if got := Normalize(in); got != want {

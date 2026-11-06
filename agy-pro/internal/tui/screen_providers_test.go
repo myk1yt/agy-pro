@@ -668,6 +668,50 @@ func TestProvidersEditActionOpensProviderForm(t *testing.T) {
 	}
 }
 
+// TestProvidersEditRowNamesSelectedTarget pins the repair for the reported edit
+// friction: the fixed Edit row names the exact provider it will open, including
+// after a Space pin travels away from the entity rows. Credential-shaped legacy
+// names pass through the same slot masker as the entity row.
+func TestProvidersEditRowNamesSelectedTarget(t *testing.T) {
+	providersFixture(t, twoProviderRegistry())
+	app := newProvidersApp(providersTestCore(providers.ProbeSkipped, "no key"), new([]string))
+	scr := app.Top().(*ProvidersScreen)
+	if got := scr.list.Row(5).Label; got != "Edit" {
+		t.Fatalf("unselected Edit label = %q, want the bare verb", got)
+	}
+	app.Step(KeyDown)
+	if got := scr.list.Row(5).Label; got != "Edit ● anthropic" {
+		t.Fatalf("selected Edit label = %q, want Edit ● anthropic", got)
+	}
+	app.Step(KeySpace)
+	for i := 0; i < 4; i++ {
+		app.Step(KeyDown)
+	}
+	if got := scr.list.Row(5).Label; got != "Edit ● anthropic" {
+		t.Fatalf("pinned Edit label after transit = %q, want Edit ● anthropic", got)
+	}
+
+	providersFixture(t, nameSinkRegistry())
+	app = newProvidersApp(providersTestCore(providers.ProbeSkipped, "no key"), new([]string))
+	scr = app.Top().(*ProvidersScreen)
+	for i := 0; i < len(nameSinkCorpus()); i++ {
+		app.Step(KeyDown) // walk from openai to the final credential-shaped plant
+	}
+	editRow := -1
+	for i := 0; i < scr.list.Len(); i++ {
+		if scr.list.Row(i).ID == providersRowIDEdit {
+			editRow = i
+			break
+		}
+	}
+	if editRow < 0 {
+		t.Fatal("Edit row missing from the name-sink registry")
+	}
+	if got := scr.list.Row(editRow).Label; got != "Edit ● "+nameSinkMask || strings.Contains(got, nameSinkPlant) {
+		t.Fatalf("credential-shaped Edit target was not masked: %q", got)
+	}
+}
+
 // TestProvidersStickySelectionMarksTarget pins the visible target of the
 // sticky-target verbs (user ask U2): the selection follows the cursor while it
 // rests on a provider row, the selected row carries the "●" marker while its
@@ -727,6 +771,13 @@ func TestProvidersActionWithoutSelectionRefuses(t *testing.T) {
 	refusal := Bundle().T("providers.msg.select_provider")
 	if refusal != providersMsgSelectProvider {
 		t.Fatalf("precondition: the en catalog entry = %q, want the fallback const %q", refusal, providersMsgSelectProvider)
+	}
+	if !strings.Contains(refusal, "Move to a provider row") || !strings.Contains(refusal, "Space pins it") {
+		t.Fatalf("the no-selection message is not actionable: %q", refusal)
+	}
+	koRefusal := i18n.Load("ko").T("providers.msg.select_provider")
+	if !strings.Contains(koRefusal, "프로바이더 행으로 이동") || !strings.Contains(koRefusal, "Space로 고정") {
+		t.Fatalf("the Korean no-selection message is not actionable: %q", koRefusal)
 	}
 	cases := []struct {
 		name string
@@ -1557,9 +1608,9 @@ func nameSinkRegistry() *providers.Registry {
 // on the providers screen against the slot authority: the entity row and the
 // delete-refusal line (the answer-path composer). Identity half: the benign
 // corpus renders unchanged. Credential half: the underscore-headed plant renders
-// masked, never raw. The inversion (user ask U2) removed the per-provider verb
-// rows, so the pin also asserts the other half: the three fixed verbs carry no
-// registry name at all, which is what keeps a name out of the frame there.
+// masked, never raw. With no selected target the three fixed verbs stay bare;
+// the selected Edit target's separate masking pin is
+// TestProvidersEditRowNamesSelectedTarget.
 func TestProvidersNameSinksUseSlotAuthority(t *testing.T) {
 	providersFixture(t, nameSinkRegistry())
 	core := providersTestCore(providers.ProbeSkipped, "no API key resolved; nothing to probe")

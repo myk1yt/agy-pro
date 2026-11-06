@@ -64,8 +64,26 @@ func TestLanguageAdditiveKeyRoundTrip(t *testing.T) {
 		}
 	}
 
+	// BCP-47 suffixes resolve by primary subtag, in parity with i18n.Normalize.
+	for in, want := range map[string]string{
+		"ko-KR": "ko",
+		"ja_JP": "ja",
+		"fr-FR": "fr",
+		"zh":    "zh-Hans",
+		"zh-CN": "zh-Hans",
+		"zh-TW": "zh-Hant",
+		"zh-HK": "zh-Hant",
+	} {
+		if got := NormalizeLanguage(in); got != want {
+			t.Errorf("NormalizeLanguage(%q) = %q; want %q", in, got, want)
+		}
+		if got := (&State{Language: in}).EffectiveLanguage(); got != want {
+			t.Errorf("EffectiveLanguage(%q) = %q; want %q", in, got, want)
+		}
+	}
+
 	// Unknown or blank values fail closed to en.
-	for _, bad := range []string{"", "  ", "klingon", "zh", "zh-CN", "pt", "ENGLISH"} {
+	for _, bad := range []string{"", "  ", "klingon", "pt", "ENGLISH"} {
 		if ValidLanguage(bad) {
 			t.Errorf("ValidLanguage(%q) = true; want false", bad)
 		}

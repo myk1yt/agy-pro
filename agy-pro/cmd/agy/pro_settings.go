@@ -215,6 +215,7 @@ func settingsProvidersCmd(core *settings.Core, args []string, in io.Reader, out,
 			return 1
 		}
 		base := snapshotRegistryProvider(spec.Name)
+		base.verifyRunDefaults = true
 		proceed, code := confirmRegistryMutation(in, out, errw, providerAddDiff(base, spec), hasYesFlag(args[2:]))
 		if !proceed {
 			return code
@@ -856,25 +857,12 @@ func confirmPersistedWrite(in io.Reader, out, errw io.Writer, banner string, dif
 var registrySnapshot = providers.Load
 
 func lookupRegistryModel(providerName, modelID string) (before providers.Model, count int, found, modelFound bool) {
-	reg, err := registrySnapshot()
-	if err != nil || reg == nil {
-		return providers.Model{}, 0, false, false
-	}
-	p := findProviderCI(reg, providerName)
-	if p == nil {
-		return providers.Model{}, 0, false, false
-	}
-	for _, m := range p.Models {
-		if m.ID == modelID {
-			before = m
-			modelFound = true
-		}
-	}
-	return before, len(p.Models), true, modelFound
+	p := snapshotRegistryModel(providerName, modelID)
+	return p.before, p.count, p.found, p.matched
 }
 
 // registryReload re-reads the on-disk registry at write time, immediately
-// before a model-update write (G-C3). Tests replace this seam to interleave an
+// before a model write (G-C3). Tests replace this seam to interleave an
 // external edit on the --yes path, where there is no console prompt to hang
 // the interleaving on; production keeps providers.Load, the same read the
 // presentation and the Core verb use.
@@ -896,15 +884,24 @@ type presentedModel struct {
 // snapshotRegistryModel captures the on-disk record for a model-update
 // presentation.
 func snapshotRegistryModel(providerName, modelID string) presentedModel {
-	before, count, found, modelFound := lookupRegistryModel(providerName, modelID)
-	return presentedModel{
-		provider: providerName,
-		modelID:  modelID,
-		before:   before,
-		count:    count,
-		found:    found,
-		matched:  found && modelFound,
+	presented := presentedModel{provider: providerName, modelID: modelID}
+	reg, err := registrySnapshot()
+	if err != nil || reg == nil {
+		return presented
 	}
+	prov := findProviderCI(reg, providerName)
+	if prov == nil {
+		return presented
+	}
+	presented.count = len(prov.Models)
+	presented.found = true
+	for _, m := range prov.Models {
+		if m.ID == modelID {
+			presented.before = m
+			presented.matched = true
+		}
+	}
+	return presented
 }
 
 // presentable reports whether the presentation actually showed a before
@@ -916,7 +913,7 @@ func (p presentedModel) presentable() bool {
 // reverifyPresentedModel re-reads the registry after consent and refuses the
 // write when the presented state moved (G-C3). The CLI presents a diff read
 // from disk, then blocks on an unbounded console prompt (or returns instantly
-// under --yes), then Core.ModelUpdate re-loads and replaces the whole record:
+// under --yes), then the Core model verb re-loads and mutates the record:
 // without this check an external edit landing between the presentation and the
 // write was silently clobbered, and the operator consented to a diff that no
 // longer described the file. The comparison is the TUI form's signed-field
@@ -941,7 +938,7 @@ func reverifyPresentedModel(p presentedModel) error {
 	prov := findProviderCI(reg, p.provider)
 	if !p.presentable() {
 		if prov != nil && findRegistryModel(prov, p.modelID) != nil {
-			return fmt.Errorf("model %s changed on disk between the presentation and the write, so the presented diff is stale; nothing written (re-run model-update after reviewing the current record)", regOperand(p.modelID))
+			return fmt.Errorf("model %s changed on disk between the presentation and the write, so the presented diff is stale; nothing written (re-run the model write after reviewing the current record)", regOperand(p.modelID))
 		}
 		return nil
 	}
@@ -955,7 +952,7 @@ func reverifyPresentedModel(p presentedModel) error {
 	if sameSignedModelFields(p.before, *m) {
 		return nil
 	}
-	return fmt.Errorf("model %s changed on disk between the presentation and the write, so the presented diff is stale; nothing written (re-run model-update after reviewing the current record)", regOperand(p.modelID))
+	return fmt.Errorf("model %s changed on disk between the presentation and the write, so the presented diff is stale; nothing written (re-run the model write after reviewing the current record)", regOperand(p.modelID))
 }
 
 // sameSignedModelFields reports whether two model records agree on every field
@@ -1241,39 +1238,44 @@ func modelChangedDiffLines(before, m providers.Model) []string {
 // provider record for name, resolved exactly like the Core verbs resolve it
 // (case-insensitive). found reports whether the entry is on disk.
 func lookupRegistryProvider(name string) (providers.Provider, bool) {
-	reg, err := registrySnapshot()
-	if err != nil || reg == nil {
-		return providers.Provider{}, false
-	}
-	p := findProviderCI(reg, name)
-	if p == nil {
-		return providers.Provider{}, false
-	}
-	return *p, true
+	base := snapshotRegistryProvider(name)
+	return base.record, base.present
 }
 
 // providerBase is the on-disk state one provider-level presentation was rendered
 // from, kept so the write can re-verify it after consent (the G-C3 / CWE-367
-// rule the model twins follow). It signs ONE addressing slot for add/delete and
-// TWO for rename:
+// rule the model twins follow). Add also signs the run-default knobs its seed
+// disclosure presents. It signs ONE addressing slot for add/delete and TWO for rename:
 //   - name/present/record: the target provider as presented (for rename the OLD
 //     name; for add the name being written; for delete the record being removed);
 //   - newName/newPresent/newRecord: the rename target as presented, so "the new
 //     name was absent" (or "was this exact record") is part of the signed state
 //     instead of an assumption.
 type providerBase struct {
-	name       string
-	present    bool
-	record     providers.Provider
-	newName    string
-	newPresent bool
-	newRecord  providers.Provider
+	name              string
+	present           bool
+	record            providers.Provider
+	defaults          providers.Defaults
+	verifyRunDefaults bool
+	newName           string
+	newPresent        bool
+	newRecord         providers.Provider
 }
 
-// snapshotRegistryProvider captures the on-disk record for one provider name.
+// snapshotRegistryProvider captures the on-disk record and run defaults from ONE
+// registry read, the exact state the provider diff and seed disclosure present.
 func snapshotRegistryProvider(name string) providerBase {
-	rec, found := lookupRegistryProvider(name)
-	return providerBase{name: name, present: found, record: rec}
+	base := providerBase{name: name}
+	reg, err := registrySnapshot()
+	if err != nil || reg == nil {
+		return base
+	}
+	base.defaults = reg.Defaults
+	if p := findProviderCI(reg, name); p != nil {
+		base.present = true
+		base.record = *p
+	}
+	return base
 }
 
 // snapshotRegistryRename captures both slots a rename presentation signs: the
@@ -1321,6 +1323,14 @@ func reverifyPresentedProvider(base providerBase, verb string) error {
 	}
 	if reg == nil {
 		return fmt.Errorf("registry re-read failed before the write, so the presented diff could not be re-verified; nothing written")
+	}
+	if base.verifyRunDefaults {
+		if reg.Defaults.TimeoutSeconds != base.defaults.TimeoutSeconds {
+			return fmt.Errorf("defaults.timeoutSeconds changed on disk between the presentation and the write, so the presented diff is stale; nothing written (re-run %s after reviewing the current defaults)", verb)
+		}
+		if reg.Defaults.MaxTurns != base.defaults.MaxTurns {
+			return fmt.Errorf("defaults.maxTurns changed on disk between the presentation and the write, so the presented diff is stale; nothing written (re-run %s after reviewing the current defaults)", verb)
+		}
 	}
 	if err := providerSlotDrift(reg, base.name, base.present, base.record, verb); err != nil {
 		return err
@@ -1386,22 +1396,25 @@ func providerDiffLine(name, baseURL string, models int) string {
 func providerAddDiff(base providerBase, spec settings.ProviderSpec) []string {
 	masked := regOperand(spec.Name)
 	after := len(spec.Models)
+	var lines []string
 	if !base.present {
-		return []string{
+		lines = []string{
 			fmt.Sprintf("Adds provider %s to the registry. Key values are untouched.", masked),
 			fmt.Sprintf("Model count: 0 -> %d", after),
 			modelWriteAtomicSentence,
 			"+ " + providerDiffLine(spec.Name, spec.BaseURL, after),
 		}
+	} else {
+		before := len(base.record.Models)
+		lines = []string{
+			fmt.Sprintf("Replaces provider %s wholesale: the current entry and its whole model list are discarded.", masked),
+			fmt.Sprintf("Model count: %d -> %d", before, after),
+			modelWriteAtomicSentence,
+			"- " + providerDiffLine(base.record.Name, base.record.BaseURL, before),
+			"+ " + providerDiffLine(spec.Name, spec.BaseURL, after),
+		}
 	}
-	before := len(base.record.Models)
-	return []string{
-		fmt.Sprintf("Replaces provider %s wholesale: the current entry and its whole model list are discarded.", masked),
-		fmt.Sprintf("Model count: %d -> %d", before, after),
-		modelWriteAtomicSentence,
-		"- " + providerDiffLine(base.record.Name, base.record.BaseURL, before),
-		"+ " + providerDiffLine(spec.Name, spec.BaseURL, after),
-	}
+	return append(lines, runDefaultsSeedDiff(base.defaults)...)
 }
 
 // providerRenameDiff renders the masked pre-write presentation for rename: the
@@ -1432,6 +1445,17 @@ func providerDeleteDiff(base providerBase) []string {
 		modelWriteAtomicSentence,
 		"- " + providerDiffLine(base.record.Name, base.record.BaseURL, n),
 	}
+}
+
+// runDefaultsSeedDiff discloses only a real ProviderAdd seed. The values come
+// from the same presentation snapshot as the rest of the diff;
+// reverifyPresentedProvider refuses the add if either knob moves before the write.
+func runDefaultsSeedDiff(before providers.Defaults) []string {
+	seeded := providers.EnsureRunDefaults(before)
+	if seeded.TimeoutSeconds == before.TimeoutSeconds && seeded.MaxTurns == before.MaxTurns {
+		return nil
+	}
+	return []string{fmt.Sprintf("Also fills missing run defaults in providers.json: timeoutSeconds=%d, maxTurns=%d (existing values are kept).", seeded.TimeoutSeconds, seeded.MaxTurns)}
 }
 
 // stripDiffControls removes control runes (the Cc class) and the format class

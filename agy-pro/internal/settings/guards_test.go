@@ -432,11 +432,11 @@ func TestParseProviderSpecJSON_RefusesCredentialName(t *testing.T) {
 
 // TestParseProviderSpecJSON_BenignNameBytesUnchanged pins the no-over-refusal
 // side of the FIX-7 gate: every charset-legal benign name still parses, and the
-// full add flow writes the exact bytes the pre-fix door wrote. The golden bytes
-// are composed with the same serialisation the save seam uses
-// (json.MarshalIndent + a trailing newline), so a message change, a
-// normalization, an extra field, or a new arm that touched a benign name would
-// move them.
+// full add flow preserves the provider bytes and adds only the contracted run
+// defaults. The golden bytes are composed with the same serialisation the save
+// seam uses (json.MarshalIndent + a trailing newline), so a message change, a
+// normalization, an extra provider field, or a new arm that touched a benign
+// name would move them.
 func TestParseProviderSpecJSON_BenignNameBytesUnchanged(t *testing.T) {
 	benign := []string{
 		"acme", "beta", "openai", "gemini", "deepseek", "anthropic", "acme-fast",
@@ -465,10 +465,13 @@ func TestParseProviderSpecJSON_BenignNameBytesUnchanged(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read providers.json: %v", err)
 			}
-			wantBody, err := json.MarshalIndent(&providers.Registry{Providers: []providers.Provider{{
-				Name: name, BaseURL: "https://gw.example/v1", APIKeyEnv: "GW_KEY",
-				Models: []providers.Model{{ID: "m1"}},
-			}}}, "", "  ")
+			wantBody, err := json.MarshalIndent(&providers.Registry{
+				Defaults: providers.EnsureRunDefaults(providers.Defaults{}),
+				Providers: []providers.Provider{{
+					Name: name, BaseURL: "https://gw.example/v1", APIKeyEnv: "GW_KEY",
+					Models: []providers.Model{{ID: "m1"}},
+				}},
+			}, "", "  ")
 			if err != nil {
 				t.Fatalf("marshal the golden registry: %v", err)
 			}

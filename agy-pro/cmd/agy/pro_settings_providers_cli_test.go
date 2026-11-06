@@ -526,3 +526,117 @@ func TestProSettingsUsage_ProviderVerbsNameYes(t *testing.T) {
 		}
 	}
 }
+
+func TestRunSettingsCmd_RunDefaultsSeedDisclosure(t *testing.T) {
+	providerSpec := providerVerbSpecFile(t,
+		`{"name":"delta","baseURL":"https://delta.example/v1","apiKeyEnv":"DELTA_KEY","models":[{"id":"d1"}]}`)
+	cases := []struct {
+		name        string
+		defaults    providers.Defaults
+		wantLine    string
+		wantPresent bool
+	}{
+		{
+			name:        "both missing",
+			wantLine:    "Also fills missing run defaults in providers.json: timeoutSeconds=7200, maxTurns=500 (existing values are kept).",
+			wantPresent: true,
+		},
+		{
+			name:        "partial seed keeps timeout",
+			defaults:    providers.Defaults{TimeoutSeconds: 900},
+			wantLine:    "Also fills missing run defaults in providers.json: timeoutSeconds=900, maxTurns=500 (existing values are kept).",
+			wantPresent: true,
+		},
+		{
+			name:        "fully set stays silent",
+			defaults:    providers.Defaults{TimeoutSeconds: 900, MaxTurns: 42},
+			wantLine:    "Also fills missing run defaults",
+			wantPresent: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := twoModelRegistry()
+			reg.Defaults = tc.defaults
+			installFileBackedSettingsCore(t, reg)
+			args := []string{"providers", "add-json", providerSpec}
+			code, out, errw := runSettings(t, args, "")
+			if code == 0 {
+				t.Fatalf("write without --yes succeeded: stdout=%s stderr=%s", out, errw)
+			}
+			if got := strings.Contains(out, tc.wantLine); got != tc.wantPresent {
+				t.Fatalf("seed disclosure presence = %v, want %v; stdout=%s", got, tc.wantPresent, out)
+			}
+		})
+	}
+}
+
+func TestRunSettingsCmd_NonAddWritesHaveNoRunDefaultsDisclosure(t *testing.T) {
+	modelSpec := filepath.Join(t.TempDir(), "model.json")
+	if err := os.WriteFile(modelSpec, []byte(`{"id":"acme-third","contextLength":64000}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	commands := map[string][]string{
+		"rename":       {"providers", "rename", "acme", "acme-main"},
+		"delete":       {"providers", "delete", "acme"},
+		"model-add":    {"providers", "model-add-json", "acme", modelSpec},
+		"model-update": {"providers", "model-update", "acme", "acme-fast", modelSpec},
+		"model-delete": {"providers", "model-delete", "acme", "acme-slow"},
+	}
+	for name, args := range commands {
+		t.Run(name, func(t *testing.T) {
+			installFileBackedSettingsCore(t, twoModelRegistry())
+			code, out, errw := runSettings(t, args, "")
+			if code == 0 {
+				t.Fatalf("write without --yes succeeded: stdout=%s stderr=%s", out, errw)
+			}
+			if strings.Contains(out, "Also fills missing run defaults") {
+				t.Fatalf("non-add write disclosed a seed that must not happen: %s", out)
+			}
+		})
+	}
+}
+
+func TestRunSettingsCmd_AddJSONSeedsThroughRealCoreSave(t *testing.T) {
+	path := installRealSettingsCore(t)
+	t.Setenv(providers.EnvProviders, path)
+	if err := os.WriteFile(path, []byte(`{"providers":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	specPath := providerVerbSpecFile(t,
+		`{"name":"delta","baseURL":"https://delta.example/v1","apiKeyEnv":"DELTA_KEY","models":[{"id":"d1"}]}`)
+	code, out, errw := runSettings(t, []string{"providers", "add-json", specPath, "--yes"}, "")
+	if code != 0 {
+		t.Fatalf("add-json exit = %d stdout=%s stderr=%s", code, out, errw)
+	}
+	reg := reloadTestRegistry(t, path)
+	if reg.Defaults.TimeoutSeconds != providers.DefaultRunTimeoutSeconds || reg.Defaults.MaxTurns != providers.DefaultRunMaxTurns {
+		t.Fatalf("persisted run defaults = %+v", reg.Defaults)
+	}
+}
+
+func TestRunSettingsCmd_AddJSONRunDefaultsDriftRefuses(t *testing.T) {
+	path := installFileBackedSettingsCore(t, twoModelRegistry())
+	specPath := providerVerbSpecFile(t,
+		`{"name":"delta","baseURL":"https://delta.example/v1","apiKeyEnv":"DELTA_KEY","models":[{"id":"d1"}]}`)
+	prev := registryReload
+	registryReload = func() (*providers.Registry, error) {
+		reg := reloadTestRegistry(t, path)
+		reg.Path = path
+		reg.Defaults.TimeoutSeconds = 901
+		if err := saveTestRegistry(reg); err != nil {
+			t.Fatalf("external defaults edit: %v", err)
+		}
+		return providers.Load()
+	}
+	t.Cleanup(func() { registryReload = prev })
+	code, _, errw := runSettings(t, []string{"providers", "add-json", specPath, "--yes"}, "")
+	registryReload = prev
+	if code != 1 || !strings.Contains(errw, "defaults.timeoutSeconds changed on disk") {
+		t.Fatalf("stale defaults exit = %d stderr=%s", code, errw)
+	}
+	reg := reloadTestRegistry(t, path)
+	if len(reg.Providers) != 1 || reg.Defaults.TimeoutSeconds != 901 {
+		t.Fatalf("refused stale write changed the external state: %+v", reg)
+	}
+}
