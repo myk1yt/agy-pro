@@ -880,8 +880,9 @@ func composeWizardWritePlan(targetPath string, prov Provider, key wizardPendingK
 //
 // Run defaults are not seeded in this read helper: the consent diff and drift
 // check both need the exact on-disk base. apply() seeds only the re-verified
-// registry through EnsureRunDefaults, binding missing knobs to 7200/500 without
-// moving operator values or writing defaults from a stale pre-consent copy.
+// registry through EnsureRunDefaults, binding missing fields to 7200/500/
+// read,search,write without moving operator values or writing defaults from a
+// stale pre-consent copy.
 func loadWizardRegistry(path string) (*Registry, error) {
 	reg, err := wizardRegistryReload(path)
 	if err == nil {
@@ -932,11 +933,8 @@ func (p *wizardWritePlan) diff() []string {
 		lines = append(lines, "- "+wizardProviderLine(p.before))
 	}
 	lines = append(lines, "+ "+wizardProviderLine(p.prov))
-	if p.base.Defaults.TimeoutSeconds <= 0 {
-		lines = append(lines, fmt.Sprintf("Sets defaults.timeoutSeconds to %d (2 hours) (was: unset, engine fallback 300s)", DefaultRunTimeoutSeconds))
-	}
-	if p.base.Defaults.MaxTurns <= 0 {
-		lines = append(lines, fmt.Sprintf("Sets defaults.maxTurns to %d (was: unset, engine fallback 500)", DefaultRunMaxTurns))
+	if fields := RunDefaultsSeedFields(p.base.Defaults); fields != "" {
+		lines = append(lines, fmt.Sprintf("Sets run defaults in providers.json: %s (were unset; engine fallbacks were 300s / 500 turns / read,search)", fields))
 	}
 	return append(lines, p.envLines()...)
 }
@@ -1023,8 +1021,8 @@ func wizardConsent(reader *bufio.Reader, out io.Writer, plan *wizardWritePlan, o
 //
 //   - add: the name is still absent;
 //   - replace: the record is still the exact record the diff described;
-//   - run defaults: both timeoutSeconds and maxTurns still match the presented
-//     base, whether either knob was already set or will be seeded;
+//   - run defaults: timeoutSeconds, maxTurns, and the raw tools string still
+//     match the presented base, whether each field was set or will be seeded;
 //   - key persist: the presented presence of the variable name (clean name and
 //     BOM variants) is unchanged, compared only when both reads are observable.
 func (p *wizardWritePlan) reverify() (*Registry, error) {
@@ -1047,6 +1045,9 @@ func (p *wizardWritePlan) reverify() (*Registry, error) {
 	}
 	if reg.Defaults.MaxTurns != p.base.Defaults.MaxTurns {
 		return nil, fmt.Errorf("defaults.maxTurns changed on disk between the presentation and the write, so the presented diff is stale; nothing written (re-run the setup wizard after reviewing the current defaults)")
+	}
+	if reg.Defaults.Tools != p.base.Defaults.Tools {
+		return nil, fmt.Errorf("defaults.tools changed on disk between the presentation and the write, so the presented diff is stale; nothing written (re-run the setup wizard after reviewing the current defaults)")
 	}
 	if p.key.set {
 		fresh := wizardEnvProbe(p.key.name)

@@ -359,6 +359,13 @@ func TestWizardGate_StaleRegistryRefuses(t *testing.T) {
 			},
 			want: "defaults.maxTurns changed on disk",
 		},
+		{
+			name: "tools drifted",
+			drifted: func(reg *Registry) {
+				reg.Defaults.Tools = "read,search,write"
+			},
+			want: "defaults.tools changed on disk",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			provPath := wizardGateHome(t)
@@ -539,10 +546,7 @@ func TestWizardGate_NoConsentLineWithoutAPersistableKey(t *testing.T) {
 }
 
 func TestWizardRunDefaultsSeedAndPreserve(t *testing.T) {
-	const (
-		timeoutSeedLine = "Sets defaults.timeoutSeconds to 7200 (2 hours) (was: unset, engine fallback 300s)"
-		turnsSeedLine   = "Sets defaults.maxTurns to 500 (was: unset, engine fallback 500)"
-	)
+	const seedLine = "Sets run defaults in providers.json: timeoutSeconds=7200, maxTurns=500, tools=read,search,write (were unset; engine fallbacks were 300s / 500 turns / read,search)"
 	readDefaults := func(t *testing.T, path string) map[string]any {
 		t.Helper()
 		raw, err := os.ReadFile(path)
@@ -586,7 +590,7 @@ func TestWizardRunDefaultsSeedAndPreserve(t *testing.T) {
 		}
 	}
 
-	t.Run("first write seeds and discloses both run knobs", func(t *testing.T) {
+	t.Run("first write seeds and discloses all run fields", func(t *testing.T) {
 		provPath := wizardGateHome(t)
 		store := newMockEnvStore()
 		wizardGateEnvSeams(t, store)
@@ -599,19 +603,18 @@ func TestWizardRunDefaultsSeedAndPreserve(t *testing.T) {
 		if got := defaults["maxTurns"]; got != float64(DefaultRunMaxTurns) {
 			t.Errorf("defaults.maxTurns = %v; want %d", got, DefaultRunMaxTurns)
 		}
-		for _, key := range []string{"n", "tools"} {
-			if v, ok := defaults[key]; ok {
-				t.Errorf("first write invented defaults.%s=%v", key, v)
-			}
+		if got := defaults["tools"]; got != DefaultRunTools {
+			t.Errorf("defaults.tools = %v; want %q", got, DefaultRunTools)
 		}
-		for _, line := range []string{timeoutSeedLine, turnsSeedLine} {
-			if !strings.Contains(transcript, line) {
-				t.Errorf("consent transcript missing %q:\n%s", line, transcript)
-			}
+		if v, ok := defaults["n"]; ok {
+			t.Errorf("first write invented defaults.n=%v", v)
+		}
+		if !strings.Contains(transcript, seedLine) {
+			t.Errorf("consent transcript missing %q:\n%s", seedLine, transcript)
 		}
 	})
 
-	t.Run("existing run knobs and unrelated defaults are preserved", func(t *testing.T) {
+	t.Run("existing run fields and unrelated defaults are preserved", func(t *testing.T) {
 		provPath := wizardGateHome(t)
 		store := newMockEnvStore()
 		wizardGateEnvSeams(t, store)
@@ -626,30 +629,51 @@ func TestWizardRunDefaultsSeedAndPreserve(t *testing.T) {
 		if reg.Defaults.N != want.N || reg.Defaults.TimeoutSeconds != want.TimeoutSeconds || reg.Defaults.MaxTurns != want.MaxTurns || reg.Defaults.Tools != want.Tools || reg.Defaults.TokenBudget != want.TokenBudget {
 			t.Errorf("defaults = %+v; want operator values %+v", reg.Defaults, want)
 		}
-		if strings.Contains(transcript, "Sets defaults.timeoutSeconds") || strings.Contains(transcript, "Sets defaults.maxTurns") {
-			t.Errorf("a populated knob produced a seeding disclosure:\n%s", transcript)
+		if strings.Contains(transcript, "Sets run defaults in providers.json") {
+			t.Errorf("populated run fields produced a seeding disclosure:\n%s", transcript)
 		}
 		if len(reg.Providers) != 2 {
 			t.Errorf("providers = %d; want the seeded groq record plus the added one", len(reg.Providers))
 		}
 	})
 
-	t.Run("only the missing knob is seeded", func(t *testing.T) {
+	t.Run("only the missing maxTurns field is disclosed", func(t *testing.T) {
 		provPath := wizardGateHome(t)
 		store := newMockEnvStore()
 		wizardGateEnvSeams(t, store)
-		writeSeed(t, provPath, Defaults{TimeoutSeconds: 900})
+		writeSeed(t, provPath, Defaults{TimeoutSeconds: 900, Tools: "read,search"})
 		transcript := runWizard(t, wizardGateKey0008)
 
 		reg, err := LoadFrom(provPath)
 		if err != nil {
 			t.Fatalf("the written registry does not load: %v", err)
 		}
-		if reg.Defaults.TimeoutSeconds != 900 || reg.Defaults.MaxTurns != DefaultRunMaxTurns {
-			t.Errorf("defaults = %+v; want timeout 900 and maxTurns %d", reg.Defaults, DefaultRunMaxTurns)
+		if reg.Defaults.TimeoutSeconds != 900 || reg.Defaults.MaxTurns != DefaultRunMaxTurns || reg.Defaults.Tools != "read,search" {
+			t.Errorf("defaults = %+v; want timeout 900, maxTurns %d, and existing tools", reg.Defaults, DefaultRunMaxTurns)
 		}
-		if strings.Contains(transcript, "Sets defaults.timeoutSeconds") || !strings.Contains(transcript, turnsSeedLine) {
+		want := "Sets run defaults in providers.json: maxTurns=500 (were unset; engine fallbacks were 300s / 500 turns / read,search)"
+		if !strings.Contains(transcript, want) || strings.Contains(transcript, "timeoutSeconds=900") || strings.Contains(transcript, "tools=read,search,") {
 			t.Errorf("partial seeding disclosure is wrong:\n%s", transcript)
+		}
+	})
+
+	t.Run("only the missing tools field is disclosed", func(t *testing.T) {
+		provPath := wizardGateHome(t)
+		store := newMockEnvStore()
+		wizardGateEnvSeams(t, store)
+		writeSeed(t, provPath, Defaults{TimeoutSeconds: 900, MaxTurns: 250})
+		transcript := runWizard(t, wizardGateKey0008)
+
+		reg, err := LoadFrom(provPath)
+		if err != nil {
+			t.Fatalf("the written registry does not load: %v", err)
+		}
+		if reg.Defaults.TimeoutSeconds != 900 || reg.Defaults.MaxTurns != 250 || reg.Defaults.Tools != DefaultRunTools {
+			t.Errorf("defaults = %+v; want existing numeric fields and seeded tools", reg.Defaults)
+		}
+		want := "Sets run defaults in providers.json: tools=read,search,write (were unset; engine fallbacks were 300s / 500 turns / read,search)"
+		if !strings.Contains(transcript, want) || strings.Contains(transcript, "timeoutSeconds=") || strings.Contains(transcript, "maxTurns=") {
+			t.Errorf("tools-only seeding disclosure is wrong:\n%s", transcript)
 		}
 	})
 }
@@ -661,7 +685,7 @@ func TestWizardRunDefaultsSeedReverifiedRegistry(t *testing.T) {
 	wizardRegistryReload = func(path string) (*Registry, error) {
 		calls++
 		if calls == 1 {
-			return &Registry{Defaults: Defaults{N: 1}}, nil
+			return &Registry{Defaults: Defaults{N: 1, Tools: "read"}}, nil
 		}
 		return &Registry{Defaults: Defaults{N: 9, Tools: "read", TokenBudget: 99}}, nil
 	}

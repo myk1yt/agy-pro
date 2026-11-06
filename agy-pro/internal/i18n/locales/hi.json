@@ -196,7 +196,7 @@
   "providers.form.name_fixed_note": "नाम स्थिर पहचान है: मॉडल और अन्य सेटिंग इसी नाम से जुड़ती हैं। नीचे Base URL या कुंजी env-var नाम संपादित करें।",
   "providers.form.api_key_conversion": "सहेजने पर यह चिपकाई गई कुंजी env variable {{name}} में बदल जाती है; providers.json केवल नाम रखता है (मान छिपा हुआ)।",
   "providers.form.approval.key_persist": "{{name}} को इस प्रोसेस के env और Windows पर HKCU\\Environment में सेट करता है (कुंजी मान कभी प्रिंट नहीं होता या providers.json में नहीं लिखा जाता)।",
-  "providers.form.approval.defaults_seed": "providers.json में छूटे हुए रन डिफ़ॉल्ट भी भरता है: timeoutSeconds={{timeout}}, maxTurns={{turns}} (मौजूदा मान बने रहते हैं)।",
+  "providers.form.approval.defaults_seed": "providers.json में छूटे हुए रन डिफ़ॉल्ट भी भरता है: {{fields}} (मौजूदा मान बने रहते हैं)।",
   "providers.form.env_persist_failed": "{{name}} के Windows उपयोगकर्ता env में सहेजने में विफल। इस प्रोसेस के env में सेट कर दिया गया।",
   "providers.form.env_session_failed": "{{name}} को इस प्रोसेस के env में सेट नहीं किया जा सका। providers.json नहीं लिखा गया।",
   "providers.form.hint": "Enter अनुमोदन diff खोलता है · Tab फ़ील्ड, डिफ़ॉल्ट ब्लॉक और सहेजें के बीच जाता है · Esc असहेजे बदलाव छोड़ने को पूछता है",

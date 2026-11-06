@@ -196,7 +196,7 @@
   "providers.form.name_fixed_note": "Il nome è l'identità fissa: i modelli e le altre impostazioni vi si riferiscono. Modifica qui sotto l'URL di base o il NOME della variabile env della chiave.",
   "providers.form.api_key_conversion": "Salva converte questa chiave incollata nella variabile di ambiente {{name}}; providers.json memorizza solo il NOME (valore nascosto).",
   "providers.form.approval.key_persist": "Imposta {{name}} nell'ambiente di questo processo e, su Windows, in HKCU\\Environment (il valore della chiave non viene mai stampato né scritto in providers.json).",
-  "providers.form.approval.defaults_seed": "Compila anche i predefiniti di esecuzione mancanti in providers.json: timeoutSeconds={{timeout}}, maxTurns={{turns}} (i valori esistenti vengono mantenuti).",
+  "providers.form.approval.defaults_seed": "Compila anche i predefiniti di esecuzione mancanti in providers.json: {{fields}} (i valori esistenti vengono mantenuti).",
   "providers.form.env_persist_failed": "Persistenza di {{name}} nell'ambiente utente di Windows non riuscita. L'ambiente di questo processo è stato impostato.",
   "providers.form.env_session_failed": "Impossibile impostare {{name}} nell'ambiente di questo processo. providers.json non è stato scritto.",
   "providers.form.hint": "Invio apre il diff di approvazione · Tab passa tra i campi, il blocco dei predefiniti e Salva · Esc chiede di scartare le modifiche non salvate",

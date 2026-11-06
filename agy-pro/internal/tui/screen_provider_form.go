@@ -136,7 +136,7 @@ const (
 	// catalog-resolved, fallback kept: providers.form.approval.key_persist
 	missingProviderFormApprovalKeyPersist = "Sets {{name}} in this process's environment and, on Windows, in HKCU\\Environment (the key value is never printed or written to providers.json)."
 	// catalog-resolved, fallback kept: providers.form.approval.defaults_seed
-	missingProviderFormApprovalDefaultsSeed = "Also fills missing run defaults in providers.json: timeoutSeconds={{timeout}}, maxTurns={{turns}} (existing values are kept)."
+	missingProviderFormApprovalDefaultsSeed = "Also fills missing run defaults in providers.json: {{fields}} (existing values are kept)."
 	// catalog-resolved, fallback kept: providers.form.name_fixed_note
 	missingProviderFormNameFixedNote = "The name is fixed identity: models and other settings resolve by it. Edit the base URL or key env NAME below."
 	// catalog-resolved, fallback kept: providers.form.env_persist_failed
@@ -903,8 +903,8 @@ func (s *providerFormScreen) approvalSummary() []string {
 }
 
 // withSideEffectDisclosures puts every non-field side effect behind the same y
-// answer as the registry diff. Only environment NAMES and numeric defaults are
-// interpolated; the pending key VALUE never enters the approval body.
+// answer as the registry diff. Only environment NAMES and run-default field
+// values are interpolated; the pending key VALUE never enters the approval body.
 func (s *providerFormScreen) withSideEffectDisclosures(summary, diff []string) []string {
 	summary = append(summary, diff...)
 	if s.pendingKeyValue != "" {
@@ -912,23 +912,18 @@ func (s *providerFormScreen) withSideEffectDisclosures(summary, diff []string) [
 			missingOr(s.b, "providers.form.approval.key_persist", missingProviderFormApprovalKeyPersist),
 			map[string]string{"name": s.shownEnv(s.pendingKeyName)}))
 	}
-	if defaults, seeded := s.runDefaultsSeed(); seeded {
-		summary = append(summary, fillHubSlots(
-			missingOr(s.b, "providers.form.approval.defaults_seed", missingProviderFormApprovalDefaultsSeed),
-			map[string]string{
-				"timeout": strconv.Itoa(defaults.TimeoutSeconds),
-				"turns":   strconv.Itoa(defaults.MaxTurns),
-			}))
+	if fields, seeded := s.runDefaultsSeed(); seeded {
+		summary = append(summary, runDefaultsSeedDisclosure(s.b, missingProviderFormApprovalDefaultsSeed, fields))
 	}
 	return summary
 }
 
-func (s *providerFormScreen) runDefaultsSeed() (providers.Defaults, bool) {
+func (s *providerFormScreen) runDefaultsSeed() (string, bool) {
 	if s.mode != providerFormModeAdd {
-		return s.reg.Defaults, false
+		return "", false
 	}
-	seeded := providers.EnsureRunDefaults(s.reg.Defaults)
-	return seeded, seeded.TimeoutSeconds != s.reg.Defaults.TimeoutSeconds || seeded.MaxTurns != s.reg.Defaults.MaxTurns
+	fields := providers.RunDefaultsSeedFields(s.reg.Defaults)
+	return fields, fields != ""
 }
 
 // addedDiffLines renders one "+ field: value" line per written field. The name
@@ -1146,15 +1141,15 @@ var (
 )
 
 // addOnDiskState reloads the registry and re-verifies the complete add-mode
-// approval base. The name must still be absent, and both raw run knobs must
-// still equal the form-open values whose EnsureRunDefaults result the approval
-// disclosed. Comparing the raw knobs, rather than only the seeded result, also
-// catches a complete defaults block disappearing when its values already equal
-// the built-in seed.
+// approval base. The name must still be absent, and all three raw run-default
+// fields must still equal the form-open values whose EnsureRunDefaults result
+// the approval disclosed. Comparing the raw fields, rather than only the seeded
+// result, also catches a complete defaults block disappearing when its values
+// already equal the built-in seed.
 //
 // The returned registry is the one the write must use, so no second load can
 // move the base after this check. A missing registry is the normal pre-setup add
-// case. Every other load failure fails closed, as does either knob drifting.
+// case. Every other load failure fails closed, as does any field drifting.
 func (s *providerFormScreen) addOnDiskState(name string) (bool, *providers.Registry, error) {
 	reg, err := providers.Load()
 	if err != nil {
@@ -1171,7 +1166,8 @@ func (s *providerFormScreen) addOnDiskState(name string) (bool, *providers.Regis
 		return true, nil, nil
 	}
 	if reg.Defaults.TimeoutSeconds != s.reg.Defaults.TimeoutSeconds ||
-		reg.Defaults.MaxTurns != s.reg.Defaults.MaxTurns {
+		reg.Defaults.MaxTurns != s.reg.Defaults.MaxTurns ||
+		reg.Defaults.Tools != s.reg.Defaults.Tools {
 		return false, nil, errProviderFormDefaultsStale
 	}
 	return false, reg, nil

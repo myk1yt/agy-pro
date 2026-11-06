@@ -1331,6 +1331,9 @@ func reverifyPresentedProvider(base providerBase, verb string) error {
 		if reg.Defaults.MaxTurns != base.defaults.MaxTurns {
 			return fmt.Errorf("defaults.maxTurns changed on disk between the presentation and the write, so the presented diff is stale; nothing written (re-run %s after reviewing the current defaults)", verb)
 		}
+		if reg.Defaults.Tools != base.defaults.Tools {
+			return fmt.Errorf("defaults.tools changed on disk between the presentation and the write, so the presented diff is stale; nothing written (re-run %s after reviewing the current defaults)", verb)
+		}
 	}
 	if err := providerSlotDrift(reg, base.name, base.present, base.record, verb); err != nil {
 		return err
@@ -1447,15 +1450,18 @@ func providerDeleteDiff(base providerBase) []string {
 	}
 }
 
+const runDefaultsSeedLine = "Also fills missing run defaults in providers.json: {{fields}} (existing values are kept)."
+
 // runDefaultsSeedDiff discloses only a real ProviderAdd seed. The values come
 // from the same presentation snapshot as the rest of the diff;
-// reverifyPresentedProvider refuses the add if either knob moves before the write.
+// reverifyPresentedProvider refuses the add if any presented field moves before
+// the write.
 func runDefaultsSeedDiff(before providers.Defaults) []string {
-	seeded := providers.EnsureRunDefaults(before)
-	if seeded.TimeoutSeconds == before.TimeoutSeconds && seeded.MaxTurns == before.MaxTurns {
+	fields := providers.RunDefaultsSeedFields(before)
+	if fields == "" {
 		return nil
 	}
-	return []string{fmt.Sprintf("Also fills missing run defaults in providers.json: timeoutSeconds=%d, maxTurns=%d (existing values are kept).", seeded.TimeoutSeconds, seeded.MaxTurns)}
+	return []string{strings.Replace(runDefaultsSeedLine, "{{fields}}", fields, 1)}
 }
 
 // stripDiffControls removes control runes (the Cc class) and the format class

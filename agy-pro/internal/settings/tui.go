@@ -730,14 +730,14 @@ func (t *TUI) addJSON(it Item, path string) error {
 	return nil
 }
 
-const panelRunDefaultsSeedLine = "Also fills missing run defaults in providers.json: timeoutSeconds=%d, maxTurns=%d (existing values are kept)."
+const panelRunDefaultsSeedLine = "Also fills missing run defaults in providers.json: {{fields}} (existing values are kept)."
 
 func panelRunDefaultsSeedDiff(before providers.Defaults) []string {
-	seeded := providers.EnsureRunDefaults(before)
-	if seeded.TimeoutSeconds == before.TimeoutSeconds && seeded.MaxTurns == before.MaxTurns {
+	fields := providers.RunDefaultsSeedFields(before)
+	if fields == "" {
 		return nil
 	}
-	return panelBody([]string{fmt.Sprintf(panelRunDefaultsSeedLine, seeded.TimeoutSeconds, seeded.MaxTurns)})
+	return panelBody([]string{i18n.Fill(panelRunDefaultsSeedLine, map[string]string{"fields": fields})})
 }
 
 func (t *TUI) panelRunDefaultsSnapshot() (providers.Defaults, error) {
@@ -758,6 +758,9 @@ func (t *TUI) panelRunDefaultsReverify(before providers.Defaults, verb string) e
 	}
 	if after.MaxTurns != before.MaxTurns {
 		return fmt.Errorf("defaults.maxTurns changed on disk between the presentation and the write, so the presented diff is stale; nothing written (re-run %s after reviewing the current defaults)", verb)
+	}
+	if after.Tools != before.Tools {
+		return fmt.Errorf("defaults.tools changed on disk between the presentation and the write, so the presented diff is stale; nothing written (re-run %s after reviewing the current defaults)", verb)
 	}
 	return nil
 }

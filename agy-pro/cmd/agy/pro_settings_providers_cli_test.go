@@ -537,19 +537,25 @@ func TestRunSettingsCmd_RunDefaultsSeedDisclosure(t *testing.T) {
 		wantPresent bool
 	}{
 		{
-			name:        "both missing",
-			wantLine:    "Also fills missing run defaults in providers.json: timeoutSeconds=7200, maxTurns=500 (existing values are kept).",
+			name:        "all missing",
+			wantLine:    "Also fills missing run defaults in providers.json: timeoutSeconds=7200, maxTurns=500, tools=read,search,write (existing values are kept).",
 			wantPresent: true,
 		},
 		{
-			name:        "partial seed keeps timeout",
-			defaults:    providers.Defaults{TimeoutSeconds: 900},
-			wantLine:    "Also fills missing run defaults in providers.json: timeoutSeconds=900, maxTurns=500 (existing values are kept).",
+			name:        "partial seed keeps timeout and tools",
+			defaults:    providers.Defaults{TimeoutSeconds: 900, Tools: "read,search"},
+			wantLine:    "Also fills missing run defaults in providers.json: maxTurns=500 (existing values are kept).",
+			wantPresent: true,
+		},
+		{
+			name:        "tools only",
+			defaults:    providers.Defaults{TimeoutSeconds: 900, MaxTurns: 42},
+			wantLine:    "Also fills missing run defaults in providers.json: tools=read,search,write (existing values are kept).",
 			wantPresent: true,
 		},
 		{
 			name:        "fully set stays silent",
-			defaults:    providers.Defaults{TimeoutSeconds: 900, MaxTurns: 42},
+			defaults:    providers.Defaults{TimeoutSeconds: 900, MaxTurns: 42, Tools: "read,search"},
 			wantLine:    "Also fills missing run defaults",
 			wantPresent: false,
 		},
@@ -610,33 +616,59 @@ func TestRunSettingsCmd_AddJSONSeedsThroughRealCoreSave(t *testing.T) {
 		t.Fatalf("add-json exit = %d stdout=%s stderr=%s", code, out, errw)
 	}
 	reg := reloadTestRegistry(t, path)
-	if reg.Defaults.TimeoutSeconds != providers.DefaultRunTimeoutSeconds || reg.Defaults.MaxTurns != providers.DefaultRunMaxTurns {
+	if reg.Defaults.TimeoutSeconds != providers.DefaultRunTimeoutSeconds || reg.Defaults.MaxTurns != providers.DefaultRunMaxTurns || reg.Defaults.Tools != providers.DefaultRunTools {
 		t.Fatalf("persisted run defaults = %+v", reg.Defaults)
 	}
 }
 
 func TestRunSettingsCmd_AddJSONRunDefaultsDriftRefuses(t *testing.T) {
-	path := installFileBackedSettingsCore(t, twoModelRegistry())
-	specPath := providerVerbSpecFile(t,
-		`{"name":"delta","baseURL":"https://delta.example/v1","apiKeyEnv":"DELTA_KEY","models":[{"id":"d1"}]}`)
-	prev := registryReload
-	registryReload = func() (*providers.Registry, error) {
-		reg := reloadTestRegistry(t, path)
-		reg.Path = path
-		reg.Defaults.TimeoutSeconds = 901
-		if err := saveTestRegistry(reg); err != nil {
-			t.Fatalf("external defaults edit: %v", err)
-		}
-		return providers.Load()
-	}
-	t.Cleanup(func() { registryReload = prev })
-	code, _, errw := runSettings(t, []string{"providers", "add-json", specPath, "--yes"}, "")
-	registryReload = prev
-	if code != 1 || !strings.Contains(errw, "defaults.timeoutSeconds changed on disk") {
-		t.Fatalf("stale defaults exit = %d stderr=%s", code, errw)
-	}
-	reg := reloadTestRegistry(t, path)
-	if len(reg.Providers) != 1 || reg.Defaults.TimeoutSeconds != 901 {
-		t.Fatalf("refused stale write changed the external state: %+v", reg)
+	for _, field := range []string{"timeoutSeconds", "maxTurns", "tools"} {
+		t.Run(field, func(t *testing.T) {
+			path := installFileBackedSettingsCore(t, twoModelRegistry())
+			specPath := providerVerbSpecFile(t,
+				`{"name":"delta","baseURL":"https://delta.example/v1","apiKeyEnv":"DELTA_KEY","models":[{"id":"d1"}]}`)
+			prev := registryReload
+			registryReload = func() (*providers.Registry, error) {
+				reg := reloadTestRegistry(t, path)
+				reg.Path = path
+				switch field {
+				case "timeoutSeconds":
+					reg.Defaults.TimeoutSeconds = 901
+				case "maxTurns":
+					reg.Defaults.MaxTurns = 41
+				case "tools":
+					reg.Defaults.Tools = "read"
+				}
+				if err := saveTestRegistry(reg); err != nil {
+					t.Fatalf("external defaults edit: %v", err)
+				}
+				return providers.Load()
+			}
+			t.Cleanup(func() { registryReload = prev })
+			code, _, errw := runSettings(t, []string{"providers", "add-json", specPath, "--yes"}, "")
+			registryReload = prev
+			want := "defaults." + field + " changed on disk"
+			if code != 1 || !strings.Contains(errw, want) {
+				t.Fatalf("stale defaults exit = %d stderr=%s; want %q", code, errw, want)
+			}
+			reg := reloadTestRegistry(t, path)
+			if len(reg.Providers) != 1 {
+				t.Fatalf("refused stale write changed the providers: %+v", reg.Providers)
+			}
+			switch field {
+			case "timeoutSeconds":
+				if reg.Defaults.TimeoutSeconds != 901 {
+					t.Fatalf("external timeout was not preserved: %+v", reg.Defaults)
+				}
+			case "maxTurns":
+				if reg.Defaults.MaxTurns != 41 {
+					t.Fatalf("external maxTurns was not preserved: %+v", reg.Defaults)
+				}
+			case "tools":
+				if reg.Defaults.Tools != "read" {
+					t.Fatalf("external tools were not preserved: %+v", reg.Defaults)
+				}
+			}
+		})
 	}
 }

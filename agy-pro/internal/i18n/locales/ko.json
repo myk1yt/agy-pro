@@ -196,7 +196,7 @@
   "providers.form.name_fixed_note": "이름은 모델과 다른 설정이 참조하는 고정 식별자입니다. 아래에서 기본 URL과 API 키 환경 변수 이름을 수정하세요.",
   "providers.form.api_key_conversion": "저장하면 붙여넣은 키를 {{name}} 환경 변수로 변환합니다. providers.json에는 이름만 저장합니다 (값 숨김).",
   "providers.form.approval.key_persist": "{{name}}을(를) 현재 프로세스 환경과 Windows 사용자 환경(HKCU\\Environment)에 설정합니다. 키 값은 출력하거나 providers.json에 쓰지 않습니다.",
-  "providers.form.approval.defaults_seed": "providers.json의 빈 실행 기본값을 채웁니다: timeoutSeconds={{timeout}}, maxTurns={{turns}}. 기존 값은 유지합니다.",
+  "providers.form.approval.defaults_seed": "providers.json의 빠진 실행 기본값을 채웁니다: {{fields}} (기존 값은 유지됩니다).",
   "providers.form.env_persist_failed": "{{name}}의 Windows 사용자 환경 저장에 실패했습니다. 현재 프로세스 환경에는 설정했습니다.",
   "providers.form.env_session_failed": "현재 프로세스 환경에 {{name}}을(를) 설정하지 못했습니다. providers.json은 기록하지 않았습니다.",
   "providers.form.hint": "Enter로 승인 diff 열기 · Tab으로 필드, 기본값 블록, 저장으로 이동 · Esc로 저장 안 한 편집 버리기 확인",

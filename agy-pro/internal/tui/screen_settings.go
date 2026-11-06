@@ -93,7 +93,8 @@ const (
 	// catalog-resolved, fallback kept: settings.approval.rename
 	settingsApprovalRename = "Rename provider {{old}} to {{new}}; the model list carries over unchanged."
 	// catalog-resolved, fallback kept: providers.form.approval.defaults_seed
-	settingsApprovalDefaultsSeed = "Also fills missing run defaults in providers.json: timeoutSeconds={{timeout}}, maxTurns={{turns}} (existing values are kept)."
+	settingsApprovalDefaultsSeed   = "Also fills missing run defaults in providers.json: {{fields}} (existing values are kept)."
+	settingsApprovalDefaultsSeedKO = "providers.json의 빠진 실행 기본값을 채웁니다: {{fields}} (기존 값은 유지됩니다)."
 	// catalog-resolved, fallback kept: settings.approval.stale_defaults
 	settingsApprovalStaleDefaults = "The run defaults changed on disk after this approval opened. Nothing was written; review the current defaults and try again."
 	// catalog-resolved, fallback kept: settings.approval.fix_keys
@@ -754,14 +755,25 @@ func (s *settingsScreen) approveProviderAdd(label string, spec settings.Provider
 }
 
 func appendRunDefaultsSeed(summary []string, b *i18n.Bundle, before providers.Defaults) []string {
-	seeded := providers.EnsureRunDefaults(before)
-	if seeded.TimeoutSeconds == before.TimeoutSeconds && seeded.MaxTurns == before.MaxTurns {
+	fields := providers.RunDefaultsSeedFields(before)
+	if fields == "" {
 		return summary
 	}
-	return append(summary, fillHubSlots(missingOr(b, "providers.form.approval.defaults_seed", settingsApprovalDefaultsSeed), map[string]string{
-		"timeout": strconv.Itoa(seeded.TimeoutSeconds),
-		"turns":   strconv.Itoa(seeded.MaxTurns),
-	}))
+	return append(summary, runDefaultsSeedDisclosure(b, settingsApprovalDefaultsSeed, fields))
+}
+
+// runDefaultsSeedDisclosure fills the shared fields slot. A catalog from before
+// the fields-slot migration falls back to the canonical template instead of
+// leaving legacy placeholders unresolved.
+func runDefaultsSeedDisclosure(b *i18n.Bundle, fallback, fields string) string {
+	if b.Lang == "ko" {
+		fallback = settingsApprovalDefaultsSeedKO
+	}
+	template := missingOr(b, "providers.form.approval.defaults_seed", fallback)
+	if !strings.Contains(template, "{{fields}}") {
+		template = fallback
+	}
+	return fillHubSlots(template, map[string]string{"fields": fields})
 }
 
 func reverifyApprovalRunDefaults(a *App, b *i18n.Bundle, before providers.Defaults) bool {
@@ -774,7 +786,7 @@ func reverifyApprovalRunDefaults(a *App, b *i18n.Bundle, before providers.Defaul
 	if reg != nil {
 		after = reg.Defaults
 	}
-	if after.TimeoutSeconds != before.TimeoutSeconds || after.MaxTurns != before.MaxTurns {
+	if after.TimeoutSeconds != before.TimeoutSeconds || after.MaxTurns != before.MaxTurns || after.Tools != before.Tools {
 		a.SetMessage(missingOr(b, "settings.approval.stale_defaults", settingsApprovalStaleDefaults))
 		return false
 	}

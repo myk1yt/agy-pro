@@ -196,7 +196,7 @@
   "providers.form.name_fixed_note": "Tên là định danh cố định: các mô hình và cài đặt khác tham chiếu theo tên này. Hãy sửa URL gốc hoặc TÊN biến môi trường của khóa ở bên dưới.",
   "providers.form.api_key_conversion": "Lưu sẽ chuyển khóa đã dán này thành biến môi trường {{name}}; providers.json chỉ lưu TÊN (giá trị bị ẩn).",
   "providers.form.approval.key_persist": "Đặt {{name}} trong môi trường của tiến trình này và, trên Windows, trong HKCU\\Environment (giá trị khóa không bao giờ được in hoặc ghi vào providers.json).",
-  "providers.form.approval.defaults_seed": "Cũng điền các mặc định chạy còn thiếu trong providers.json: timeoutSeconds={{timeout}}, maxTurns={{turns}} (giữ nguyên các giá trị hiện có).",
+  "providers.form.approval.defaults_seed": "Cũng điền các mặc định chạy còn thiếu trong providers.json: {{fields}} (giữ nguyên các giá trị hiện có).",
   "providers.form.env_persist_failed": "Không lưu {{name}} vào môi trường Windows của tài khoản hiện tại được. Đã đặt trong môi trường của tiến trình này.",
   "providers.form.env_session_failed": "Không thể đặt {{name}} trong môi trường của tiến trình này. providers.json chưa được ghi.",
   "providers.form.hint": "Enter mở diff phê duyệt · Tab đi qua các trường, khối mặc định và Lưu · Esc hỏi hủy chỉnh sửa chưa lưu",

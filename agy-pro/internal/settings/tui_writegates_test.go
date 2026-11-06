@@ -119,8 +119,8 @@ func TestPanelDiffWordingMatchesCatalog(t *testing.T) {
 		},
 		{
 			name: "providers.form.approval.defaults_seed",
-			got:  fmt.Sprintf(panelRunDefaultsSeedLine, 7200, 500),
-			want: fill(fill("providers.form.approval.defaults_seed", "{{timeout}}", "7200"), "{{turns}}", "500"),
+			got:  i18n.Fill(panelRunDefaultsSeedLine, map[string]string{"fields": "timeoutSeconds=7200, maxTurns=500, tools=read,search,write"}),
+			want: "Also fills missing run defaults in providers.json: timeoutSeconds=7200, maxTurns=500, tools=read,search,write (existing values are kept).",
 		},
 	}
 	for _, c := range cases {
@@ -333,9 +333,10 @@ func TestPanelProviderGateRunDefaultsDisclosure(t *testing.T) {
 		want     string
 		present  bool
 	}{
-		{name: "missing", want: "Also fills missing run defaults in providers.json: timeoutSeconds=7200, maxTurns=500 (existing values are kept).", present: true},
-		{name: "partial", defaults: providers.Defaults{TimeoutSeconds: 900}, want: "timeoutSeconds=900, maxTurns=500", present: true},
-		{name: "present", defaults: providers.Defaults{TimeoutSeconds: 900, MaxTurns: 42}, want: "Also fills missing run defaults", present: false},
+		{name: "missing", want: "Also fills missing run defaults in providers.json: timeoutSeconds=7200, maxTurns=500, tools=read,search,write (existing values are kept).", present: true},
+		{name: "partial", defaults: providers.Defaults{TimeoutSeconds: 900, Tools: "read,search"}, want: "run defaults in providers.json: maxTurns=500 (existing values are kept).", present: true},
+		{name: "tools only", defaults: providers.Defaults{TimeoutSeconds: 900, MaxTurns: 42}, want: "run defaults in providers.json: tools=read,search,write (existing values are kept).", present: true},
+		{name: "present", defaults: providers.Defaults{TimeoutSeconds: 900, MaxTurns: 42, Tools: "read,search"}, want: "Also fills missing run defaults", present: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tui, f := newGateTUI(t)
@@ -354,15 +355,24 @@ func TestPanelProviderGateRunDefaultsDriftRefuses(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"name":"gamma","baseURL":"https://gamma.example/v1","apiKeyEnv":"GAMMA_KEY","models":[{"id":"g1"}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	tui, f := newGateTUI(t)
-	armWith(t, tui, "providers.add_json", path)
-	f.reg.Defaults.MaxTurns = 41
-	tui.Step(KeyYes)
-	if f.saved != 0 {
-		t.Fatalf("stale defaults write called SaveReg %d times", f.saved)
-	}
-	if !strings.Contains(tui.message, "defaults.maxTurns changed on disk") {
-		t.Fatalf("message = %q; want stale-defaults refusal", tui.message)
+	for _, field := range []string{"maxTurns", "tools"} {
+		t.Run(field, func(t *testing.T) {
+			tui, f := newGateTUI(t)
+			armWith(t, tui, "providers.add_json", path)
+			if field == "maxTurns" {
+				f.reg.Defaults.MaxTurns = 41
+			} else {
+				f.reg.Defaults.Tools = "read"
+			}
+			tui.Step(KeyYes)
+			if f.saved != 0 {
+				t.Fatalf("stale defaults write called SaveReg %d times", f.saved)
+			}
+			want := "defaults." + field + " changed on disk"
+			if !strings.Contains(tui.message, want) {
+				t.Fatalf("message = %q; want %q", tui.message, want)
+			}
+		})
 	}
 }
 

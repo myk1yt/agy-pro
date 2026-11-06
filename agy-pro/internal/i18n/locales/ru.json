@@ -196,7 +196,7 @@
   "providers.form.name_fixed_note": "Имя является фиксированным идентификатором: модели и другие настройки ссылаются на него. Измените ниже базовый URL или имя переменной окружения с ключом.",
   "providers.form.api_key_conversion": "При сохранении вставленный ключ преобразуется в переменную окружения {{name}}; providers.json хранит только ИМЯ (значение скрыто).",
   "providers.form.approval.key_persist": "Устанавливает {{name}} в окружении этого процесса и, в Windows, в HKCU\\Environment (значение ключа никогда не выводится и не записывается в providers.json).",
-  "providers.form.approval.defaults_seed": "Также заполняет отсутствующие умолчания запуска в providers.json: timeoutSeconds={{timeout}}, maxTurns={{turns}} (существующие значения сохраняются).",
+  "providers.form.approval.defaults_seed": "Также заполняет отсутствующие умолчания запуска в providers.json: {{fields}} (существующие значения сохраняются).",
   "providers.form.env_persist_failed": "Не удалось сохранить {{name}} в окружении пользователя Windows. В окружении этого процесса значение установлено.",
   "providers.form.env_session_failed": "Не удалось установить {{name}} в окружении этого процесса. providers.json не был записан.",
   "providers.form.hint": "Enter открывает diff подтверждения · Tab проходит по полям, блоку умолчаний и «Сохранить» · Esc спрашивает, отменить ли несохраненные правки",

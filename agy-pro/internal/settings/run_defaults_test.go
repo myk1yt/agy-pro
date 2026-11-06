@@ -20,17 +20,25 @@ func TestCoreProviderAddSeedsRunDefaults(t *testing.T) {
 		name         string
 		timeout      int
 		maxTurns     int
+		tools        string
 		wantTimeout  int
 		wantMaxTurns int
+		wantTools    string
 	}{
-		{name: "missing knobs seed", wantTimeout: providers.DefaultRunTimeoutSeconds, wantMaxTurns: providers.DefaultRunMaxTurns},
-		{name: "partial seed keeps user timeout", timeout: 900, wantTimeout: 900, wantMaxTurns: providers.DefaultRunMaxTurns},
-		{name: "present knobs never move", timeout: 901, maxTurns: 77, wantTimeout: 901, wantMaxTurns: 77},
+		{name: "missing knobs seed", wantTimeout: providers.DefaultRunTimeoutSeconds, wantMaxTurns: providers.DefaultRunMaxTurns, wantTools: providers.DefaultRunTools},
+		{name: "partial seed keeps user timeout and tools", timeout: 900, tools: "read,search", wantTimeout: 900, wantMaxTurns: providers.DefaultRunMaxTurns, wantTools: "read,search"},
+		{name: "present knobs never move", timeout: 901, maxTurns: 77, tools: "read,search", wantTimeout: 901, wantMaxTurns: 77, wantTools: "read,search"},
+		{name: "whitespace tools seed", timeout: 901, maxTurns: 77, tools: "   ", wantTimeout: 901, wantMaxTurns: 77, wantTools: providers.DefaultRunTools},
+		{name: "custom tools never move", timeout: 901, maxTurns: 77, tools: "read", wantTimeout: 901, wantMaxTurns: 77, wantTools: "read"},
 	}
 	for verbName, verb := range verbs {
 		for _, tc := range cases {
 			t.Run(verbName+"/"+tc.name, func(t *testing.T) {
 				core, before, path := runDefaultsFileCore(t, tc.timeout, tc.maxTurns)
+				before.Defaults.Tools = tc.tools
+				if err := saveRegistryFile(before); err != nil {
+					t.Fatalf("seed tools fixture: %v", err)
+				}
 				if err := verb(core, before); err != nil {
 					t.Fatalf("write: %v", err)
 				}
@@ -41,6 +49,7 @@ func TestCoreProviderAddSeedsRunDefaults(t *testing.T) {
 				want := before.Defaults
 				want.TimeoutSeconds = tc.wantTimeout
 				want.MaxTurns = tc.wantMaxTurns
+				want.Tools = tc.wantTools
 				if !reflect.DeepEqual(after.Defaults, want) {
 					t.Fatalf("defaults after write = %+v; want %+v", after.Defaults, want)
 				}
@@ -99,8 +108,8 @@ func TestOtherCoreRegistryWritesDoNotSeedRunDefaults(t *testing.T) {
 			if !reflect.DeepEqual(after.Defaults, want) {
 				t.Fatalf("defaults after raw write = %+v; want unchanged %+v", after.Defaults, want)
 			}
-			if after.Defaults.TimeoutSeconds != 0 || after.Defaults.MaxTurns != 0 {
-				t.Fatalf("raw write seeded run defaults: %+v", after.Defaults)
+			if after.Defaults.TimeoutSeconds != 0 || after.Defaults.MaxTurns != 0 || after.Defaults.Tools != "read,search" {
+				t.Fatalf("raw write moved run defaults: %+v", after.Defaults)
 			}
 		})
 	}

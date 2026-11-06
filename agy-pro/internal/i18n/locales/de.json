@@ -196,7 +196,7 @@
   "providers.form.name_fixed_note": "Der Name ist die feste Identität: Modelle und andere Einstellungen werden darüber aufgelöst. Bearbeiten Sie unten die Basis-URL oder den NAMEN der Key-Umgebungsvariablen.",
   "providers.form.api_key_conversion": "Speichern wandelt diesen eingefügten Key in die Umgebungsvariable {{name}} um; providers.json speichert nur den NAMEN (Wert verborgen).",
   "providers.form.approval.key_persist": "Setzt {{name}} in der Umgebung dieses Prozesses und unter Windows in HKCU\\Environment (der Key-Wert wird nie ausgegeben oder in providers.json geschrieben).",
-  "providers.form.approval.defaults_seed": "Füllt außerdem fehlende Ausführungs-Standardwerte in providers.json: timeoutSeconds={{timeout}}, maxTurns={{turns}} (vorhandene Werte bleiben erhalten).",
+  "providers.form.approval.defaults_seed": "Füllt außerdem fehlende Ausführungs-Standardwerte in providers.json: {{fields}} (vorhandene Werte bleiben erhalten).",
   "providers.form.env_persist_failed": "Das Speichern von {{name}} in der Windows-Benutzerumgebung ist fehlgeschlagen. Die Umgebung dieses Prozesses wurde gesetzt.",
   "providers.form.env_session_failed": "{{name}} konnte nicht in der Umgebung dieses Prozesses gesetzt werden. providers.json wurde nicht geschrieben.",
   "providers.form.hint": "Enter öffnet den Genehmigungs-Diff · Tab wandert durch die Felder, den Standardwert-Block und Speichern · Esc fragt, ungespeicherte Änderungen zu verwerfen",

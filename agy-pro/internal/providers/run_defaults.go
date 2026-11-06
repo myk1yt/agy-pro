@@ -1,5 +1,10 @@
 package providers
 
+import (
+	"fmt"
+	"strings"
+)
+
 // Run-default knobs the provider-add doors bind into the providers.json
 // defaults block. The fanout CLI ladder reads that block and binds every run
 // with it (fanout/cli.go rung order: preset, then defaults, then the engine
@@ -15,12 +20,16 @@ const (
 	// seeding it pins the value the engine would already choose instead of
 	// leaving the slot to an undocumented fallback.
 	DefaultRunMaxTurns = 500
+	// DefaultRunTools grants read, search, and write tools. Exec remains an
+	// explicit opt-in and is never seeded.
+	DefaultRunTools = "read,search,write"
 )
 
 // EnsureRunDefaults fills a Defaults value's missing run knobs with the
-// registry-level defaults above. A knob the user already set (non-zero) is
-// never moved; N, Tools, TokenBudget, ExcludeFamilies, and ExcludeModels are
-// left untouched so this helper cannot weaken an exclusion policy.
+// registry-level defaults above. A numeric knob the user already set (non-zero)
+// or a Tools value with non-whitespace content is never moved; N, TokenBudget,
+// ExcludeFamilies, and ExcludeModels are left untouched so this helper cannot
+// weaken an exclusion policy.
 func EnsureRunDefaults(d Defaults) Defaults {
 	if d.TimeoutSeconds <= 0 {
 		d.TimeoutSeconds = DefaultRunTimeoutSeconds
@@ -28,7 +37,28 @@ func EnsureRunDefaults(d Defaults) Defaults {
 	if d.MaxTurns <= 0 {
 		d.MaxTurns = DefaultRunMaxTurns
 	}
+	if strings.TrimSpace(d.Tools) == "" {
+		d.Tools = DefaultRunTools
+	}
 	return d
+}
+
+// RunDefaultsSeedFields renders only the run-default fields EnsureRunDefaults
+// changes, in providers.json field order. Consent surfaces share this rendering
+// so a partial seed never claims to change an existing value.
+func RunDefaultsSeedFields(before Defaults) string {
+	seeded := EnsureRunDefaults(before)
+	fields := make([]string, 0, 3)
+	if seeded.TimeoutSeconds != before.TimeoutSeconds {
+		fields = append(fields, fmt.Sprintf("timeoutSeconds=%d", seeded.TimeoutSeconds))
+	}
+	if seeded.MaxTurns != before.MaxTurns {
+		fields = append(fields, fmt.Sprintf("maxTurns=%d", seeded.MaxTurns))
+	}
+	if seeded.Tools != before.Tools {
+		fields = append(fields, "tools="+seeded.Tools)
+	}
+	return strings.Join(fields, ", ")
 }
 
 // DefaultEnvNameFor returns the API key environment-variable name for a

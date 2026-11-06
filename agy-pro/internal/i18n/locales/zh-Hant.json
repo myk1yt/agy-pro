@@ -196,7 +196,7 @@
   "providers.form.name_fixed_note": "名稱是固定識別：模型與其他設定都依它解析。請在下方編輯 Base URL 或 API 金鑰環境變數名稱。",
   "providers.form.api_key_conversion": "儲存會將此貼上的金鑰轉換為環境變數 {{name}}；providers.json 僅儲存名稱（值已隱藏）。",
   "providers.form.approval.key_persist": "在此程序的環境中設定 {{name}}，並在 Windows 上設定到 HKCU\\Environment（金鑰值絕不會列印或寫入 providers.json）。",
-  "providers.form.approval.defaults_seed": "也會填入 providers.json 中缺少的執行預設值：timeoutSeconds={{timeout}}, maxTurns={{turns}}（保留現有值）。",
+  "providers.form.approval.defaults_seed": "也會填入 providers.json 中缺少的執行預設值：{{fields}}（保留現有值）。",
   "providers.form.env_persist_failed": "無法將 {{name}} 保存到 Windows 使用者環境。已在此程序的環境中設定。",
   "providers.form.env_session_failed": "無法在此程序的環境中設定 {{name}}。未寫入 providers.json。",
   "providers.form.hint": "Enter 開啟核准差異 · Tab 在欄位、預設值區塊與儲存之間移動 · Esc 詢問是否捨棄未儲存的編輯",

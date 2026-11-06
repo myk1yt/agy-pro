@@ -196,7 +196,7 @@
   "providers.form.name_fixed_note": "名前は固定の識別子です。モデルと他の設定はこの名前で参照します。下で Base URL または API キー環境変数名を編集してください。",
   "providers.form.api_key_conversion": "保存すると、貼り付けたこのキーは環境変数 {{name}} に変換され、providers.json には名前のみが保存されます (値は非表示)。",
   "providers.form.approval.key_persist": "{{name}} をこのプロセスの環境と、Windows では HKCU\\Environment に設定します (キーの値が出力されたり providers.json に書き込まれたりすることはありません)。",
-  "providers.form.approval.defaults_seed": "providers.json の不足している実行既定値も補います: timeoutSeconds={{timeout}}, maxTurns={{turns}} (既存の値は保持されます)。",
+  "providers.form.approval.defaults_seed": "providers.json の不足している実行既定値も補います: {{fields}} (既存の値は保持されます)。",
   "providers.form.env_persist_failed": "{{name}} の Windows ユーザー環境への保存に失敗しました。このプロセスの環境には設定しました。",
   "providers.form.env_session_failed": "{{name}} をこのプロセスの環境に設定できませんでした。providers.json は書き込まれていません。",
   "providers.form.hint": "Enter で承認 diff を開く · Tab でフィールド、既定値ブロック、保存へ移動 · Esc で未保存の編集破棄を確認",

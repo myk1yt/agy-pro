@@ -196,7 +196,7 @@
   "providers.form.name_fixed_note": "Le nom est une identité fixe : les modèles et les autres paramètres sont résolus par son intermédiaire. Modifiez ci-dessous l'URL de base ou le NOM de la variable d'environnement de la clé.",
   "providers.form.api_key_conversion": "Enregistrer convertit cette clé collée en variable d'environnement {{name}} ; providers.json ne stocke que le NOM (valeur masquée).",
   "providers.form.approval.key_persist": "Définit {{name}} dans l'environnement de ce processus et, sous Windows, dans HKCU\\Environment (la valeur de la clé n'est jamais affichée ni écrite dans providers.json).",
-  "providers.form.approval.defaults_seed": "Remplit également les valeurs d'exécution par défaut manquantes dans providers.json : timeoutSeconds={{timeout}}, maxTurns={{turns}} (les valeurs existantes sont conservées).",
+  "providers.form.approval.defaults_seed": "Remplit également les valeurs d'exécution par défaut manquantes dans providers.json : {{fields}} (les valeurs existantes sont conservées).",
   "providers.form.env_persist_failed": "Échec de l'enregistrement de {{name}} dans l'environnement utilisateur Windows. L'environnement de ce processus a été défini.",
   "providers.form.env_session_failed": "Impossible de définir {{name}} dans l'environnement de ce processus. providers.json n'a pas été écrit.",
   "providers.form.hint": "Entrée ouvre le diff d'approbation · Tab parcourt les champs, le bloc des valeurs par défaut et Enregistrer · Échap demande d'abandonner les modifications non enregistrées",

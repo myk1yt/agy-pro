@@ -803,9 +803,10 @@ func TestSettingsScreenAddJSONRunDefaultsDisclosure(t *testing.T) {
 		want     string
 		present  bool
 	}{
-		{name: "missing", want: "Also fills missing run defaults in providers.json: timeoutSeconds=7200, maxTurns=500 (existing values are kept).", present: true},
-		{name: "partial", defaults: providers.Defaults{TimeoutSeconds: 900}, want: "timeoutSeconds=900, maxTurns=500", present: true},
-		{name: "present", defaults: providers.Defaults{TimeoutSeconds: 900, MaxTurns: 42}, want: "Also fills missing run defaults", present: false},
+		{name: "missing", want: "Also fills missing run defaults in providers.json: timeoutSeconds=7200, maxTurns=500, tools=read,search,write (existing values are kept).", present: true},
+		{name: "partial", defaults: providers.Defaults{TimeoutSeconds: 900, Tools: "read,search"}, want: "run defaults in providers.json: maxTurns=500 (existing values are kept).", present: true},
+		{name: "tools only", defaults: providers.Defaults{TimeoutSeconds: 900, MaxTurns: 42}, want: "run defaults in providers.json: tools=read,search,write (existing values are kept).", present: true},
+		{name: "present", defaults: providers.Defaults{TimeoutSeconds: 900, MaxTurns: 42, Tools: "read,search"}, want: "Also fills missing run defaults", present: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newSettingsTestCore(t)
@@ -824,26 +825,65 @@ func TestSettingsScreenAddJSONRunDefaultsDisclosure(t *testing.T) {
 			if got := strings.Contains(body, tc.want); got != tc.present {
 				t.Fatalf("seed disclosure presence = %v, want %v; body:\n%s", got, tc.present, body)
 			}
+			if tc.name == "partial" && strings.Contains(body, "timeoutSeconds=900") {
+				t.Fatalf("partial disclosure named an existing field; body:\n%s", body)
+			}
+		})
+	}
+}
+
+func TestRunDefaultsSeedDisclosureCanonicalFallbacks(t *testing.T) {
+	const fields = "timeoutSeconds=7200, maxTurns=500, tools=read,search,write"
+	for _, tc := range []struct {
+		lang string
+		want string
+	}{
+		{lang: "en", want: "Also fills missing run defaults in providers.json: " + fields + " (existing values are kept)."},
+		{lang: "ko", want: "providers.json의 빠진 실행 기본값을 채웁니다: " + fields + " (기존 값은 유지됩니다)."},
+	} {
+		t.Run(tc.lang, func(t *testing.T) {
+			b := i18n.Load(tc.lang)
+			if b.T("providers.form.approval.defaults_seed") == "providers.form.approval.defaults_seed" {
+				t.Fatal("defaults-seed catalog key is missing")
+			}
+			got := runDefaultsSeedDisclosure(b, settingsApprovalDefaultsSeed, fields)
+			if got != tc.want {
+				t.Fatalf("disclosure = %q; want canonical fallback %q", got, tc.want)
+			}
+			if strings.Contains(got, "{{") {
+				t.Fatalf("disclosure has an unresolved slot: %q", got)
+			}
 		})
 	}
 }
 
 func TestSettingsScreenAddJSONRunDefaultsDriftRefuses(t *testing.T) {
-	h := newSettingsTestCore(t)
-	app := newSettingsApp(h)
-	scr := app.Top().(*settingsScreen)
-	spec := settings.ProviderSpec{Name: "beta", BaseURL: "https://beta.example.com", APIKeyEnv: "AGY_P11_SET_KEY"}
-	scr.approveProviderAdd("providers.add.label", spec, "beta.json", app)
-	h.reg.Defaults.TimeoutSeconds = 901
-	if err := h.persistReg(h.reg); err != nil {
-		t.Fatal(err)
-	}
-	app.Step(KeyYes)
-	if findProvider(h.reg, "beta") != nil {
-		t.Fatal("provider add landed after the disclosed defaults changed")
-	}
-	if !strings.Contains(app.Message(), "run defaults changed on disk") {
-		t.Fatalf("message = %q; want stale-defaults refusal", app.Message())
+	for _, field := range []string{"timeoutSeconds", "maxTurns", "tools"} {
+		t.Run(field, func(t *testing.T) {
+			h := newSettingsTestCore(t)
+			app := newSettingsApp(h)
+			scr := app.Top().(*settingsScreen)
+			spec := settings.ProviderSpec{Name: "beta", BaseURL: "https://beta.example.com", APIKeyEnv: "AGY_P11_SET_KEY"}
+			scr.approveProviderAdd("providers.add.label", spec, "beta.json", app)
+			switch field {
+			case "timeoutSeconds":
+				h.reg.Defaults.TimeoutSeconds = 901
+			case "maxTurns":
+				h.reg.Defaults.MaxTurns = 41
+			case "tools":
+				h.reg.Defaults.Tools = "read"
+			}
+			if err := h.persistReg(h.reg); err != nil {
+				t.Fatal(err)
+			}
+			app.Step(KeyYes)
+			if findProvider(h.reg, "beta") != nil {
+				t.Fatal("provider add landed after the disclosed defaults changed")
+			}
+			if !strings.Contains(app.Message(), "run defaults changed on disk") {
+				t.Fatalf("message = %q; want stale-defaults refusal", app.Message())
+			}
+		})
 	}
 }
 

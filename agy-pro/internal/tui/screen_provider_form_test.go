@@ -212,7 +212,7 @@ func TestProviderFormAddWithoutDefaults(t *testing.T) {
 	}
 	summary := strings.Join(appr.Body(120), "\n")
 	if !strings.Contains(summary, "Also fills missing run defaults") ||
-		!strings.Contains(summary, "timeoutSeconds=7200, maxTurns=500") {
+		!strings.Contains(summary, "timeoutSeconds=7200, maxTurns=500, tools=read,search,write") {
 		t.Fatalf("defaults-seed disclosure missing; summary:\n%s", summary)
 	}
 	app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyYes}})
@@ -224,15 +224,14 @@ func TestProviderFormAddWithoutDefaults(t *testing.T) {
 	if !ok || p.BaseURL != "http://127.0.0.1:8080/v1" || p.APIKeyEnv != "" {
 		t.Fatalf("added provider = %+v (ok %v)", p, ok)
 	}
-	if reg.Defaults.TimeoutSeconds != 7200 || reg.Defaults.MaxTurns != 500 {
-		t.Fatalf("seeded run defaults = %+v, want timeoutSeconds=7200 and maxTurns=500", reg.Defaults)
+	if reg.Defaults.TimeoutSeconds != 7200 || reg.Defaults.MaxTurns != 500 || reg.Defaults.Tools != providers.DefaultRunTools {
+		t.Fatalf("seeded run defaults = %+v, want all three seeded fields", reg.Defaults)
 	}
 }
 
 // TestProviderFormAddSeedsOnlyMissingRunDefaults pins the write-side boundary:
-// one user-owned knob and every unrelated defaults field survive, while only the
-// absent knob is filled. The approval discloses the resulting values, not a
-// blanket reset to the two built-in numbers.
+// user-owned fields and every unrelated defaults field survive, while only the
+// absent field is filled. The approval lists only that seeded field.
 func TestProviderFormAddSeedsOnlyMissingRunDefaults(t *testing.T) {
 	reg := providerFormFixtureReg()
 	reg.Defaults.TimeoutSeconds = 900
@@ -244,8 +243,9 @@ func TestProviderFormAddSeedsOnlyMissingRunDefaults(t *testing.T) {
 		t.Fatalf("modal = %T, want *Approval", app.Modal())
 	}
 	summary := strings.Join(appr.Body(120), "\n")
-	if !strings.Contains(summary, "timeoutSeconds=900, maxTurns=500") || strings.Contains(summary, "timeoutSeconds=7200") {
-		t.Fatalf("partial seed disclosure moved a user-owned knob; summary:\n%s", summary)
+	if !strings.Contains(summary, "run defaults in providers.json: maxTurns=500 (existing values are kept).") ||
+		strings.Contains(summary, "timeoutSeconds=") || strings.Contains(summary, "tools=") {
+		t.Fatalf("partial seed disclosure did not list only maxTurns; summary:\n%s", summary)
 	}
 	app.CaptureRun(&ScriptedKeys{Keys: []Key{KeyYes}})
 	after, err := providers.LoadFrom(path)
@@ -261,12 +261,12 @@ func TestProviderFormAddSeedsOnlyMissingRunDefaults(t *testing.T) {
 }
 
 // TestProviderFormAddDefaultsCommitReverification pins the add-mode defaults
-// half of the approval contract. The no-drift write persists exactly the two run
-// knobs the approval disclosed. Any change to either presented base knob while
-// the approval is open refuses the write, including losing an already-complete
-// defaults block (where comparing only the seeded result would miss the drift).
+// half of the approval contract. The no-drift write persists exactly the fields
+// the approval disclosed. Any change to a presented raw field while the approval
+// is open refuses the write, including losing an already-complete defaults block
+// (where comparing only the seeded result would miss the drift).
 func TestProviderFormAddDefaultsCommitReverification(t *testing.T) {
-	t.Run("no drift writes the disclosed knobs", func(t *testing.T) {
+	t.Run("no drift writes the disclosed fields", func(t *testing.T) {
 		reg := providerFormFixtureReg()
 		reg.Defaults.TimeoutSeconds = 900
 		reg.Defaults.MaxTurns = 0
@@ -277,7 +277,7 @@ func TestProviderFormAddDefaultsCommitReverification(t *testing.T) {
 			t.Fatalf("modal = %T, want *Approval", app.Modal())
 		}
 		summary := strings.Join(appr.Body(120), "\n")
-		if !strings.Contains(summary, "timeoutSeconds=900, maxTurns=500") {
+		if !strings.Contains(summary, "run defaults in providers.json: maxTurns=500 (existing values are kept).") {
 			t.Fatalf("approval did not disclose the expected seed; summary:\n%s", summary)
 		}
 
@@ -311,13 +311,18 @@ func TestProviderFormAddDefaultsCommitReverification(t *testing.T) {
 			external: providers.Defaults{TimeoutSeconds: 900, MaxTurns: 25},
 		},
 		{
+			name:     "tools changed",
+			initial:  providers.Defaults{Tools: "read,search"},
+			external: providers.Defaults{Tools: "read"},
+		},
+		{
 			name:     "defaults block appeared",
 			initial:  providers.Defaults{},
 			external: providers.Defaults{TimeoutSeconds: 900, MaxTurns: 25},
 		},
 		{
 			name:     "complete defaults block disappeared",
-			initial:  providers.Defaults{TimeoutSeconds: 7200, MaxTurns: 500},
+			initial:  providers.Defaults{TimeoutSeconds: 7200, MaxTurns: 500, Tools: providers.DefaultRunTools},
 			external: providers.Defaults{},
 		},
 	}
@@ -889,8 +894,14 @@ func TestProviderFormDigitLeadingNameRefusesKeyConversion(t *testing.T) {
 	const secret = providerFormPastedKeyValue
 	oldSetenv, oldPersist := providerFormSetenv, providerFormPersistUserEnv
 	t.Cleanup(func() { providerFormSetenv, providerFormPersistUserEnv = oldSetenv, oldPersist })
-	providerFormSetenv = func(name, value string) error { t.Fatal("session env seam called for an invalid derived NAME"); return nil }
-	providerFormPersistUserEnv = func(name, value string) error { t.Fatal("persist env seam called for an invalid derived NAME"); return nil }
+	providerFormSetenv = func(name, value string) error {
+		t.Fatal("session env seam called for an invalid derived NAME")
+		return nil
+	}
+	providerFormPersistUserEnv = func(name, value string) error {
+		t.Fatal("persist env seam called for an invalid derived NAME")
+		return nil
+	}
 
 	app, path := newProviderFormTestApp(t, providerFormFixtureReg(), "add", "")
 	before := providerFormDisk(t, path)

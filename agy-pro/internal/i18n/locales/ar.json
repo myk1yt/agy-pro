@@ -196,7 +196,7 @@
   "providers.form.name_fixed_note": "الاسم هو الهوية الثابتة: تُحل النماذج والإعدادات الأخرى بالرجوع إليه. حرّر الرابط الأساسي أو اسم متغير بيئة المفتاح أدناه.",
   "providers.form.api_key_conversion": "يحوّل الحفظ هذا المفتاح الملصق إلى متغير البيئة {{name}}؛ يخزّن providers.json الاسم فقط (القيمة مخفية).",
   "providers.form.approval.key_persist": "يضبط {{name}} في بيئة هذه العملية، وفي Windows داخل HKCU\\Environment (لا تُطبع قيمة المفتاح ولا تُكتب إلى providers.json أبدًا).",
-  "providers.form.approval.defaults_seed": "يملأ أيضًا افتراضيات التشغيل الناقصة في providers.json: timeoutSeconds={{timeout}}، maxTurns={{turns}} (تُحفظ القيم الحالية).",
+  "providers.form.approval.defaults_seed": "يملأ أيضًا افتراضيات التشغيل الناقصة في providers.json: {{fields}} (تُحفظ القيم الحالية).",
   "providers.form.env_persist_failed": "فشل حفظ {{name}} في بيئة مستخدم Windows. تم ضبطه في بيئة هذه العملية.",
   "providers.form.env_session_failed": "تعذّر ضبط {{name}} في بيئة هذه العملية. لم يُكتب providers.json.",
   "providers.form.hint": "Enter يفتح اختلاف الموافقة · Tab يتنقل بين الحقول وكتلة الافتراضيات و\"حفظ\" · Esc يسأل عن تجاهل التعديلات غير المحفوظة",

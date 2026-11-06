@@ -196,7 +196,7 @@
   "providers.form.name_fixed_note": "The name is fixed identity: models and other settings resolve by it. Edit the base URL or key env NAME below.",
   "providers.form.api_key_conversion": "Save converts this pasted key into environment variable {{name}}; providers.json stores the NAME only (value hidden).",
   "providers.form.approval.key_persist": "Sets {{name}} in this process's environment and, on Windows, in HKCU\\Environment (the key value is never printed or written to providers.json).",
-  "providers.form.approval.defaults_seed": "Also fills missing run defaults in providers.json: timeoutSeconds={{timeout}}, maxTurns={{turns}} (existing values are kept).",
+  "providers.form.approval.defaults_seed": "Also fills missing run defaults in providers.json: {{fields}} (existing values are kept).",
   "providers.form.env_persist_failed": "Windows user-environment persist failed for {{name}}. This process's environment was set.",
   "providers.form.env_session_failed": "Could not set {{name}} in this process's environment. providers.json was not written.",
   "providers.form.hint": "Enter opens the approval diff · Tab walks the fields, the defaults block, and Save · Esc asks to discard unsaved edits",
