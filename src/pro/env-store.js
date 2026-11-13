@@ -16,11 +16,76 @@ const {
   validateWireProtocol,
   validateEnvName,
   validateProfileName,
-  looksLikeAPIKey,
   parseGatewayModels,
   formatGatewayModels,
-  maskSecret
+  maskSecret,
+  stripControlAndFormat
 } = require('./validator');
+const { defaultEnvForProvider } = require('./presets');
+
+/**
+ * Credential shapes that must never be echoed, even when they land in a profile/provider/model
+ * field of gateway.json. Narrower than `looksLikeAPIKey`, which flags any hyphenated or dotted
+ * string and would mask legitimate names such as `free-gw` or `my.profile`.
+ * @type {RegExp[]}
+ */
+const CREDENTIAL_MATERIAL_PATTERNS = [
+  /^(?:AKIA|ASIA)[0-9A-Z]{16}$/,
+  /^gh[pousr]_[A-Za-z0-9]{16,}$/,
+  /^github_pat_[A-Za-z0-9_]{20,}$/,
+  /^xox[baprs]-[A-Za-z0-9-]{10,}$/,
+  /^AIza[0-9A-Za-z_-]{35}$/,
+  /^ya29\.[0-9A-Za-z_-]{20,}$/,
+  /^sk-ant-[A-Za-z0-9_-]{10,}$/,
+  /^sk-[A-Za-z0-9_-]{12,}$/,
+  /^gsk_[A-Za-z0-9]{12,}$/,
+  /^nvapi-[A-Za-z0-9_-]{12,}$/,
+  /^glpat-[A-Za-z0-9_-]{16,}$/,
+  /^npm_[A-Za-z0-9]{30,}$/,
+  /^dckr_pat-[A-Za-z0-9_-]{20,}$/,
+  /^eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./
+];
+
+/**
+ * Reports whether a config field holds credential material rather than a name.
+ * @param {string} value
+ * @returns {boolean}
+ */
+function looksLikeCredentialMaterial(value) {
+  const s = String(value || '').trim();
+  if (!s) return false;
+  if (CREDENTIAL_MATERIAL_PATTERNS.some((re) => re.test(s))) return true;
+  const lower = s.toLowerCase();
+  if (['bearer ', 'secret_', 'live_', 'key-'].some((p) => lower.startsWith(p))) return true;
+  return s.length >= 32 && !/[-.\s]/.test(s) && /[A-Z]/.test(s) && /[a-z]/.test(s) && /[0-9]/.test(s);
+}
+
+/**
+ * Renders a config-derived label (profile name, provider name, model id) for terminal output.
+ * gateway.json and providers.json are untrusted input: an ANSI escape or control rune in a name
+ * would otherwise repaint the hub, forge a prompt, or hide a line. Credential-shaped values are
+ * masked with the same idiom as `maskSecret`. This is the canonical label sanitizer: `wizard.js`
+ * reuses it so an error hint and a hub line cannot drift apart.
+ * @param {*} value
+ * @returns {string}
+ */
+function displayConfigName(value) {
+  const clean = stripControlAndFormat(String(value === null || value === undefined ? '' : value).trim());
+  if (!clean) return '';
+  return looksLikeCredentialMaterial(clean) ? maskSecret(clean) : clean;
+}
+
+/**
+ * Strips control/format characters from a config-derived name before it is embedded in an
+ * error message, so a tampered gateway.json cannot inject terminal escapes through errors.
+ * A pasted secret stored as a profile name is additionally masked: error text ends up in
+ * terminals and CI logs, where the raw value must never appear.
+ * @param {*} value
+ * @returns {string}
+ */
+function safeErrorName(value) {
+  return displayConfigName(value).slice(0, 128);
+}
 
 const GATEWAY_ENV_KEYS = Object.freeze([
   'AGY_LLM_GATEWAY_URL',
@@ -35,6 +100,10 @@ const RC_BLOCK_START = '# >>> agy-pro gateway >>>';
 const RC_BLOCK_END = '# <<< agy-pro gateway <<<';
 
 const ENV_KEY_SAFE_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+// Namespace of the per-profile API key variables `agy-pro` creates itself
+// (`AGY_PRO_GATEWAY_<PROFILE>_API_KEY`). Only these are purgeable on profile deletion.
+const OWNED_ENV_PREFIX = 'AGY_PRO_GATEWAY_';
 
 /**
  * Resolves the absolute Windows PowerShell executable path (CWE-426 protection).
@@ -251,15 +320,23 @@ function normalizeGatewayConfig(raw) {
 /**
  * Validates a gateway v2 config object before writing to disk.
  * Ensures plaintext API keys are never persisted inside `gateway.json`.
+ * `options.allowMissingApiKeyEnv` names the profiles that `sanitizeInvalidApiKeyEnv` reported as
+ * repaired during a repair write; only those may skip the "remote URLs need a key name" rule, so a
+ * previously saved poisoned profile (invalid name, or an empty name on a remote URL) cannot block
+ * `gateway off`/delete/switch.
  * @param {object} config
+ * @param {{ allowMissingApiKeyEnv?: string[] }} [options]
  * @returns {object} Validated normalized v2 config
  */
-function validateGatewayConfig(config) {
+function validateGatewayConfig(config, options = {}) {
   const normalized = normalizeGatewayConfig(config);
+  const allowMissingApiKeyEnv = new Set(
+    (Array.isArray(options.allowMissingApiKeyEnv) ? options.allowMissingApiKeyEnv : []).map((n) => String(n))
+  );
   for (const [name, profile] of Object.entries(normalized.profiles)) {
     const nameCheck = validateProfileName(name);
     if (!nameCheck.valid) {
-      throw new Error(`Invalid profile name "${name}": ${nameCheck.error}`);
+      throw new Error(`Invalid profile name "${safeErrorName(name)}": ${nameCheck.error}`);
     }
     const urlCheck = validateGatewayURL(profile.url);
     if (!urlCheck.valid) {
@@ -270,17 +347,14 @@ function validateGatewayConfig(config) {
       throw new Error(`Profile "${name}": ${wireCheck.error}`);
     }
     if (profile.apiKeyEnv) {
-      if (looksLikeAPIKey(profile.apiKeyEnv)) {
-        throw new Error(
-          `Profile "${name}": apiKeyEnv looks like a secret key instead of an env variable name (refused to protect gateway.json)`
-        );
-      }
+      // validateEnvName already rejects secret-shaped values while accepting long
+      // UPPER_SNAKE names such as AGY_PRO_GATEWAY_<PROFILE>_API_KEY.
       const envCheck = validateEnvName(profile.apiKeyEnv);
       if (!envCheck.valid) {
         throw new Error(`Profile "${name}": ${envCheck.error}`);
       }
       profile.apiKeyEnv = envCheck.value;
-    } else if (!urlCheck.isLoopback) {
+    } else if (!urlCheck.isLoopback && !allowMissingApiKeyEnv.has(name)) {
       throw new Error(
         `Profile "${name}": apiKeyEnv is required for remote endpoints (only loopback URLs may omit an API key)`
       );
@@ -308,8 +382,12 @@ function loadGatewayConfig(options = {}) {
   let parsed;
   try {
     parsed = JSON.parse(rawText);
-  } catch (err) {
-    throw new Error(`Failed to parse ${filePath}: ${err.message}`);
+  } catch (_) {
+    // Never echo the parser message: V8 appends a raw file-content snippet, which can contain a
+    // pasted API key.
+    throw new Error(
+      `Failed to parse ${filePath}: gateway.json is corrupted (invalid JSON); move or delete it to start fresh`
+    );
   }
   return normalizeGatewayConfig(parsed);
 }
@@ -317,15 +395,71 @@ function loadGatewayConfig(options = {}) {
 /**
  * Validates and atomically writes `gateway.json` (mode `0o600`).
  * Never stores plaintext API keys inside `gateway.json`.
+ * Repair writes (`options.allowMissingApiKeyEnv`) are reserved for `activateGateway`,
+ * `deactivateGateway` and `deleteProfile`; user-facing save paths stay fully strict.
  * @param {object} config
- * @param {{ configPath?: string }} [options]
+ * @param {{ configPath?: string, allowMissingApiKeyEnv?: string[] }} [options]
  * @returns {object} Saved v2 config
  */
 function saveGatewayConfig(config, options = {}) {
-  const validated = validateGatewayConfig(config);
+  const validated = validateGatewayConfig(config, {
+    allowMissingApiKeyEnv: options.allowMissingApiKeyEnv
+  });
   const filePath = getGatewayConfigPath(options);
   writeAtomic(filePath, JSON.stringify(validated, null, 2) + '\n', 0o600);
   return validated;
+}
+
+/**
+ * Clears `apiKeyEnv` values that no longer pass `validateEnvName` (for example a profile written
+ * before the reserved-name hardening, such as `apiKeyEnv: 'AGY_LLM_GATEWAY_URL'`). Mutates `config`
+ * in place and reports every repaired entry so the caller can surface it; nothing is rewritten
+ * silently.
+ * A remote profile whose `apiKeyEnv` is already empty is reported as repaired as well: the strict
+ * validator rejects that state, so without the exemption the repair write itself would throw and
+ * `gateway off`/delete/switch would stay blocked until the file was edited by hand. Loopback
+ * profiles legitimately omit the key name and are left alone.
+ * Entries never carry the original value: it may be a pasted secret, and `validateEnvName` embeds
+ * reserved names in its error text. Only `maskedApiKeyEnv` (or an empty string) plus a fixed
+ * message are returned, so callers cannot leak the value even by serializing the whole record.
+ * @param {object} config
+ * @returns {Array<{ profile: string, maskedApiKeyEnv: string, error: string }>}
+ */
+function sanitizeInvalidApiKeyEnv(config) {
+  const cleared = [];
+  const profiles = config && config.profiles;
+  if (!profiles || typeof profiles !== 'object') return cleared;
+
+  for (const [name, profile] of Object.entries(profiles)) {
+    if (!profile || typeof profile !== 'object') continue;
+    const original = String(profile.apiKeyEnv || '')
+      .replace(/\ufeff/g, '')
+      .trim();
+    if (!original) {
+      const urlCheck = validateGatewayURL(profile.url);
+      if (urlCheck.valid && !urlCheck.isLoopback) {
+        cleared.push({
+          profile: name,
+          maskedApiKeyEnv: '',
+          error:
+            'apiKeyEnv is required for remote endpoints (left empty; repair saved without a key name)'
+        });
+      }
+      continue;
+    }
+    const check = validateEnvName(original);
+    if (check.valid) {
+      profile.apiKeyEnv = check.value;
+      continue;
+    }
+    profile.apiKeyEnv = '';
+    cleared.push({
+      profile: name,
+      maskedApiKeyEnv: maskSecret(original),
+      error: 'invalid or reserved env name (value hidden)'
+    });
+  }
+  return cleared;
 }
 
 /**
@@ -756,12 +890,146 @@ function buildGatewayEnvMap(profile, apiKeyValue = '') {
 }
 
 /**
+ * Post-write read-back check: confirms the persisted store holds the URL, wire protocol and
+ * models that were just written. Skipped when a custom `win32Runner` intercepts writes
+ * without a matching `win32Reader` (nothing real was persisted to read back).
+ * An empty read-back is reported separately from a genuine value mismatch: the write may have
+ * succeeded while the read failed (Windows PowerShell read errors are swallowed into `{}`).
+ * @param {Record<string, string|null>} expected
+ * @param {object} [options]
+ */
+function verifyPersistedGateway(expected, options = {}) {
+  const platform = options.platform || process.platform;
+  if (platform === 'win32' && typeof options.win32Runner === 'function' && typeof options.win32Reader !== 'function') {
+    return;
+  }
+  const persisted = readPersistedEnvMap(GATEWAY_ENV_KEYS, options);
+  const persistedKeys = Object.keys(persisted.vars || {});
+  const clean = {};
+  for (const [k, v] of Object.entries(persisted.vars || {})) {
+    clean[k.replace(/\ufeff/g, '').trim()] = String(v);
+  }
+  const checked = ['AGY_LLM_GATEWAY_URL', 'AGY_LLM_GATEWAY_WIRE_PROTOCOL', 'AGY_LLM_GATEWAY_MODELS'];
+  const mismatched = checked.filter((k) => expected[k] && clean[k] !== expected[k]);
+  if (mismatched.length === 0) return;
+  if (persistedKeys.length === 0) {
+    throw new Error(
+      'Post-write verification failed: read-back could not be confirmed (the persisted environment read ' +
+        'returned no values), so the write may have succeeded while the read failed. ' +
+        'Run `agy-pro doctor` to inspect the persisted store.'
+    );
+  }
+  throw new Error(
+    `Post-write verification failed: persisted environment does not match for ${mismatched.join(', ')}. ` +
+      'Check write permissions or run `agy-pro doctor`.'
+  );
+}
+
+/**
+ * Returns true when `envName` is the auto-generated key name `agy-pro` itself created for
+ * `profileName` (`AGY_PRO_GATEWAY_<PROFILE>_API_KEY`). Provider-hint names such as
+ * `DEEPSEEK_API_KEY` are user-owned and deliberately excluded.
+ * @param {string} envName
+ * @param {string} profileName
+ * @returns {boolean}
+ */
+function isOwnedAutoEnvName(envName, profileName) {
+  const clean = String(envName || '')
+    .replace(/\ufeff/g, '')
+    .trim();
+  if (!clean || !clean.startsWith(OWNED_ENV_PREFIX)) return false;
+  return clean === defaultEnvForProvider(profileName);
+}
+
+/**
+ * Returns true when any profile in `profiles` still references `envName`.
+ * Windows environment variable names are case-insensitive, so `my_key` and `MY_KEY` are the same
+ * variable; a case-sensitive check could purge a key a surviving profile still depends on.
+ * @param {Record<string, object>} profiles
+ * @param {string} envName
+ * @returns {boolean}
+ */
+function isEnvReferencedByProfiles(profiles, envName) {
+  const target = String(envName || '')
+    .replace(/\ufeff/g, '')
+    .trim()
+    .toUpperCase();
+  if (!target) return false;
+  return Object.keys(profiles || {}).some((name) => {
+    const ref = String((profiles[name] || {}).apiKeyEnv || '')
+      .replace(/\ufeff/g, '')
+      .trim()
+      .toUpperCase();
+    return ref === target;
+  });
+}
+
+/**
+ * Removes a saved profile from `gateway.json`. If it was the active profile, the gateway is
+ * turned OFF (env cleared) and the active profile falls back to the first remaining one.
+ * The profile's API key env var is purged from persistent storage only when `agy-pro` generated
+ * the name itself and no remaining profile references it; shared or custom names are preserved.
+ * @param {string} profileName
+ * @param {object} [options]
+ * @returns {{ deleted: string, wasActive: boolean, wasOn: boolean, activeProfile: string, purgedEnv: string[], clearedApiKeyEnv: Array<object> }}
+ */
+function deleteProfile(profileName, options = {}) {
+  const config = loadGatewayConfig(options);
+  const name = String(profileName || '').trim();
+  if (!Object.prototype.hasOwnProperty.call(config.profiles, name)) {
+    throw new Error(`Gateway profile "${safeErrorName(name)}" not found.`);
+  }
+  const removed = config.profiles[name];
+  const removedEnvName = String((removed && removed.apiKeyEnv) || '').trim();
+  const wasActive = config.activeProfile === name;
+  const wasOn = wasActive && config.active;
+  // Deactivate first so a later save failure cannot leave the gateway env pointing at a deleted profile.
+  if (wasOn) {
+    deactivateGateway({ ...options, keepState: true });
+  }
+  delete config.profiles[name];
+  if (wasActive) {
+    const keys = Object.keys(config.profiles);
+    config.activeProfile = keys.length > 0 ? keys[0] : '';
+    config.active = false;
+  }
+  // Repair surviving profiles whose apiKeyEnv no longer validates before the save rejects the file.
+  const clearedApiKeyEnv = sanitizeInvalidApiKeyEnv(config);
+  saveGatewayConfig(config, {
+    ...options,
+    allowMissingApiKeyEnv: clearedApiKeyEnv.map((entry) => entry.profile)
+  });
+
+  // Purge the orphan credential only after the config is durably saved.
+  const purgedEnv = [];
+  if (
+    removedEnvName &&
+    isOwnedAutoEnvName(removedEnvName, name) &&
+    !isEnvReferencedByProfiles(config.profiles, removedEnvName)
+  ) {
+    persistEnvMap({ [removedEnvName]: null }, options);
+    purgedEnv.push(removedEnvName);
+  }
+
+  return {
+    deleted: name,
+    wasActive,
+    wasOn,
+    activeProfile: config.activeProfile,
+    purgedEnv,
+    clearedApiKeyEnv
+  };
+}
+
+/**
  * Activates a saved profile (or `config.activeProfile`) by writing `AGY_LLM_GATEWAY_*`
  * to persistent OS storage and `process.env`, and marking `active: true` in `gateway.json`.
  * Validates profile and `gateway.json` schema BEFORE writing any OS env state.
+ * A poisoned, non-target profile no longer blocks activation: its invalid `apiKeyEnv` is cleared
+ * (and reported back in `clearedApiKeyEnv`) instead of failing the whole config save.
  * @param {string} [profileName]
  * @param {{ apiKey?: string, configPath?: string, envPath?: string, envFile?: string, rcFiles?: string[], platform?: string, win32Runner?: Function }} [options]
- * @returns {{ profileName: string, profile: object, envMap: Record<string, string|null>, maskedKey: string }}
+ * @returns {{ profileName: string, profile: object, envMap: Record<string, string|null>, maskedKey: string, clearedApiKeyEnv: Array<object> }}
  */
 function activateGateway(profileName, options = {}) {
   const config = loadGatewayConfig(options);
@@ -771,53 +1039,70 @@ function activateGateway(profileName, options = {}) {
   }
   if (!Object.prototype.hasOwnProperty.call(config.profiles, targetName)) {
     const available = Object.keys(config.profiles);
-    const hint = available.length > 0 ? ` Available: ${available.join(', ')}` : '';
-    throw new Error(`Gateway profile "${targetName}" not found.${hint}`);
+    // Both the queried name and the hint list come from gateway.json, so both go through
+    // `safeErrorName` (control/format strip + credential mask): the CLI writes `err.message`
+    // verbatim, and a tampered key could otherwise paint the terminal or leak a pasted secret.
+    const hint =
+      available.length > 0 ? ` Available: ${available.map((n) => safeErrorName(n)).join(', ')}` : '';
+    throw new Error(`Gateway profile "${safeErrorName(targetName)}" not found.${hint}`);
   }
   const profile = config.profiles[targetName];
+  const safeTarget = safeErrorName(targetName);
 
   const urlCheck = validateGatewayURL(profile.url);
   if (!urlCheck.valid) {
-    throw new Error(`Profile "${targetName}": ${urlCheck.error}`);
+    throw new Error(`Profile "${safeTarget}": ${urlCheck.error}`);
   }
   const wireCheck = validateWireProtocol(profile.wireProtocol);
   if (!wireCheck.valid) {
-    throw new Error(`Profile "${targetName}": ${wireCheck.error}`);
+    throw new Error(`Profile "${safeTarget}": ${wireCheck.error}`);
   }
   if (profile.apiKeyEnv) {
     const envCheck = validateEnvName(profile.apiKeyEnv);
     if (!envCheck.valid) {
-      throw new Error(`Profile "${targetName}": ${envCheck.error}`);
+      throw new Error(`Profile "${safeTarget}": ${envCheck.error}`);
     }
     profile.apiKeyEnv = envCheck.value;
+  } else if (!urlCheck.isLoopback) {
+    // The repair exemption below is for stale profiles that are not being used; the profile being
+    // activated must still name a key variable, or the saved config could not be turned on again.
+    throw new Error(
+      `Profile "${safeTarget}": apiKeyEnv is required for remote endpoints (only loopback URLs may omit an API key)`
+    );
   }
 
   const loopback = urlCheck.isLoopback;
   const apiKeyValue = resolveProfileAPIKey(profile, options);
   if (!loopback && !apiKeyValue) {
     throw new Error(
-      `API key is not set for profile "${targetName}" (expected env var ${profile.apiKeyEnv || 'AGY_LLM_GATEWAY_API_KEY'}). Set it or re-run \`agy-pro setup\`.`
+      `API key is not set for profile "${safeTarget}" (expected env var ${maskSecret(profile.apiKeyEnv) || 'AGY_LLM_GATEWAY_API_KEY'}). Set it or re-run \`agy-pro setup\`.`
     );
   }
 
   const updates = buildGatewayEnvMap(profile, apiKeyValue);
   if (apiKeyValue && profile.apiKeyEnv) {
     if (!ENV_KEY_SAFE_RE.test(profile.apiKeyEnv)) {
-      throw new Error(`Profile "${targetName}": unsafe apiKeyEnv name`);
+      throw new Error(`Profile "${safeTarget}": unsafe apiKeyEnv name`);
     }
     updates[profile.apiKeyEnv] = apiKeyValue;
   }
 
   config.activeProfile = targetName;
   config.active = true;
-  saveGatewayConfig(config, options);
+  const clearedApiKeyEnv = sanitizeInvalidApiKeyEnv(config);
+  saveGatewayConfig(config, {
+    ...options,
+    allowMissingApiKeyEnv: clearedApiKeyEnv.map((entry) => entry.profile)
+  });
   persistEnvMap(updates, options);
+  verifyPersistedGateway(updates, options);
 
   return {
     profileName: targetName,
     profile,
     envMap: updates,
-    maskedKey: apiKeyValue ? maskSecret(apiKeyValue) : '(none - loopback)'
+    maskedKey: apiKeyValue ? maskSecret(apiKeyValue) : '(none - loopback)',
+    clearedApiKeyEnv
   };
 }
 
@@ -826,8 +1111,11 @@ function activateGateway(profileName, options = {}) {
  * persistent OS storage and `process.env` so native `agy` models are restored.
  * When `keepState` is false (uninstall), removes `gateway.json`, `gateway.env`,
  * mock win32 env store, and shell rc source blocks.
+ * Turning the gateway OFF never fails on a poisoned profile: invalid `apiKeyEnv` values are cleared
+ * (and remote profiles missing one are exempted) and reported in `clearedApiKeyEnv` before
+ * `gateway.json` is saved.
  * @param {{ keepState?: boolean, configPath?: string, envPath?: string, envFile?: string, rcFiles?: string[], platform?: string, win32Runner?: Function }} [options]
- * @returns {{ deactivated: boolean, keepState: boolean, clearedKeys: string[] }}
+ * @returns {{ deactivated: boolean, keepState: boolean, clearedKeys: string[], clearedApiKeyEnv: Array<object> }}
  */
 function deactivateGateway(options = {}) {
   const keepState = options.keepState !== false;
@@ -839,11 +1127,16 @@ function deactivateGateway(options = {}) {
   persistEnvMap(clearMap, options);
 
   const configPath = getGatewayConfigPath(options);
+  let clearedApiKeyEnv = [];
   if (keepState) {
     if (fs.existsSync(configPath)) {
       const config = loadGatewayConfig(options);
       config.active = false;
-      saveGatewayConfig(config, options);
+      clearedApiKeyEnv = sanitizeInvalidApiKeyEnv(config);
+      saveGatewayConfig(config, {
+        ...options,
+        allowMissingApiKeyEnv: clearedApiKeyEnv.map((entry) => entry.profile)
+      });
     }
   } else {
     const envPath = getGatewayEnvPath(options);
@@ -863,7 +1156,8 @@ function deactivateGateway(options = {}) {
   return {
     deactivated: true,
     keepState,
-    clearedKeys: [...GATEWAY_ENV_KEYS]
+    clearedKeys: [...GATEWAY_ENV_KEYS],
+    clearedApiKeyEnv
   };
 }
 
@@ -890,6 +1184,8 @@ function getAdminSettingsPath(options = {}) {
 
 /**
  * Read-only check for enterprise MDM `admin_settings.json` overrides.
+ * The MDM file is read only to decide `configured`; `settings` stays on the record for future
+ * callers, so any surface that serializes the return value must project its own whitelist.
  * @param {{ adminSettingsPath?: string, platform?: string }} [options]
  * @returns {{ exists: boolean, path: string, configured: boolean, settings: object|null, error: string|null }}
  */
@@ -908,8 +1204,16 @@ function detectAdminGatewaySettings(options = {}) {
           (parsed.models && Array.isArray(parsed.models.list) && parsed.models.list.length > 0))
     );
     return { exists: true, path: targetPath, configured, settings: parsed, error: null };
-  } catch (err) {
-    return { exists: true, path: targetPath, configured: false, settings: null, error: err.message };
+  } catch (_) {
+    // Never echo the parser message: V8 appends a raw file-content snippet, and the MDM file can
+    // hold enterprise credentials.
+    return {
+      exists: true,
+      path: targetPath,
+      configured: false,
+      settings: null,
+      error: 'admin_settings.json is not valid JSON (contents withheld)'
+    };
   }
 }
 
@@ -998,7 +1302,12 @@ module.exports = {
   buildGatewayEnvMap,
   activateGateway,
   deactivateGateway,
+  deleteProfile,
+  verifyPersistedGateway,
+  sanitizeInvalidApiKeyEnv,
+  isEnvReferencedByProfiles,
   getAdminSettingsPath,
   detectAdminGatewaySettings,
-  getGatewayStatus
+  getGatewayStatus,
+  displayConfigName
 };

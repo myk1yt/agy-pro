@@ -19,7 +19,9 @@ const {
   formatGatewayModels,
   maskSecret,
   maskBaseURL,
-  maskHeaders
+  maskHeaders,
+  stripControlAndFormat,
+  redactSecrets
 } = require('./validator');
 const { fetchRemoteModels } = require('./http-client');
 const {
@@ -34,7 +36,7 @@ const {
   readPersistedEnvMap,
   detectAdminGatewaySettings
 } = require('./env-store');
-const { runSetup } = require('./wizard');
+const { runSetup, RELOAD_HINT, formatClearedApiKeyEnvNotices, requestUnmanagedEnvConsent, formatUnmanagedEnvRefusal } = require('./wizard');
 const pkg = require('../../package.json');
 
 /**
@@ -54,10 +56,14 @@ function formatHelp() {
     '  gateway off [--yes]             Deactivate gateway (restores native Antigravity models)',
     '  gateway status [--json]         Show active mode (NATIVE vs GATEWAY_XOR), profile & MDM state',
     '  models [--remote] [--json]      List configured or remote (/models) gateway models',
-    '  env [--shell sh|pwsh|cmd]       Print shell export commands (--reveal for plaintext key)',
+    '  env [--shell sh|pwsh|cmd]       Print shell exports (--profile, --reveal for plaintext key)',
     '  doctor [--json]                 Verify Node >=16, zero agy PATH shadowing, hooks, statusLine & gateway env',
     '  help                            Show this help message',
     '  version                         Print version',
+    '',
+    'Consent Flag:',
+    '  --allow-unmanaged-env           Allow `gateway on`, `models --remote` or `env --profile` to',
+    '                                  forward a profile env var that agy-pro does not manage (no prompt).',
     '',
     'Setup Non-Interactive Flags (--yes):',
     '  --yes, --profile <name>, --provider <name>, --url <url>, --wire <genai|openai>,',
@@ -92,7 +98,8 @@ function parseCommonArgs(args, allowedFlags = new Set()) {
     remote: false,
     reveal: false,
     shell: '',
-    profile: ''
+    profile: '',
+    allowUnmanagedEnv: false
   };
   const positionals = [];
 
@@ -102,6 +109,8 @@ function parseCommonArgs(args, allowedFlags = new Set()) {
       flags.json = true;
     } else if ((arg === '--yes' || arg === '-y') && allowedFlags.has('yes')) {
       flags.yes = true;
+    } else if (arg === '--allow-unmanaged-env' && allowedFlags.has('allow-unmanaged-env')) {
+      flags.allowUnmanagedEnv = true;
     } else if (arg === '--remote' && allowedFlags.has('remote')) {
       flags.remote = true;
     } else if (arg === '--reveal' && allowedFlags.has('reveal')) {
@@ -124,6 +133,140 @@ function parseCommonArgs(args, allowedFlags = new Set()) {
   }
 
   return { flags, positionals };
+}
+
+/**
+ * Renders a config-derived label (profile name, model id, validator message) for terminal and
+ * `--json` output. A hand-edited `gateway.json` can carry ANSI/control bytes in its keys, so those
+ * are stripped, and credential tokens embedded in the string (`sk-…`, `AKIA…`, `AIza…`, bearer
+ * headers) are redacted. Ordinary names such as `local-ollama` or `qwen2.5-coder:32b` pass
+ * through unchanged.
+ * @param {string} value
+ * @returns {string}
+ */
+function displayConfigLabel(value) {
+  return redactSecrets(stripControlAndFormat(value));
+}
+
+/**
+ * Renders a URL for the human text paths. `maskBaseURL` hides embedded credentials but returns the
+ * raw string when nothing credential-shaped needs masking, so control/format runes from a tampered
+ * env store or gateway.json are stripped here first.
+ * @param {string} rawUrl
+ * @returns {string}
+ */
+function displayTextURL(rawUrl) {
+  return stripControlAndFormat(maskBaseURL(rawUrl));
+}
+
+/**
+ * Projects the repair report from `activateGateway`/`deactivateGateway` onto the public
+ * `{ profile, maskedApiKeyEnv }` shape published by `gateway on|off --json`.
+ *
+ * The source records are already masked at the env-store boundary: `sanitizeInvalidApiKeyEnv`
+ * returns `{ profile, maskedApiKeyEnv, error }` where `error` is a fixed phrase and no raw name is
+ * kept. This projection is defense-in-depth rather than the only defense: it drops `error` and any
+ * field a future change might add, and control-strips the two fields it does publish.
+ * @param {Array<{ profile: string, maskedApiKeyEnv: string, error?: string }>} [cleared]
+ * @returns {Array<{ profile: string, maskedApiKeyEnv: string }>}
+ */
+function toMaskedClearedList(cleared) {
+  if (!Array.isArray(cleared)) return [];
+  return cleared.map((entry) => ({
+    profile: stripControlAndFormat((entry && entry.profile) || ''),
+    maskedApiKeyEnv: stripControlAndFormat((entry && entry.maskedApiKeyEnv) || '')
+  }));
+}
+
+/**
+ * Activates a gateway profile after passing the unmanaged-env consent gate.
+ *
+ * `activateGateway` resolves the profile's `apiKeyEnv` from the ambient environment and persists
+ * the value into OS storage, so a tampered gateway.json could otherwise forward an arbitrary
+ * credential (`GITHUB_TOKEN`, ...) to an attacker URL on every `agy` run. Managed names, and
+ * catalog names whose URL matches the catalog host, pass silently; anything else needs an
+ * interactive `y` or an explicit `--allow-unmanaged-env`.
+ * @param {string} profileName
+ * @param {object} flags Parsed flags (`json`, `allowUnmanagedEnv`).
+ * @param {object} deps CLI context (`output`, `errOutput`, `envOptions`, `input`, `isTTY`).
+ * @returns {Promise<number>} Exit code.
+ */
+async function activateWithConsent(profileName, flags, deps) {
+  const { output, envOptions } = deps;
+  const errOut = deps.errOutput || output;
+
+  let config;
+  try {
+    config = loadGatewayConfig(envOptions);
+  } catch (err) {
+    errOut.write(`Error: ${err.message}\n`);
+    return 1;
+  }
+  const targetName = String(profileName || config.activeProfile || '').trim();
+  const profile =
+    targetName && Object.prototype.hasOwnProperty.call(config.profiles, targetName)
+      ? config.profiles[targetName]
+      : null;
+
+  if (profile) {
+    const consent = await requestUnmanagedEnvConsent(profile, {
+      input: deps.input,
+      output,
+      isTTY: deps.isTTY,
+      allowUnmanagedEnv: Boolean(flags.allowUnmanagedEnv),
+      // Name the target explicitly and evaluate the same config file this handler loaded: a
+      // library caller that injects `configPath` must not have the gate read the default path.
+      profileName: targetName,
+      envOptions
+    });
+    if (!consent) {
+      errOut.write(`Error: ${formatUnmanagedEnvRefusal(profile.apiKeyEnv, profile.url)}\n`);
+      return 1;
+    }
+  }
+
+  try {
+    const res = activateGateway(profileName, envOptions);
+    if (flags.json) {
+      output.write(
+        JSON.stringify(
+          {
+            ok: true,
+            mode: 'GATEWAY_XOR',
+            profile: displayConfigLabel(res.profileName),
+            url: maskBaseURL(res.profile.url),
+            wireProtocol: res.profile.wireProtocol,
+            models: res.profile.models.map((id) => displayConfigLabel(id)),
+            maskedKey: res.maskedKey,
+            clearedApiKeyEnv: toMaskedClearedList(res.clearedApiKeyEnv),
+            warning: XOR_MODELS_WARNING
+          },
+          null,
+          2
+        ) + '\n'
+      );
+      return 0;
+    }
+    output.write(
+      `Gateway activated: profile "${displayConfigLabel(res.profileName)}" (${maskBaseURL(res.profile.url)})\n`
+    );
+    output.write(
+      `Wire Protocol: ${res.profile.wireProtocol} | Models: ${res.profile.models
+        .map((id) => displayConfigLabel(id))
+        .join(',')}\n`
+    );
+    output.write(`API Key      : ${res.maskedKey}\n`);
+    for (const notice of formatClearedApiKeyEnvNotices(res.clearedApiKeyEnv)) output.write(notice);
+    if (res.profile.wireProtocol === 'openai') {
+      output.write(`${OPENAI_TOOL_WARNING}\n`);
+    }
+    output.write(`${XOR_MODELS_WARNING}\n`);
+    output.write(`${RELOAD_HINT}\n`);
+    return 0;
+  } catch (err) {
+    errOut.write(`Error: ${err.message}\n`);
+    return 1;
+  }
 }
 
 /**
@@ -150,82 +293,72 @@ function handleGateway(args, deps) {
     }
 
     const maskedHdrs = status.headers ? maskHeaders(status.headers) : '';
-    const safeStatus = {
-      ...status,
-      url: maskBaseURL(status.url),
-      headers: maskedHdrs,
-      maskedHeaders: maskedHdrs
-    };
+    const adminSettings = status.adminSettings || {};
+    const safeActiveProfile = displayConfigLabel(status.activeProfile);
+    const safeProfiles = status.profiles.map((name) => displayConfigLabel(name));
+    const safeModels = status.models.map((id) => displayConfigLabel(id));
+    const safeModelsError = status.modelsError ? displayConfigLabel(status.modelsError) : null;
 
     if (parsed.flags.json) {
-      output.write(JSON.stringify(safeStatus, null, 2) + '\n');
+      // Explicit whitelist: `adminSettings.settings` (the parsed MDM file) and its parser error
+      // snippet must never reach machine output, and no spread of internal records is allowed here.
+      const jsonStatus = {
+        ok: true,
+        mode: status.mode,
+        active: status.active,
+        activeProfile: safeActiveProfile || null,
+        profiles: safeProfiles,
+        url: maskBaseURL(status.url),
+        wireProtocol: status.wireProtocol,
+        models: safeModels,
+        modelsError: safeModelsError,
+        maskedKey: status.maskedKey,
+        headers: maskedHdrs,
+        maskedHeaders: maskedHdrs,
+        caCert: stripControlAndFormat(status.caCert),
+        adminSettings: {
+          exists: Boolean(adminSettings.exists),
+          configured: Boolean(adminSettings.configured),
+          path: stripControlAndFormat(adminSettings.path)
+        },
+        configPath: stripControlAndFormat(status.configPath),
+        bomVariants: (status.bomVariants || []).map((name) => displayConfigLabel(name))
+      };
+      output.write(JSON.stringify(jsonStatus, null, 2) + '\n');
       return 0;
     }
 
-    output.write(`Gateway Mode   : ${safeStatus.mode}\n`);
-    output.write(`Active Profile : ${safeStatus.activeProfile || '(none)'}\n`);
-    output.write(
-      `Saved Profiles : ${safeStatus.profiles.length > 0 ? safeStatus.profiles.join(', ') : '(none)'}\n`
-    );
-    output.write(`Gateway URL    : ${safeStatus.url || '(unset)'}\n`);
-    output.write(`Wire Protocol  : ${safeStatus.wireProtocol || '(unset)'}\n`);
-    output.write(
-      `Gateway Models : ${safeStatus.models.length > 0 ? safeStatus.models.join(', ') : '(unset)'}\n`
-    );
-    if (safeStatus.modelsError) {
-      output.write(`Models Error   : ${safeStatus.modelsError}\n`);
+    output.write(`Gateway Mode   : ${status.mode}\n`);
+    output.write(`Active Profile : ${safeActiveProfile || '(none)'}\n`);
+    output.write(`Saved Profiles : ${safeProfiles.length > 0 ? safeProfiles.join(', ') : '(none)'}\n`);
+    // Human text path: `maskBaseURL` passes control/format runes through when nothing needs
+    // masking, and `wireProtocol` comes straight from the user-writable env store, so both are
+    // stripped here (the JSON branch relies on JSON.stringify escaping only).
+    output.write(`Gateway URL    : ${displayTextURL(status.url) || '(unset)'}\n`);
+    output.write(`Wire Protocol  : ${displayConfigLabel(status.wireProtocol) || '(unset)'}\n`);
+    output.write(`Gateway Models : ${safeModels.length > 0 ? safeModels.join(', ') : '(unset)'}\n`);
+    if (safeModelsError) {
+      output.write(`Models Error   : ${safeModelsError}\n`);
     }
-    output.write(`API Key        : ${safeStatus.maskedKey}\n`);
-    if (safeStatus.maskedHeaders) {
-      output.write(`Headers        : ${safeStatus.maskedHeaders}\n`);
+    output.write(`API Key        : ${displayConfigLabel(status.maskedKey)}\n`);
+    if (maskedHdrs) {
+      output.write(`Headers        : ${displayConfigLabel(maskedHdrs)}\n`);
     }
     output.write(
-      `MDM Admin File : ${safeStatus.adminSettings.configured ? `ACTIVE (${safeStatus.adminSettings.path})` : 'none'}\n`
+      `MDM Admin File : ${adminSettings.configured ? `ACTIVE (${displayConfigLabel(adminSettings.path)})` : 'none'}\n`
     );
-    output.write(`Config File    : ${safeStatus.configPath}\n`);
+    output.write(`Config File    : ${displayConfigLabel(status.configPath)}\n`);
     return 0;
   }
 
   if (sub === 'on') {
-    const parsed = parseCommonArgs(rest, new Set(['yes', 'json', 'profile']));
+    const parsed = parseCommonArgs(rest, new Set(['yes', 'json', 'profile', 'allow-unmanaged-env']));
     if (parsed.error) {
       errOut.write(`Error: ${parsed.error}\n`);
       return 2;
     }
     const profileName = parsed.flags.profile || parsed.positionals[0] || '';
-    try {
-      const res = activateGateway(profileName, envOptions);
-      if (parsed.flags.json) {
-        output.write(
-          JSON.stringify(
-            {
-              ok: true,
-              mode: 'GATEWAY_XOR',
-              profile: res.profileName,
-              url: maskBaseURL(res.profile.url),
-              wireProtocol: res.profile.wireProtocol,
-              models: res.profile.models,
-              maskedKey: res.maskedKey,
-              warning: XOR_MODELS_WARNING
-            },
-            null,
-            2
-          ) + '\n'
-        );
-        return 0;
-      }
-      output.write(`Gateway activated: profile "${res.profileName}" (${maskBaseURL(res.profile.url)})\n`);
-      output.write(`Wire Protocol: ${res.profile.wireProtocol} | Models: ${res.profile.models.join(',')}\n`);
-      output.write(`API Key      : ${res.maskedKey}\n`);
-      if (res.profile.wireProtocol === 'openai') {
-        output.write(`${OPENAI_TOOL_WARNING}\n`);
-      }
-      output.write(`${XOR_MODELS_WARNING}\n`);
-      return 0;
-    } catch (err) {
-      errOut.write(`Error: ${err.message}\n`);
-      return 1;
-    }
+    return activateWithConsent(profileName, parsed.flags, deps);
   }
 
   if (sub === 'off') {
@@ -237,10 +370,25 @@ function handleGateway(args, deps) {
     try {
       const res = deactivateGateway({ ...envOptions, keepState: true });
       if (parsed.flags.json) {
-        output.write(JSON.stringify({ ok: true, mode: 'NATIVE', ...res }, null, 2) + '\n');
+        output.write(
+          JSON.stringify(
+            {
+              ok: true,
+              mode: 'NATIVE',
+              deactivated: res.deactivated,
+              keepState: res.keepState,
+              clearedKeys: res.clearedKeys,
+              clearedApiKeyEnv: toMaskedClearedList(res.clearedApiKeyEnv)
+            },
+            null,
+            2
+          ) + '\n'
+        );
         return 0;
       }
       output.write('Gateway turned OFF. Native Antigravity models restored (open a new terminal).\n');
+      for (const notice of formatClearedApiKeyEnvNotices(res.clearedApiKeyEnv)) output.write(notice);
+      output.write(`${RELOAD_HINT}\n`);
       return 0;
     } catch (err) {
       errOut.write(`Error: ${err.message}\n`);
@@ -258,7 +406,7 @@ function handleGateway(args, deps) {
 async function handleModels(args, deps) {
   const { output, envOptions, transport } = deps;
   const errOut = deps.errOutput || output;
-  const parsed = parseCommonArgs(args, new Set(['remote', 'json', 'profile']));
+  const parsed = parseCommonArgs(args, new Set(['remote', 'json', 'profile', 'allow-unmanaged-env']));
   if (parsed.error) {
     errOut.write(`Error: ${parsed.error}\n`);
     return 2;
@@ -288,6 +436,22 @@ async function handleModels(args, deps) {
       errOut.write('Error: No gateway URL configured. Run `agy-pro setup` or pass --profile <name>.\n');
       return 2;
     }
+    if (profile) {
+      const consent = await requestUnmanagedEnvConsent(profile, {
+        input: deps.input,
+        output,
+        isTTY: deps.isTTY,
+        allowUnmanagedEnv: Boolean(parsed.flags.allowUnmanagedEnv),
+        // Same config file and same owning profile as the load above (library callers may inject
+        // `configPath`; the default path would evaluate a different profile set).
+        profileName: targetName,
+        envOptions
+      });
+      if (!consent) {
+        errOut.write(`Error: ${formatUnmanagedEnvRefusal(profile.apiKeyEnv, profile.url)}\n`);
+        return 1;
+      }
+    }
     const apiKey = profile
       ? resolveProfileAPIKey(profile, envOptions)
       : process.env.AGY_LLM_GATEWAY_API_KEY || '';
@@ -301,17 +465,30 @@ async function handleModels(args, deps) {
         transport
       });
       if (parsed.flags.json) {
-        output.write(JSON.stringify({ url: maskBaseURL(url), models: remote }, null, 2) + '\n');
+        output.write(
+          JSON.stringify(
+            {
+              url: displayTextURL(url),
+              models: remote.map((m) => ({
+                id: displayConfigLabel(m.id),
+                contextLength: m.contextLength,
+                maxOutputTokens: m.maxOutputTokens
+              }))
+            },
+            null,
+            2
+          ) + '\n'
+        );
         return 0;
       }
       if (remote.length === 0) {
-        output.write(`No models returned by ${maskBaseURL(url)}/models.\n`);
+        output.write(`No models returned by ${displayTextURL(url)}/models.\n`);
         return 0;
       }
-      output.write(`Remote models (${maskBaseURL(url)}):\n`);
+      output.write(`Remote models (${displayTextURL(url)}):\n`);
       for (const m of remote) {
         const ctx = m.contextLength > 0 ? ` (context: ${m.contextLength})` : '';
-        output.write(`  - ${m.id}${ctx}\n`);
+        output.write(`  - ${displayConfigLabel(m.id)}${ctx}\n`);
       }
       return 0;
     } catch (err) {
@@ -322,13 +499,15 @@ async function handleModels(args, deps) {
 
   const status = getGatewayStatus(envOptions);
   const models = profile ? profile.models : status.models;
+  const safeModels = models.map((id) => displayConfigLabel(id));
+  const safeProfileLabel = displayConfigLabel(profile ? targetName : status.activeProfile);
   if (parsed.flags.json) {
     output.write(
       JSON.stringify(
         {
           mode: status.mode,
-          profile: profile ? targetName : status.activeProfile || null,
-          models
+          profile: safeProfileLabel || null,
+          models: safeModels
         },
         null,
         2
@@ -341,9 +520,9 @@ async function handleModels(args, deps) {
     output.write('No gateway models configured. Run `agy-pro setup` to add a provider.\n');
     return 0;
   }
-  const label = profile ? `Profile "${targetName}"` : `Active gateway (${status.mode})`;
+  const label = profile ? `Profile "${safeProfileLabel}"` : `Active gateway (${status.mode})`;
   output.write(`${label} models:\n`);
-  for (const id of models) {
+  for (const id of safeModels) {
     output.write(`  - ${id}\n`);
   }
   return 0;
@@ -382,12 +561,21 @@ function formatShellUnset(shell, key) {
 }
 
 /**
- * Handles `agy-pro env [--shell sh|pwsh|cmd] [--profile <name>] [--reveal]`.
+ * Handles `agy-pro env [--shell sh|pwsh|cmd] [--profile <name>] [--reveal] [--allow-unmanaged-env]`.
+ *
+ * `--profile` resolves the saved profile's API key, so it passes the same unmanaged-env consent
+ * gate as `gateway on` / `models --remote`: a tampered `gateway.json` that names an ambient secret
+ * (`GITHUB_TOKEN`) cannot turn `env --profile x --reveal` into a plaintext read without an
+ * interactive `y` or an explicit `--allow-unmanaged-env`. Managed profiles are unchanged.
+ * @returns {Promise<number>} Exit code.
  */
-function handleEnv(args, deps) {
+async function handleEnv(args, deps) {
   const { output, envOptions } = deps;
   const errOut = deps.errOutput || output;
-  const parsed = parseCommonArgs(args, new Set(['shell', 'profile', 'reveal']));
+  const parsed = parseCommonArgs(
+    args,
+    new Set(['shell', 'profile', 'reveal', 'allow-unmanaged-env'])
+  );
   if (parsed.error) {
     errOut.write(`Error: ${parsed.error}\n`);
     return 2;
@@ -422,7 +610,22 @@ function handleEnv(args, deps) {
       ? config.profiles[parsed.flags.profile]
       : null;
     if (!profile) {
-      errOut.write(`Error: Profile "${parsed.flags.profile}" not found.\n`);
+      errOut.write(`Error: Profile "${displayConfigLabel(parsed.flags.profile)}" not found.\n`);
+      return 1;
+    }
+    const consent = await requestUnmanagedEnvConsent(profile, {
+      input: deps.input,
+      // stdout is a shell program here (`eval "$(agy-pro env ...)"`), so the prompt goes to stderr.
+      output: errOut,
+      isTTY: deps.isTTY,
+      allowUnmanagedEnv: Boolean(parsed.flags.allowUnmanagedEnv),
+      // Same config file and same owning profile as the load above (library callers may inject
+      // `configPath`; the default path would evaluate a different profile set).
+      profileName: parsed.flags.profile,
+      envOptions
+    });
+    if (!consent) {
+      errOut.write(`Error: ${formatUnmanagedEnvRefusal(profile.apiKeyEnv, profile.url)}\n`);
       return 1;
     }
     const apiKey = resolveProfileAPIKey(profile, envOptions);
@@ -619,7 +822,7 @@ function handleDoctor(args, deps) {
     checks.push({
       id: 'gateway_config',
       status: 'fail',
-      message: `Failed to load ${getGatewayConfigPath(envOptions)}: ${err.message}`
+      message: `Failed to load ${displayConfigLabel(getGatewayConfigPath(envOptions))}: ${displayConfigLabel(err.message)}`
     });
     status = null;
   }
@@ -652,7 +855,7 @@ function handleDoctor(args, deps) {
         checks.push({
           id: 'gateway_env',
           status: 'pass',
-          message: `Gateway active (${status.mode}, ${maskBaseURL(status.url)}, wire=${status.wireProtocol}, models=${status.models.length})`
+          message: `Gateway active (${status.mode}, ${displayTextURL(status.url)}, wire=${displayConfigLabel(status.wireProtocol)}, models=${status.models.length})`
         });
       }
     }
@@ -669,7 +872,7 @@ function handleDoctor(args, deps) {
       checks.push({
         id: 'admin_settings',
         status: 'warn',
-        message: `Enterprise admin_settings.json override present at ${status.adminSettings.path}`
+        message: `Enterprise admin_settings.json override present at ${displayConfigLabel(status.adminSettings.path)}`
       });
     }
   }
@@ -698,11 +901,14 @@ function handleDoctor(args, deps) {
 async function runCli(argv = process.argv.slice(2), deps = {}) {
   const output = deps.output || process.stdout;
   const errOut = deps.errOutput || process.stderr;
+  const input = deps.input || process.stdin;
   const context = {
-    input: deps.input || process.stdin,
+    input,
     output,
     errOutput: errOut,
-    isTTY: deps.isTTY,
+    // The binary entry point passes no `isTTY`; derive it so interactive consent prompts still
+    // reach a real terminal instead of silently refusing every unmanaged env var.
+    isTTY: deps.isTTY !== undefined ? Boolean(deps.isTTY) : Boolean(input && input.isTTY),
     envOptions: deps.envOptions || {},
     transport: deps.transport,
     findAgyBinaries: deps.findAgyBinaries
@@ -729,7 +935,10 @@ async function runCli(argv = process.argv.slice(2), deps = {}) {
   }
 
   if (cmd === 'setup') {
-    const res = await runSetup(rest, context);
+    const res = await runSetup(rest, {
+      ...context,
+      runDoctor: () => handleDoctor([], context)
+    });
     return res.exitCode;
   }
 

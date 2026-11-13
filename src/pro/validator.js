@@ -195,6 +195,57 @@ function looksLikeAPIKey(val) {
   return false;
 }
 
+// Single cap for every apiKeyEnv name. Auto-generated `AGY_PRO_GATEWAY_<PROFILE>_API_KEY` names
+// reach 88 chars (profile names allow 64); the 96 limit keeps those and hand-made names up to
+// 96 chars loadable. Names longer than 96 are rejected (the pre-cap base had no length limit).
+const MAX_ENV_NAME_LENGTH = 96;
+
+const RESERVED_ENV_NAMES = new Set([
+  'PATH', 'PATHEXT', 'NODE_OPTIONS', 'NODE_PATH', 'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH',
+  'APPDATA', 'LOCALAPPDATA', 'PROGRAMDATA', 'PROGRAMFILES', 'COMSPEC', 'SYSTEMROOT', 'SYSTEMDRIVE',
+  'WINDIR', 'TEMP', 'TMP', 'TMPDIR', 'SHELL', 'USER', 'USERNAME', 'LOGNAME', 'PWD', 'OLDPWD',
+  'IFS', 'PS1', 'ENV', 'BASH_ENV', 'CDPATH', 'EDITOR', 'VISUAL', 'PYTHONPATH', 'PYTHONHOME',
+  'PERL5LIB', 'RUBYLIB', 'CLASSPATH', 'JAVA_TOOL_OPTIONS', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME',
+  'SSL_CERT_FILE', 'SSL_CERT_DIR', 'NODE_EXTRA_CA_CERTS', 'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY',
+  'ALL_PROXY',
+  // Shell / interpreter hooks whose value is executed or sourced on the next session.
+  'PROMPT_COMMAND', 'ZDOTDIR', 'GIT_SSH_COMMAND', 'GIT_SSH', 'GIT_EXTERNAL_DIFF', 'PYTHONSTARTUP',
+  'PYTHONINSPECT', 'LESSOPEN', 'LESSCLOSE', 'NPM_CONFIG_SCRIPT_SHELL', 'JDK_JAVA_OPTIONS',
+  'RUBYOPT', 'PERL5OPT', 'PSMODULEPATH',
+  // Prompt hooks beyond PS1 plus pager/askpass indirection: each one either executes a command or
+  // hands a stored secret to an external program on the next session.
+  'PS0', 'PS2', 'PS3', 'PS4', 'PAGER', 'MANPAGER', 'GIT_PAGER', 'GIT_EDITOR', 'GIT_ASKPASS',
+  'SSH_ASKPASS', 'GIT_SEQUENCE_EDITOR', '_JAVA_OPTIONS',
+  // Round-3 security-review residual execution hooks: values executed/sourced on the next
+  // session, or consumed by a privileged helper (sudo askpass, editor indirection, loaders).
+  'SUDO_ASKPASS', 'FCEDIT', 'SVN_EDITOR', 'HGEDITOR', 'BROWSER', 'GRADLE_OPTS', 'GCONV_PATH',
+  'VIMINIT', 'DOTNET_STARTUP_HOOKS', 'PIP_INDEX_URL', 'NPM_CONFIG_NODE_OPTIONS', 'GIT_EXEC_PATH',
+  'GIT_TEMPLATE_DIR', 'PERLLIB', 'LUA_PATH', 'LUA_CPATH',
+  // agy-pro's own inputs: overwriting these redirects its storage or key lookup.
+  'AGY_PRO_HOME', 'AGY_PRO_ENV_FILE', 'AGY_PRO_RC_FILE', 'AGY_PRO_API_KEY_INPUT',
+  'AGY_PRO_WIN32_REGISTRY', 'AGY_ADMIN_SETTINGS_PATH', 'AGY_SETTINGS_PATH', 'AGY_CONFIG_DIR',
+  // Object-prototype keys: `process.env[name]` and plain-object profile maps resolve inherited
+  // members for these names, so a stored "key" would read back as `[object Object]`/a function.
+  '__PROTO__', 'CONSTRUCTOR', 'PROTOTYPE'
+]);
+// `AGY_LLM_GATEWAY_` covers the whole gateway control plane (URL, API_KEY, WIRE_PROTOCOL, MODELS,
+// CA_CERT, HEADERS); auto-generated key names use the `AGY_PRO_GATEWAY_` namespace instead.
+// `GIT_CONFIG_` blocks git's config-injection env family (COUNT/KEY_n/VALUE_n/GLOBAL/SYSTEM/
+// PARAMETERS) which would otherwise rewrite git behavior for every later session.
+// NOTE: the whole `AGY_PRO_` prefix must stay reserved-free so auto-generated
+// `AGY_PRO_GATEWAY_<PROFILE>_API_KEY` names (up to 88 chars) keep validating.
+const RESERVED_ENV_PREFIXES = ['LD_', 'DYLD_', 'NODE_', 'BASH_FUNC_', 'AGY_LLM_GATEWAY_', 'GIT_CONFIG_'];
+
+/**
+ * Returns true if an env name is a reserved system/loader variable (case-insensitive).
+ * @param {string} envName
+ * @returns {boolean}
+ */
+function isReservedEnvName(envName) {
+  const upper = String(envName || '').toUpperCase();
+  return RESERVED_ENV_NAMES.has(upper) || RESERVED_ENV_PREFIXES.some((p) => upper.startsWith(p));
+}
+
 /**
  * Checks whether an env name is in the known built-in provider catalog.
  * @param {string} envName
@@ -242,6 +293,16 @@ function validateEnvName(envName) {
       valid: false,
       error: 'apiKeyEnv must be an environment variable NAME, not a key value (value hidden)'
     };
+  }
+
+  if (isReservedEnvName(trimmed)) {
+    return {
+      valid: false,
+      error: `apiKeyEnv "${trimmed}" is a reserved system/loader variable name and cannot hold an API key`
+    };
+  }
+  if (trimmed.length > MAX_ENV_NAME_LENGTH) {
+    return { valid: false, error: `apiKeyEnv name is too long (max ${MAX_ENV_NAME_LENGTH} characters)` };
   }
 
   if (Object.prototype.hasOwnProperty.call(process.env, trimmed)) {
@@ -486,6 +547,7 @@ module.exports = {
   validateWireProtocol,
   looksLikeAPIKey,
   validateEnvName,
+  isReservedEnvName,
   validateProfileName,
   parseGatewayModels,
   formatGatewayModels,

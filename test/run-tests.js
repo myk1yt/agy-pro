@@ -9178,6 +9178,7 @@ agy      1234 user    5u  IPv4 0xbaadf00d      0t0  TCP 127.0.0.1:54457 (LISTEN)
           delete process.env.AGY_LLM_GATEWAY_API_KEY;
 
           const answers = [
+            '1',                              // Hub: [1] add/update provider
             'local-gateway',                  // Step 1: provider
             'hybrid-gw',                      // Step 1: profile name
             'http://127.0.0.1:19999/v1',      // Step 2: loopback URL
@@ -9192,7 +9193,8 @@ agy      1234 user    5u  IPv4 0xbaadf00d      0t0  TCP 127.0.0.1:54457 (LISTEN)
             'REMOTE_GW_API_KEY',              // Step 6: API key env name required for remote URL
             'sk-remote-transition-999',       // Step 6: API key value
             'Y',                              // Step 6: retry probe on remote HTTPS -> succeeds (200)
-            'Y'                               // Step 7: Save profile and activate gateway
+            'Y',                              // Step 7: Save profile and activate gateway
+            '0'                               // Hub: [0] exit
           ];
           const wizInput = new PassThrough();
           const wizChunks = [];
@@ -9227,6 +9229,3208 @@ agy      1234 user    5u  IPv4 0xbaadf00d      0t0  TCP 127.0.0.1:54457 (LISTEN)
         } finally {
           fs.rmSync(sandbox, { recursive: true, force: true });
         }
+      });
+    });
+
+    // --- Interactive Hub (isolated AGY_PRO_HOME / AGY_PRO_ENV_FILE, POSIX store: never touches HKCU) ---
+    const hubKeys = [...ENV_GUARD_KEYS, 'AGY_PRO_HOME', 'AGY_PRO_ENV_FILE', 'MY_GW_API_KEY', 'AGY_ADMIN_SETTINGS_PATH'];
+    const withHubSandbox = async (fn) => {
+      await withSavedEnv(hubKeys, async () => {
+        const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-pro-hub-'));
+        try {
+          const homeDir = path.join(sandbox, 'agy-pro');
+          for (const k of hubKeys) delete process.env[k];
+          process.env.AGY_PRO_HOME = homeDir;
+          process.env.AGY_PRO_ENV_FILE = path.join(sandbox, 'win32-env.json');
+          const envOptions = {
+            configPath: path.join(homeDir, 'gateway.json'),
+            envPath: path.join(homeDir, 'gateway.env'),
+            rcFiles: [],
+            platform: 'linux',
+            adminSettingsPath: path.join(sandbox, 'admin_settings.json')
+          };
+          await fn({ homeDir, envOptions });
+        } finally {
+          fs.rmSync(sandbox, { recursive: true, force: true });
+        }
+      });
+    };
+    const runHub = async (answers, envOptions, extra = {}) => {
+      const queue = [...answers];
+      const input = new PassThrough();
+      const chunks = [];
+      const output = {
+        write(s) {
+          const text = String(s);
+          chunks.push(text);
+          if (text.endsWith(': ') && queue.length > 0) {
+            const next = queue.shift();
+            setImmediate(() => input.write(next + '\n'));
+          }
+          return true;
+        }
+      };
+      const res = await wizard.runSetup([], { input, output, errOutput: output, isTTY: true, envOptions, ...extra });
+      return { res, queue, text: chunks.join('') };
+    };
+    const loop = (name) => ({ provider: 'custom', url: 'http://127.0.0.1:1/v1', wireProtocol: 'openai', apiKeyEnv: '', models: [name] });
+
+    await test('hub: custom remote endpoint defaults apiKeyEnv, persists, activates and prints --reveal hint', async () => {
+      await withHubSandbox(async ({ envOptions }) => {
+        const transport = async () => ({ statusCode: 200, statusMessage: 'OK', headers: {}, body: JSON.stringify({ data: [] }) });
+        const { res, queue, text } = await runHub(
+          ['1', 'custom', 'my-gw', 'https://gw.example.com/v1', '1', 'sk-custom-key-1234567890', '', '', 'model-x', 'n', 'Y', '0'],
+          envOptions,
+          { transport }
+        );
+        assert.strictEqual(res.exitCode, 0, text);
+        assert.strictEqual(queue.length, 0, `unconsumed answers: ${queue.join(',')}`);
+        assert(text.includes('OS Env Mode'), 'hub status header missing');
+        const expectedEnv = presets.defaultEnvForProvider('my-gw');
+        assert(expectedEnv, 'defaultEnvForProvider must return a name');
+        const cfg = envStore.loadGatewayConfig(envOptions);
+        assert.strictEqual(cfg.profiles['my-gw'].apiKeyEnv, expectedEnv);
+        assert.strictEqual(cfg.activeProfile, 'my-gw');
+        assert.strictEqual(cfg.active, true);
+        const status = envStore.getGatewayStatus(envOptions);
+        assert.strictEqual(status.mode, 'GATEWAY_XOR');
+        const stored = envStore.readPersistedEnvMap(undefined, envOptions).vars;
+        assert.strictEqual(stored.AGY_LLM_GATEWAY_URL, 'https://gw.example.com/v1');
+        assert.strictEqual(stored.AGY_LLM_GATEWAY_MODELS, 'model-x');
+        assert.strictEqual(envStore.readPersistedEnvMap([expectedEnv], envOptions).vars[expectedEnv], 'sk-custom-key-1234567890');
+        assert(text.includes('--reveal'), 'reload hint must use --reveal');
+        assert(!text.includes('sk-custom-key-1234567890'), 'plaintext key must never be printed');
+        assert(!fs.readFileSync(envOptions.configPath, 'utf8').includes('sk-custom-key'), 'gateway.json must not hold secrets');
+        delete process.env[expectedEnv];
+      });
+    });
+
+    await test('hub: switch, edit models, status+doctor, delete and gateway OFF loop until [0] Exit', async () => {
+      await withHubSandbox(async ({ envOptions }) => {
+        envStore.saveGatewayConfig(
+          { version: 2, activeProfile: 'first', active: false, profiles: { first: loop('m-a'), second: loop('m-b') } },
+          envOptions
+        );
+        let doctorCalls = 0;
+        const { res, queue, text } = await runHub(
+          ['2', 'second', '3', '', 'm1,m2', '5', '6', 'first', 'y', '7', '0'],
+          envOptions,
+          { runDoctor: async () => { doctorCalls++; } }
+        );
+        assert.strictEqual(res.exitCode, 0, text);
+        assert.strictEqual(queue.length, 0, `unconsumed answers: ${queue.join(',')}`);
+        assert.strictEqual(doctorCalls, 1);
+        const cfg = envStore.loadGatewayConfig(envOptions);
+        assert.deepStrictEqual(Object.keys(cfg.profiles), ['second']);
+        assert.deepStrictEqual(cfg.profiles.second.models, ['m1', 'm2']);
+        assert.strictEqual(cfg.active, false);
+        assert.strictEqual(envStore.getGatewayStatus(envOptions).mode, 'NATIVE');
+        assert(text.includes('GATEWAY_XOR'), 'header must show GATEWAY_XOR while active');
+      });
+    });
+
+    await test('hub: editing models with gateway OFF offers activation', async () => {
+      await withHubSandbox(async ({ envOptions }) => {
+        envStore.saveGatewayConfig(
+          { version: 2, activeProfile: 'solo', active: false, profiles: { solo: loop('m-a') } },
+          envOptions
+        );
+        const { res, queue, text } = await runHub(['3', '', 'm9', 'Y', '0'], envOptions);
+        assert.strictEqual(res.exitCode, 0, text);
+        assert.strictEqual(queue.length, 0);
+        const status = envStore.getGatewayStatus(envOptions);
+        assert.strictEqual(status.mode, 'GATEWAY_XOR');
+        assert.deepStrictEqual(status.models, ['m9']);
+      });
+    });
+
+    await test('hub: imports legacy providers.json and survives bad actions', async () => {
+      await withHubSandbox(async ({ homeDir, envOptions }) => {
+        fs.mkdirSync(homeDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(homeDir, 'providers.json'),
+          JSON.stringify({ providers: { legacy1: { baseURL: 'http://127.0.0.1:11434/v1', models: ['llama3'] }, bad: { baseURL: 'nope' } } })
+        );
+        const { res, queue, text } = await runHub(['9', '8', '0'], envOptions);
+        assert.strictEqual(res.exitCode, 0, text);
+        assert.strictEqual(queue.length, 0);
+        assert(text.includes('[8] Import legacy'), 'menu must list [8] when providers.json exists');
+        const cfg = envStore.loadGatewayConfig(envOptions);
+        assert.deepStrictEqual(Object.keys(cfg.profiles), ['legacy1']);
+        assert(text.includes('Unknown selection'));
+      });
+    });
+
+    await test('env-store: activateGateway read-back and deleteProfile', async () => {
+      await withHubSandbox(async ({ envOptions }) => {
+        envStore.saveGatewayConfig(
+          { version: 2, activeProfile: 'a', active: false, profiles: { a: loop('m1'), b: loop('m2') } },
+          envOptions
+        );
+        envStore.activateGateway('a', envOptions);
+        assert.doesNotThrow(() => envStore.verifyPersistedGateway({ AGY_LLM_GATEWAY_URL: 'http://127.0.0.1:1/v1' }, envOptions));
+        assert.throws(
+          () => envStore.verifyPersistedGateway({ AGY_LLM_GATEWAY_URL: 'http://127.0.0.1:2/v1' }, envOptions),
+          /Post-write verification failed/
+        );
+        const del = envStore.deleteProfile('a', envOptions);
+        assert.strictEqual(del.wasActive, true);
+        assert.strictEqual(envStore.getGatewayStatus(envOptions).mode, 'NATIVE');
+        assert.deepStrictEqual(Object.keys(envStore.loadGatewayConfig(envOptions).profiles), ['b']);
+        assert.throws(() => envStore.deleteProfile('zzz', envOptions), /not found/);
+      });
+    });
+
+    // --- Regression tests for the agy-pro setup hardening (legacy import, reserved names, purge, read-back) ---
+
+    // Pins fix: importLegacyProviders always returns { imported, skipped, notices } and the hub [8]
+    // path renders notices without crashing (Round-1 seat reproduced a TypeError on res.notices).
+    await test('hub: legacy import returns {imported, skipped, notices} and renders notices with no Error: line (Round-1 TypeError regression)', async () => {
+      const legacyFile = {
+        providers: {
+          'legacy-clean': {
+            baseURL: 'https://clean.example.com/v1',
+            apiKeyEnv: 'MY_GW_API_KEY',
+            apiKey: 'sk-clean-key-00001',
+            models: ['m1', 'm2']
+          },
+          'legacy-hdr': {
+            baseURL: 'https://hdr.example.com/v1',
+            headers: 'Authorization: Bearer sk-hdr-leg-12345\r\nX-Tenant: acme',
+            models: ['m3']
+          }
+        }
+      };
+      await withHubSandbox(async ({ homeDir, envOptions }) => {
+        fs.mkdirSync(homeDir, { recursive: true });
+        fs.writeFileSync(path.join(homeDir, 'providers.json'), JSON.stringify(legacyFile));
+        const direct = wizard.importLegacyProviders(envOptions);
+        assert(Array.isArray(direct.imported), 'imported must be an array');
+        assert(Array.isArray(direct.skipped), 'skipped must be an array');
+        assert(Array.isArray(direct.notices), 'notices must be an array (Round-1 TypeError regression)');
+        assert.deepStrictEqual(direct.imported.sort(), ['legacy-clean', 'legacy-hdr']);
+        assert(direct.notices.some((n) => n.includes('Removed Authorization header')), 'authorization notice expected');
+      });
+      await withHubSandbox(async ({ homeDir, envOptions }) => {
+        fs.mkdirSync(homeDir, { recursive: true });
+        fs.writeFileSync(path.join(homeDir, 'providers.json'), JSON.stringify(legacyFile));
+        const { res, queue, text } = await runHub(['8', '0'], envOptions);
+        assert.strictEqual(res.exitCode, 0, text);
+        assert.strictEqual(queue.length, 0, `unconsumed answers: ${queue.join(',')}`);
+        assert(!text.includes('Error:'), `hub import must not print an Error: line, got:\n${text}`);
+        assert(text.includes('Imported 2 profile(s)'), 'both legacy entries must import');
+        assert(text.includes('Notice:'), 'notices must be rendered');
+        assert(text.includes('Removed Authorization header'), 'authorization notice must be rendered');
+      });
+    });
+
+    // Pins fix: legacy Go registry model objects ({ id, family, tags, enabled, contextLength })
+    // normalize to ID strings with the Go Enabled *bool semantics from agy-pro/internal/providers/
+    // providers.go:144,151 (IsEnabled(): m.Enabled == nil || *m.Enabled) — enabled:true imports,
+    // enabled:false is skipped (excluded, never imported as active), a missing (nil) enabled imports;
+    // mixed string/object arrays normalize; entries without an id drop out.
+    await test('legacy import normalizes Go registry model objects with Go Enabled *bool semantics (false skipped, nil/true kept), mixed arrays, and drops invalid entries', async () => {
+      await withHubSandbox(async ({ homeDir, envOptions }) => {
+        fs.mkdirSync(homeDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(homeDir, 'providers.json'),
+          JSON.stringify({
+            providers: {
+              'go-shaped': {
+                baseURL: 'https://go.example.com/v1',
+                models: [
+                  { id: 'model-a', family: 'x', tags: ['a'], enabled: true, contextLength: 8192 },
+                  { id: 'model-b', family: 'y', tags: [], enabled: false, contextLength: 4096 },
+                  { id: 'model-c', family: 'z', tags: [] }
+                ]
+              },
+              mixed: {
+                baseURL: 'https://mixed.example.com/v1',
+                models: ['plain-1', { id: 'obj-1' }, { noId: 'skip-me' }, 42, null]
+              }
+            }
+          })
+        );
+        const res = wizard.importLegacyProviders(envOptions);
+        assert.deepStrictEqual(res.imported.sort(), ['go-shaped', 'mixed']);
+        const cfg = envStore.loadGatewayConfig(envOptions);
+        assert.deepStrictEqual(
+          cfg.profiles['go-shaped'].models,
+          ['model-a', 'model-c'],
+          'enabled:true (model-a) and missing/nil enabled (model-c) import; enabled:false (model-b) is excluded per providers.go IsEnabled()'
+        );
+        assert.deepStrictEqual(cfg.profiles.mixed.models, ['plain-1', 'obj-1', '42']);
+      });
+    });
+
+    // Pins fix: apiKeyEnv reserved-name hardening (shell hooks + AGY_LLM_GATEWAY_* control plane +
+    // agy-pro storage inputs) while auto-generated AGY_PRO_GATEWAY_* names, realistic 71-char
+    // UPPER_SNAKE_KEY names, and the 96-char cap keep working.
+    await test('validator.js rejects reserved env names and over-long apiKeyEnv but accepts auto-generated and 71-char names', () => {
+      const reserved = [
+        'AGY_LLM_GATEWAY_URL',
+        'AGY_LLM_GATEWAY_MODELS',
+        'PROMPT_COMMAND',
+        'GIT_SSH_COMMAND',
+        'PYTHONSTARTUP',
+        'LESSOPEN',
+        'NPM_CONFIG_SCRIPT_SHELL',
+        'JDK_JAVA_OPTIONS',
+        'PSMODULEPATH',
+        'ZDOTDIR',
+        'AGY_PRO_HOME'
+      ];
+      for (const name of reserved) {
+        assert.strictEqual(validator.validateEnvName(name).valid, false, `${name} must be rejected`);
+      }
+      assert.strictEqual(validator.validateEnvName('AGY_PRO_GATEWAY_WORK_API_KEY').valid, true);
+      const realistic71 = 'CORP_GATEWAY_TEAM_ALPHA' + '_'.repeat(40) + '_API_KEY';
+      assert.strictEqual(realistic71.length, 71);
+      assert.strictEqual(validator.validateEnvName(realistic71).valid, true, 'realistic 71-char name must pass');
+      assert.strictEqual(validator.validateEnvName('A'.repeat(97)).valid, false, '97-char name must exceed the 96-char cap');
+    });
+
+    // Pins fix: default import never overwrites an existing profile (skip + notice, values intact),
+    // and the hub [8] overwrite-confirmation decline keeps existing profiles too.
+    await test('legacy import conflict: single-arg call skips by default with notice; hub decline keeps existing profile', async () => {
+      await withHubSandbox(async ({ homeDir, envOptions }) => {
+        fs.mkdirSync(homeDir, { recursive: true });
+        envStore.saveGatewayConfig(
+          { version: 2, activeProfile: 'dup', active: false, profiles: { dup: loop('orig-model') } },
+          envOptions
+        );
+        fs.writeFileSync(
+          path.join(homeDir, 'providers.json'),
+          JSON.stringify({ providers: { dup: { baseURL: 'https://new.example.com/v1', models: ['new-model'] } } })
+        );
+        const direct = wizard.importLegacyProviders(envOptions);
+        assert.deepStrictEqual(direct.imported, []);
+        assert.deepStrictEqual(direct.skipped, ['dup']);
+        assert(direct.notices.some((n) => n.includes('already exists; skipped')), 'skip notice expected');
+        const kept = envStore.loadGatewayConfig(envOptions).profiles.dup;
+        assert.strictEqual(kept.url, 'http://127.0.0.1:1/v1', 'existing profile URL must be unchanged');
+        assert.deepStrictEqual(kept.models, ['orig-model'], 'existing profile models must be unchanged');
+
+        const { res, queue, text } = await runHub(['8', 'n', '0'], envOptions);
+        assert.strictEqual(res.exitCode, 0, text);
+        assert.strictEqual(queue.length, 0, `unconsumed answers: ${queue.join(',')}`);
+        assert(text.includes('Keeping existing profiles'), 'declining the overwrite prompt must keep existing profiles');
+        assert(text.includes('Notice:'), 'skip notice must be rendered on the hub path');
+        assert.strictEqual(envStore.loadGatewayConfig(envOptions).profiles.dup.url, 'http://127.0.0.1:1/v1');
+      });
+    });
+
+    // Pins fix: two legacy entries sharing one managed apiKeyEnv (DEEPSEEK_API_KEY, a
+    // provider-catalog name that survives the Round-4 default-deny) with different plain keys
+    // import successfully, post exactly one in-flight conflict notice, and the persisted store
+    // keeps the FIRST key.
+    await test('legacy import in-flight secret conflict keeps the first key and posts exactly one notice', async () => {
+      await withHubSandbox(async ({ homeDir, envOptions }) => {
+        fs.mkdirSync(homeDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(homeDir, 'providers.json'),
+          JSON.stringify({
+            providers: {
+              alpha: { baseURL: 'https://alpha.example.com/v1', apiKeyEnv: 'DEEPSEEK_API_KEY', apiKey: 'sk-first-key-0001', models: ['m1'] },
+              beta: { baseURL: 'https://beta.example.com/v1', apiKeyEnv: 'DEEPSEEK_API_KEY', apiKey: 'sk-second-key-002', models: ['m2'] }
+            }
+          })
+        );
+        const res = wizard.importLegacyProviders(envOptions);
+        assert.deepStrictEqual(res.imported.sort(), ['alpha', 'beta']);
+        assert.strictEqual(res.notices.length, 1, `expected exactly one conflict notice, got: ${res.notices.join(' | ')}`);
+        assert(res.notices[0].includes('kept the first key'), 'in-flight conflict notice expected');
+        assert.strictEqual(
+          envStore.readPersistedEnvMap(['DEEPSEEK_API_KEY'], envOptions).vars.DEEPSEEK_API_KEY,
+          'sk-first-key-0001',
+          'persisted store must keep the first legacy key'
+        );
+        const cfg = envStore.loadGatewayConfig(envOptions);
+        assert.strictEqual(cfg.profiles.alpha.apiKeyEnv, 'DEEPSEEK_API_KEY', 'catalog name must survive the import (default-deny keeps it)');
+        assert.strictEqual(cfg.profiles.beta.apiKeyEnv, 'DEEPSEEK_API_KEY', 'catalog name must survive the import (default-deny keeps it)');
+      });
+    });
+
+    // Pins fix: deleteProfile purges only agy-pro-owned auto-generated env names (AGY_PRO_GATEWAY_<PROFILE>_API_KEY).
+    // Custom shared names (MY_SHARED_KEY) and provider-default names (DEEPSEEK_API_KEY) are user-owned and preserved.
+    await test('deleteProfile purges only agy-pro-owned auto env names; shared custom and provider-default names survive', async () => {
+      await withSavedEnv(['AGY_PRO_GATEWAY_WORK_API_KEY'], async () => {
+        await withHubSandbox(async ({ envOptions }) => {
+          const mk = (apiKeyEnv) => ({
+            provider: 'custom',
+            url: 'http://127.0.0.1:1/v1',
+            wireProtocol: 'openai',
+            apiKeyEnv,
+            models: ['m1'],
+            caCert: '',
+            headers: ''
+          });
+          envStore.saveGatewayConfig(
+            {
+              version: 2,
+              activeProfile: '',
+              active: false,
+              profiles: {
+                work: mk('AGY_PRO_GATEWAY_WORK_API_KEY'),
+                'shared-a': mk('MY_SHARED_KEY'),
+                'shared-b': mk('MY_SHARED_KEY'),
+                deepseek: mk('DEEPSEEK_API_KEY')
+              }
+            },
+            envOptions
+          );
+          envStore.persistEnvMap(
+            {
+              AGY_PRO_GATEWAY_WORK_API_KEY: 'sk-work-000000000001',
+              MY_SHARED_KEY: 'sk-shared-0000000001',
+              DEEPSEEK_API_KEY: 'sk-deep-000000000001'
+            },
+            envOptions
+          );
+
+          const autoName = presets.defaultEnvForProvider('work');
+          assert.strictEqual(autoName, 'AGY_PRO_GATEWAY_WORK_API_KEY');
+          const delAuto = envStore.deleteProfile('work', envOptions);
+          assert.deepStrictEqual(delAuto.purgedEnv, ['AGY_PRO_GATEWAY_WORK_API_KEY']);
+          assert.strictEqual(
+            envStore.readPersistedEnvMap(['AGY_PRO_GATEWAY_WORK_API_KEY'], envOptions).vars.AGY_PRO_GATEWAY_WORK_API_KEY,
+            undefined,
+            'auto-generated key must be purged from the persisted store'
+          );
+
+          const delShared = envStore.deleteProfile('shared-a', envOptions);
+          assert.deepStrictEqual(delShared.purgedEnv, [], 'shared custom name must not be purged');
+          assert.strictEqual(
+            envStore.readPersistedEnvMap(['MY_SHARED_KEY'], envOptions).vars.MY_SHARED_KEY,
+            'sk-shared-0000000001',
+            'shared custom name must survive while other profiles reference it'
+          );
+
+          const delProvider = envStore.deleteProfile('deepseek', envOptions);
+          assert.deepStrictEqual(delProvider.purgedEnv, [], 'provider-default name must not be purged (defense guard)');
+          assert.strictEqual(
+            envStore.readPersistedEnvMap(['DEEPSEEK_API_KEY'], envOptions).vars.DEEPSEEK_API_KEY,
+            'sk-deep-000000000001',
+            'provider-default name must survive profile deletion'
+          );
+        });
+      });
+    });
+
+    // Pins fix: verifyPersistedGateway reports an empty read-back separately from a genuine mismatch
+    // ("read-back could not be confirmed" vs the existing "does not match" message).
+    await test('env-store: verifyPersistedGateway distinguishes empty read-back from genuine mismatch', () => {
+      const expected = { AGY_LLM_GATEWAY_URL: 'https://gw.example.com/v1' };
+      const emptyReadOpts = { platform: 'win32', win32Reader: () => ({ vars: {}, bomVariants: [] }) };
+      assert.throws(
+        () => envStore.verifyPersistedGateway(expected, emptyReadOpts),
+        /read-back could not be confirmed/
+      );
+      const mismatchOpts = {
+        platform: 'win32',
+        win32Reader: () => ({ vars: { AGY_LLM_GATEWAY_URL: 'https://other.example.com/v1' }, bomVariants: [] })
+      };
+      assert.throws(() => envStore.verifyPersistedGateway(expected, mismatchOpts), /does not match/);
+      assert.throws(() => envStore.verifyPersistedGateway(expected, mismatchOpts), /Post-write verification failed/);
+    });
+
+    // Pins fix: imported provider values are stripped of ANSI escape/control sequences, Authorization
+    // headers never land in gateway.json (removal + notice), and a broken providers.json fails with a
+    // generic message that leaks no file snippet.
+    await test('legacy import strips ANSI/control chars from provider, removes Authorization headers, and reports broken JSON generically', async () => {
+      await withHubSandbox(async ({ homeDir, envOptions }) => {
+        fs.mkdirSync(homeDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(homeDir, 'providers.json'),
+          JSON.stringify({
+            providers: {
+              'ansi-corp': {
+                baseURL: 'https://ansi.example.com/v1',
+                provider: 'evil\x1b[31mcorp',
+                headers: 'Authorization: Bearer sk-leg-hdr-secret-1\nX-Keep: keepme',
+                models: ['m1']
+              }
+            }
+          })
+        );
+        const res = wizard.importLegacyProviders(envOptions);
+        assert.deepStrictEqual(res.imported, ['ansi-corp']);
+        const profile = envStore.loadGatewayConfig(envOptions).profiles['ansi-corp'];
+        assert(!profile.provider.includes('\x1b'), 'ANSI escape must be stripped from the provider value');
+        assert.strictEqual(profile.provider, 'evil[31mcorp');
+        assert(!profile.headers.toLowerCase().includes('authorization'), 'Authorization header must not be persisted');
+        assert(profile.headers.includes('X-Keep: keepme'), 'non-auth headers must survive');
+        assert(res.notices.some((n) => n.includes('Removed Authorization header')), 'removal notice expected');
+
+        fs.writeFileSync(path.join(homeDir, 'providers.json'), '{not json', 'utf8');
+        let parseErr = null;
+        try {
+          wizard.importLegacyProviders(envOptions);
+        } catch (err) {
+          parseErr = err;
+        }
+        assert(parseErr, 'broken providers.json must throw');
+        assert(/Failed to parse legacy providers\.json/.test(parseErr.message), `generic parse message expected, got: ${parseErr.message}`);
+        assert(!parseErr.message.includes('{not json'), 'parse error must not leak the raw file snippet');
+      });
+    });
+
+    // Pins fix: hubProbe validates a profile's apiKeyEnv before any network I/O, so a tampered
+    // gateway.json (invalid env name injected) is refused with an error instead of probing.
+    await test('hub: probe refuses a tampered profile with an invalid apiKeyEnv before any network call', async () => {
+      await withHubSandbox(async ({ homeDir, envOptions }) => {
+        fs.mkdirSync(homeDir, { recursive: true });
+        fs.writeFileSync(
+          envOptions.configPath,
+          JSON.stringify({
+            version: 2,
+            activeProfile: '',
+            active: false,
+            profiles: {
+              tampered: {
+                provider: 'custom',
+                url: 'http://127.0.0.1:1/v1',
+                wireProtocol: 'openai',
+                apiKeyEnv: 'AGY_LLM_GATEWAY_URL',
+                models: ['m1'],
+                caCert: '',
+                headers: ''
+              }
+            }
+          })
+        );
+        let probeCalls = 0;
+        const { res, queue, text } = await runHub(['4', 'tampered', '0'], envOptions, {
+          transport: async () => {
+            probeCalls++;
+            return { statusCode: 200, statusMessage: 'OK', headers: {}, body: '{}' };
+          }
+        });
+        assert.strictEqual(res.exitCode, 0, text);
+        assert.strictEqual(queue.length, 0, `unconsumed answers: ${queue.join(',')}`);
+        assert(text.includes('Probe refused'), `probe must be refused for an invalid apiKeyEnv, got:\n${text}`);
+        assert.strictEqual(probeCalls, 0, 'no network probe may run when apiKeyEnv is invalid');
+      });
+    });
+
+    // --- Round-3 regression tests (wizard + validator/env-store + wiring) ---
+
+    // Pins fix: hubProbe consent gate for unmanaged apiKeyEnv names under the Round-4 unified
+    // policy (requestUnmanagedEnvConsent). An agy-pro generated name (AGY_PRO_GATEWAY_<PROFILE>_API_KEY)
+    // probes without a confirmation prompt on any URL; a provider-catalog name probes silently ONLY
+    // when the profile URL targets that provider's catalog host. A catalog name pointed at a
+    // foreign host is a confused deputy and gets the same confirmation prompt as any other
+    // (custom/unmanaged) name; the prompt defaults to N and refuses the probe before the credential
+    // value is sent to the profile URL.
+    await test('hub: probe consent gate skips auto-generated names and catalog names on matching hosts, requires confirmation for unmanaged names and foreign-host catalog names', async () => {
+      await withSavedEnv(['MY_CUSTOM_KEY'], async () => {
+        process.env.MY_CUSTOM_KEY = 'sk-custom-probe-0001';
+        const mk = (apiKeyEnv) => ({
+          provider: 'custom',
+          url: 'https://probe.example.com/v1',
+          wireProtocol: 'openai',
+          apiKeyEnv,
+          models: ['m1'],
+          caCert: '',
+          headers: ''
+        });
+
+        // (a) Auto-generated agy-pro-owned name -> no confirmation prompt, probe runs.
+        await withHubSandbox(async ({ envOptions }) => {
+          envStore.saveGatewayConfig(
+            { version: 2, activeProfile: '', active: false, profiles: { 'auto-gw': mk('AGY_PRO_GATEWAY_AUTO_GW_API_KEY') } },
+            envOptions
+          );
+          let probeCalls = 0;
+          const { res, queue, text } = await runHub(['4', 'auto-gw', '0'], envOptions, {
+            transport: async () => {
+              probeCalls++;
+              return { statusCode: 200, statusMessage: 'OK', headers: {}, body: '{}' };
+            }
+          });
+          assert.strictEqual(res.exitCode, 0, text);
+          assert.strictEqual(queue.length, 0, `unconsumed answers: ${queue.join(',')}`);
+          assert(!text.includes('unmanaged env var'), 'auto-generated name must not trigger the consent prompt');
+          assert.strictEqual(probeCalls, 1, 'probe must run for an auto-generated env name');
+        });
+
+        // (b) Catalog name pointed at a FOREIGN host (confused deputy) -> the Round-4 unified
+        // policy requires a confirmation prompt; the default N (empty answer) refuses the probe
+        // before any network call. This case previously hung the suite: the policy now consumes
+        // one extra answer, so the queue must supply the empty default-N response explicitly.
+        await withHubSandbox(async ({ envOptions }) => {
+          envStore.saveGatewayConfig(
+            { version: 2, activeProfile: '', active: false, profiles: { cat: mk('DEEPSEEK_API_KEY') } },
+            envOptions
+          );
+          let probeCalls = 0;
+          const { res, queue, text } = await runHub(['4', 'cat', '', '0'], envOptions, {
+            transport: async () => {
+              probeCalls++;
+              return { statusCode: 200, statusMessage: 'OK', headers: {}, body: '{}' };
+            }
+          });
+          assert.strictEqual(res.exitCode, 0, text);
+          assert.strictEqual(queue.length, 0, `unconsumed answers: ${queue.join(',')}`);
+          assert(text.includes('unmanaged env var DEEPSEEK_API_KEY'), 'catalog name + foreign host must trigger the consent prompt');
+          assert(text.includes('Probe refused'), 'declining the consent prompt must refuse the probe');
+          assert.strictEqual(probeCalls, 0, 'no network probe may run when consent is declined');
+        });
+
+        // (b-y) Catalog name + foreign host with an explicit "y" -> probe proceeds.
+        await withHubSandbox(async ({ envOptions }) => {
+          envStore.saveGatewayConfig(
+            { version: 2, activeProfile: '', active: false, profiles: { cat: mk('DEEPSEEK_API_KEY') } },
+            envOptions
+          );
+          let probeCalls = 0;
+          const { res, queue, text } = await runHub(['4', 'cat', 'y', '0'], envOptions, {
+            transport: async () => {
+              probeCalls++;
+              return { statusCode: 200, statusMessage: 'OK', headers: {}, body: '{}' };
+            }
+          });
+          assert.strictEqual(res.exitCode, 0, text);
+          assert.strictEqual(queue.length, 0, `unconsumed answers: ${queue.join(',')}`);
+          assert.strictEqual(probeCalls, 1, 'probe must run after an explicit y consent for a foreign-host catalog name');
+          assert(text.includes('Connection succeeded'), text);
+        });
+
+        // (b-match) Catalog name whose URL targets the catalog host -> no prompt, probe runs.
+        await withHubSandbox(async ({ envOptions }) => {
+          envStore.saveGatewayConfig(
+            {
+              version: 2,
+              activeProfile: '',
+              active: false,
+              profiles: { cat: { ...mk('DEEPSEEK_API_KEY'), url: 'https://api.deepseek.com/v1' } }
+            },
+            envOptions
+          );
+          let probeCalls = 0;
+          const { res, queue, text } = await runHub(['4', 'cat', '0'], envOptions, {
+            transport: async () => {
+              probeCalls++;
+              return { statusCode: 200, statusMessage: 'OK', headers: {}, body: '{}' };
+            }
+          });
+          assert.strictEqual(res.exitCode, 0, text);
+          assert.strictEqual(queue.length, 0, `unconsumed answers: ${queue.join(',')}`);
+          assert(!text.includes('unmanaged env var'), 'catalog name on its own host must not trigger the consent prompt');
+          assert.strictEqual(probeCalls, 1, 'probe must run for a catalog env name on the matching host');
+        });
+
+        // (c) Unmanaged custom name -> confirmation prompt; default N refuses before any network call.
+        await withHubSandbox(async ({ envOptions }) => {
+          envStore.saveGatewayConfig(
+            { version: 2, activeProfile: '', active: false, profiles: { custom: mk('MY_CUSTOM_KEY') } },
+            envOptions
+          );
+          let probeCalls = 0;
+          const { res, queue, text } = await runHub(['4', 'custom', '', '0'], envOptions, {
+            transport: async () => {
+              probeCalls++;
+              return { statusCode: 200, statusMessage: 'OK', headers: {}, body: '{}' };
+            }
+          });
+          assert.strictEqual(res.exitCode, 0, text);
+          assert.strictEqual(queue.length, 0, `unconsumed answers: ${queue.join(',')}`);
+          assert(text.includes('unmanaged env var MY_CUSTOM_KEY'), 'consent prompt must name the unmanaged env var');
+          assert(text.includes('Probe refused'), 'declining the consent prompt must refuse the probe');
+          assert.strictEqual(probeCalls, 0, 'no network probe may run when consent is declined');
+        });
+
+        // (c-y) Unmanaged custom name with explicit "y" -> probe proceeds.
+        await withHubSandbox(async ({ envOptions }) => {
+          envStore.saveGatewayConfig(
+            { version: 2, activeProfile: '', active: false, profiles: { custom: mk('MY_CUSTOM_KEY') } },
+            envOptions
+          );
+          let probeCalls = 0;
+          const { res, queue, text } = await runHub(['4', 'custom', 'y', '0'], envOptions, {
+            transport: async () => {
+              probeCalls++;
+              return { statusCode: 200, statusMessage: 'OK', headers: {}, body: '{}' };
+            }
+          });
+          assert.strictEqual(res.exitCode, 0, text);
+          assert.strictEqual(queue.length, 0, `unconsumed answers: ${queue.join(',')}`);
+          assert.strictEqual(probeCalls, 1, 'probe must run after an explicit y consent');
+          assert(text.includes('Connection succeeded'), text);
+        });
+      });
+    });
+
+    // Pins fix (3 of 3 paths, legacy import): credential-bearing headers (X-Api-Key,
+    // Proxy-Authorization, X-Auth-Token) are stripped before gateway.json is written and a removal
+    // notice is posted; benign headers survive.
+    await test('legacy import strips X-Api-Key / Proxy-Authorization / X-Auth-Token headers with a notice', async () => {
+      await withHubSandbox(async ({ homeDir, envOptions }) => {
+        fs.mkdirSync(homeDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(homeDir, 'providers.json'),
+          JSON.stringify({
+            providers: {
+              'hdr-strip': {
+                baseURL: 'https://hdr.example.com/v1',
+                headers: 'X-Api-Key: sk-leg-xapikey-0001\nProxy-Authorization: Basic bGVnY3JlZA==\r\nX-Auth-Token: tok-leg-auth-0001\nX-Keep: legkeep',
+                models: ['m1']
+              }
+            }
+          })
+        );
+        const res = wizard.importLegacyProviders(envOptions);
+        assert.deepStrictEqual(res.imported, ['hdr-strip']);
+        const profile = envStore.loadGatewayConfig(envOptions).profiles['hdr-strip'];
+        assert.strictEqual(profile.headers, 'X-Keep: legkeep', 'only the benign header may survive');
+        const rawCfg = fs.readFileSync(envOptions.configPath, 'utf8');
+        for (const leaked of ['sk-leg-xapikey-0001', 'bGVnY3JlZA==', 'tok-leg-auth-0001', 'X-Api-Key', 'Proxy-Authorization', 'X-Auth-Token']) {
+          assert(!rawCfg.includes(leaked), `gateway.json must not retain ${leaked}`);
+        }
+        assert(res.notices.some((n) => n.includes('Removed Authorization header')), 'removal notice expected');
+      });
+    });
+
+    // Pins fix (interactive headers prompt path): credential headers pasted at the wizard's
+    // "Extra HTTP headers" prompt never reach gateway.json and a removal notice is printed.
+    await test('interactive wizard strips credential headers from the extra-headers prompt with a notice', async () => {
+      await withHubSandbox(async ({ envOptions }) => {
+        const { res, queue, text } = await runHub(
+          [
+            '1', 'custom', 'hdr-gw', 'https://gw.example.com/v1', '1',
+            'sk-interactive-key-0000001', '',
+            'X-Api-Key: sk-interactive-hdr-0001, X-Keep: keepme',
+            'm1', 'n', 'Y', '0'
+          ],
+          envOptions,
+          { transport: async () => ({ statusCode: 200, statusMessage: 'OK', headers: {}, body: JSON.stringify({ data: [] }) }) }
+        );
+        assert.strictEqual(res.exitCode, 0, text);
+        assert.strictEqual(queue.length, 0, `unconsumed answers: ${queue.join(',')}`);
+        assert(text.includes('Removed credential header(s) from the extra headers'), `strip notice expected, got:\n${text}`);
+        assert(!text.includes('sk-interactive-hdr-0001'), 'stripped header secret must never be printed');
+        const profile = envStore.loadGatewayConfig(envOptions).profiles['hdr-gw'];
+        assert.strictEqual(profile.headers, 'X-Keep: keepme');
+        assert(!fs.readFileSync(envOptions.configPath, 'utf8').includes('sk-interactive-hdr-0001'), 'gateway.json must not hold the credential header');
+      });
+    });
+
+    // Pins fix (--headers flag path): credential headers passed via --headers are stripped before
+    // the profile is saved and a removal notice is printed to stdout.
+    await test('setup --yes strips credential headers from --headers with a notice', async () => {
+      await withHubSandbox(async ({ envOptions }) => {
+        const out = makeOut();
+        const err = makeOut();
+        const code = await proCli.runCli(
+          [
+            'setup', '--yes', '--provider', 'custom', '--profile', 'flag-gw',
+            '--url', 'http://127.0.0.1:1/v1', '--models', 'm1',
+            '--headers', 'Proxy-Authorization: Basic cHJveHk=, X-Auth-Token: tok-flag-00001, X-Keep: keepflag'
+          ],
+          { output: out, errOutput: err, isTTY: false, envOptions }
+        );
+        assert.strictEqual(code, 0, `setup --yes failed: ${out.text()} ${err.text()}`);
+        assert(out.text().includes('Removed credential header(s) from --headers'), `strip notice expected, got:\n${out.text()}`);
+        assert(!out.text().includes('cHJveHk=') && !out.text().includes('tok-flag-00001'), 'stripped header secrets must never be printed');
+        const profile = envStore.loadGatewayConfig(envOptions).profiles['flag-gw'];
+        assert.strictEqual(profile.headers, 'X-Keep: keepflag');
+        assert(!fs.readFileSync(envOptions.configPath, 'utf8').includes('cHJveHk='), 'gateway.json must not hold the credential header');
+      });
+    });
+
+    // Pins fix: legacy import preserves managed explicit apiKeyEnv names — provider-catalog
+    // names (DEEPSEEK_API_KEY) and agy-pro-owned auto-generated names (AGY_PRO_GATEWAY_*).
+    // Any other explicit name is default-denied under the Round-4 policy: it falls back to the
+    // generated AGY_PRO_GATEWAY_<PROFILE>_API_KEY name with a notice, and the notice must carry
+    // only the masked form of the rejected name (never the raw string). An invalid explicit name
+    // still falls back with the rejection notice.
+    await test('legacy import preserves managed catalog/owned apiKeyEnv names and default-denies unmanaged names to the generated name with a masked notice', async () => {
+      await withHubSandbox(async ({ homeDir, envOptions }) => {
+        fs.mkdirSync(homeDir, { recursive: true });
+        const longName = 'MY_VERY_LONG_CUSTOM_API_KEY';
+        assert.strictEqual(longName.length, 27, 'MY_VERY_LONG_CUSTOM_API_KEY is 27 chars (>=24, past the looksLikeAPIKey length heuristic)');
+        fs.writeFileSync(
+          path.join(homeDir, 'providers.json'),
+          JSON.stringify({
+            providers: {
+              'cat-name': { baseURL: 'https://cat.example.com/v1', apiKeyEnv: 'DEEPSEEK_API_KEY', models: ['m1'] },
+              'owned-name': { baseURL: 'https://owned.example.com/v1', apiKeyEnv: 'AGY_PRO_GATEWAY_OWNED_NAME_API_KEY', models: ['m1'] },
+              'long-name': { baseURL: 'https://long.example.com/v1', apiKeyEnv: longName, models: ['m1'] },
+              'bad-name': { baseURL: 'https://bad.example.com/v1', apiKeyEnv: 'AGY_LLM_GATEWAY_URL', models: ['m1'] }
+            }
+          })
+        );
+        const res = wizard.importLegacyProviders(envOptions);
+        assert.deepStrictEqual(res.imported.sort(), ['bad-name', 'cat-name', 'long-name', 'owned-name']);
+        const cfg = envStore.loadGatewayConfig(envOptions);
+        assert.strictEqual(cfg.profiles['cat-name'].apiKeyEnv, 'DEEPSEEK_API_KEY', 'provider-catalog name must be preserved');
+        assert.strictEqual(cfg.profiles['owned-name'].apiKeyEnv, 'AGY_PRO_GATEWAY_OWNED_NAME_API_KEY', 'agy-pro-owned name must be preserved');
+        assert.strictEqual(
+          cfg.profiles['long-name'].apiKeyEnv,
+          presets.defaultEnvForProvider('long-name'),
+          'unmanaged explicit name must fall back to the generated name (Round-4 default-deny)'
+        );
+        assert.strictEqual(presets.defaultEnvForProvider('long-name'), 'AGY_PRO_GATEWAY_LONG_NAME_API_KEY');
+        assert(
+          res.notices.some((n) => n.includes('legacy apiKeyEnv "MY_VE****" is not managed by agy-pro; using generated AGY_PRO_GATEWAY_LONG_NAME_API_KEY.')),
+          'default-deny fallback notice (masked name only) expected'
+        );
+        assert(
+          !res.notices.some((n) => n.includes(longName)),
+          'the raw unmanaged name must never appear in a notice'
+        );
+        assert(
+          !res.notices.some((n) => n.includes('DEEPSEEK_API_KEY') && n.includes('not managed')),
+          'a preserved catalog name must not produce a default-deny notice'
+        );
+        assert(
+          !res.notices.some((n) => n.includes('AGY_PRO_GATEWAY_OWNED_NAME_API_KEY') && n.includes('not managed')),
+          'a preserved owned name must not produce a default-deny notice'
+        );
+        assert.strictEqual(
+          cfg.profiles['bad-name'].apiKeyEnv,
+          presets.defaultEnvForProvider('bad-name'),
+          'invalid explicit name must fall back to the generated name'
+        );
+        assert.strictEqual(presets.defaultEnvForProvider('bad-name'), 'AGY_PRO_GATEWAY_BAD_NAME_API_KEY');
+        assert(
+          res.notices.some((n) => n.includes('legacy apiKeyEnv "AGY_L****" rejected')),
+          'rejection notice with the masked reserved name expected'
+        );
+      });
+    });
+
+    // Pins fix: deleteProfile wasOn contract — wasOn is true only when the deleted profile was both
+    // the active pointer and gateway-active (active:true); an active-but-OFF profile deletes with
+    // wasOn:false, and the hub wording says "already OFF" (never "it was active").
+    await test('deleteProfile wasOn is true only for active+ON; hub reports active-but-OFF as "already OFF"', async () => {
+      const remote = (apiKeyEnv) => ({
+        provider: 'custom',
+        url: 'https://onp.example.com/v1',
+        wireProtocol: 'openai',
+        apiKeyEnv,
+        models: ['m1'],
+        caCert: '',
+        headers: ''
+      });
+      await withHubSandbox(async ({ envOptions }) => {
+        // active + ON -> wasOn true
+        envStore.saveGatewayConfig(
+          { version: 2, activeProfile: 'onp', active: true, profiles: { onp: remote('AGY_PRO_GATEWAY_ONP_API_KEY'), offp: loop('m2') } },
+          envOptions
+        );
+        const delOn = envStore.deleteProfile('onp', envOptions);
+        assert.strictEqual(delOn.wasActive, true);
+        assert.strictEqual(delOn.wasOn, true, 'active+ON deletion must report wasOn:true');
+
+        // active pointer but gateway OFF -> wasOn false, wasActive true
+        envStore.saveGatewayConfig(
+          { version: 2, activeProfile: 'offp', active: false, profiles: { offp: loop('m2'), inact: loop('m3') } },
+          envOptions
+        );
+        const delOff = envStore.deleteProfile('offp', envOptions);
+        assert.strictEqual(delOff.wasActive, true);
+        assert.strictEqual(delOff.wasOn, false, 'active-but-OFF deletion must report wasOn:false');
+
+        // inactive profile -> wasOn false, wasActive false
+        envStore.saveGatewayConfig(
+          { version: 2, activeProfile: 'keeper', active: false, profiles: { keeper: loop('m4'), inact: loop('m3') } },
+          envOptions
+        );
+        const delInact = envStore.deleteProfile('inact', envOptions);
+        assert.strictEqual(delInact.wasActive, false);
+        assert.strictEqual(delInact.wasOn, false, 'inactive deletion must report wasOn:false');
+      });
+      await withHubSandbox(async ({ envOptions }) => {
+        envStore.saveGatewayConfig(
+          { version: 2, activeProfile: 'offp', active: false, profiles: { offp: loop('m2') } },
+          envOptions
+        );
+        const { res, queue, text } = await runHub(['6', 'offp', 'y', '0'], envOptions);
+        assert.strictEqual(res.exitCode, 0, text);
+        assert.strictEqual(queue.length, 0, `unconsumed answers: ${queue.join(',')}`);
+        assert(text.includes('Deleted profile "offp".'), text);
+        assert(text.includes('Gateway was already OFF; active profile cleared.'), 'active-but-OFF wording expected');
+        assert(!text.includes('it was active'), 'active-but-OFF deletion must not claim the gateway was active');
+      });
+      await withHubSandbox(async ({ envOptions }) => {
+        envStore.saveGatewayConfig(
+          { version: 2, activeProfile: 'onp', active: true, profiles: { onp: remote('AGY_PRO_GATEWAY_ONP_API_KEY') } },
+          envOptions
+        );
+        const { res, queue, text } = await runHub(['6', 'onp', 'y', '0'], envOptions);
+        assert.strictEqual(res.exitCode, 0, text);
+        assert.strictEqual(queue.length, 0, `unconsumed answers: ${queue.join(',')}`);
+        assert(text.includes('Gateway turned OFF (it was active).'), 'active+ON wording expected');
+      });
+    });
+
+    // Pins fix: a poisoned ACTIVE profile (apiKeyEnv hand-injected as AGY_LLM_GATEWAY_API_KEY, which
+    // the reserved-name hardening rejects) must not trap gateway off / delete / switch: each path
+    // clears the invalid name in a repair write, records clearedApiKeyEnv, and prints only the
+    // masked form — the injected original key value never appears in any output.
+    await test('poisoned active profile recovers via gateway off / delete / switch with masked-only clearedApiKeyEnv output', async () => {
+      await withHubSandbox(async ({ homeDir, envOptions }) => {
+        fs.mkdirSync(homeDir, { recursive: true });
+        const poisonedConfig = () => ({
+          version: 2,
+          activeProfile: 'poison',
+          active: true,
+          profiles: {
+            poison: {
+              provider: 'custom',
+              url: 'https://poison.example.com/v1',
+              wireProtocol: 'openai',
+              apiKeyEnv: 'AGY_LLM_GATEWAY_API_KEY',
+              models: ['m1'],
+              caCert: '',
+              headers: ''
+            },
+            healthy: loop('m2')
+          }
+        });
+        const writePoisoned = () =>
+          fs.writeFileSync(envOptions.configPath, JSON.stringify(poisonedConfig(), null, 2), 'utf8');
+        const SENTINEL = 'sk-poisoned-secret-0001';
+
+        // (a) gateway off (deactivateGateway, keepState) clears env, records clearedApiKeyEnv, disk apiKeyEnv:""
+        writePoisoned();
+        process.env.AGY_LLM_GATEWAY_API_KEY = SENTINEL;
+        const offRes = envStore.deactivateGateway({ ...envOptions, keepState: true });
+        assert.strictEqual(offRes.clearedApiKeyEnv.length, 1, 'clearedApiKeyEnv must record the poisoned profile');
+        assert.strictEqual(offRes.clearedApiKeyEnv[0].profile, 'poison');
+        assert.strictEqual(offRes.clearedApiKeyEnv[0].maskedApiKeyEnv, 'AGY_L****', 'only the masked form may be recorded');
+        assert(!Object.prototype.hasOwnProperty.call(process.env, 'AGY_LLM_GATEWAY_API_KEY'), 'gateway off must clear the env');
+        const cfgAfterOff = envStore.loadGatewayConfig(envOptions);
+        assert.strictEqual(cfgAfterOff.active, false);
+        assert.strictEqual(cfgAfterOff.profiles.poison.apiKeyEnv, '', 'disk apiKeyEnv must be cleared to empty string');
+
+        // (b) deleting the poisoned profile succeeds without a throw
+        writePoisoned();
+        const delRes = envStore.deleteProfile('poison', envOptions);
+        assert.strictEqual(delRes.deleted, 'poison');
+        assert.deepStrictEqual(Object.keys(envStore.loadGatewayConfig(envOptions).profiles), ['healthy']);
+
+        // (c) switching to another profile succeeds without a throw and repairs the poisoned one
+        writePoisoned();
+        const actRes = envStore.activateGateway('healthy', envOptions);
+        assert.strictEqual(actRes.profileName, 'healthy');
+        assert.strictEqual(actRes.clearedApiKeyEnv.length, 1, 'switch must repair and report the poisoned profile');
+        assert.strictEqual(envStore.loadGatewayConfig(envOptions).profiles.poison.apiKeyEnv, '');
+
+        // Hub [7] gateway-off path prints the human warning with the masked value only
+        writePoisoned();
+        process.env.AGY_LLM_GATEWAY_API_KEY = SENTINEL;
+        const hubOff = await runHub(['7', '0'], envOptions);
+        assert.strictEqual(hubOff.res.exitCode, 0, hubOff.text);
+        assert.strictEqual(hubOff.queue.length, 0, `unconsumed answers: ${hubOff.queue.join(',')}`);
+        assert(hubOff.text.includes('Warning: cleared invalid apiKeyEnv for profile "poison"'), `human warning expected, got:\n${hubOff.text}`);
+        assert(hubOff.text.includes('"AGY_L****"'), 'masked apiKeyEnv must be printed');
+        assert(!hubOff.text.includes(SENTINEL), 'injected key value must never appear in hub output');
+
+        // Hub [2] switch path also reports the repair without leaking the key
+        writePoisoned();
+        process.env.AGY_LLM_GATEWAY_API_KEY = SENTINEL;
+        const hubSwitch = await runHub(['2', 'healthy', '0'], envOptions);
+        assert.strictEqual(hubSwitch.res.exitCode, 0, hubSwitch.text);
+        assert.strictEqual(hubSwitch.queue.length, 0, `unconsumed answers: ${hubSwitch.queue.join(',')}`);
+        assert(hubSwitch.text.includes('Activated gateway profile "healthy".'), hubSwitch.text);
+        assert(hubSwitch.text.includes('Warning: cleared invalid apiKeyEnv'), 'switch must surface the repair warning');
+        assert(!hubSwitch.text.includes(SENTINEL), 'injected key value must never appear in hub output');
+      });
+    });
+
+    // Pins fix: loadGatewayConfig reports corrupted gateway.json with a generic "Failed to parse"
+    // message that never embeds the raw file-content snippet (V8 parser messages can echo a pasted key).
+    await test('loadGatewayConfig corrupted JSON keeps the Failed to parse prefix and never leaks the file snippet', async () => {
+      await withHubSandbox(async ({ homeDir, envOptions }) => {
+        fs.mkdirSync(homeDir, { recursive: true });
+        const fakeKey = 'sk-fakebrokenkey1234567890';
+        fs.writeFileSync(envOptions.configPath, `{ "profiles": { "x": { "url": "${fakeKey}"`, 'utf8');
+        let err = null;
+        try {
+          envStore.loadGatewayConfig(envOptions);
+        } catch (e) {
+          err = e;
+        }
+        assert(err, 'corrupted gateway.json must throw');
+        assert(err.message.startsWith('Failed to parse'), 'Failed to parse prefix must be preserved');
+        assert(!err.message.includes(fakeKey), 'error message must not contain the raw file snippet');
+      });
+    });
+
+    // Pins fix: validateEnvName Round-3 reserved names — object-prototype keys and prompt/pager/askpass
+    // hooks are rejected — while auto-generated, all 8 provider-catalog preset names and 88-char
+    // auto-generated names stay valid.
+    await test('validator.js Round-3 reserved names (__proto__/constructor/prototype/PS2/pager/askpass/java) rejected; presets and 88-char names accepted', () => {
+      for (const name of ['__proto__', 'constructor', 'prototype', 'PS2', 'GIT_EDITOR', 'PAGER', 'MANPAGER', 'GIT_ASKPASS', '_JAVA_OPTIONS']) {
+        assert.strictEqual(validator.validateEnvName(name).valid, false, `${name} must be rejected`);
+      }
+      assert.strictEqual(validator.validateEnvName('AGY_PRO_GATEWAY_WORK_API_KEY').valid, true);
+      for (const p of presets.KNOWN_PROVIDERS) {
+        assert(p.apiKeyEnv, 'every catalog provider must name its key env var');
+        assert.strictEqual(validator.validateEnvName(p.apiKeyEnv).valid, true, `${p.apiKeyEnv} must stay valid`);
+      }
+      const auto88 = `AGY_PRO_GATEWAY_${'P'.repeat(64)}_API_KEY`;
+      assert.strictEqual(auto88.length, 88);
+      assert.strictEqual(validator.validateEnvName(auto88).valid, true, '88-char auto-generated name must pass');
+    });
+
+    // Pins fix: isEnvReferencedByProfiles compares env names case-insensitively (Windows env var
+    // names are case-insensitive), so a lookup in another case still counts as a reference and the
+    // shared key is not purged.
+    await test('env-store: isEnvReferencedByProfiles ignores case (my_key matches MY_KEY on Windows semantics)', () => {
+      const profiles = { a: { apiKeyEnv: 'MY_KEY' }, b: { apiKeyEnv: 'OTHER_KEY' } };
+      assert.strictEqual(envStore.isEnvReferencedByProfiles(profiles, 'my_key'), true);
+      assert.strictEqual(envStore.isEnvReferencedByProfiles(profiles, 'My_Key'), true);
+      assert.strictEqual(envStore.isEnvReferencedByProfiles(profiles, 'MY_KEY'), true);
+      assert.strictEqual(envStore.isEnvReferencedByProfiles(profiles, 'MY_KEY2'), false);
+      assert.strictEqual(envStore.isEnvReferencedByProfiles({}, 'MY_KEY'), false);
+      assert.strictEqual(envStore.isEnvReferencedByProfiles(profiles, ''), false);
+      const lowerProfiles = { a: { apiKeyEnv: 'my_key' } };
+      assert.strictEqual(envStore.isEnvReferencedByProfiles(lowerProfiles, 'MY_KEY'), true, 'reverse casing must also match');
+    });
+
+    // Pins fix: hubProbe refuses to probe a profile with an empty model list before any network
+    // call, with an explicit message pointing at [3] Edit models.
+    await test('hub: probe refuses a profile with no models before any network call', async () => {
+      await withHubSandbox(async ({ envOptions }) => {
+        envStore.saveGatewayConfig(
+          {
+            version: 2,
+            activeProfile: '',
+            active: false,
+            profiles: {
+              empty: {
+                provider: 'custom',
+                url: 'https://empty.example.com/v1',
+                wireProtocol: 'openai',
+                apiKeyEnv: 'AGY_PRO_GATEWAY_EMPTY_API_KEY',
+                models: [],
+                caCert: '',
+                headers: ''
+              }
+            }
+          },
+          envOptions
+        );
+        let probeCalls = 0;
+        const { res, queue, text } = await runHub(['4', 'empty', '0'], envOptions, {
+          transport: async () => {
+            probeCalls++;
+            return { statusCode: 200, statusMessage: 'OK', headers: {}, body: '{}' };
+          }
+        });
+        assert.strictEqual(res.exitCode, 0, text);
+        assert.strictEqual(queue.length, 0, `unconsumed answers: ${queue.join(',')}`);
+        assert(text.includes('Probe refused'), `probe must be refused for empty models, got:\n${text}`);
+        assert(text.includes('has no models'), 'refusal must explain the empty model list');
+        assert.strictEqual(probeCalls, 0, 'no network probe may run when the profile has no models');
+      });
+    });
+
+    // Pins fix (cli.js wiring): the human `gateway off` path prints the
+    // "Warning: cleared invalid apiKeyEnv" line with the masked value only, while the --json path
+    // stays machine-clean (parseable JSON, no human Warning line, masked form only).
+    await test('cli.js gateway off prints the human cleared-apiKeyEnv warning; --json stays machine-clean', async () => {
+      await withHubSandbox(async ({ homeDir, envOptions }) => {
+        fs.mkdirSync(homeDir, { recursive: true });
+        const SENTINEL = 'sk-poisoned-secret-0001';
+        const writePoisoned = () =>
+          fs.writeFileSync(
+            envOptions.configPath,
+            JSON.stringify(
+              {
+                version: 2,
+                activeProfile: 'poison',
+                active: true,
+                profiles: {
+                  poison: {
+                    provider: 'custom',
+                    url: 'https://poison.example.com/v1',
+                    wireProtocol: 'openai',
+                    apiKeyEnv: 'AGY_LLM_GATEWAY_API_KEY',
+                    models: ['m1'],
+                    caCert: '',
+                    headers: ''
+                  }
+                }
+              },
+              null,
+              2
+            ),
+            'utf8'
+          );
+
+        // Human path: Warning line present, masked only, no sentinel value.
+        writePoisoned();
+        process.env.AGY_LLM_GATEWAY_API_KEY = SENTINEL;
+        const humanOut = makeOut();
+        const humanErr = makeOut();
+        const humanCode = await proCli.runCli(['gateway', 'off'], { output: humanOut, errOutput: humanErr, envOptions });
+        assert.strictEqual(humanCode, 0, `gateway off failed: ${humanOut.text()} ${humanErr.text()}`);
+        assert(humanOut.text().includes('Warning: cleared invalid apiKeyEnv for profile "poison"'), `human warning expected, got:\n${humanOut.text()}`);
+        assert(humanOut.text().includes('"AGY_L****"'), 'masked apiKeyEnv must be printed');
+        assert(!humanOut.text().includes(SENTINEL), 'injected key value must never appear in human output');
+        assert.strictEqual(humanErr.text(), '', 'gateway off human path must not write to errOutput');
+
+        // --json path: parseable JSON, no human Warning line, masked form only.
+        writePoisoned();
+        process.env.AGY_LLM_GATEWAY_API_KEY = SENTINEL;
+        const jsonOut = makeOut();
+        const jsonErr = makeOut();
+        const jsonCode = await proCli.runCli(['gateway', 'off', '--json'], { output: jsonOut, errOutput: jsonErr, envOptions });
+        assert.strictEqual(jsonCode, 0, `gateway off --json failed: ${jsonOut.text()} ${jsonErr.text()}`);
+        const parsed = JSON.parse(jsonOut.text());
+        assert.strictEqual(parsed.ok, true);
+        assert.strictEqual(parsed.mode, 'NATIVE');
+        assert.strictEqual(parsed.clearedApiKeyEnv.length, 1);
+        assert.strictEqual(parsed.clearedApiKeyEnv[0].maskedApiKeyEnv, 'AGY_L****');
+        assert(!jsonOut.text().includes('Warning:'), 'human Warning must not leak into the --json output');
+        assert(!jsonOut.text().includes(SENTINEL), 'injected key value must never appear in --json output');
+      });
+    });
+
+    // --- Round-4 regression tests (unified consent gate, --json leak blocking, default-deny
+    //     import, header-sanitizer residue, notice masking, empty-apiKeyEnv recovery trap,
+    //     reserved-name expansion) ---
+
+    // Pins fix: --json output paths must never carry a secret-shaped apiKeyEnv. gateway off --json
+    // repairs the poisoned profile and reports clearedApiKeyEnv with ONLY {profile, maskedApiKeyEnv}
+    // fields (no raw apiKeyEnv, no error text); gateway on --json refuses at the consent gate with a
+    // masked-only refusal. The raw secret string appears in neither stdout nor stderr.
+    await test('Round-4: gateway off --json and gateway on --json never leak a secret-shaped apiKeyEnv (masked-only clearedApiKeyEnv)', async () => {
+      await withHubSandbox(async ({ homeDir, envOptions }) => {
+        fs.mkdirSync(homeDir, { recursive: true });
+        const SECRET_NAME = 'sk-live-abcdef1234567890';
+        const writePoisoned = () =>
+          fs.writeFileSync(
+            envOptions.configPath,
+            JSON.stringify(
+              {
+                version: 2,
+                activeProfile: 'leak',
+                active: true,
+                profiles: {
+                  leak: {
+                    provider: 'custom',
+                    url: 'https://leak.example.com/v1',
+                    wireProtocol: 'openai',
+                    apiKeyEnv: SECRET_NAME,
+                    models: ['m1'],
+                    caCert: '',
+                    headers: ''
+                  }
+                }
+              },
+              null,
+              2
+            ),
+            'utf8'
+          );
+
+        // gateway off --json: parseable JSON, no raw secret anywhere, masked-only clearedApiKeyEnv.
+        writePoisoned();
+        const offOut = makeOut();
+        const offErr = makeOut();
+        const offCode = await proCli.runCli(['gateway', 'off', '--json'], { output: offOut, errOutput: offErr, envOptions });
+        assert.strictEqual(offCode, 0, `gateway off --json failed: ${offOut.text()} ${offErr.text()}`);
+        assert(!offOut.text().includes(SECRET_NAME), 'raw secret apiKeyEnv must never appear in --json stdout');
+        assert(!offErr.text().includes(SECRET_NAME), 'raw secret apiKeyEnv must never appear in stderr');
+        const offJson = JSON.parse(offOut.text());
+        assert.strictEqual(offJson.ok, true);
+        assert.strictEqual(offJson.clearedApiKeyEnv.length, 1);
+        assert.deepStrictEqual(
+          Object.keys(offJson.clearedApiKeyEnv[0]).sort(),
+          ['maskedApiKeyEnv', 'profile'],
+          'clearedApiKeyEnv entries must carry only {profile, maskedApiKeyEnv}'
+        );
+        assert(!Object.prototype.hasOwnProperty.call(offJson.clearedApiKeyEnv[0], 'apiKeyEnv'), 'raw apiKeyEnv field must be absent');
+        assert.strictEqual(offJson.clearedApiKeyEnv[0].profile, 'leak');
+        assert.strictEqual(offJson.clearedApiKeyEnv[0].maskedApiKeyEnv, 'sk-li****', 'only the masked form may be recorded');
+
+        // gateway on --json: the consent gate refuses a secret-shaped unmanaged name; the refusal
+        // is masked-only and names the consent flag.
+        writePoisoned();
+        const onOut = makeOut();
+        const onErr = makeOut();
+        const onCode = await proCli.runCli(['gateway', 'on', '--json'], { output: onOut, errOutput: onErr, envOptions, isTTY: false });
+        assert.strictEqual(onCode, 1, 'gateway on --json must refuse a secret-shaped apiKeyEnv');
+        assert.strictEqual(onOut.text(), '', 'refusal must not write to stdout');
+        assert(!onErr.text().includes(SECRET_NAME), 'raw secret apiKeyEnv must never appear in the refusal');
+        assert(onErr.text().includes('sk-li****'), 'refusal must show only the masked form');
+        assert(onErr.text().includes('--allow-unmanaged-env'), 'refusal must point at the consent flag');
+      });
+    });
+
+    // Pins fix: the activation consent gate wired into cli.js `gateway on`. (a) An unmanaged env
+    // name on a non-interactive run is refused (exit 1) with the --allow-unmanaged-env hint and no
+    // activation occurs; (b) the flag proceeds; (c) a catalog name on its own catalog host passes
+    // silently (no prompt, exit 0); (d) a catalog name on a foreign host is a confused deputy and
+    // is refused non-interactively.
+    await test('Round-4: gateway on consent gate refuses unmanaged names, honors --allow-unmanaged-env, and trusts catalog names only on their own host', async () => {
+      await withSavedEnv(['MY_CUSTOM_KEY', 'DEEPSEEK_API_KEY'], async () => {
+        const mk = (apiKeyEnv, url) => ({
+          provider: 'custom',
+          url,
+          wireProtocol: 'openai',
+          apiKeyEnv,
+          models: ['m1'],
+          caCert: '',
+          headers: ''
+        });
+
+        // (a) unmanaged name, non-interactive -> refusal exit non-zero + --allow-unmanaged-env hint
+        await withHubSandbox(async ({ envOptions }) => {
+          process.env.MY_CUSTOM_KEY = 'sk-unmanaged-act-0001';
+          envStore.saveGatewayConfig(
+            { version: 2, activeProfile: '', active: false, profiles: { unman: mk('MY_CUSTOM_KEY', 'https://unman.example.com/v1') } },
+            envOptions
+          );
+          const out = makeOut();
+          const err = makeOut();
+          const code = await proCli.runCli(['gateway', 'on', 'unman'], { output: out, errOutput: err, envOptions, isTTY: false });
+          assert.strictEqual(code, 1, 'non-interactive gateway on must refuse an unmanaged env name');
+          assert.strictEqual(out.text(), '', 'refusal must not write to stdout');
+          assert(err.text().includes('unmanaged env var MY_CUSTOM_KEY'), 'refusal must name the unmanaged env var');
+          assert(err.text().includes('--allow-unmanaged-env'), 'refusal must name the escape hatch');
+          assert.strictEqual(envStore.loadGatewayConfig(envOptions).active, false, 'activation must not occur');
+        });
+
+        // (b) --allow-unmanaged-env -> proceeds and persists the gateway env
+        await withHubSandbox(async ({ envOptions }) => {
+          process.env.MY_CUSTOM_KEY = 'sk-unmanaged-act-0001';
+          envStore.saveGatewayConfig(
+            { version: 2, activeProfile: '', active: false, profiles: { unman: mk('MY_CUSTOM_KEY', 'https://unman.example.com/v1') } },
+            envOptions
+          );
+          const out = makeOut();
+          const err = makeOut();
+          const code = await proCli.runCli(['gateway', 'on', 'unman', '--allow-unmanaged-env'], {
+            output: out,
+            errOutput: err,
+            envOptions,
+            isTTY: false
+          });
+          assert.strictEqual(code, 0, `gateway on --allow-unmanaged-env failed: ${out.text()} ${err.text()}`);
+          const cfg = envStore.loadGatewayConfig(envOptions);
+          assert.strictEqual(cfg.active, true);
+          assert.strictEqual(cfg.activeProfile, 'unman');
+          const persisted = envStore.readPersistedEnvMap(['AGY_LLM_GATEWAY_URL', 'MY_CUSTOM_KEY'], envOptions).vars;
+          assert.strictEqual(persisted.AGY_LLM_GATEWAY_URL, 'https://unman.example.com/v1');
+          assert.strictEqual(persisted.MY_CUSTOM_KEY, 'sk-unmanaged-act-0001');
+        });
+
+        // (c) catalog name + matching catalog host -> silent pass, no prompt
+        await withHubSandbox(async ({ envOptions }) => {
+          process.env.DEEPSEEK_API_KEY = 'sk-deepseek-act-0001';
+          envStore.saveGatewayConfig(
+            { version: 2, activeProfile: '', active: false, profiles: { catok: mk('DEEPSEEK_API_KEY', 'https://api.deepseek.com/v1') } },
+            envOptions
+          );
+          const out = makeOut();
+          const err = makeOut();
+          const code = await proCli.runCli(['gateway', 'on', 'catok'], { output: out, errOutput: err, envOptions, isTTY: false });
+          assert.strictEqual(code, 0, `catalog name on matching host must activate without a prompt: ${out.text()} ${err.text()}`);
+          assert(!err.text().includes('unmanaged env var'), 'matching-host catalog name must not be treated as unmanaged');
+          assert.strictEqual(envStore.loadGatewayConfig(envOptions).active, true);
+        });
+
+        // (d) catalog name + foreign host -> non-interactive refusal (confused deputy)
+        await withHubSandbox(async ({ envOptions }) => {
+          envStore.saveGatewayConfig(
+            { version: 2, activeProfile: '', active: false, profiles: { catbad: mk('DEEPSEEK_API_KEY', 'https://evil.example.com/v1') } },
+            envOptions
+          );
+          const out = makeOut();
+          const err = makeOut();
+          const code = await proCli.runCli(['gateway', 'on', 'catbad'], { output: out, errOutput: err, envOptions, isTTY: false });
+          assert.strictEqual(code, 1, 'catalog name on a foreign host must be refused non-interactively');
+          assert(err.text().includes('unmanaged env var DEEPSEEK_API_KEY'), 'foreign-host catalog name must be named in the refusal');
+          assert.strictEqual(envStore.loadGatewayConfig(envOptions).active, false, 'activation must not occur');
+        });
+      });
+    });
+
+    // Pins fix (e): the hub [2] switch path goes through the same consent gate; an interactive
+    // default N (empty answer) refuses activation and the gateway stays OFF.
+    await test('Round-4: hub [2] activation consent gate declines on default N and never activates', async () => {
+      await withSavedEnv(['MY_CUSTOM_KEY'], async () => {
+        process.env.MY_CUSTOM_KEY = 'sk-unmanaged-hub-0001';
+        await withHubSandbox(async ({ envOptions }) => {
+          envStore.saveGatewayConfig(
+            {
+              version: 2,
+              activeProfile: '',
+              active: false,
+              profiles: { unman: { provider: 'custom', url: 'https://unman.example.com/v1', wireProtocol: 'openai', apiKeyEnv: 'MY_CUSTOM_KEY', models: ['m1'], caCert: '', headers: '' } }
+            },
+            envOptions
+          );
+          const { res, queue, text } = await runHub(['2', 'unman', '', '0'], envOptions);
+          assert.strictEqual(res.exitCode, 0, text);
+          assert.strictEqual(queue.length, 0, `unconsumed answers: ${queue.join(',')}`);
+          assert(text.includes('unmanaged env var MY_CUSTOM_KEY'), 'consent prompt must name the unmanaged env var');
+          assert(text.includes('Activation refused'), 'declining the consent prompt must refuse activation');
+          assert(!text.includes('sk-unmanaged-hub-0001'), 'key value must never appear in hub output');
+          const cfg = envStore.loadGatewayConfig(envOptions);
+          assert.strictEqual(cfg.active, false, 'activation must not occur on default N');
+          assert.strictEqual(cfg.activeProfile, '', 'active pointer must remain unset');
+          assert.strictEqual(envStore.getGatewayStatus(envOptions).mode, 'NATIVE');
+        });
+      });
+    });
+
+    // Pins fix: `models --remote` resolves the profile key, so it passes through the same consent
+    // gate before any network I/O: an unmanaged-name profile is refused non-interactively with
+    // transport never called; --allow-unmanaged-env lets the transport run.
+    await test('Round-4: models --remote refuses an unmanaged-name profile before any network call', async () => {
+      await withSavedEnv(['MY_CUSTOM_KEY'], async () => {
+        process.env.MY_CUSTOM_KEY = 'sk-remote-gate-0001';
+        await withHubSandbox(async ({ envOptions }) => {
+          envStore.saveGatewayConfig(
+            {
+              version: 2,
+              activeProfile: '',
+              active: false,
+              profiles: { unman: { provider: 'custom', url: 'https://unman.example.com/v1', wireProtocol: 'openai', apiKeyEnv: 'MY_CUSTOM_KEY', models: ['m1'], caCert: '', headers: '' } }
+            },
+            envOptions
+          );
+          let transportCalls = 0;
+          const out = makeOut();
+          const err = makeOut();
+          const code = await proCli.runCli(['models', '--remote', '--profile', 'unman'], {
+            output: out,
+            errOutput: err,
+            envOptions,
+            isTTY: false,
+            transport: async () => {
+              transportCalls++;
+              return { statusCode: 200, statusMessage: 'OK', headers: {}, body: '{}' };
+            }
+          });
+          assert.strictEqual(code, 1, 'models --remote must refuse an unmanaged env name non-interactively');
+          assert.strictEqual(transportCalls, 0, 'no network call may run when consent is denied');
+          assert(err.text().includes('unmanaged env var MY_CUSTOM_KEY'), 'refusal must name the unmanaged env var');
+          assert(err.text().includes('--allow-unmanaged-env'), 'refusal must name the escape hatch');
+
+          let allowedCalls = 0;
+          const out2 = makeOut();
+          const err2 = makeOut();
+          const code2 = await proCli.runCli(['models', '--remote', '--profile', 'unman', '--allow-unmanaged-env', '--json'], {
+            output: out2,
+            errOutput: err2,
+            envOptions,
+            isTTY: false,
+            transport: async () => {
+              allowedCalls++;
+              return { statusCode: 200, statusMessage: 'OK', headers: {}, body: JSON.stringify({ data: [{ id: 'remote-m1' }] }) };
+            }
+          });
+          assert.strictEqual(code2, 0, `models --remote --allow-unmanaged-env failed: ${out2.text()} ${err2.text()}`);
+          assert.strictEqual(allowedCalls, 1, 'transport must run once the consent flag is passed');
+          assert.strictEqual(JSON.parse(out2.text()).models[0].id, 'remote-m1');
+        });
+      });
+    });
+
+    // Pins fix: legacy import default-denies every unmanaged explicit apiKeyEnv. GITHUB_TOKEN is a
+    // valid env name but not agy-pro-managed, so it falls back to the generated name with a notice;
+    // GIT_CONFIG_KEY_0 is additionally a reserved GIT_CONFIG_ prefix name, so it falls back through
+    // the rejection notice. Catalog names (MISTRAL_API_KEY) survive untouched. Notices carry the
+    // masked form only; denied keys still persist under their generated names.
+    await test('Round-4: legacy import default-denies GITHUB_TOKEN and GIT_CONFIG_KEY_0 to generated names with masked notices; catalog names survive', async () => {
+      await withHubSandbox(async ({ homeDir, envOptions }) => {
+        fs.mkdirSync(homeDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(homeDir, 'providers.json'),
+          JSON.stringify({
+            providers: {
+              'gh-token': { baseURL: 'https://gh.example.com/v1', apiKeyEnv: 'GITHUB_TOKEN', apiKey: 'sk-gh-leg-00000001', models: ['m1'] },
+              'git-cfg': { baseURL: 'https://git.example.com/v1', apiKeyEnv: 'GIT_CONFIG_KEY_0', apiKey: 'sk-git-leg-000001', models: ['m1'] },
+              'cat-keep': { baseURL: 'https://cat.example.com/v1', apiKeyEnv: 'MISTRAL_API_KEY', models: ['m1'] }
+            }
+          })
+        );
+        const res = wizard.importLegacyProviders(envOptions);
+        assert.deepStrictEqual(res.imported.sort(), ['cat-keep', 'gh-token', 'git-cfg']);
+        const cfg = envStore.loadGatewayConfig(envOptions);
+        assert.strictEqual(cfg.profiles['gh-token'].apiKeyEnv, 'AGY_PRO_GATEWAY_GH_TOKEN_API_KEY', 'GITHUB_TOKEN must fall back to the generated name (default-deny)');
+        assert.strictEqual(cfg.profiles['git-cfg'].apiKeyEnv, 'AGY_PRO_GATEWAY_GIT_CFG_API_KEY', 'GIT_CONFIG_KEY_0 must fall back to the generated name (reserved GIT_CONFIG_ prefix)');
+        assert.strictEqual(cfg.profiles['cat-keep'].apiKeyEnv, 'MISTRAL_API_KEY', 'catalog name must be preserved');
+        assert(
+          res.notices.some((n) => n.includes('legacy apiKeyEnv "GITHU****" is not managed by agy-pro; using generated AGY_PRO_GATEWAY_GH_TOKEN_API_KEY.')),
+          'default-deny notice for GITHUB_TOKEN expected (masked name only)'
+        );
+        assert(
+          res.notices.some((n) => n.includes('legacy apiKeyEnv "GIT_C****" rejected')),
+          'reserved-name rejection notice for GIT_CONFIG_KEY_0 expected (masked name only)'
+        );
+        assert(!res.notices.some((n) => n.includes('GITHUB_TOKEN')), 'raw GITHUB_TOKEN must never appear in a notice');
+        assert(!res.notices.some((n) => n.includes('GIT_CONFIG_KEY_0')), 'raw GIT_CONFIG_KEY_0 must never appear in a notice');
+        const vars = envStore.readPersistedEnvMap(['AGY_PRO_GATEWAY_GH_TOKEN_API_KEY', 'AGY_PRO_GATEWAY_GIT_CFG_API_KEY'], envOptions).vars;
+        assert.strictEqual(vars.AGY_PRO_GATEWAY_GH_TOKEN_API_KEY, 'sk-gh-leg-00000001', 'denied key persists under its generated name');
+        assert.strictEqual(vars.AGY_PRO_GATEWAY_GIT_CFG_API_KEY, 'sk-git-leg-000001', 'denied key persists under its generated name');
+      });
+    });
+
+    // Pins fix: the credential-header sanitizer leaves zero fragments for obfuscated spellings —
+    // ANSI-split (Author\x1b[31mization), newline-split (Authoriz\nation), comma-joined values
+    // (X-Api-Key: p1,p2), and fullwidth homoglyphs (Ａuthorization). Direct pins plus an
+    // end-to-end legacy import whose gateway.json must contain no fragment at all.
+    await test('Round-4: header sanitizer leaves no credential fragments (ANSI-split, newline-split, comma-joined, fullwidth homoglyph)', async () => {
+      const cases = [
+        'Author\x1b[31mization: Bearer sk-x',
+        'Authoriz\nation: Bearer sk-y',
+        'X-Api-Key: p1,p2',
+        'Ａuthorization: Bearer sk-z'
+      ];
+      for (const raw of cases) {
+        const stripped = wizard.stripAuthorizationHeaders(raw);
+        assert.strictEqual(stripped.text, '', `no header may survive for ${JSON.stringify(raw)}`);
+        assert(stripped.removedAuthorization, `credential removal must be reported for ${JSON.stringify(raw)}`);
+      }
+
+      await withHubSandbox(async ({ homeDir, envOptions }) => {
+        fs.mkdirSync(homeDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(homeDir, 'providers.json'),
+          JSON.stringify({
+            providers: {
+              'frag-a': { baseURL: 'https://a.example.com/v1', headers: 'Author\x1b[31mization: Bearer sk-x', models: ['m1'] },
+              'frag-b': { baseURL: 'https://b.example.com/v1', headers: 'Authoriz\nation: Bearer sk-y', models: ['m1'] },
+              'frag-c': { baseURL: 'https://c.example.com/v1', headers: 'X-Api-Key: p1,p2', models: ['m1'] },
+              'frag-d': { baseURL: 'https://d.example.com/v1', headers: 'Ａuthorization: Bearer sk-z', models: ['m1'] }
+            }
+          })
+        );
+        const res = wizard.importLegacyProviders(envOptions);
+        assert.deepStrictEqual(res.imported.sort(), ['frag-a', 'frag-b', 'frag-c', 'frag-d']);
+        assert.strictEqual(res.notices.length, 4, 'one removal notice per credential-bearing profile expected');
+        const rawCfg = fs.readFileSync(envOptions.configPath, 'utf8');
+        for (const frag of ['sk-x', 'sk-y', 'sk-z', 'p1', 'p2', 'X-Api-Key', 'Api-Key', 'Authorization', 'authorization', 'Bearer', '[31m', 'ization', 'uthorization', 'Ａuthorization']) {
+          assert(!rawCfg.includes(frag), `gateway.json must not retain fragment: ${frag}`);
+        }
+        const cfg = envStore.loadGatewayConfig(envOptions);
+        for (const name of ['frag-a', 'frag-b', 'frag-c', 'frag-d']) {
+          assert.strictEqual(cfg.profiles[name].headers, '', `profile ${name} must end up with no headers`);
+        }
+      });
+    });
+
+    // Pins fix: consent-gate notices mask a secret-shaped apiKeyEnv. A tampered gateway.json can
+    // hold a pasted credential in apiKeyEnv; the hub [2] consent prompt and its refusal must show
+    // only the masked form (AKIAI****) and never the raw string.
+    await test('Round-4: refused consent notices carry only the masked form of a secret-shaped apiKeyEnv', async () => {
+      await withHubSandbox(async ({ homeDir, envOptions }) => {
+        fs.mkdirSync(homeDir, { recursive: true });
+        const SECRET_NAME = 'AKIAIOSFODNN7EXAMPLE';
+        fs.writeFileSync(
+          envOptions.configPath,
+          JSON.stringify(
+            {
+              version: 2,
+              activeProfile: '',
+              active: false,
+              profiles: {
+                masked: {
+                  provider: 'custom',
+                  url: 'https://masked.example.com/v1',
+                  wireProtocol: 'openai',
+                  apiKeyEnv: SECRET_NAME,
+                  models: ['m1'],
+                  caCert: '',
+                  headers: ''
+                }
+              }
+            },
+            null,
+            2
+          ),
+          'utf8'
+        );
+        const { res, queue, text } = await runHub(['2', 'masked', '', '0'], envOptions);
+        assert.strictEqual(res.exitCode, 0, text);
+        assert.strictEqual(queue.length, 0, `unconsumed answers: ${queue.join(',')}`);
+        assert(text.includes('unmanaged env var AKIAI****'), 'consent prompt and refusal must show only the masked name');
+        assert(text.includes('Activation refused'), 'default N must refuse activation');
+        assert(!text.includes(SECRET_NAME), 'raw secret-shaped apiKeyEnv must never appear in output');
+        assert.strictEqual(envStore.loadGatewayConfig(envOptions).active, false, 'activation must not occur');
+      });
+    });
+
+    // Pins fix: the empty-apiKeyEnv recovery trap. A remote profile whose apiKeyEnv is '' would
+    // make the strict validator reject every repair write, trapping gateway off / delete / switch.
+    // The repair paths exempt the reported profile, succeed without a throw, record
+    // clearedApiKeyEnv (with an empty masked name), and leave apiKeyEnv '' on disk; a strict save
+    // without the exemption keeps rejecting remote + empty apiKeyEnv.
+    await test('Round-4: remote profile with empty apiKeyEnv recovers via off/delete/switch while strict saves keep rejecting it', async () => {
+      await withHubSandbox(async ({ homeDir, envOptions }) => {
+        fs.mkdirSync(homeDir, { recursive: true });
+        const trapCfg = () => ({
+          version: 2,
+          activeProfile: 'trap',
+          active: true,
+          profiles: {
+            trap: { provider: 'custom', url: 'https://trap.example.com/v1', wireProtocol: 'openai', apiKeyEnv: '', models: ['m1'], caCert: '', headers: '' },
+            healthy: { provider: 'custom', url: 'http://127.0.0.1:1/v1', wireProtocol: 'openai', apiKeyEnv: '', models: ['m2'], caCert: '', headers: '' }
+          }
+        });
+        const writeTrap = () => fs.writeFileSync(envOptions.configPath, JSON.stringify(trapCfg(), null, 2), 'utf8');
+
+        // (a) deactivate succeeds and records the repair
+        writeTrap();
+        const offRes = envStore.deactivateGateway({ ...envOptions, keepState: true });
+        assert.strictEqual(offRes.clearedApiKeyEnv.length, 1, 'the empty-name remote profile must be reported as repaired');
+        assert.strictEqual(offRes.clearedApiKeyEnv[0].profile, 'trap');
+        assert.strictEqual(offRes.clearedApiKeyEnv[0].maskedApiKeyEnv, '');
+        const cfgOff = envStore.loadGatewayConfig(envOptions);
+        assert.strictEqual(cfgOff.active, false);
+        assert.strictEqual(cfgOff.profiles.trap.apiKeyEnv, '', 'disk apiKeyEnv must stay empty after the repair write');
+
+        // (b) delete succeeds
+        writeTrap();
+        const delRes = envStore.deleteProfile('trap', envOptions);
+        assert.strictEqual(delRes.deleted, 'trap');
+        assert.deepStrictEqual(Object.keys(envStore.loadGatewayConfig(envOptions).profiles), ['healthy']);
+
+        // (c) switching to the healthy profile succeeds and repairs the trap profile
+        writeTrap();
+        const actRes = envStore.activateGateway('healthy', envOptions);
+        assert.strictEqual(actRes.profileName, 'healthy');
+        assert.strictEqual(actRes.clearedApiKeyEnv.length, 1, 'switch must repair and report the trap profile');
+        assert.strictEqual(envStore.loadGatewayConfig(envOptions).profiles.trap.apiKeyEnv, '');
+
+        // (d) a strict save (no repair exemption) keeps rejecting remote + empty apiKeyEnv
+        assert.throws(
+          () => envStore.saveGatewayConfig(trapCfg(), envOptions),
+          /apiKeyEnv is required for remote endpoints/
+        );
+      });
+    });
+
+    // Pins fix: reserved-name expansion. The 16 residual execution hooks from the security review
+    // plus the whole GIT_CONFIG_ family (git config injection) are rejected, while the 8
+    // provider-catalog preset names and an 88-char auto-generated name keep validating.
+    await test('Round-4: reserved execution hooks (16) and the GIT_CONFIG_ prefix are rejected; presets and 88-char auto names stay valid', () => {
+      const round4Reserved = [
+        'SUDO_ASKPASS', 'FCEDIT', 'SVN_EDITOR', 'HGEDITOR', 'BROWSER', 'GRADLE_OPTS', 'GCONV_PATH',
+        'VIMINIT', 'DOTNET_STARTUP_HOOKS', 'PIP_INDEX_URL', 'NPM_CONFIG_NODE_OPTIONS', 'GIT_EXEC_PATH',
+        'GIT_TEMPLATE_DIR', 'PERLLIB', 'LUA_PATH', 'LUA_CPATH'
+      ];
+      assert.strictEqual(round4Reserved.length, 16);
+      for (const name of round4Reserved) {
+        assert.strictEqual(validator.validateEnvName(name).valid, false, `${name} must be rejected`);
+      }
+      for (const name of ['GIT_CONFIG_KEY_0', 'GIT_CONFIG_COUNT', 'GIT_CONFIG_GLOBAL', 'git_config_parameters']) {
+        assert.strictEqual(validator.validateEnvName(name).valid, false, `${name} must be rejected (GIT_CONFIG_ prefix)`);
+      }
+      for (const p of presets.KNOWN_PROVIDERS) {
+        assert(p.apiKeyEnv, 'every catalog provider must name its key env var');
+        assert.strictEqual(validator.validateEnvName(p.apiKeyEnv).valid, true, `${p.apiKeyEnv} must stay valid`);
+      }
+      const auto88 = `AGY_PRO_GATEWAY_${'P'.repeat(64)}_API_KEY`;
+      assert.strictEqual(auto88.length, 88);
+      assert.strictEqual(validator.validateEnvName(auto88).valid, true, '88-char auto-generated name must pass');
+    });
+
+    // --- Round-5 regression tests (header-sanitizer principle fix, benign comma preservation,
+    //     raw echo removal, cross-profile owned-name binding, loopback exemption, status --json
+    //     MDM whitelist, env --profile consent gate, error-message sanitization, and the
+    //     seat-flagged test gaps: runCli isTTY fallback, hub [3] consent branches, MDM parser
+    //     message) ---
+
+    // Mirrors runHub but auto-answers an empty (default) response once the scripted queue is
+    // exhausted, counting those auto-answers. Tests that expect ZERO prompts assert
+    // unexpectedPrompts === 0, so a stray consent prompt fails fast instead of hanging the suite
+    // on a dry answer queue (the Round-4 hang lesson).
+    const runHubSafe = async (answers, envOptions, extra = {}) => {
+      const queue = [...answers];
+      const input = new PassThrough();
+      const chunks = [];
+      let unexpectedPrompts = 0;
+      const output = {
+        write(s) {
+          const text = String(s);
+          chunks.push(text);
+          if (text.endsWith(': ')) {
+            const next = queue.length > 0 ? queue.shift() : (unexpectedPrompts++, '');
+            setImmediate(() => input.write(next + '\n'));
+          }
+          return true;
+        }
+      };
+      const res = await wizard.runSetup([], { input, output, errOutput: output, isTTY: true, envOptions, ...extra });
+      return { res, queue, text: chunks.join(''), unexpectedPrompts };
+    };
+
+    // Pins fix (header-sanitizer principle): names are reassembled across an arbitrary number of
+    // fragments and compared on a normalized copy only (ANSI, control/zero-width/format runes and
+    // whitespace removed, NFKC on the comparison copy), so the 3-way split (`Auth`+`oriz`+`ation`),
+    // the 4-way split with a detached colon, a colon-leading fragment, a whitespace-split name, a
+    // zero-width-joined name, and a fullwidth colon all resolve to a credential and are dropped
+    // with their whole value. Legacy import must leave zero residue in gateway.json raw text.
+    await test('Round-5: header sanitizer leaves no credential residue for the 6 obfuscated spellings (direct pins + legacy import)', async () => {
+      const spellings = [
+        'Auth\noriz\nation: Bearer sk-1',
+        'Auth\noriz\nation\n: Bearer sk-2',
+        ': Bearer sk-3',
+        'Authoriz ation: Bearer sk-4',
+        'auth\u200borization: Bearer sk-5',
+        'Authorization\uFF1A Bearer sk-6'
+      ];
+      for (const raw of spellings) {
+        const stripped = wizard.stripAuthorizationHeaders(raw);
+        assert.strictEqual(stripped.text, '', `no header may survive for ${JSON.stringify(raw)}`);
+        assert(stripped.removedAuthorization, `credential removal must be reported for ${JSON.stringify(raw)}`);
+      }
+
+      await withHubSandbox(async ({ homeDir, envOptions }) => {
+        fs.mkdirSync(homeDir, { recursive: true });
+        const providers = {};
+        spellings.forEach((headers, i) => {
+          providers[`frag-${i + 1}`] = { baseURL: `https://f${i + 1}.example.com/v1`, headers, models: ['m1'] };
+        });
+        fs.writeFileSync(path.join(homeDir, 'providers.json'), JSON.stringify({ providers }));
+        const res = wizard.importLegacyProviders(envOptions);
+        assert.deepStrictEqual(res.imported.sort(), ['frag-1', 'frag-2', 'frag-3', 'frag-4', 'frag-5', 'frag-6']);
+        assert.strictEqual(res.notices.length, 6, 'one removal notice per credential-bearing profile expected');
+        const rawCfg = fs.readFileSync(envOptions.configPath, 'utf8');
+        for (const frag of ['sk-1', 'sk-2', 'sk-3', 'sk-4', 'sk-5', 'sk-6', 'Bearer', 'oriz', 'ation', 'Authorization', 'authorization']) {
+          assert(!rawCfg.includes(frag), `gateway.json must not retain fragment: ${frag}`);
+        }
+        const cfg = envStore.loadGatewayConfig(envOptions);
+        for (let i = 1; i <= 6; i++) {
+          assert.strictEqual(cfg.profiles[`frag-${i}`].headers, '', `profile frag-${i} must end up with no headers`);
+          assert(
+            res.notices.some((n) => n.includes(`Removed Authorization header from profile "frag-${i}"`)),
+            `removal notice for frag-${i} expected`
+          );
+        }
+      });
+    });
+
+    // Pins fix (benign comma preservation): kept groups re-emit with their original separators,
+    // so `X-List: a,b,c` survives verbatim on the --headers path; same-line segments keep commas.
+    await test('Round-5: setup --yes --headers strips all 6 obfuscated spellings and preserves benign comma values verbatim', async () => {
+      const spellings = [
+        'Auth\noriz\nation: Bearer sk-1',
+        'Auth\noriz\nation\n: Bearer sk-2',
+        ': Bearer sk-3',
+        'Authoriz ation: Bearer sk-4',
+        'auth\u200borization: Bearer sk-5',
+        'Authorization\uFF1A Bearer sk-6'
+      ];
+      await withHubSandbox(async ({ envOptions }) => {
+        for (let i = 0; i < spellings.length; i++) {
+          const out = makeOut();
+          const err = makeOut();
+          const code = await proCli.runCli(
+            ['setup', '--yes', '--provider', 'custom', '--profile', `hdr-${i + 1}`, '--url', 'http://127.0.0.1:1/v1', '--models', 'm1', '--headers', spellings[i]],
+            { output: out, errOutput: err, isTTY: false, envOptions }
+          );
+          assert.strictEqual(code, 0, `setup --yes hdr-${i + 1} failed: ${out.text()} ${err.text()}`);
+          const profile = envStore.loadGatewayConfig(envOptions).profiles[`hdr-${i + 1}`];
+          assert.strictEqual(profile.headers, '', `profile hdr-${i + 1} must keep no headers`);
+          assert(!fs.readFileSync(envOptions.configPath, 'utf8').includes(`sk-${i + 1}`), `gateway.json must not retain sk-${i + 1}`);
+          assert(!out.text().includes(`sk-${i + 1}`), 'stripped header secret must never be printed');
+          if (i === 0) {
+            assert(out.text().includes('Removed credential header(s) from --headers'), 'strip notice expected');
+          }
+        }
+
+        const direct = wizard.stripAuthorizationHeaders('X-List: a,b,c');
+        assert.strictEqual(direct.text, 'X-List: a,b,c', 'commas in a benign value must be preserved');
+        assert.strictEqual(direct.removedAuthorization, false);
+        const twoLine = wizard.stripAuthorizationHeaders('X-List: a,b,c\nX-Other: d');
+        assert.strictEqual(twoLine.text, 'X-List: a,b,c\nX-Other: d', 'benign pairs keep their own lines and commas');
+
+        const out = makeOut();
+        const err = makeOut();
+        const code = await proCli.runCli(
+          ['setup', '--yes', '--provider', 'custom', '--profile', 'hdr-list', '--url', 'http://127.0.0.1:1/v1', '--models', 'm1', '--headers', 'X-List: a,b,c'],
+          { output: out, errOutput: err, isTTY: false, envOptions }
+        );
+        assert.strictEqual(code, 0, `setup --yes hdr-list failed: ${out.text()} ${err.text()}`);
+        assert.strictEqual(envStore.loadGatewayConfig(envOptions).profiles['hdr-list'].headers, 'X-List: a,b,c');
+        assert(!out.text().includes('Removed credential header(s)'), 'a benign header must not post a removal notice');
+      });
+    });
+
+    // Pins fix (raw echo removal): an ANSI profile name and an ANSI URL in a tampered gateway.json
+    // are display-sanitized on every hub output path ([2] switch, [3] edit, [4] probe, [5] status,
+    // [6] delete, [7] off, unknown selection, and the hub error catch) and on the cli status
+    // (human + --json), models, and activation paths. Secret-shaped profile/model names are masked
+    // (display text differs from the raw credential string).
+    await test('Round-5: hub [2]-[7] and cli status/models/activation outputs never echo ANSI names or URLs (secret-shaped names masked)', async () => {
+      const ANSI_NAME = 'p\x1b[31mX';
+      const ANSI_URL = 'https://ansi.example.com/v1\x1b[2K\rhttps://trusted.example.com';
+      const SECRET_MODEL = 'sk-ant-pasted-secret-abc123456789';
+      // The hub session deliberately keeps benign model ids only: hubEditModels still echoes the
+      // raw "Current models: ..." list (and the freshly parsed list) without displayConfigName
+      // sanitization — a production gap reported in the Round-5 report, not pinned here.
+      const writeAnsiConfig = (envOptions, models = ['m1']) =>
+        fs.writeFileSync(
+          envOptions.configPath,
+          JSON.stringify(
+            {
+              version: 2,
+              activeProfile: ANSI_NAME,
+              active: true,
+              profiles: {
+                [ANSI_NAME]: {
+                  provider: 'custom',
+                  url: ANSI_URL,
+                  wireProtocol: 'openai',
+                  apiKeyEnv: 'MY_UNMANAGED_KEY',
+                  models,
+                  caCert: '',
+                  headers: ''
+                }
+              }
+            },
+            null,
+            2
+          ),
+          'utf8'
+        );
+
+      // (a) One hub session exercising [2],[3],[4],[5],[6],[7] and an unknown selection. [3] and
+      // [7] hit the invalid-profile-name save guard (a tampered name can never be re-saved), which
+      // is itself a sanitized error path through the hub catch.
+      await withHubSandbox(async ({ homeDir, envOptions }) => {
+        fs.mkdirSync(homeDir, { recursive: true });
+        writeAnsiConfig(envOptions);
+        const answers = ['2', '1', '', '3', '1', 'm2', '4', '1', '', '5', '6', '1', 'n', '7', '9', '0'];
+        const { res, queue, text } = await runHub(answers, envOptions, {
+          transport: async () => ({ statusCode: 200, statusMessage: 'OK', headers: {}, body: '{}' })
+        });
+        assert.strictEqual(res.exitCode, 0, text);
+        assert.strictEqual(queue.length, 0, `unconsumed answers: ${queue.join(',')}`);
+        assert(!text.includes('\x1b'), 'hub output must not contain an ESC byte');
+        assert(!text.includes('\u009b'), 'hub output must not contain a C1 CSI byte');
+        assert(text.includes('p[31mX'), 'sanitized profile name must be rendered');
+        assert(
+          text.includes('https://ansi.example.com/v1[2Khttps://trusted.example.com'),
+          'sanitized URL must be rendered with control bytes stripped'
+        );
+        assert(text.includes('Activation refused'), 'hub [2] consent decline expected');
+        assert(text.includes('Probe refused'), 'hub [4] consent decline expected');
+        assert(text.includes('Error: Invalid profile name "p[31mX"'), 'hub [3]/[7] save guard error must be sanitized');
+        assert(text.includes('[CANCELLED] nothing deleted'), 'hub [6] decline expected');
+        assert(text.includes('Unknown selection "9".'), 'unknown-selection branch expected');
+      });
+
+      // (b) cli human + --json status, models, and the activation path over the same tampered shape.
+      await withHubSandbox(async ({ homeDir, envOptions }) => {
+        fs.mkdirSync(homeDir, { recursive: true });
+        writeAnsiConfig(envOptions, ['m1', SECRET_MODEL]);
+        const humanOut = makeOut();
+        const humanErr = makeOut();
+        const humanCode = await proCli.runCli(['gateway', 'status'], { output: humanOut, errOutput: humanErr, envOptions });
+        assert.strictEqual(humanCode, 0, `gateway status failed: ${humanOut.text()} ${humanErr.text()}`);
+        assert(!(humanOut.text() + humanErr.text()).includes('\x1b'), 'human status must not emit an ESC byte');
+        assert(humanOut.text().includes('p[31mX'), 'sanitized profile name must appear in human status');
+
+        const jsonOut = makeOut();
+        const jsonErr = makeOut();
+        const jsonCode = await proCli.runCli(['gateway', 'status', '--json'], { output: jsonOut, errOutput: jsonErr, envOptions });
+        assert.strictEqual(jsonCode, 0, `gateway status --json failed: ${jsonOut.text()} ${jsonErr.text()}`);
+        const parsed = JSON.parse(jsonOut.text());
+        assert.strictEqual(parsed.activeProfile, 'p[31mX', 'JSON activeProfile must carry the sanitized name');
+        assert.deepStrictEqual(parsed.profiles, ['p[31mX']);
+        assert(!jsonOut.text().includes('\x1b') && !jsonOut.text().includes('\\u001b'), 'JSON output must not carry an escape');
+
+        const modelsOut = makeOut();
+        const modelsErr = makeOut();
+        const modelsCode = await proCli.runCli(['models', '--profile', ANSI_NAME], { output: modelsOut, errOutput: modelsErr, envOptions });
+        assert.strictEqual(modelsCode, 0, `models --profile failed: ${modelsOut.text()} ${modelsErr.text()}`);
+        assert(!(modelsOut.text() + modelsErr.text()).includes('\x1b'), 'models output must not emit an ESC byte');
+        assert(modelsOut.text().includes('Profile "p[31mX" models:'), 'sanitized label expected');
+        assert(modelsOut.text().includes('m1'), 'plain model id must be listed');
+        assert(modelsOut.text().includes('[REDACTED]'), 'secret-shaped model id must be redacted');
+        assert(!modelsOut.text().includes(SECRET_MODEL), 'raw secret-shaped model id must never be printed');
+
+        // Activation of a tampered invalid name is refused at the save guard; the error must be
+        // sanitized. A loopback profile with no key name passes the consent gate, so the run
+        // reaches the save guard (a tampered name can never be re-saved).
+        fs.writeFileSync(
+          envOptions.configPath,
+          JSON.stringify(
+            {
+              version: 2,
+              activeProfile: '',
+              active: false,
+              profiles: {
+                [ANSI_NAME]: { provider: 'custom', url: 'http://127.0.0.1:11434/v1', wireProtocol: 'openai', apiKeyEnv: '', models: ['model-one'], caCert: '', headers: '' }
+              }
+            },
+            null,
+            2
+          ),
+          'utf8'
+        );
+        const onOut = makeOut();
+        const onErr = makeOut();
+        const onCode = await proCli.runCli(['gateway', 'on', ANSI_NAME], { output: onOut, errOutput: onErr, envOptions, isTTY: false });
+        assert.strictEqual(onCode, 1, 'activating an invalid-name profile must fail');
+        assert(!(onOut.text() + onErr.text()).includes('\x1b'), 'activation error must not emit an ESC byte');
+        assert(onErr.text().includes('Invalid profile name "p[31mX"'), 'sanitized activation error expected');
+      });
+
+      // (c) Secret-shaped profile name: display text must differ from the raw credential string.
+      await withHubSandbox(async ({ homeDir, envOptions }) => {
+        fs.mkdirSync(homeDir, { recursive: true });
+        const SECRET_NAME = 'sk-ant-pasted-secret-abc123456789';
+        fs.writeFileSync(
+          envOptions.configPath,
+          JSON.stringify(
+            {
+              version: 2,
+              activeProfile: '',
+              active: false,
+              profiles: {
+                [SECRET_NAME]: { provider: 'custom', url: 'http://127.0.0.1:11434/v1', wireProtocol: 'openai', apiKeyEnv: '', models: ['m1'], caCert: '', headers: '' }
+              }
+            },
+            null,
+            2
+          ),
+          'utf8'
+        );
+        const humanOut = makeOut();
+        const humanErr = makeOut();
+        const humanCode = await proCli.runCli(['gateway', 'status'], { output: humanOut, errOutput: humanErr, envOptions });
+        assert.strictEqual(humanCode, 0);
+        assert(!humanOut.text().includes(SECRET_NAME), 'raw secret-shaped profile name must never be printed');
+        assert(humanOut.text().includes('[REDACTED]'), 'secret-shaped profile name must be redacted');
+
+        const jsonOut = makeOut();
+        const jsonErr = makeOut();
+        const jsonCode = await proCli.runCli(['gateway', 'status', '--json'], { output: jsonOut, errOutput: jsonErr, envOptions });
+        assert.strictEqual(jsonCode, 0);
+        assert.deepStrictEqual(JSON.parse(jsonOut.text()).profiles, ['[REDACTED]']);
+      });
+    });
+
+    // Pins fix (cross-profile owned-name binding): an AGY_PRO_GATEWAY_* name generated for a
+    // DIFFERENT profile is unmanaged, so a profile cannot borrow a sibling's key without consent;
+    // the profile's own generated name stays managed. End-to-end: `gateway on` refuses the sibling
+    // name non-interactively and passes silently for the own name.
+    await test('Round-5: cross-profile owned-name binding — sibling generated name is unmanaged (gate refusal), own name passes', async () => {
+      assert.strictEqual(presets.defaultEnvForProvider('free-gw'), 'AGY_PRO_GATEWAY_FREE_GW_API_KEY');
+      assert.strictEqual(wizard.isManagedEnvName('AGY_PRO_GATEWAY_MY_GATEWAY_API_KEY', 'free-gw'), false, 'sibling generated name must be unmanaged (name-only test)');
+      assert.strictEqual(wizard.isManagedEnvName('AGY_PRO_GATEWAY_FREE_GW_API_KEY', 'free-gw'), true, 'own generated name must be managed (name-only test)');
+      assert.strictEqual(
+        wizard.isManagedProfileEnv({ apiKeyEnv: 'AGY_PRO_GATEWAY_MY_GATEWAY_API_KEY', url: 'https://evil.example.com/v1' }, 'free-gw'),
+        false,
+        'sibling generated name must fire the consent gate'
+      );
+      // Ownership also needs derivation uniqueness (Round-7): the same exact name in a solo
+      // profile set passes, while a normalization-colliding sibling contests it.
+      const soloConfig = { profiles: { 'free-gw': { apiKeyEnv: 'AGY_PRO_GATEWAY_FREE_GW_API_KEY' } } };
+      assert.strictEqual(
+        wizard.isManagedProfileEnv(
+          { apiKeyEnv: 'AGY_PRO_GATEWAY_FREE_GW_API_KEY', url: 'https://evil.example.com/v1' },
+          'free-gw',
+          soloConfig
+        ),
+        true,
+        'own generated name must pass without consent when no sibling contests it'
+      );
+      assert.strictEqual(
+        wizard.isManagedProfileEnv(
+          { apiKeyEnv: 'AGY_PRO_GATEWAY_FREE_GW_API_KEY', url: 'https://evil.example.com/v1' },
+          'free-gw',
+          {
+            profiles: {
+              'free-gw': { apiKeyEnv: 'AGY_PRO_GATEWAY_FREE_GW_API_KEY' },
+              'free.gw': { apiKeyEnv: 'AGY_PRO_GATEWAY_FREE_GW_API_KEY' }
+            }
+          }
+        ),
+        false,
+        'a normalization-colliding sibling makes the owned name contested (fail-closed)'
+      );
+
+      await withSavedEnv(['AGY_PRO_GATEWAY_FREE_GW_API_KEY'], async () => {
+        // (a) sibling name -> non-interactive refusal, no activation
+        await withHubSandbox(async ({ envOptions }) => {
+          envStore.saveGatewayConfig(
+            {
+              version: 2,
+              activeProfile: '',
+              active: false,
+              profiles: {
+                'free-gw': { provider: 'custom', url: 'https://evil.example.com/v1', wireProtocol: 'openai', apiKeyEnv: 'AGY_PRO_GATEWAY_MY_GATEWAY_API_KEY', models: ['m1'], caCert: '', headers: '' }
+              }
+            },
+            envOptions
+          );
+          const out = makeOut();
+          const err = makeOut();
+          const code = await proCli.runCli(['gateway', 'on', 'free-gw'], { output: out, errOutput: err, envOptions, isTTY: false });
+          assert.strictEqual(code, 1, 'cross-bound sibling name must be refused non-interactively');
+          assert.strictEqual(out.text(), '', 'refusal must not write to stdout');
+          assert(err.text().includes('unmanaged env var AGY_P****'), 'refusal must show only the masked cross-bound name (35-char names are secret-masked)');
+          assert(!err.text().includes('AGY_PRO_GATEWAY_MY_GATEWAY_API_KEY'), 'raw cross-bound name must never appear in the refusal');
+          assert(err.text().includes('--allow-unmanaged-env'), 'refusal must name the escape hatch');
+          assert.strictEqual(envStore.loadGatewayConfig(envOptions).active, false, 'activation must not occur');
+        });
+
+        // (b) own name -> managed, silent non-interactive activation
+        await withHubSandbox(async ({ envOptions }) => {
+          process.env.AGY_PRO_GATEWAY_FREE_GW_API_KEY = 'sk-own-crossbind-0000001';
+          envStore.saveGatewayConfig(
+            {
+              version: 2,
+              activeProfile: '',
+              active: false,
+              profiles: {
+                'free-gw': { provider: 'custom', url: 'https://own.example.com/v1', wireProtocol: 'openai', apiKeyEnv: 'AGY_PRO_GATEWAY_FREE_GW_API_KEY', models: ['m1'], caCert: '', headers: '' }
+              }
+            },
+            envOptions
+          );
+          const out = makeOut();
+          const err = makeOut();
+          const code = await proCli.runCli(['gateway', 'on', 'free-gw'], { output: out, errOutput: err, envOptions, isTTY: false });
+          assert.strictEqual(code, 0, `own generated name must activate without a prompt: ${out.text()} ${err.text()}`);
+          assert(!err.text().includes('unmanaged env var'), 'own name must not be treated as unmanaged');
+          const cfg = envStore.loadGatewayConfig(envOptions);
+          assert.strictEqual(cfg.active, true);
+          assert.strictEqual(cfg.activeProfile, 'free-gw');
+          const persisted = envStore.readPersistedEnvMap(['AGY_LLM_GATEWAY_URL', 'AGY_LLM_GATEWAY_API_KEY'], envOptions).vars;
+          assert.strictEqual(persisted.AGY_LLM_GATEWAY_URL, 'https://own.example.com/v1');
+          assert.strictEqual(persisted.AGY_LLM_GATEWAY_API_KEY, 'sk-own-crossbind-0000001');
+          delete process.env.AGY_PRO_GATEWAY_FREE_GW_API_KEY;
+        });
+      });
+    });
+
+    // Pins fix (import cross-binding rule): a legacy entry naming a sibling profile's generated
+    // apiKeyEnv falls back to this profile's own generated name with a masked notice; the own
+    // generated name is preserved and produces no fallback notice.
+    await test('Round-5: legacy import falls back for a sibling generated apiKeyEnv with a masked notice and preserves the own name', async () => {
+      await withHubSandbox(async ({ homeDir, envOptions }) => {
+        fs.mkdirSync(homeDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(homeDir, 'providers.json'),
+          JSON.stringify({
+            providers: {
+              'free-gw': { baseURL: 'https://free.example.com/v1', apiKeyEnv: 'AGY_PRO_GATEWAY_MY_GATEWAY_API_KEY', models: ['m1'] },
+              'own-gw': { baseURL: 'https://own.example.com/v1', apiKeyEnv: 'AGY_PRO_GATEWAY_OWN_GW_API_KEY', models: ['m1'] }
+            }
+          })
+        );
+        const res = wizard.importLegacyProviders(envOptions);
+        assert.deepStrictEqual(res.imported.sort(), ['free-gw', 'own-gw']);
+        const cfg = envStore.loadGatewayConfig(envOptions);
+        assert.strictEqual(
+          cfg.profiles['free-gw'].apiKeyEnv,
+          'AGY_PRO_GATEWAY_FREE_GW_API_KEY',
+          'a sibling generated name must fall back to this profile generated name'
+        );
+        assert.strictEqual(
+          cfg.profiles['own-gw'].apiKeyEnv,
+          'AGY_PRO_GATEWAY_OWN_GW_API_KEY',
+          'the own generated name must be preserved'
+        );
+        assert(
+          res.notices.some((n) => n.includes('"AGY_P****" is not managed by agy-pro; using generated AGY_PRO_GATEWAY_FREE_GW_API_KEY.')),
+          'fallback notice with the masked sibling name expected'
+        );
+        assert(
+          !res.notices.some((n) => n.includes('AGY_PRO_GATEWAY_MY_GATEWAY_API_KEY')),
+          'the raw sibling name must never appear in a notice'
+        );
+        assert(
+          !res.notices.some((n) => n.includes('AGY_PRO_GATEWAY_OWN_GW_API_KEY') && n.includes('not managed')),
+          'the preserved own name must not produce a fallback notice'
+        );
+      });
+    });
+
+    // Pins fix (loopback exemption generalization): a loopback URL passes the consent gate for ANY
+    // env name (the value never leaves the machine). Direct pins plus end-to-end hub probe with
+    // zero prompts and a non-interactive `gateway on` activation.
+    await test('Round-5: loopback URL exempts any apiKeyEnv name from the consent gate (probe and activation)', async () => {
+      assert.strictEqual(
+        wizard.isManagedProfileEnv({ apiKeyEnv: 'MY_CUSTOM_KEY', url: 'http://127.0.0.1:8080/v1' }, 'loop'),
+        true,
+        'loopback must pass for an arbitrary name'
+      );
+      assert.strictEqual(
+        wizard.isManagedProfileEnv({ apiKeyEnv: 'MY_CUSTOM_KEY', url: 'http://localhost:1/v1' }, 'loop'),
+        true,
+        'localhost must pass for an arbitrary name'
+      );
+      assert.strictEqual(
+        wizard.isManagedProfileEnv({ apiKeyEnv: 'MY_CUSTOM_KEY', url: 'https://remote.example.com/v1' }, 'loop'),
+        false,
+        'remote URL with an arbitrary name still needs consent'
+      );
+
+      await withSavedEnv(['MY_CUSTOM_KEY'], async () => {
+        process.env.MY_CUSTOM_KEY = 'sk-loopback-exempt-0001';
+        await withHubSandbox(async ({ envOptions }) => {
+          envStore.saveGatewayConfig(
+            {
+              version: 2,
+              activeProfile: '',
+              active: false,
+              profiles: { loop: { provider: 'custom', url: 'http://127.0.0.1:1/v1', wireProtocol: 'openai', apiKeyEnv: 'MY_CUSTOM_KEY', models: ['m1'], caCert: '', headers: '' } }
+            },
+            envOptions
+          );
+          let probeCalls = 0;
+          const { res, queue, text, unexpectedPrompts } = await runHubSafe(['4', 'loop', '0'], envOptions, {
+            transport: async () => {
+              probeCalls++;
+              return { statusCode: 200, statusMessage: 'OK', headers: {}, body: '{}' };
+            }
+          });
+          assert.strictEqual(res.exitCode, 0, text);
+          assert.strictEqual(queue.length, 0, `unconsumed answers: ${queue.join(',')}`);
+          assert.strictEqual(unexpectedPrompts, 0, 'loopback probe must not render any consent prompt');
+          assert.strictEqual(probeCalls, 1, 'loopback probe must run for an unmanaged name');
+          assert(!text.includes('unmanaged env var'), 'loopback must not trigger the consent prompt');
+          assert(text.includes('Connection succeeded'), text);
+
+          const out = makeOut();
+          const err = makeOut();
+          const code = await proCli.runCli(['gateway', 'on', 'loop'], { output: out, errOutput: err, envOptions, isTTY: false });
+          assert.strictEqual(code, 0, `loopback activation must pass without consent: ${out.text()} ${err.text()}`);
+          assert.strictEqual(envStore.loadGatewayConfig(envOptions).active, true);
+          assert.strictEqual(envStore.getGatewayStatus(envOptions).mode, 'GATEWAY_XOR');
+        });
+        delete process.env.MY_CUSTOM_KEY;
+      });
+    });
+
+    // Pins fix (status --json MDM whitelist): the --json status projects adminSettings onto the
+    // summary fields {exists, configured, path} only; the parsed MDM body (enterprise credentials)
+    // and any parser error snippet never reach machine or human output.
+    await test('Round-5: gateway status --json adminSettings whitelist (summary fields only, no settings body or parser snippet)', async () => {
+      await withHubSandbox(async ({ envOptions }) => {
+        fs.writeFileSync(
+          envOptions.adminSettingsPath,
+          JSON.stringify({ gateway: { url: 'https://mdm.example.com/v1', apiKey: 'MDM-SUPER-SECRET-VALUE' }, realm: 'corp.internal' })
+        );
+        envStore.saveGatewayConfig(
+          {
+            version: 2,
+            activeProfile: 'managed',
+            active: true,
+            profiles: { managed: { provider: 'custom', url: 'https://managed.example.com/v1', wireProtocol: 'openai', apiKeyEnv: 'AGY_PRO_GATEWAY_MANAGED_API_KEY', models: ['m1'], caCert: '', headers: '' } }
+          },
+          envOptions
+        );
+
+        const out = makeOut();
+        const err = makeOut();
+        const code = await proCli.runCli(['gateway', 'status', '--json'], { output: out, errOutput: err, envOptions });
+        assert.strictEqual(code, 0, `gateway status --json failed: ${out.text()} ${err.text()}`);
+        assert(!out.text().includes('MDM-SUPER-SECRET-VALUE'), 'MDM secret must never reach --json output');
+        assert(!out.text().includes('corp.internal'), 'MDM realm must never reach --json output');
+        assert(!out.text().includes('"settings"'), 'adminSettings.settings must never be serialized');
+        assert(!out.text().includes('"apiKey"'), 'MDM keys must never reach --json output');
+        const parsed = JSON.parse(out.text());
+        assert.strictEqual(parsed.mode, 'ADMIN_OVERRIDE');
+        assert.strictEqual(parsed.activeProfile, 'managed');
+        assert.deepStrictEqual(
+          Object.keys(parsed.adminSettings).sort(),
+          ['configured', 'exists', 'path'],
+          'adminSettings must carry only the summary fields'
+        );
+        assert.strictEqual(parsed.adminSettings.exists, true);
+        assert.strictEqual(parsed.adminSettings.configured, true);
+        assert(parsed.adminSettings.path.endsWith('admin_settings.json'), 'summary path expected');
+
+        const humanOut = makeOut();
+        const humanErr = makeOut();
+        const humanCode = await proCli.runCli(['gateway', 'status'], { output: humanOut, errOutput: humanErr, envOptions });
+        assert.strictEqual(humanCode, 0);
+        assert(!(humanOut.text() + humanErr.text()).includes('MDM-SUPER-SECRET-VALUE'), 'MDM secret must never reach human output');
+        assert(humanOut.text().includes('MDM Admin File : ACTIVE'), 'human MDM summary line expected');
+      });
+    });
+
+    // Pins fix (env --profile consent gate): `env --profile X --reveal` resolves the profile key,
+    // so it passes the same consent gate; a non-interactive run refuses with EMPTY stdout (shell
+    // eval safety) and names the escape hatch; --allow-unmanaged-env proceeds and reveals; a
+    // managed profile stays prompt-free with valid shell on stdout.
+    await test('Round-5: env --profile consent gate refuses unmanaged names (empty stdout), honors --allow-unmanaged-env, stays prompt-free for managed', async () => {
+      await withSavedEnv(['GITHUB_TOKEN', 'AGY_PRO_GATEWAY_MANAGED_API_KEY'], async () => {
+        process.env.GITHUB_TOKEN = 'ghp_SECRETVALUE1234567890';
+        process.env.AGY_PRO_GATEWAY_MANAGED_API_KEY = 'managed-key-value-123456';
+        await withHubSandbox(async ({ envOptions }) => {
+          const mk = (apiKeyEnv) => ({ provider: 'custom', url: 'https://unman.example.com/v1', wireProtocol: 'openai', apiKeyEnv, models: ['m'], caCert: '', headers: '' });
+          envStore.saveGatewayConfig(
+            { version: 2, activeProfile: '', active: false, profiles: { unman: mk('GITHUB_TOKEN'), managed: mk('AGY_PRO_GATEWAY_MANAGED_API_KEY') } },
+            envOptions
+          );
+
+          // (a) unmanaged name, non-interactive -> refusal with empty stdout (eval-safe)
+          const refuseOut = makeOut();
+          const refuseErr = makeOut();
+          const refuseCode = await proCli.runCli(['env', '--profile', 'unman', '--reveal'], { output: refuseOut, errOutput: refuseErr, envOptions, isTTY: false });
+          assert.strictEqual(refuseCode, 1, 'env --profile must refuse an unmanaged name non-interactively');
+          assert.strictEqual(refuseOut.text(), '', 'stdout must stay empty so eval "$(...)" cannot execute a refusal');
+          assert(/refusing/i.test(refuseErr.text()), 'refusal must explain the block');
+          assert(refuseErr.text().includes('--allow-unmanaged-env'), 'refusal must name the escape hatch');
+          assert(!refuseErr.text().includes('ghp_SECRETVALUE1234567890'), 'secret value must never appear in the refusal');
+          assert(!refuseErr.text().includes('Continue?'), 'no prompt may be rendered non-interactively');
+
+          // (b) --allow-unmanaged-env -> proceeds and reveals the key
+          const allowOut = makeOut();
+          const allowErr = makeOut();
+          const allowCode = await proCli.runCli(['env', '--shell', 'sh', '--profile', 'unman', '--reveal', '--allow-unmanaged-env'], { output: allowOut, errOutput: allowErr, envOptions, isTTY: false });
+          assert.strictEqual(allowCode, 0, `env --allow-unmanaged-env failed: ${allowOut.text()} ${allowErr.text()}`);
+          assert(allowOut.text().includes("export AGY_LLM_GATEWAY_API_KEY='ghp_SECRETVALUE1234567890'"), 'explicit opt-in must reveal the resolved profile key');
+          for (const line of allowOut.text().trim().split('\n')) {
+            assert(/^(export|unset) /.test(line), `stdout must stay valid shell code: ${line}`);
+          }
+
+          // (c) managed profile -> prompt-free, valid shell
+          const managedOut = makeOut();
+          const managedErr = makeOut();
+          const managedCode = await proCli.runCli(['env', '--shell', 'sh', '--profile', 'managed', '--reveal'], { output: managedOut, errOutput: managedErr, envOptions, isTTY: false });
+          assert.strictEqual(managedCode, 0, `managed env --profile failed: ${managedOut.text()} ${managedErr.text()}`);
+          assert.strictEqual(managedErr.text(), '', 'managed profile must not write to stderr');
+          assert(!(managedOut.text() + managedErr.text()).includes('Continue?'), 'managed profile must not prompt');
+          assert(!/refusing/i.test(managedErr.text()), 'managed profile must not be refused');
+          assert(managedOut.text().includes('managed-key-value-123456'), 'managed key must be exported');
+          for (const line of managedOut.text().trim().split('\n')) {
+            assert(/^(export|unset) /.test(line), `stdout must stay valid shell code: ${line}`);
+          }
+        });
+        delete process.env.GITHUB_TOKEN;
+        delete process.env.AGY_PRO_GATEWAY_MANAGED_API_KEY;
+      });
+    });
+
+    // Pins fix (error-message sanitization): an invalid (ANSI-bearing) profile name in a tampered
+    // config surfaces through load/save errors with control bytes stripped; the activation
+    // not-found error sanitizes the queried name; the missing-key error masks the apiKeyEnv name.
+    await test('Round-5: activation/load errors sanitize ANSI profile names; not-found names and missing-key apiKeyEnv are masked', async () => {
+      // (a) + (c) invalid name in config blocks a valid target's activation; missing key masks apiKeyEnv
+      await withSavedEnv(['MY_CUSTOM_KEY'], async () => {
+        await withHubSandbox(async ({ homeDir, envOptions }) => {
+          fs.mkdirSync(homeDir, { recursive: true });
+          fs.writeFileSync(
+            envOptions.configPath,
+            JSON.stringify(
+              {
+                version: 2,
+                activeProfile: 'remote1',
+                active: false,
+                profiles: {
+                  remote1: { provider: 'custom', url: 'https://remote1.example.com/v1', wireProtocol: 'openai', apiKeyEnv: 'MY_CUSTOM_KEY', models: ['m1'], caCert: '', headers: '' },
+                  'bad\x1b[31mname': { provider: 'custom', url: 'http://127.0.0.1:1/v1', wireProtocol: 'openai', apiKeyEnv: '', models: ['m1'], caCert: '', headers: '' }
+                }
+              },
+              null,
+              2
+            ),
+            'utf8'
+          );
+
+          // (c) missing key: apiKeyEnv is masked, never raw
+          let missingKeyErr = null;
+          try {
+            envStore.activateGateway('remote1', envOptions);
+          } catch (err) {
+            missingKeyErr = err;
+          }
+          assert(missingKeyErr, 'activation without a key value must throw');
+          assert(missingKeyErr.message.includes('expected env var MY_CU****'), 'missing-key error must mask the apiKeyEnv name');
+          assert(!missingKeyErr.message.includes('MY_CUSTOM_KEY'), 'raw apiKeyEnv name must never appear in the missing-key error');
+
+          // (a) with the key present, the save guard rejects the tampered sibling name, sanitized
+          process.env.MY_CUSTOM_KEY = 'sk-err-sanitize-00000001';
+          let invalidNameErr = null;
+          try {
+            envStore.activateGateway('remote1', envOptions);
+          } catch (err) {
+            invalidNameErr = err;
+          }
+          assert(invalidNameErr, 'activation must fail while a tampered profile name is present');
+          assert(!invalidNameErr.message.includes('\x1b'), 'error message must not contain an ESC byte');
+          assert(invalidNameErr.message.includes('Invalid profile name "bad[31mname"'), 'sanitized invalid-name error expected');
+          delete process.env.MY_CUSTOM_KEY;
+        });
+      });
+
+      // (b) not-found: the queried name is sanitized in the error
+      await withHubSandbox(async ({ envOptions }) => {
+        envStore.saveGatewayConfig(
+          { version: 2, activeProfile: 'a', active: false, profiles: { a: loop('m1') } },
+          envOptions
+        );
+        const out = makeOut();
+        const err = makeOut();
+        const code = await proCli.runCli(['gateway', 'on', 'no\x1b[31mpe'], { output: out, errOutput: err, envOptions, isTTY: false });
+        assert.strictEqual(code, 1, 'activating a nonexistent profile must fail');
+        assert(!(out.text() + err.text()).includes('\x1b'), 'not-found error must not emit an ESC byte');
+        assert(err.text().includes('Gateway profile "no[31mpe" not found.'), 'sanitized not-found name expected');
+      });
+
+      // deleteProfile's not-found error already goes through safeErrorName (src/pro/env-store.js),
+      // so the raw-echo gap this note used to describe no longer exists; Round-6 pins both paths.
+    });
+
+    // Pins gap (a): runCli derives isTTY from input.isTTY when deps.isTTY is omitted (the binary
+    // entry point passes no isTTY). A TTY-marked input renders the consent prompt and refuses an
+    // empty (default N) response; a plain stream is treated as non-interactive and refuses without
+    // rendering any prompt.
+    await test('Round-5: runCli derives isTTY from input when deps.isTTY is omitted (prompt renders on TTY input and refuses empty; plain input refuses without prompt)', async () => {
+      await withSavedEnv(['MY_CUSTOM_KEY'], async () => {
+        process.env.MY_CUSTOM_KEY = 'sk-fallback-act-0001';
+        await withHubSandbox(async ({ envOptions }) => {
+          envStore.saveGatewayConfig(
+            { version: 2, activeProfile: '', active: false, profiles: { unman: { provider: 'custom', url: 'https://unman.example.com/v1', wireProtocol: 'openai', apiKeyEnv: 'MY_CUSTOM_KEY', models: ['m1'], caCert: '', headers: '' } } },
+            envOptions
+          );
+
+          // TTY-derived: prompt renders, empty answer (default N) refuses
+          const ttyInput = new PassThrough();
+          ttyInput.isTTY = true;
+          const ttyOut = makeOut();
+          const ttyErr = makeOut();
+          let promptRendered = false;
+          const ttyWrapped = {
+            write(s) {
+              const text = String(s);
+              ttyOut.write(text);
+              if (!promptRendered && text.endsWith(': ')) {
+                promptRendered = true;
+                setImmediate(() => ttyInput.write('\n'));
+              }
+              return true;
+            }
+          };
+          const ttyCode = await proCli.runCli(['gateway', 'on', 'unman'], { input: ttyInput, output: ttyWrapped, errOutput: ttyErr, envOptions });
+          assert.strictEqual(ttyCode, 1, 'an empty (default N) consent answer must refuse activation');
+          assert(promptRendered, 'the consent prompt must render when isTTY is derived from a TTY input');
+          assert(ttyOut.text().includes('Continue? [y/N]'), 'the derived-interactive prompt text must reach the output');
+          assert(ttyOut.text().includes('unmanaged env var MY_CUSTOM_KEY'), 'the derived-interactive prompt must name the env var');
+          assert(!ttyOut.text().includes('sk-fallback-act-0001'), 'the key value must never appear in the prompt');
+          assert(/refusing/i.test(ttyErr.text()), 'the refusal must be written after the declined prompt');
+
+          // Non-TTY-derived: no prompt, straight refusal
+          const plainInput = new PassThrough();
+          const plainOut = makeOut();
+          const plainErr = makeOut();
+          const plainCode = await proCli.runCli(['gateway', 'on', 'unman'], { input: plainInput, output: plainOut, errOutput: plainErr, envOptions });
+          assert.strictEqual(plainCode, 1, 'a plain (non-TTY) input must refuse without prompting');
+          assert(!plainOut.text().includes('Continue?'), 'no prompt may render when isTTY derives false');
+          assert(/refusing/i.test(plainErr.text()), 'the refusal must still be written');
+          assert.strictEqual(envStore.loadGatewayConfig(envOptions).active, false, 'activation must not occur');
+        });
+        delete process.env.MY_CUSTOM_KEY;
+      });
+    });
+
+    // Pins gap (b): hub [3] Edit models runs BOTH post-save activation branches through the
+    // unmanaged-env consent gate: gateway OFF asks "Activate it now?" then gates (decline ->
+    // 'Activation refused', stays OFF; accept -> activates), gateway ON refreshes through the gate
+    // (decline -> 'Refresh refused', stays ON; accept -> 'Gateway refreshed.').
+    await test('Round-5: hub [3] edit-models consent branches (OFF activate, ON refresh) decline and accept', async () => {
+      await withSavedEnv(['MY_CUSTOM_KEY'], async () => {
+        process.env.MY_CUSTOM_KEY = 'sk-hub3-branch-00001';
+        const mk = () => ({ provider: 'custom', url: 'https://unman.example.com/v1', wireProtocol: 'openai', apiKeyEnv: 'MY_CUSTOM_KEY', models: ['m1'], caCert: '', headers: '' });
+
+        // OFF + decline: models updated, activation refused, gateway stays OFF
+        await withHubSandbox(async ({ envOptions }) => {
+          envStore.saveGatewayConfig({ version: 2, activeProfile: 'unman', active: false, profiles: { unman: mk() } }, envOptions);
+          const { res, queue, text } = await runHub(['3', 'unman', 'm9', 'Y', '', '0'], envOptions);
+          assert.strictEqual(res.exitCode, 0, text);
+          assert.strictEqual(queue.length, 0, `unconsumed answers: ${queue.join(',')}`);
+          assert(text.includes('Updated models for "unman": m9'), text);
+          assert(text.includes('Activation refused'), 'declining the OFF-branch consent must refuse activation');
+          assert(!text.includes('sk-hub3-branch-00001'), 'key value must never appear in hub output');
+          const cfg = envStore.loadGatewayConfig(envOptions);
+          assert.deepStrictEqual(cfg.profiles.unman.models, ['m9']);
+          assert.strictEqual(cfg.active, false, 'gateway must stay OFF after a declined activation');
+        });
+
+        // OFF + accept: models updated, profile activated, gateway ON
+        await withHubSandbox(async ({ envOptions }) => {
+          envStore.saveGatewayConfig({ version: 2, activeProfile: 'unman', active: false, profiles: { unman: mk() } }, envOptions);
+          const { res, queue, text } = await runHub(['3', 'unman', 'm9', 'Y', 'y', '0'], envOptions);
+          assert.strictEqual(res.exitCode, 0, text);
+          assert.strictEqual(queue.length, 0, `unconsumed answers: ${queue.join(',')}`);
+          assert(text.includes('Activated gateway profile "unman".'), text);
+          assert.strictEqual(envStore.loadGatewayConfig(envOptions).active, true);
+          assert.strictEqual(envStore.getGatewayStatus(envOptions).mode, 'GATEWAY_XOR');
+        });
+
+        // ON + decline: models updated, refresh refused, gateway stays ON
+        await withHubSandbox(async ({ envOptions }) => {
+          envStore.saveGatewayConfig({ version: 2, activeProfile: 'unman', active: true, profiles: { unman: mk() } }, envOptions);
+          const { res, queue, text } = await runHub(['3', 'unman', 'm9', '', '0'], envOptions);
+          assert.strictEqual(res.exitCode, 0, text);
+          assert.strictEqual(queue.length, 0, `unconsumed answers: ${queue.join(',')}`);
+          assert(text.includes('Refresh refused'), 'declining the ON-branch consent must refuse the refresh');
+          assert(!text.includes('sk-hub3-branch-00001'), 'key value must never appear in hub output');
+          const cfg = envStore.loadGatewayConfig(envOptions);
+          assert.deepStrictEqual(cfg.profiles.unman.models, ['m9']);
+          assert.strictEqual(cfg.active, true, 'gateway must stay ON after a declined refresh');
+        });
+
+        // ON + accept: refresh runs through activateGateway
+        await withHubSandbox(async ({ envOptions }) => {
+          envStore.saveGatewayConfig({ version: 2, activeProfile: 'unman', active: true, profiles: { unman: mk() } }, envOptions);
+          const { res, queue, text } = await runHub(['3', 'unman', 'm9', 'y', '0'], envOptions);
+          assert.strictEqual(res.exitCode, 0, text);
+          assert.strictEqual(queue.length, 0, `unconsumed answers: ${queue.join(',')}`);
+          assert(text.includes('Gateway refreshed.'), text);
+          assert.strictEqual(envStore.loadGatewayConfig(envOptions).active, true);
+        });
+        delete process.env.MY_CUSTOM_KEY;
+      });
+    });
+
+    // Pins gap (c): a corrupted enterprise admin_settings.json is reported with the fixed
+    // snippet-free parser message on the detect API, `gateway status --json`, and `doctor` —
+    // the V8 parser snippet can embed enterprise credentials from the file body.
+    await test('Round-5: broken admin_settings.json reports a snippet-free parser message on detect, status --json, and doctor', async () => {
+      await withHubSandbox(async ({ envOptions }) => {
+        fs.writeFileSync(
+          envOptions.adminSettingsPath,
+          '{ "gateway": { "url": "https://x.example.com/v1", "apiKey": "LEAK-ME-1234567890"'
+        );
+        const detected = envStore.detectAdminGatewaySettings(envOptions);
+        assert.strictEqual(detected.exists, true);
+        assert.strictEqual(detected.configured, false);
+        assert.strictEqual(detected.settings, null);
+        assert.strictEqual(detected.error, 'admin_settings.json is not valid JSON (contents withheld)');
+        assert(!detected.error.includes('LEAK-ME-1234567890'), 'parser message must not embed the file snippet');
+
+        const statusOut = makeOut();
+        const statusErr = makeOut();
+        const statusCode = await proCli.runCli(['gateway', 'status', '--json'], { output: statusOut, errOutput: statusErr, envOptions });
+        assert.strictEqual(statusCode, 0, `gateway status --json failed: ${statusOut.text()} ${statusErr.text()}`);
+        assert(!(statusOut.text() + statusErr.text()).includes('LEAK-ME-1234567890'), 'status output must not leak the snippet');
+        assert(!(statusOut.text() + statusErr.text()).includes('"apiKey"'), 'MDM keys must not leak into status output');
+        const parsed = JSON.parse(statusOut.text());
+        assert.strictEqual(parsed.adminSettings.exists, true);
+        assert.strictEqual(parsed.adminSettings.configured, false);
+        assert.deepStrictEqual(Object.keys(parsed.adminSettings).sort(), ['configured', 'exists', 'path']);
+
+        const doctorOut = makeOut();
+        const doctorErr = makeOut();
+        const doctorCode = await proCli.runCli(['doctor'], { output: doctorOut, errOutput: doctorErr, envOptions, findAgyBinaries: () => [] });
+        assert.strictEqual(doctorCode, 0, `doctor failed: ${doctorOut.text()} ${doctorErr.text()}`);
+        assert(!(doctorOut.text() + doctorErr.text()).includes('LEAK-ME-1234567890'), 'doctor output must not leak the snippet');
+      });
+    });
+
+    // --- Round-5 follow-up (fail-closed) regression tests ---
+    //
+    // Pins fix: isManagedProfileEnv() used to return true (fail-open) when the caller could not
+    // supply a profileName, and the CLI consent gate resolves profileName by reverse lookup
+    // (findProfileNameForEnv), which returns '' whenever the env name is referenced by zero or
+    // SEVERAL profiles. Two real sibling profiles sharing one generated name therefore used to
+    // bypass the consent gate entirely. The fix fails closed: an AGY_PRO_GATEWAY_* name without a
+    // provable owner is unmanaged and needs consent (src/pro/wizard.js:1179-1182, docstring
+    // :1167-1169). The tests below pin that exact geometry end-to-end.
+
+    // Pins fix: sibling geometry — alpha-gw is active and owns its generated name
+    // AGY_PRO_GATEWAY_ALPHA_GW_API_KEY; beta-gw references the SAME name (cross-profile binding).
+    // (a) cli `gateway on beta-gw` non-interactive is refused (exit 1, masked unmanaged notice,
+    //     no activation, persisted env untouched); (b) hub [2] default N refuses too;
+    //     (c) --allow-unmanaged-env proceeds (and forwards alpha's key value to beta's URL —
+    //     exactly what the gate exists to gate); (d) alpha-gw's own-name activation passes
+    //     without confirmation on the hub path (explicit profileName);
+    //     (d2) the same geometry now passes on the CLI path too, because the CLI passes the target
+    //     profile name it resolved (Round-6 item 1) instead of relying on the ambiguous reverse
+    //     lookup. The cross-profile refusal in (a) is unaffected.
+    await test('Round-5b: sibling geometry — cross-bound beta-gw refused (cli + hub), opt-in proceeds, own-name alpha-gw passes on both hub and cli', async () => {
+      const ALPHA_ENV = presets.defaultEnvForProvider('alpha-gw');
+      assert.strictEqual(ALPHA_ENV, 'AGY_PRO_GATEWAY_ALPHA_GW_API_KEY', 'geometry pin: alpha-gw owns its generated name');
+
+      await withSavedEnv([ALPHA_ENV], async () => {
+        process.env[ALPHA_ENV] = 'sk-alpha-real-key-00000001';
+        const setupSibling = (envOptions) => {
+          envStore.saveGatewayConfig(
+            {
+              version: 2,
+              activeProfile: 'alpha-gw',
+              active: true,
+              profiles: {
+                'alpha-gw': { provider: 'custom', url: 'https://alpha.example.com/v1', wireProtocol: 'openai', apiKeyEnv: ALPHA_ENV, models: ['m1'], caCert: '', headers: '' },
+                'beta-gw': { provider: 'custom', url: 'https://beta.example.com/v1', wireProtocol: 'openai', apiKeyEnv: ALPHA_ENV, models: ['m1'], caCert: '', headers: '' }
+              }
+            },
+            envOptions
+          );
+          // alpha-gw is the ACTIVE profile: its gateway env is persisted in the store.
+          envStore.persistEnvMap(
+            {
+              AGY_LLM_GATEWAY_URL: 'https://alpha.example.com/v1',
+              AGY_LLM_GATEWAY_API_KEY: 'sk-alpha-real-key-00000001',
+              AGY_LLM_GATEWAY_WIRE_PROTOCOL: 'openai',
+              AGY_LLM_GATEWAY_MODELS: 'm1'
+            },
+            envOptions
+          );
+        };
+
+        // (a) cli non-interactive refusal
+        await withHubSandbox(async ({ envOptions }) => {
+          setupSibling(envOptions);
+          const out = makeOut();
+          const err = makeOut();
+          const code = await proCli.runCli(['gateway', 'on', 'beta-gw'], { output: out, errOutput: err, envOptions, isTTY: false });
+          assert.strictEqual(code, 1, 'cross-bound beta-gw must be refused non-interactively (fail-closed)');
+          assert.strictEqual(out.text(), '', 'refusal must not write to stdout');
+          assert(err.text().includes('unmanaged env var AGY_P****'), 'refusal must show only the masked env name');
+          assert(!err.text().includes(ALPHA_ENV), 'raw env name must never appear in the refusal');
+          assert(err.text().includes('--allow-unmanaged-env'), 'refusal must name the escape hatch');
+          const cfg = envStore.loadGatewayConfig(envOptions);
+          assert.strictEqual(cfg.activeProfile, 'alpha-gw', 'active pointer must stay on alpha-gw');
+          assert.strictEqual(cfg.active, true, 'gateway state must be untouched');
+          const persisted = envStore.readPersistedEnvMap(['AGY_LLM_GATEWAY_URL'], envOptions).vars;
+          assert.strictEqual(persisted.AGY_LLM_GATEWAY_URL, 'https://alpha.example.com/v1', 'persisted env store must not record beta');
+        });
+
+        // (b) hub [2] interactive refusal on default N
+        await withHubSandbox(async ({ envOptions }) => {
+          setupSibling(envOptions);
+          const { res, queue, text } = await runHub(['2', 'beta-gw', '', '0'], envOptions);
+          assert.strictEqual(res.exitCode, 0, text);
+          assert.strictEqual(queue.length, 0, `unconsumed answers: ${queue.join(',')}`);
+          assert(text.includes('unmanaged env var AGY_P****'), 'hub consent prompt must show only the masked name');
+          assert(text.includes('Activation refused'), 'declining the hub consent must refuse activation');
+          assert(!text.includes('sk-alpha-real-key-00000001'), 'key value must never appear in hub output');
+          assert.strictEqual(envStore.loadGatewayConfig(envOptions).activeProfile, 'alpha-gw', 'hub refusal must keep alpha-gw active');
+        });
+
+        // (c) explicit opt-out proceeds — and forwards alpha's key value to beta's URL
+        await withHubSandbox(async ({ envOptions }) => {
+          setupSibling(envOptions);
+          const out = makeOut();
+          const err = makeOut();
+          const code = await proCli.runCli(['gateway', 'on', 'beta-gw', '--allow-unmanaged-env'], { output: out, errOutput: err, envOptions, isTTY: false });
+          assert.strictEqual(code, 0, `opt-in activation failed: ${out.text()} ${err.text()}`);
+          const cfg = envStore.loadGatewayConfig(envOptions);
+          assert.strictEqual(cfg.activeProfile, 'beta-gw');
+          assert.strictEqual(cfg.active, true);
+          const persisted = envStore.readPersistedEnvMap(['AGY_LLM_GATEWAY_URL', 'AGY_LLM_GATEWAY_API_KEY'], envOptions).vars;
+          assert.strictEqual(persisted.AGY_LLM_GATEWAY_URL, 'https://beta.example.com/v1');
+          assert.strictEqual(persisted.AGY_LLM_GATEWAY_API_KEY, 'sk-alpha-real-key-00000001', 'opt-in forwards the shared name value (the gate exists to gate exactly this)');
+        });
+
+        // (d) hub [2] alpha-gw: the name is alpha's own generated name, but beta-gw also
+        // references it, so ownership is not provable and the consent prompt appears. Default N
+        // refuses activation.
+        await withHubSandbox(async ({ envOptions }) => {
+          setupSibling(envOptions);
+          const { res, queue, text } = await runHub(['2', 'alpha-gw', '', '0'], envOptions);
+          assert.strictEqual(res.exitCode, 0, text);
+          assert.strictEqual(queue.length, 0, `unconsumed answers: ${queue.join(',')}`);
+          assert(text.includes('unmanaged env var'), 'a contested shared name must trigger the consent prompt');
+          assert(text.includes('Activation refused'), 'default N must refuse the contested activation');
+          assert(!text.includes('Activated gateway profile'), 'beta references the name, so alpha cannot activate silently');
+        });
+
+        // (d2) cli own-name activation in the SAME shared geometry is refused non-interactively:
+        // Round-7 restored derivation uniqueness (an explicit profileName no longer short-circuits
+        // the ownership check), so a name another profile references needs consent. (d3) shows the
+        // uncontested single-profile geometry still passes.
+        await withHubSandbox(async ({ envOptions }) => {
+          setupSibling(envOptions);
+          const out = makeOut();
+          const err = makeOut();
+          const code = await proCli.runCli(['gateway', 'on', 'alpha-gw'], { output: out, errOutput: err, envOptions, isTTY: false });
+          assert.strictEqual(code, 1, `cli contested activation must be refused: ${out.text()} ${err.text()}`);
+          assert.strictEqual(out.text(), '', 'refusal must not write to stdout');
+          assert(err.text().includes('unmanaged env var'), err.text());
+        });
+
+        // (d3) the same own-name profile passes once the rival profile is gone.
+        await withHubSandbox(async ({ envOptions }) => {
+          setupSibling(envOptions);
+          const solo = envStore.loadGatewayConfig(envOptions);
+          delete solo.profiles['beta-gw'];
+          envStore.saveGatewayConfig(solo, envOptions);
+          const out = makeOut();
+          const err = makeOut();
+          const code = await proCli.runCli(['gateway', 'on', 'alpha-gw'], { output: out, errOutput: err, envOptions, isTTY: false });
+          assert.strictEqual(code, 0, `uncontested own-name activation must pass: ${out.text()} ${err.text()}`);
+          assert(!err.text().includes('unmanaged env var'), 'uncontested own-name activation must not trigger the gate');
+          assert.strictEqual(envStore.loadGatewayConfig(envOptions).active, true);
+        });
+        delete process.env[ALPHA_ENV];
+      });
+    });
+
+    // Pins fix: ambiguous owners — two profiles referencing the SAME AGY_PRO_GATEWAY_* name (one
+    // that is not either profile's own generated name) can never prove ownership. Both the cli
+    // path (ambiguous reverse lookup -> '' -> fail-closed) and the hub path (explicit
+    // profileName, but the name is not this profile's generated one) refuse; --allow-unmanaged-env
+    // stays available as the explicit opt-out.
+    await test('Round-5b: ambiguous owners — a shared AGY_PRO_GATEWAY_* name cannot prove ownership, activation is refused (fail-closed)', async () => {
+      const SHARED = 'AGY_PRO_GATEWAY_SHARED_API_KEY';
+      assert.notStrictEqual(SHARED, presets.defaultEnvForProvider('shared-a'));
+      assert.notStrictEqual(SHARED, presets.defaultEnvForProvider('shared-b'));
+      assert.strictEqual(
+        wizard.isManagedProfileEnv({ apiKeyEnv: SHARED, url: 'https://a.example.com/v1' }, ''),
+        false,
+        'an owned-prefix name with an unprovable owner must be unmanaged (fail-closed)'
+      );
+
+      await withSavedEnv([SHARED], async () => {
+        process.env[SHARED] = 'sk-shared-ambig-000000001';
+        const mk = (url) => ({ provider: 'custom', url, wireProtocol: 'openai', apiKeyEnv: SHARED, models: ['m1'], caCert: '', headers: '' });
+        const save = (envOptions) =>
+          envStore.saveGatewayConfig(
+            { version: 2, activeProfile: 'shared-a', active: false, profiles: { 'shared-a': mk('https://a.example.com/v1'), 'shared-b': mk('https://b.example.com/v1') } },
+            envOptions
+          );
+
+        // cli refusal
+        await withHubSandbox(async ({ envOptions }) => {
+          save(envOptions);
+          const out = makeOut();
+          const err = makeOut();
+          const code = await proCli.runCli(['gateway', 'on', 'shared-a'], { output: out, errOutput: err, envOptions, isTTY: false });
+          assert.strictEqual(code, 1, 'ambiguous ownership must be refused non-interactively');
+          assert.strictEqual(out.text(), '', 'refusal must not write to stdout');
+          assert(err.text().includes('unmanaged env var AGY_P****'), 'refusal must show only the masked name');
+          assert(err.text().includes('--allow-unmanaged-env'), 'refusal must name the escape hatch');
+          const cfg = envStore.loadGatewayConfig(envOptions);
+          assert.strictEqual(cfg.active, false, 'activation must not occur');
+          assert.strictEqual(cfg.activeProfile, 'shared-a', 'active pointer must remain untouched');
+        });
+
+        // hub refusal on default N
+        await withHubSandbox(async ({ envOptions }) => {
+          save(envOptions);
+          const { res, queue, text } = await runHub(['2', 'shared-a', '', '0'], envOptions);
+          assert.strictEqual(res.exitCode, 0, text);
+          assert.strictEqual(queue.length, 0, `unconsumed answers: ${queue.join(',')}`);
+          assert(text.includes('unmanaged env var AGY_P****'), 'hub consent prompt must show only the masked name');
+          assert(text.includes('Activation refused'), 'declining must refuse activation');
+          assert.strictEqual(envStore.loadGatewayConfig(envOptions).active, false);
+        });
+
+        // explicit opt-out still works under ambiguity
+        await withHubSandbox(async ({ envOptions }) => {
+          save(envOptions);
+          const out = makeOut();
+          const err = makeOut();
+          const code = await proCli.runCli(['gateway', 'on', 'shared-a', '--allow-unmanaged-env'], { output: out, errOutput: err, envOptions, isTTY: false });
+          assert.strictEqual(code, 0, `opt-in activation failed: ${out.text()} ${err.text()}`);
+          assert.strictEqual(envStore.loadGatewayConfig(envOptions).active, true);
+          assert.strictEqual(envStore.getGatewayStatus(envOptions).mode, 'GATEWAY_XOR');
+        });
+        delete process.env[SHARED];
+      });
+    });
+
+    // Documentation pin (no behavior change is being proposed): the header sanitizer tokenizes on
+    // commas AND newlines, and reassembles a colon-less fragment run with the FOLLOWING header's
+    // name only when that run opens a line. A comma-joined 3-way split at line start
+    // (`Auth,oriz,ation: Bearer sk-x`) is therefore caught exactly like the newline 3-way: the
+    // whole group drops and nothing reaches the wire. The accepted compromise: fragments that
+    // follow an opening benign pair fold into it (the `X-List: a,b,c` comma-preservation rule),
+    // so a credential tail hidden BEHIND a benign pair reopens as its own header and persists
+    // at-rest in gateway.json. On the wire that tail survives only as far as Node's HTTP
+    // header-name validation allows: a token-valid junk name (`ation: Bearer sk-z`) is sent as a
+    // non-credential header, while a whitespace-bearing name is rejected at send time and the
+    // probe fails closed. Aggressively re-scanning folded comma segments would break benign comma
+    // preservation, so the tail is accepted at-rest. This test pins exactly that current
+    // behavior; changing it requires a conscious follow-up.
+    await test('Round-5b (doc pin): comma-joined 3-way split — line-start spelling is caught; a tail hidden behind a benign pair persists at-rest (bounded by Node header validation)', async () => {
+      // Exact task spelling, comma-joined at line start: caught whole, like the newline 3-way.
+      const lineStart = wizard.stripAuthorizationHeaders('Auth,oriz,ation: Bearer sk-x');
+      assert.strictEqual(lineStart.text, '', 'line-start comma 3-way must drop the whole group');
+      assert.strictEqual(lineStart.removedAuthorization, true, 'credential removal must be reported');
+
+      // Benign-first compromise: mid fragments fold into the benign pair; the tail reopens.
+      const behindBenign = wizard.stripAuthorizationHeaders('X-A: 1,oriz,ation: Bearer sk-z');
+      assert.strictEqual(behindBenign.text, 'X-A: 1,oriz\nation: Bearer sk-z', 'the tail persists at-rest behind a benign pair (accepted compromise)');
+      assert.strictEqual(behindBenign.removedAuthorization, false, 'no removal is reported for the folded shape');
+
+      // A whitespace-bearing tail name is kept at-rest too, but Node's header-name token
+      // validation rejects it at send time (verified against a real server below).
+      const spaceName = wizard.stripAuthorizationHeaders('X-A: 1,oriz ation: Bearer sk-z');
+      assert.strictEqual(spaceName.text, 'X-A: 1\noriz ation: Bearer sk-z');
+      assert.strictEqual(spaceName.removedAuthorization, false);
+
+      // Wire bounds: line-start spelling sends nothing; the token-valid tail rides as a junk
+      // NON-credential header; the whitespace-bearing tail never reaches the server.
+      const seen = [];
+      const server = http.createServer((req, res) => {
+        seen.push({ url: req.url, headers: req.headers });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('{}');
+      });
+      await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+      try {
+        const port = server.address().port;
+        const probe = (headers) =>
+          httpClient.probeEndpoint({ url: `http://127.0.0.1:${port}/v1`, apiKey: '', wireProtocol: 'openai', model: 'm1', headers });
+
+        const r1 = await probe(lineStart.text);
+        assert.strictEqual(r1.ok, true, 'empty kept headers must probe fine');
+        assert.strictEqual(seen.length, 1, 'exactly one request expected');
+        assert(!('ation' in seen[0].headers), 'the caught 3-way must send nothing');
+        assert(!('x-a' in seen[0].headers), 'no residual header from the caught spelling');
+
+        const r2 = await probe(behindBenign.text);
+        assert.strictEqual(r2.ok, true, 'the benign-first residual still probes');
+        assert.strictEqual(seen.length, 2, 'second request expected');
+        assert.strictEqual(seen[1].headers['ation'], 'Bearer sk-z', 'token-valid tail rides as a junk non-credential header (documented compromise)');
+        assert.strictEqual(seen[1].headers['x-a'], '1', 'benign pair header preserved');
+
+        const r3 = await probe(spaceName.text);
+        assert.strictEqual(r3.ok, false, 'a whitespace-bearing header name must fail at Node validation');
+        assert.strictEqual(seen.length, 2, 'the rejected request must never reach the server');
+      } finally {
+        await new Promise((resolve) => server.close(resolve));
+      }
+    });
+
+    // --- Round-6 remediation regression tests ---
+
+    // Pins fix: the three CLI consent call sites (`gateway on`, `models --remote`, `env --profile`)
+    // used to call requestUnmanagedEnvConsent without `profileName`/`envOptions`, so the gate
+    // re-resolved the owning profile from the DEFAULT config path. A library caller that injects a
+    // custom `configPath` (no AGY_PRO_HOME) therefore had the gate evaluate a different file and
+    // refuse a legitimately managed profile. Each path below runs with a configPath-injected
+    // envOptions and no AGY_PRO_HOME, and must pass the gate silently.
+    await test('Round-6: cli consent gate evaluates the caller-injected configPath (gateway on / models --remote / env --profile)', async () => {
+      const ENV = presets.defaultEnvForProvider('alpha-gw');
+      assert.strictEqual(ENV, 'AGY_PRO_GATEWAY_ALPHA_GW_API_KEY', 'geometry pin: alpha-gw owns its generated name');
+
+      await withSavedEnv([ENV, 'AGY_PRO_HOME'], async () => {
+        // The library caller supplies only envOptions; the gate must not fall back to the default
+        // path (which would resolve to this sandbox's empty ~/.agy-pro).
+        delete process.env.AGY_PRO_HOME;
+        process.env[ENV] = 'sk-alpha-injected-key-000001';
+        await withHubSandbox(async ({ envOptions }) => {
+          envStore.saveGatewayConfig(
+            {
+              version: 2,
+              activeProfile: 'alpha-gw',
+              active: false,
+              profiles: {
+                'alpha-gw': {
+                  provider: 'custom',
+                  url: 'https://alpha.example.com/v1',
+                  wireProtocol: 'openai',
+                  apiKeyEnv: ENV,
+                  models: ['m1'],
+                  caCert: '',
+                  headers: ''
+                }
+              }
+            },
+            envOptions
+          );
+
+          // (a) gateway on — own generated name, single owner: no consent needed
+          const onOut = makeOut();
+          const onErr = makeOut();
+          const onCode = await proCli.runCli(['gateway', 'on', 'alpha-gw'], {
+            output: onOut,
+            errOutput: onErr,
+            envOptions,
+            isTTY: false
+          });
+          assert.strictEqual(onCode, 0, `injected-configPath activation failed: ${onOut.text()} ${onErr.text()}`);
+          assert(!onErr.text().includes('unmanaged env var'), 'the gate must not refuse a managed profile');
+          assert(onErr.text() === '', `activation must stay prompt-free: ${onErr.text()}`);
+          assert.strictEqual(envStore.loadGatewayConfig(envOptions).active, true);
+
+          // (b) models --remote — same gate, same config file
+          const modelsOut = makeOut();
+          const modelsErr = makeOut();
+          const modelsCode = await proCli.runCli(['models', '--profile', 'alpha-gw', '--remote'], {
+            output: modelsOut,
+            errOutput: modelsErr,
+            envOptions,
+            isTTY: false,
+            transport: async () => ({ statusCode: 200, statusMessage: 'OK', headers: {}, body: '{"data":[]}' })
+          });
+          assert.strictEqual(modelsCode, 0, `models --remote refused: ${modelsOut.text()} ${modelsErr.text()}`);
+          assert(!modelsErr.text().includes('unmanaged env var'), 'models --remote must not refuse a managed profile');
+
+          // (c) env --profile — same gate, same config file
+          const envOut = makeOut();
+          const envErr = makeOut();
+          const envCode = await proCli.runCli(['env', '--shell', 'sh', '--profile', 'alpha-gw'], {
+            output: envOut,
+            errOutput: envErr,
+            envOptions,
+            isTTY: false
+          });
+          assert.strictEqual(envCode, 0, `env --profile refused: ${envOut.text()} ${envErr.text()}`);
+          assert(!envErr.text().includes('unmanaged env var'), 'env --profile must not refuse a managed profile');
+          assert(envOut.text().includes("export AGY_LLM_GATEWAY_URL='https://alpha.example.com/v1'"), envOut.text());
+        });
+
+        // (d) The gate must resolve the owning profile from the SAME config file the caller names.
+        // The CLI handlers hold only the profile object, so when no `profileName` is supplied the
+        // gate falls back to findProfileNameForEnv, which reads the config at `envOptions`. Two
+        // profiles sharing one generated name are ambiguous and must fail closed, while the default
+        // path (a single owner) proves ownership. Round-7 extends the same fail-closed rule to an
+        // explicit `profileName`: the name is still checked for uniqueness in the loaded config.
+        // This pins the gate contract the CLI relies on; the CLI call sites pass `envOptions` for
+        // exactly this reason.
+        const DEFAULT_HOME = process.env.AGY_PRO_HOME;
+        const defaultHome = fs.mkdtempSync(path.join(os.tmpdir(), 'r6-default-home-'));
+        const injectedHome = fs.mkdtempSync(path.join(os.tmpdir(), 'r6-injected-home-'));
+        const mkProfile = (url) => ({
+          provider: 'custom',
+          url,
+          wireProtocol: 'openai',
+          apiKeyEnv: ENV,
+          models: ['m1'],
+          caCert: '',
+          headers: ''
+        });
+        try {
+          // Default path (AGY_PRO_HOME): a single owner of the generated name.
+          process.env.AGY_PRO_HOME = defaultHome;
+          envStore.saveGatewayConfig(
+            { version: 2, activeProfile: 'alpha-gw', active: false, profiles: { 'alpha-gw': mkProfile('https://alpha.example.com/v1') } },
+            {}
+          );
+          // Injected path: two owners of the same name -> the gate cannot prove ownership.
+          const injected = {
+            configPath: path.join(injectedHome, 'gateway.json'),
+            envPath: path.join(injectedHome, 'gateway.env'),
+            rcFiles: [],
+            platform: 'linux'
+          };
+          envStore.saveGatewayConfig(
+            {
+              version: 2,
+              activeProfile: 'alpha-gw',
+              active: false,
+              profiles: {
+                'alpha-gw': mkProfile('https://alpha.example.com/v1'),
+                'beta-gw': mkProfile('https://beta.example.com/v1')
+              }
+            },
+            injected
+          );
+
+          const profile = envStore.loadGatewayConfig(injected).profiles['alpha-gw'];
+          const gate = (extra) => wizard.requestUnmanagedEnvConsent(profile, { isTTY: false, ...extra });
+
+          assert.strictEqual(
+            await gate({ envOptions: injected }),
+            false,
+            'the injected config has two owners, so the gate must fail closed'
+          );
+          assert.strictEqual(
+            await gate({}),
+            true,
+            'without envOptions the gate reads the default path (one owner) and passes: the latent divergence the CLI must not hit'
+          );
+          assert.strictEqual(
+            await gate({ envOptions: injected, profileName: 'alpha-gw' }),
+            false,
+            'an explicit profileName does not skip uniqueness: beta-gw references the same name, so ownership stays unprovable'
+          );
+        } finally {
+          if (DEFAULT_HOME === undefined) delete process.env.AGY_PRO_HOME;
+          else process.env.AGY_PRO_HOME = DEFAULT_HOME;
+          fs.rmSync(defaultHome, { recursive: true, force: true });
+          fs.rmSync(injectedHome, { recursive: true, force: true });
+        }
+        delete process.env[ENV];
+      });
+    });
+
+    // Pins fix: hub [3] (`Current models:` / `Updated models for`) and the hub status header
+    // (`GATEWAY_MODELS`) echoed model ids through stripControlAndFormat only, so a secret-shaped
+    // id from a tampered gateway.json or a pasted AGY_LLM_GATEWAY_MODELS reached the terminal
+    // verbatim. Both now go through displayConfigName, matching cli `models` and hub [5]; benign
+    // ids keep their original spelling.
+    await test('Round-6: hub header and [3] mask secret-shaped model ids while benign ids stay verbatim', async () => {
+      const SECRET = 'sk-ant-pasted-secret-abc123456789';
+      const BENIGN = 'qwen2.5-coder:32b';
+      await withSavedEnv(['AGY_LLM_GATEWAY_MODELS'], async () => {
+        await withHubSandbox(async ({ envOptions }) => {
+          envStore.saveGatewayConfig(
+            {
+              version: 2,
+              activeProfile: 'm',
+              active: true,
+              profiles: {
+                m: {
+                  provider: 'custom',
+                  url: 'http://127.0.0.1:11434/v1',
+                  wireProtocol: 'openai',
+                  apiKeyEnv: '',
+                  models: [BENIGN, SECRET],
+                  caCert: '',
+                  headers: ''
+                }
+              }
+            },
+            envOptions
+          );
+          // The header reads the effective env, so pin the same pair there.
+          envStore.persistEnvMap(
+            {
+              AGY_LLM_GATEWAY_URL: 'http://127.0.0.1:11434/v1',
+              AGY_LLM_GATEWAY_MODELS: `${BENIGN},${SECRET}`,
+              AGY_LLM_GATEWAY_WIRE_PROTOCOL: 'openai'
+            },
+            envOptions
+          );
+
+          const { res, queue, text } = await runHub(['3', 'm', '', '0'], envOptions);
+          assert.strictEqual(res.exitCode, 0, text);
+          assert.strictEqual(queue.length, 0, `unconsumed answers: ${queue.join(',')}`);
+          assert(!text.includes(SECRET), 'raw secret-shaped model id must never be printed');
+          assert(text.includes('sk-an****'), 'the masked model id must be rendered');
+          assert(text.includes(`Current models: ${BENIGN},sk-an****`), `hub [3] current list must mask: ${text}`);
+          assert(text.includes(`Updated models for "m": ${BENIGN},sk-an****`), 'hub [3] confirmation must mask');
+          assert(text.includes(`${BENIGN},sk-an****`), 'the status header must mask the model list');
+          assert(!text.includes('\x1b'), 'hub output must not contain an ESC byte');
+          assert.strictEqual(
+            envStore.loadGatewayConfig(envOptions).profiles.m.models[0],
+            BENIGN,
+            'the benign id must be stored verbatim'
+          );
+        });
+      });
+    });
+
+    // Pins fix: activateGateway's not-found hint and its mid-flight profile errors interpolated the
+    // raw profile name, and the CLI writes `err.message` verbatim, so a tampered gateway.json could
+    // push ANSI/control bytes into the terminal. Every config-derived name in those messages is now
+    // sanitized, including the `Available:` list.
+    await test('Round-6: activateGateway errors and the not-found hint sanitize ANSI profile names (no ESC reaches the CLI)', async () => {
+      const ANSI_NAME = 'p\x1b[31mX';
+      await withHubSandbox(async ({ homeDir, envOptions }) => {
+        fs.mkdirSync(homeDir, { recursive: true });
+        const writeConfig = (url, apiKeyEnv) =>
+          fs.writeFileSync(
+            envOptions.configPath,
+            JSON.stringify(
+              {
+                version: 2,
+                activeProfile: '',
+                active: false,
+                profiles: {
+                  [ANSI_NAME]: {
+                    provider: 'custom',
+                    url,
+                    wireProtocol: 'openai',
+                    apiKeyEnv,
+                    models: ['m1'],
+                    caCert: '',
+                    headers: ''
+                  }
+                }
+              },
+              null,
+              2
+            ),
+            'utf8'
+          );
+
+        // (a) mid-flight URL error names the profile
+        writeConfig('ftp://bad.example.com/v1', '');
+        let urlErr = null;
+        try {
+          envStore.activateGateway(ANSI_NAME, envOptions);
+        } catch (err) {
+          urlErr = err;
+        }
+        assert(urlErr, 'an invalid profile URL must fail activation');
+        assert(!urlErr.message.includes('\x1b'), 'URL error must not carry an ESC byte');
+        assert(urlErr.message.includes(`Profile "p[31mX":`), `sanitized profile name expected: ${urlErr.message}`);
+
+        // (b) remote endpoint without an apiKeyEnv
+        writeConfig('https://remote.example.com/v1', '');
+        let envErr = null;
+        try {
+          envStore.activateGateway(ANSI_NAME, envOptions);
+        } catch (err) {
+          envErr = err;
+        }
+        assert(envErr, 'a remote profile without apiKeyEnv must fail activation');
+        assert(!envErr.message.includes('\x1b'), 'apiKeyEnv error must not carry an ESC byte');
+        assert(envErr.message.includes('apiKeyEnv is required for remote endpoints'), envErr.message);
+
+        // (c) not-found: both the queried name and the `Available:` hint list are sanitized
+        let notFoundErr = null;
+        try {
+          envStore.activateGateway('missing', envOptions);
+        } catch (err) {
+          notFoundErr = err;
+        }
+        assert(notFoundErr, 'activating a nonexistent profile must throw');
+        assert(!notFoundErr.message.includes('\x1b'), 'not-found hint must not carry an ESC byte');
+        assert(
+          notFoundErr.message.includes('Available: p[31mX'),
+          `sanitized Available hint expected: ${notFoundErr.message}`
+        );
+
+        // (d) the CLI catch path prints that message verbatim, so end-to-end output stays clean
+        writeConfig('ftp://bad.example.com/v1', '');
+        const out = makeOut();
+        const err = makeOut();
+        const code = await proCli.runCli(['gateway', 'on', ANSI_NAME], { output: out, errOutput: err, envOptions, isTTY: false });
+        assert.strictEqual(code, 1, 'the CLI must report the activation failure');
+        assert(!(out.text() + err.text()).includes('\x1b'), 'CLI output must not emit an ESC byte');
+        assert(err.text().includes('Profile "p[31mX":'), err.text());
+
+        // (e) deleteProfile's not-found error is sanitized too (the stale NOTE this batch removed)
+        let deleteErr = null;
+        try {
+          envStore.deleteProfile('\x1b[31mghost', envOptions);
+        } catch (err) {
+          deleteErr = err;
+        }
+        assert(deleteErr, 'deleting a nonexistent profile must throw');
+        assert(!deleteErr.message.includes('\x1b'), 'deleteProfile not-found must not carry an ESC byte');
+        assert(deleteErr.message.includes('Gateway profile "[31mghost" not found.'), deleteErr.message);
+      });
+    });
+
+    // Pins fix: ANSI_ESCAPE_RE only covered CSI/OSC, so the short escape family survived as
+    // residue (`Authoriz\x1b7ation` -> `Authoriz7ation`) and the credential-name match missed,
+    // leaving the value in gateway.json. The regex now consumes ESC + intermediate bytes + final
+    // byte, and every spelling below must drop the whole header.
+    await test('Round-6: non-CSI ANSI escape families leave no credential residue (ESC 7/8/c, ESC ( B, ESC # 8)', async () => {
+      const spellings = [
+        'Authoriz\x1b7ation: Bearer sk-esc7',
+        'Authoriz\x1b8ation: Bearer sk-esc8',
+        'Authoriz\x1bcation: Bearer sk-escc',
+        'Authoriz\x1b(Bation: Bearer sk-escb',
+        'Authoriz\x1b#8ation: Bearer sk-esch',
+        'Authoriz\x1b]0;t\x07ation: Bearer sk-escosc'
+      ];
+      for (const raw of spellings) {
+        const stripped = wizard.stripAuthorizationHeaders(raw);
+        assert.strictEqual(stripped.text, '', `no header may survive for ${JSON.stringify(raw)}`);
+        assert(stripped.removedAuthorization, `credential removal must be reported for ${JSON.stringify(raw)}`);
+      }
+
+      // Benign header values are untouched by the wider grammar.
+      assert.deepStrictEqual(wizard.stripAuthorizationHeaders('X-List: a,b,c'), {
+        text: 'X-List: a,b,c',
+        removedAuthorization: false
+      });
+
+      // End to end: the legacy import path writes gateway.json, so the file itself must be clean.
+      await withHubSandbox(async ({ homeDir, envOptions }) => {
+        fs.mkdirSync(homeDir, { recursive: true });
+        const providers = {};
+        spellings.forEach((headers, i) => {
+          providers[`esc-${i + 1}`] = { baseURL: `https://e${i + 1}.example.com/v1`, headers, models: ['m1'] };
+        });
+        fs.writeFileSync(path.join(homeDir, 'providers.json'), JSON.stringify({ providers }));
+        const res = wizard.importLegacyProviders(envOptions);
+        assert.strictEqual(res.imported.length, spellings.length, 'every legacy profile must import');
+        const rawCfg = fs.readFileSync(envOptions.configPath, 'utf8');
+        for (const token of ['sk-esc', 'Bearer', 'Authoriz', 'uthorization', '\x1b']) {
+          assert(!rawCfg.includes(token), `gateway.json must not retain ${JSON.stringify(token)}`);
+        }
+        const cfg = envStore.loadGatewayConfig(envOptions);
+        for (let i = 1; i <= spellings.length; i++) {
+          assert.strictEqual(cfg.profiles[`esc-${i}`].headers, '', `profile esc-${i} must end up with no headers`);
+        }
+      });
+    });
+
+    // --- Round-7 remediation regression tests ---
+
+    // Pins fix (F6-01): `defaultEnvForProvider` is many-to-one (`work-gw` / `work.gw` /
+    // `WORK-GW` all derive AGY_PRO_GATEWAY_WORK_GW_API_KEY). Round-6 threaded an explicit
+    // `profileName` into the gate, so an attacker-appended colliding sibling could point at the
+    // owner's key and still pass the exact-name match. Ownership now also requires derivation
+    // uniqueness inside the loaded profile set: a contested name needs consent, for the colliding
+    // profile and for the owner it shadows, while an uncontested name still passes silently.
+    await test('Round-7: normalization-colliding sibling cannot borrow the owner env name (cli refusal, hub consent, solo pass)', async () => {
+      const ENV = presets.defaultEnvForProvider('work-gw');
+      assert.strictEqual(ENV, 'AGY_PRO_GATEWAY_WORK_GW_API_KEY', 'geometry pin: work-gw owns the variable');
+      assert.strictEqual(presets.defaultEnvForProvider('work.gw'), ENV, 'the derivation is many-to-one');
+      assert.strictEqual(presets.defaultEnvForProvider('WORK-GW'), ENV, 'case variants collide too');
+
+      await withSavedEnv([ENV], async () => {
+        process.env[ENV] = 'sk-work-real-key-000000001';
+        const mkProfile = (url) => ({
+          provider: 'custom',
+          url,
+          wireProtocol: 'openai',
+          apiKeyEnv: ENV,
+          models: ['m1'],
+          caCert: '',
+          headers: ''
+        });
+        // The attack shape is a hand-edited gateway.json: `work.gw` is not a savable profile name.
+        const writeConfig = (envOptions, withRival) => {
+          fs.mkdirSync(path.dirname(envOptions.configPath), { recursive: true });
+          const profiles = { 'work-gw': mkProfile('https://victim.example.com/v1') };
+          if (withRival) profiles['work.gw'] = mkProfile('https://evil.example.com/v1');
+          fs.writeFileSync(
+            envOptions.configPath,
+            JSON.stringify({ version: 2, activeProfile: '', active: false, profiles }, null, 2),
+            'utf8'
+          );
+        };
+
+        // (a) single-profile geometry: the owner passes without consent
+        await withHubSandbox(async ({ envOptions }) => {
+          writeConfig(envOptions, false);
+          const out = makeOut();
+          const err = makeOut();
+          const code = await proCli.runCli(['gateway', 'on', 'work-gw'], { output: out, errOutput: err, envOptions, isTTY: false });
+          assert.strictEqual(code, 0, `solo owner activation must pass: ${out.text()} ${err.text()}`);
+          assert(!err.text().includes('unmanaged env var'), 'a solo owner must not be gated');
+          assert.strictEqual(envStore.loadGatewayConfig(envOptions).active, true);
+        });
+
+        // (b) the colliding sibling is refused non-interactively and nothing is activated
+        await withHubSandbox(async ({ envOptions }) => {
+          writeConfig(envOptions, true);
+          const out = makeOut();
+          const err = makeOut();
+          const code = await proCli.runCli(['gateway', 'on', 'work.gw'], { output: out, errOutput: err, envOptions, isTTY: false });
+          assert.strictEqual(code, 1, `the colliding profile must be refused: ${out.text()} ${err.text()}`);
+          assert.strictEqual(out.text(), '', 'refusal must not write to stdout');
+          assert(err.text().includes('unmanaged env var'), err.text());
+          assert(!err.text().includes(ENV), 'the raw env name must never be echoed');
+          assert.strictEqual(envStore.loadGatewayConfig(envOptions).active, false, 'no activation may occur');
+          assert.strictEqual(
+            envStore.readPersistedEnvMap(['AGY_LLM_GATEWAY_URL'], envOptions).vars.AGY_LLM_GATEWAY_URL,
+            undefined,
+            'the attacker URL must not be persisted'
+          );
+
+          // The other two CLI call sites share the gate and must refuse before any key is resolved.
+          const modelsOut = makeOut();
+          const modelsErr = makeOut();
+          const modelsCode = await proCli.runCli(['models', '--profile', 'work.gw', '--remote'], {
+            output: modelsOut,
+            errOutput: modelsErr,
+            envOptions,
+            isTTY: false
+          });
+          assert.strictEqual(modelsCode, 1, 'models --remote must refuse the colliding profile');
+          assert.strictEqual(modelsOut.text(), '', 'models --remote refusal must not write to stdout');
+          assert(modelsErr.text().includes('unmanaged env var'), modelsErr.text());
+
+          const envOut = makeOut();
+          const envErr = makeOut();
+          const envCode = await proCli.runCli(['env', '--shell', 'sh', '--profile', 'work.gw'], {
+            output: envOut,
+            errOutput: envErr,
+            envOptions,
+            isTTY: false
+          });
+          assert.strictEqual(envCode, 1, 'env --profile must refuse the colliding profile');
+          assert.strictEqual(envOut.text(), '', 'env --profile refusal must not write to stdout');
+          assert(envErr.text().includes('unmanaged env var'), envErr.text());
+        });
+
+        // (c) hub interactive: default N refuses, an explicit y is the consent path
+        await withHubSandbox(async ({ envOptions }) => {
+          writeConfig(envOptions, true);
+          const refused = await runHub(['2', 'work.gw', '', '0'], envOptions);
+          assert.strictEqual(refused.res.exitCode, 0, refused.text);
+          assert.strictEqual(refused.queue.length, 0, `unconsumed answers: ${refused.queue.join(',')}`);
+          assert(refused.text.includes('unmanaged env var'), 'the hub must ask before forwarding the contested key');
+          assert(refused.text.includes('Activation refused'), 'default N must refuse');
+          assert(!refused.text.includes('Activated gateway profile'), 'nothing may activate on default N');
+        });
+        await withHubSandbox(async ({ envOptions }) => {
+          writeConfig(envOptions, true);
+          const accepted = await runHub(['2', 'work.gw', 'y', '0'], envOptions);
+          assert.strictEqual(accepted.res.exitCode, 0, accepted.text);
+          assert.strictEqual(accepted.queue.length, 0, `unconsumed answers: ${accepted.queue.join(',')}`);
+          assert(accepted.text.includes('Activated gateway profile "work.gw".'), accepted.text);
+          assert.strictEqual(envStore.loadGatewayConfig(envOptions).active, true);
+        });
+
+        // (d) fail-closed in the other direction: while the rival exists, the owner is contested too
+        await withHubSandbox(async ({ envOptions }) => {
+          writeConfig(envOptions, true);
+          const out = makeOut();
+          const err = makeOut();
+          const code = await proCli.runCli(['gateway', 'on', 'work-gw'], { output: out, errOutput: err, envOptions, isTTY: false });
+          assert.strictEqual(code, 1, 'the contested owner must be gated as well');
+          assert.strictEqual(out.text(), '');
+          assert(err.text().includes('unmanaged env var'), err.text());
+        });
+      });
+    });
+
+    // Pins fix (F6-04): the hub [3] prompt default is the MASKED model list, and `ask()` returns
+    // that default on Enter. Re-parsing it stored `sk-an****` in gateway.json. Enter (empty answer
+    // or an echo of the display default) now keeps the stored ids verbatim; a real edit still wins.
+    await test('Round-7: hub [3] Enter-through keeps the stored model ids (masked display is never persisted)', async () => {
+      const SECRET = 'sk-ant-pasted-secret-abc123456789';
+      const BENIGN = 'qwen2.5-coder:32b';
+      await withSavedEnv(['AGY_LLM_GATEWAY_MODELS'], async () => {
+        await withHubSandbox(async ({ envOptions }) => {
+          envStore.saveGatewayConfig(
+            {
+              version: 2,
+              activeProfile: 'm',
+              active: false,
+              profiles: {
+                m: {
+                  provider: 'custom',
+                  url: 'http://127.0.0.1:11434/v1',
+                  wireProtocol: 'openai',
+                  apiKeyEnv: '',
+                  models: [BENIGN, SECRET],
+                  caCert: '',
+                  headers: ''
+                }
+              }
+            },
+            envOptions
+          );
+
+          const entered = await runHub(['3', 'm', '', 'n', '0'], envOptions);
+          assert.strictEqual(entered.res.exitCode, 0, entered.text);
+          assert.strictEqual(entered.queue.length, 0, `unconsumed answers: ${entered.queue.join(',')}`);
+          assert(entered.text.includes(`Current models: ${BENIGN},sk-an****`), entered.text);
+          assert(!entered.text.includes(SECRET), 'the raw secret-shaped id must never be printed');
+          assert.deepStrictEqual(
+            envStore.loadGatewayConfig(envOptions).profiles.m.models,
+            [BENIGN, SECRET],
+            'Enter must keep the stored ids verbatim'
+          );
+          assert(
+            !fs.readFileSync(envOptions.configPath, 'utf8').includes('sk-an****'),
+            'the masked display form must never reach gateway.json'
+          );
+
+          const edited = await runHub(['3', 'm', 'qwen2.5-coder:7b', 'n', '0'], envOptions);
+          assert.strictEqual(edited.res.exitCode, 0, edited.text);
+          assert.strictEqual(edited.queue.length, 0, `unconsumed answers: ${edited.queue.join(',')}`);
+          assert.deepStrictEqual(
+            envStore.loadGatewayConfig(envOptions).profiles.m.models,
+            ['qwen2.5-coder:7b'],
+            'a real edit must still replace the stored ids'
+          );
+        });
+      });
+    });
+
+    // Pins fix (F6-03): the not-found `Available:` hint control-stripped names but never masked a
+    // secret-shaped profile key, so a pasted secret reached the terminal/CI log. `safeErrorName`
+    // now reuses `displayConfigName` (strip + credential mask), covering the queried name too.
+    await test('Round-7: not-found hints mask secret-shaped profile names (no ESC, no raw value)', async () => {
+      const SECRET_NAME = 'sk-ant-pasted-secret-abc123456789';
+      const ANSI_NAME = 'p\x1b[31mX';
+      await withHubSandbox(async ({ homeDir, envOptions }) => {
+        fs.mkdirSync(homeDir, { recursive: true });
+        const profile = (url) => ({
+          provider: 'custom',
+          url,
+          wireProtocol: 'openai',
+          apiKeyEnv: 'SOME_KEY',
+          models: ['m1'],
+          caCert: '',
+          headers: ''
+        });
+        fs.writeFileSync(
+          envOptions.configPath,
+          JSON.stringify(
+            {
+              version: 2,
+              activeProfile: '',
+              active: false,
+              profiles: {
+                [SECRET_NAME]: profile('https://a.example.com/v1'),
+                [ANSI_NAME]: profile('https://b.example.com/v1')
+              }
+            },
+            null,
+            2
+          ),
+          'utf8'
+        );
+
+        let notFoundErr = null;
+        try {
+          envStore.activateGateway('missing', envOptions);
+        } catch (err) {
+          notFoundErr = err;
+        }
+        assert(notFoundErr, 'activating a nonexistent profile must throw');
+        assert(!notFoundErr.message.includes('\x1b'), 'the hint must not carry an ESC byte');
+        assert(!notFoundErr.message.includes(SECRET_NAME), 'the raw secret-shaped name must not be echoed');
+        assert(notFoundErr.message.includes('sk-an****'), notFoundErr.message);
+        assert(notFoundErr.message.includes('p[31mX'), 'benign names stay readable after control stripping');
+
+        const out = makeOut();
+        const err = makeOut();
+        const code = await proCli.runCli(['gateway', 'on', 'missing'], { output: out, errOutput: err, envOptions, isTTY: false });
+        assert.strictEqual(code, 1);
+        assert.strictEqual(out.text(), '');
+        assert(!err.text().includes('\x1b'), 'the CLI path must not emit an ESC byte');
+        assert(!err.text().includes(SECRET_NAME), 'the CLI path must not echo the raw secret');
+        assert(err.text().includes('sk-an****'), err.text());
+
+        // A secret-shaped QUERIED name is masked as well (it reaches the same error text).
+        const QUERY = 'sk-ant-queried-secret-000000000';
+        let queryErr = null;
+        try {
+          envStore.activateGateway(QUERY, envOptions);
+        } catch (err2) {
+          queryErr = err2;
+        }
+        assert(queryErr, 'a nonexistent queried profile must throw');
+        assert(!queryErr.message.includes(QUERY), 'the queried name must be masked in its own error');
+        assert(queryErr.message.includes('sk-an****'), queryErr.message);
+      });
+    });
+
+    // Pins fix (F6-02): `maskBaseURL` returns the raw string when nothing credential-shaped needs
+    // masking, and the wire/header values come from the user-writable env store, so the CLI text
+    // paths echoed ESC/bidi runes. Status/doctor text must be stripped; benign values still render.
+    await test('Round-7: cli status/doctor text output strips control and format runes from env-store values', async () => {
+      await withHubSandbox(async ({ envOptions }) => {
+        envStore.persistEnvMap(
+          {
+            AGY_LLM_GATEWAY_URL: 'https://x.example.com/v1\x1b[2K\u202e',
+            AGY_LLM_GATEWAY_API_KEY: '\x1b[31msk-ant-real-key-0000000001',
+            AGY_LLM_GATEWAY_WIRE_PROTOCOL: 'openai\x1b[2K',
+            AGY_LLM_GATEWAY_HEADERS: 'X-Test: a\x1b[31mb',
+            AGY_LLM_GATEWAY_MODELS: 'm1\u202e'
+          },
+          envOptions
+        );
+
+        const out = makeOut();
+        const err = makeOut();
+        const code = await proCli.runCli(['gateway', 'status'], { output: out, errOutput: err, envOptions });
+        assert.strictEqual(code, 0, err.text());
+        assert(out.text().includes('Gateway URL'), out.text());
+        assert(out.text().includes('Wire Protocol  : openai[2K'), 'the wire value must render, minus the ESC');
+        assert(!out.text().includes('\x1b'), 'status text must not emit an ESC byte');
+        assert(!out.text().includes('\u202e'), 'status text must not emit a bidi override');
+
+        const dOut = makeOut();
+        const dErr = makeOut();
+        await proCli.runCli(['doctor'], { output: dOut, errOutput: dErr, envOptions });
+        assert(!(dOut.text() + dErr.text()).includes('\x1b'), 'doctor text must not emit an ESC byte');
+        assert(!(dOut.text() + dErr.text()).includes('\u202e'), 'doctor text must not emit a bidi override');
+
+        // The hub header/[5] echo the same env-store values; the adjacent-scan fix strips them too.
+        const hub = await runHub(['5', '0'], envOptions);
+        assert.strictEqual(hub.res.exitCode, 0, hub.text);
+        assert(!hub.text.includes('\x1b'), 'hub status text must not emit an ESC byte');
+        assert(!hub.text.includes('\u202e'), 'hub status text must not emit a bidi override');
       });
     });
   });
