@@ -260,7 +260,8 @@ func TestCodeDocPinsPerSubcommandFlags(t *testing.T) {
 	// order plan, write, review, rollback, run.
 	flagCell := regexp.MustCompile("`--([a-z][a-z0-9-]*)")
 	rows := 0
-	for _, line := range strings.Split(doc, "\n") {
+	for _, rawLine := range strings.Split(doc, "\n") {
+		line := strings.TrimRight(rawLine, "\r")
 		if !strings.HasPrefix(line, "| `--") {
 			continue
 		}

@@ -64,6 +64,7 @@ func isHelpToken(args []string) bool {
 }
 
 func handleProCommand(args []string) {
+	fmt.Fprintln(os.Stderr, "[DEPRECATED] Go 'agy pro' shim is superseded by native antigravity-cli (/swarm, subagents, Auto mode, hooks, plugins) and simplified Node 'agy-pro setup'.")
 	if len(args) == 0 {
 		printProHelp()
 		return
@@ -132,6 +133,7 @@ func printProHelp() {
 	fmt.Println("===========================================================")
 	fmt.Printf("  agy-pro v%s - High-Performance CLI Shim & Orchestrator\n", Version)
 	fmt.Println("===========================================================")
+	fmt.Println("[DEPRECATED] Go 'agy pro' shim is superseded by native antigravity-cli (/swarm, subagents, Auto mode, hooks, plugins) and simplified Node 'agy-pro setup'.")
 	fmt.Println("Usage: agy pro <command> [arguments...]")
 	fmt.Println()
 	fmt.Println(">>> agy pro setup  opens the full-screen setup TUI <<<")

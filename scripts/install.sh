@@ -32,6 +32,7 @@ ROOT_MARKER="$HOME/.local/share/agy-tools-root"
 chmod +x "$ROOT_DIR/bin/agy-tools.js" 2>/dev/null || true
 chmod +x "$ROOT_DIR/bin/agy-tokens.js" 2>/dev/null || true
 chmod +x "$ROOT_DIR/bin/agy-dashboard.js" 2>/dev/null || true
+chmod +x "$ROOT_DIR/bin/agy-pro.js" 2>/dev/null || true
 
 # Records the repository root for the self-healing wrappers. The wrappers read this
 # file at run time and repair it themselves when the repository moves.
@@ -85,7 +86,7 @@ AGY_TOOLS_MARKER="${HOME}/.local/share/agy-tools-root"
 AGY_TOOLS_SCRIPT="__AGY_SCRIPT__"
 AGY_TOOLS_PKG_NAME="agy-tools"
 AGY_TOOLS_SCAN_DEPTH=6
-AGY_TOOLS_ENTRY_SCRIPTS="agy-tools.js agy-tokens.js agy-dashboard.js"
+AGY_TOOLS_ENTRY_SCRIPTS="agy-tools.js agy-tokens.js agy-dashboard.js agy-pro.js"
 
 agy_tools_fail() {
     printf '%s\n' "[agy-tools] ERROR: $1" >&2
@@ -212,70 +213,58 @@ AGY_TOOLS_WRAPPER
 echo "[INFO] Linking agy-tools globally via npm link..."
 cd "$ROOT_DIR"
 
+NPM_LINK_OK=0
 if npm link >/dev/null 2>&1; then
+    NPM_LINK_OK=1
     echo ""
-    echo "[SUCCESS] agy-tools, agy-tokens, agy-dashboard, and antigravity-tools installed globally!"
-    if ! write_root_marker "$ROOT_DIR"; then
-        echo "[ERROR] Could not write the root marker: $ROOT_MARKER" >&2
-        echo "[ERROR] Fix the error above, then re-run: bash scripts/install.sh" >&2
-        exit 1
-    fi
+    echo "[SUCCESS] agy-tools, agy-tokens, agy-dashboard, agy-pro, and antigravity-tools installed globally!"
 else
     echo ""
     echo "[WARN] Global npm link required sudo or failed. Installing self-healing wrappers..."
-    USER_BIN="$HOME/.local/bin"
-    mkdir -p "$USER_BIN"
-    # The marker goes in first and is FATAL: a wrapper that exists without a
-    # marker would rescan the whole profile on every single run, so a marker
-    # that cannot be written aborts the install instead of degrading.
-    if ! write_root_marker "$ROOT_DIR"; then
-        echo "[ERROR] Could not write the root marker: $ROOT_MARKER" >&2
-        echo "[ERROR] Fix the error above, then re-run: bash scripts/install.sh" >&2
-        exit 1
-    fi
-    write_wrapper "$USER_BIN/agy-tools" "agy-tools.js"
-    write_wrapper "$USER_BIN/antigravity-tools" "agy-tools.js"
-    write_wrapper "$USER_BIN/agy-tokens" "agy-tokens.js"
-    write_wrapper "$USER_BIN/agy-dashboard" "agy-dashboard.js"
-    echo "[SUCCESS] Created self-healing wrappers in $USER_BIN"
+fi
+
+USER_BIN="$HOME/.local/bin"
+mkdir -p "$USER_BIN"
+# The marker goes in first and is FATAL: a wrapper that exists without a
+# marker would rescan the whole profile on every single run, so a marker
+# that cannot be written aborts the install instead of degrading.
+if ! write_root_marker "$ROOT_DIR"; then
+    echo "[ERROR] Could not write the root marker: $ROOT_MARKER" >&2
+    echo "[ERROR] Fix the error above, then re-run: bash scripts/install.sh" >&2
+    exit 1
+fi
+write_wrapper "$USER_BIN/agy-tools" "agy-tools.js"
+write_wrapper "$USER_BIN/antigravity-tools" "agy-tools.js"
+write_wrapper "$USER_BIN/agy-tokens" "agy-tokens.js"
+write_wrapper "$USER_BIN/agy-dashboard" "agy-dashboard.js"
+write_wrapper "$USER_BIN/agy-pro" "agy-pro.js"
+echo "[SUCCESS] Created self-healing wrappers in $USER_BIN"
+if [ "$NPM_LINK_OK" -eq 0 ]; then
     echo "Make sure $USER_BIN is in your PATH."
     echo "The wrappers re-resolve the repository root at run time, so they survive moving this folder."
 fi
 
 echo ""
-echo "[INFO] Deploying the Antigravity integrations with agy pro..."
-echo "[INFO]   statusLine, rules, plugins, skills, lifecycle hooks"
-# Trusted path first: agy-pro keeps its shim at the fixed user-owned path below
-# (~/.agy-pro/bin, the same directory install.ps1 deploys to), so invoke THAT by
-# absolute path. A PATH-earlier `agy` would otherwise run attacker code holding
-# this deployment's --yes and could persist a payload in the statusLine slot
-# (CWE-426 untrusted search path). The .exe twin is what Git Bash on Windows sees.
-AGY_DOOR=""
-for _agy_shim in "$HOME/.agy-pro/bin/agy" "$HOME/.agy-pro/bin/agy.exe"; do
-    if [ -x "$_agy_shim" ]; then
-        AGY_DOOR="$_agy_shim"
-        break
-    fi
-done
-# No agy-pro shim on this machine: fall back to the CLI that PATH resolves.
-if [ -z "$AGY_DOOR" ] && command -v agy >/dev/null 2>&1; then
-    AGY_DOOR="agy"
-fi
-if [ -n "$AGY_DOOR" ]; then
-    if ! "$AGY_DOOR" pro integrations apply tools --yes; then
-        echo "[ERROR] agy pro integrations apply tools failed; the statusLine integration and the rules/plugins/skills/hooks deployment were NOT completed." >&2
-        echo "[ERROR] Fix the error above, then re-run: bash scripts/install.sh" >&2
-        exit 1
-    fi
-else
-    echo "[WARN] The agy CLI is not in your PATH, so the Antigravity integrations were NOT deployed."
-    echo "[WARN] After agy is installed, run this exact command once:"
-    echo "         agy pro integrations apply tools --yes"
-    echo "[WARN] Then restart Antigravity CLI (agy) to start seeing real-time token tracking."
+echo "[INFO] Deploying Antigravity customizations (rules, plugins, skills, hooks, agents, references)..."
+if ! node "$ROOT_DIR/scripts/lib/configure-customizations.js"; then
+    echo "[ERROR] Failed to deploy Antigravity customizations." >&2
+    echo "[ERROR] Fix the error above, then re-run: bash scripts/install.sh" >&2
+    exit 1
 fi
 
+echo "[INFO] Configuring Antigravity statusLine in settings.json..."
+if ! node "$ROOT_DIR/scripts/lib/configure-statusline.js"; then
+    echo "[ERROR] Failed to configure statusLine in settings.json." >&2
+    echo "[ERROR] Fix the error above, then re-run: bash scripts/install.sh" >&2
+    exit 1
+fi
+
+echo ""
 echo "Try running:"
 echo "  agy-tools --version"
 echo "  agy-tools prices --currency krw"
 echo "  agy-tokens --help"
+echo "  agy-pro setup"
+echo ""
+echo "Next step (optional): run \"agy-pro setup\" to configure an external LLM gateway."
 echo ""

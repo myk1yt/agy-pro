@@ -7,6 +7,7 @@
     "agy-tools": "./bin/agy-tools.js",
     "agy-dashboard": "./bin/agy-dashboard.js",
     "agy-tokens": "./bin/agy-tokens.js",
+    "agy-pro": "./bin/agy-pro.js",
     "antigravity-tools": "./bin/agy-tools.js"
   },
   "scripts": {
@@ -46,6 +47,8 @@
     "plugins",
     "skills",
     "hooks",
+    "agents",
+    "references",
     "data",
     "docs",
     "LICENSE",

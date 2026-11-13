@@ -1,4 +1,4 @@
 @echo off
 setlocal
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0agy-pro\scripts\uninstall.ps1" %*
+node "%~dp0scripts\lib\uninstall.js" %*
 exit /b %ERRORLEVEL%

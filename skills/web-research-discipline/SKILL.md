@@ -1,7 +1,7 @@
 ---
 name: web-research-discipline
 description: >
-  Multi-source web fact-verification methodology for Verify-mode research dispatches via agy pro fanout. Covers source quorum, citation format, evidence labels, contradiction resolution, and the claims-register contract.
+  Multi-source web fact-verification methodology for Verify-mode research dispatches via native /swarm or parallel invoke_subagent instances. Covers source quorum, citation format, evidence labels, contradiction resolution, and the claims-register contract.
 ---
 
 # Web Research Discipline

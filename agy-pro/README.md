@@ -1,6 +1,20 @@
-# agy-pro: High-Performance Go Shim & Swarm Orchestrator
+# agy-pro: Legacy Go Shim & Swarm Orchestrator (DEPRECATED / FROZEN)
 
-`agy-pro` is a transparent, ultra-low-latency Go shim and orchestrator for Google's Antigravity CLI (`agy`).
+> [!WARNING]
+> **DEPRECATED & FROZEN — DO NOT USE THE GO `agy-pro` SHIM**
+>
+> The Go `agy.exe` shim and its `agy pro ...` subcommands (`swarm`, `fanout`, `code`, `hybrid`, `bridge`, `settings`, `mode`, `integrations`, and the Go `setup` TUI) are **deprecated and frozen**.
+>
+> - **For swarms, teamwork, subagents, plugins, hooks, and Auto mode:** Use native **`antigravity-cli` (`agy`)** directly (`/swarm`, `/teamwork`, custom `AGENT.md` subagents, native `hooks.json`, `/plugin`, `Auto` mode).
+> - **For installation & customizations (zero `agy.exe` PATH shadowing):** Use the root Option 1 Node.js installer (`install.cmd` / `scripts/install.bat` / `scripts/install.sh`) documented in the root **[`README.md`](../README.md)** ([한국어](../README.ko.md)).
+> - **For external LLM gateway configuration (`AGY_LLM_GATEWAY_*`):** Use the new simplified Node.js **`agy-pro`** CLI (`agy-pro setup`, `agy-pro gateway on [<profile>]|off|status`, `agy-pro models`, `agy-pro env`, `agy-pro doctor`), installed automatically by the Option 1 installer.
+> - **To remove an old Go shim on Windows:** Run `uninstall.cmd --yes` from the repository root (or `agy-pro/scripts/uninstall.ps1`).
+>
+> The sections below are preserved solely as historical/archived documentation for the frozen Go codebase.
+
+---
+
+`agy-pro` was a transparent Go shim and orchestrator for Google's Antigravity CLI (`agy`).
 
 It provides:
 

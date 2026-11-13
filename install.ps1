@@ -35,5 +35,5 @@ if (-not $relaunchGuard) {
     }
 }
 
-& "$PSScriptRoot\agy-pro\scripts\install.ps1" @args
+& "$PSScriptRoot\scripts\install.bat" @args
 exit $LASTEXITCODE

@@ -1,12 +1,38 @@
+#!/usr/bin/env node
+
 /**
  * @fileoverview Full Antigravity CLI Customization Suite Configurator & Deployer.
- * Deploys rules/, plugins/, skills/, and hooks/ from repository to ~/.gemini/config/
- * with zero external dependencies, atomic writes, automatic backups, and idempotency.
+ * Deploys rules/, plugins/, skills/, hooks/, agents/, references/, and optional
+ * workflows/ from the repository to ~/.gemini/config/ with zero external
+ * dependencies, atomic writes, automatic backups, exclusion filtering,
+ * deploy-time hooks.json launcher pinning, and idempotency.
  */
+
+'use strict';
 
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { resolveTokensLauncher, quoteCommandPath } = require('./configure-statusline');
+
+/**
+ * Supported customization categories deployed to ~/.gemini/config/.
+ * Note: 'workflows' is an optional supported category — when repoRoot/workflows
+ * does not exist, syncDirectory safely treats it as a no-op without requiring
+ * an empty workflows/ directory in package.json "files".
+ */
+const CATEGORIES = ['rules', 'plugins', 'skills', 'hooks', 'agents', 'references', 'workflows'];
+
+/**
+ * Default top-level directory exclusions per category.
+ * Legacy swarm/settings plugins, mode skill, and agypro-search agent stay in
+ * the repository for reference/Go tests, but are excluded from user deployment.
+ */
+const DEFAULT_EXCLUDES = {
+  plugins: new Set(['agypro_swarm', 'agypro_settings']),
+  skills: new Set(['mode']),
+  agents: new Set(['agypro-search'])
+};
 
 /**
  * Generates a timestamp string formatted as YYYYMMDD-HHMMSS using local time.
@@ -14,7 +40,7 @@ const os = require('os');
  * @returns {string} Timestamp string.
  */
 function getTimestamp(date = new Date()) {
-  const pad = n => String(n).padStart(2, '0');
+  const pad = (n) => String(n).padStart(2, '0');
   const year = date.getFullYear();
   const month = pad(date.getMonth() + 1);
   const day = pad(date.getDate());
@@ -38,8 +64,8 @@ function getRepoRoot() {
  * @returns {string} Absolute path to config directory.
  */
 function getConfigDir() {
-  if (process.env.AGY_CONFIG_DIR) {
-    return path.resolve(process.env.AGY_CONFIG_DIR);
+  if (process.env.AGY_CONFIG_DIR && process.env.AGY_CONFIG_DIR.trim()) {
+    return path.resolve(process.env.AGY_CONFIG_DIR.trim());
   }
   return path.join(os.homedir(), '.gemini', 'config');
 }
@@ -54,7 +80,7 @@ function writeAtomic(filePath, content) {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  const tmpPath = `${filePath}.tmp.${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
+  const tmpPath = `${filePath}.tmp.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
   fs.writeFileSync(tmpPath, content);
   try {
     fs.renameSync(tmpPath, filePath);
@@ -74,31 +100,82 @@ function writeAtomic(filePath, content) {
 }
 
 /**
- * Synchronizes a source directory to target directory recursively.
- * @param {string} srcDir 
- * @param {string} tgtDir 
- * @param {Object} [options]
- * @returns {Array<Object>}
+ * Rewrites hooks.PostInvocation.command in hooks.json at deploy time to pin the
+ * discovered absolute agy-tokens launcher path. Leaves the original buffer
+ * untouched when no absolute launcher is found or when the expected slot is absent.
+ *
+ * @param {Buffer} rawBuffer - Raw hooks.json file bytes.
+ * @param {string|null} absLauncher - Resolved absolute agy-tokens launcher path.
+ * @returns {Buffer} Transformed or original buffer.
+ */
+function pinHooksJsonContent(rawBuffer, absLauncher) {
+  if (!absLauncher || !path.isAbsolute(absLauncher)) {
+    return rawBuffer;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(rawBuffer.toString('utf8'));
+  } catch (_err) {
+    return rawBuffer;
+  }
+  if (
+    !parsed ||
+    typeof parsed !== 'object' ||
+    !parsed.hooks ||
+    typeof parsed.hooks !== 'object' ||
+    !parsed.hooks.PostInvocation ||
+    typeof parsed.hooks.PostInvocation !== 'object' ||
+    typeof parsed.hooks.PostInvocation.command !== 'string'
+  ) {
+    return rawBuffer;
+  }
+  parsed.hooks.PostInvocation.command = `${quoteCommandPath(absLauncher)} --hook`;
+  return Buffer.from(`${JSON.stringify(parsed, null, 2)}\n`, 'utf8');
+}
+
+/**
+ * Synchronizes a source directory to a target directory recursively.
+ * @param {string} srcDir - Source directory.
+ * @param {string} tgtDir - Target directory.
+ * @param {Object} [options] - Sync options.
+ * @param {boolean} [options.force] - Force overwrite even when identical.
+ * @param {string} [options.timestamp] - Timestamp suffix for backup files.
+ * @param {Set<string>|string[]} [options.excludes] - Top-level subdirectory names to skip.
+ * @param {Function} [options.transformFile] - Optional `(srcPath, relPath, buf) => Buffer` transform.
+ * @returns {Array<Object>} List of file deployment records.
  */
 function syncDirectory(srcDir, tgtDir, options = {}) {
   const ts = options.timestamp || getTimestamp();
   const results = [];
   if (!fs.existsSync(srcDir)) return results;
 
-  function traverse(currentSrc, currentTgt) {
+  const excludeSet = options.excludes instanceof Set
+    ? options.excludes
+    : new Set(options.excludes || []);
+
+  function traverse(currentSrc, currentTgt, relPrefix) {
     if (!fs.existsSync(currentTgt)) {
       fs.mkdirSync(currentTgt, { recursive: true });
     }
     const entries = fs.readdirSync(currentSrc, { withFileTypes: true });
     for (const entry of entries) {
-      if (entry.name === '.git' || entry.name.endsWith('.bak') || entry.name.includes('.bak.')) continue;
+      if (entry.name === '.git' || entry.name.endsWith('.bak') || entry.name.includes('.bak.')) {
+        continue;
+      }
+      if (currentSrc === srcDir && excludeSet.has(entry.name)) {
+        continue;
+      }
       const sPath = path.join(currentSrc, entry.name);
       const tPath = path.join(currentTgt, entry.name);
+      const relPath = relPrefix ? `${relPrefix}/${entry.name}` : entry.name;
 
       if (entry.isDirectory()) {
-        traverse(sPath, tPath);
+        traverse(sPath, tPath, relPath);
       } else if (entry.isFile()) {
-        const sContent = fs.readFileSync(sPath);
+        let sContent = fs.readFileSync(sPath);
+        if (typeof options.transformFile === 'function') {
+          sContent = options.transformFile(sPath, relPath, sContent);
+        }
         if (fs.existsSync(tPath)) {
           const tContent = fs.readFileSync(tPath);
           if (sContent.equals(tContent) && !options.force) {
@@ -117,21 +194,29 @@ function syncDirectory(srcDir, tgtDir, options = {}) {
     }
   }
 
-  traverse(srcDir, tgtDir);
+  traverse(srcDir, tgtDir, '');
   return results;
 }
 
 /**
- * Deploys all customizations (rules, plugins, skills, hooks).
- * @param {Object} [options]
- * @returns {Object} Deployment summary
+ * Deploys all customizations across supported categories.
+ * @param {Object} [options] - Deployment options.
+ * @returns {Object} Deployment summary.
  */
 function deployAllCustomizations(options = {}) {
   const repoRoot = options.repoRoot || getRepoRoot();
   const configDir = options.configDir || getConfigDir();
-  const ts = getTimestamp();
+  const ts = options.timestamp || getTimestamp();
 
-  const categories = ['rules', 'plugins', 'skills', 'hooks'];
+  const absLauncher = options.tokensLauncher !== undefined
+    ? options.tokensLauncher
+    : resolveTokensLauncher({
+      homeDir: options.homeDir,
+      pathEnv: options.pathEnv,
+      platform: options.platform,
+      fallback: null
+    });
+
   const summary = {
     created: 0,
     updated: 0,
@@ -139,10 +224,23 @@ function deployAllCustomizations(options = {}) {
     details: {}
   };
 
-  for (const cat of categories) {
+  for (const cat of CATEGORIES) {
     const src = path.join(repoRoot, cat);
     const tgt = path.join(configDir, cat);
-    const results = syncDirectory(src, tgt, { force: options.force, timestamp: ts });
+    const excludes = options.excludes && options.excludes[cat]
+      ? options.excludes[cat]
+      : DEFAULT_EXCLUDES[cat];
+
+    const transformFile = cat === 'hooks'
+      ? (_sPath, relPath, buf) => (relPath === 'hooks.json' ? pinHooksJsonContent(buf, absLauncher) : buf)
+      : undefined;
+
+    const results = syncDirectory(src, tgt, {
+      force: options.force,
+      timestamp: ts,
+      excludes,
+      transformFile
+    });
     summary.details[cat] = results;
     for (const r of results) {
       summary[r.action] = (summary[r.action] || 0) + 1;
@@ -154,17 +252,23 @@ function deployAllCustomizations(options = {}) {
 
 /**
  * Parses CLI arguments.
+ * @param {string[]} [args] - CLI arguments.
+ * @returns {Object} Parsed options.
  */
 function parseArgs(args = []) {
   const options = { force: false };
-  for (let i = 0; i < args.length; i++) {
+  for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
     if (arg === '--force' || arg === '-f') {
       options.force = true;
     } else if (arg === '--target' && args[i + 1]) {
       options.configDir = path.resolve(args[++i]);
+    } else if (arg.startsWith('--target=')) {
+      options.configDir = path.resolve(arg.slice('--target='.length));
     } else if (arg === '--source' && args[i + 1]) {
       options.repoRoot = path.resolve(args[++i]);
+    } else if (arg.startsWith('--source=')) {
+      options.repoRoot = path.resolve(arg.slice('--source='.length));
     }
   }
   return options;
@@ -190,7 +294,10 @@ if (require.main === module) {
 }
 
 module.exports = {
+  CATEGORIES,
+  DEFAULT_EXCLUDES,
   deployAllCustomizations,
+  pinHooksJsonContent,
   syncDirectory,
   getRepoRoot,
   getConfigDir,

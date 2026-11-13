@@ -19,7 +19,7 @@ Every subagent dispatch (Auditor, Coder, Verifier) must include this four-part p
 
 ## 3. Phase 1: Domain Decomposition & Parallel Research
 1. Deconstruct the feature across architectural boundaries (Core/Architecture, UI/Design, Data/API, Security, QA).
-2. Dispatch parallel research subagents via `agy pro fanout` or multi-agent invocation to investigate existing patterns and dependencies.
+2. Dispatch parallel research subagents via native `/swarm` or concurrent `invoke_subagent` calls to investigate existing patterns and dependencies.
 3. Consolidate findings into a comprehensive design document on disk: Intent, Domain Analysis, Interface Contracts, and Edge Cases.
 
 ## 4. Phase 2: Unprimed Adversarial Plan Audit
@@ -38,7 +38,7 @@ Every subagent dispatch (Auditor, Coder, Verifier) must include this four-part p
 
 ## 6. Phase 4: Double-Blind Verification Swarm
 1. Verification agents receive only the specification and success criteria—never the implementer's rationales or transcripts.
-2. Dispatch parallel verification swarm via `agy pro fanout`:
+2. Dispatch parallel verification swarm via native `/swarm` or concurrent `invoke_subagent` instances:
    - **Build & Test Verifier**: Executes full test suite, confirms 100% pass rate and zero regressions.
    - **Plan Conformance Verifier**: Audits 1:1 itemized alignment with user requirements.
    - **Edge Case & Security Verifier**: Stresses boundary conditions, error paths, and security attack surfaces.

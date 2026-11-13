@@ -1,22 +1,16 @@
+#!/usr/bin/env node
+
 /**
- * @fileoverview RETIRED WRITER - agy-pro owns settings.json now.
+ * @fileoverview Atomic configurator for the Antigravity CLI statusLine slot in
+ * ~/.gemini/antigravity-cli/settings.json.
  *
- * This script used to merge the statusLine hook into
- * ~/.gemini/antigravity-cli/settings.json (create, merge, corrupt recovery,
- * timestamped backups). agy-pro's Go settings door
- * (agy-pro/internal/integrations/settings.go, P5-3 D5) owns that slot through the
- * agysettings ledger, so every write path here is gone: calling one raises a
- * typed refusal instead of writing, and the CLI exits with a dedicated code.
- *
- * What is left is read-only inspection for a person asking "what is configured
- * right now": neither installer calls this script any more (the Go integrations
- * engine deploys the slot):
- *
- *   node scripts/lib/configure-statusline.js --check [--settings <path>]
- *
- * The verb that replaces the write is
- * `agy pro integrations apply statusline --yes`.
+ * Supports creating, merging (preserving unmanaged top-level keys), corrupt JSON
+ * recovery (.corrupt.<ts>), timestamped backups (.bak.<ts>), read-only checks
+ * (--check / --dry-read), and consistent cross-platform agy-tokens launcher
+ * discovery.
  */
+
+'use strict';
 
 const fs = require('fs');
 const path = require('path');
@@ -25,90 +19,219 @@ const os = require('os');
 const DEFAULT_COMMAND = 'agy-tokens --hook --raw --write-dashboard';
 
 /**
- * Exit code of the retired write path. It is deliberately not 1: a caller can
- * tell "the tool refused because another owner took the file" (3) from "the tool
- * broke" (1) without parsing prose.
- * @type {number}
+ * Generates a timestamp string formatted as YYYYMMDD-HHMMSS using local time.
+ * @param {Date} [date] - Optional Date object.
+ * @returns {string} Timestamp string.
  */
-const DEPRECATED_EXIT_CODE = 3;
-
-/**
- * The refusal sentence, printed verbatim and carried by the error. The command it
- * names is the verb that replaces this script: the explicit `statusline` operand
- * (the retired `--feature` flag form is not a door spelling; the installers run
- * the fuller `agy pro integrations apply tools --yes`).
- * @type {string}
- */
-const DEPRECATION_MESSAGE =
-  '[deprecated] agy-pro now owns settings.json; run: agy pro integrations apply statusline --yes';
-
-/**
- * Raised by every retired write path. `exitCode` lets a caller that cannot print
- * map the refusal onto the documented status.
- */
-class DeprecatedWriterError extends Error {
-  /** @param {string} [detail] - Optional extra sentence for the caller. */
-  constructor(detail = '') {
-    super(detail ? `${DEPRECATION_MESSAGE} (${detail})` : DEPRECATION_MESSAGE);
-    this.name = 'DeprecatedWriterError';
-    this.deprecated = true;
-    this.exitCode = DEPRECATED_EXIT_CODE;
-  }
+function getTimestamp(date = new Date()) {
+  const pad = (n) => String(n).padStart(2, '0');
+  const year = date.getFullYear();
+  const month = pad(date.getMonth() + 1);
+  const day = pad(date.getDate());
+  const hours = pad(date.getHours());
+  const minutes = pad(date.getMinutes());
+  const seconds = pad(date.getSeconds());
+  return `${year}${month}${day}-${hours}${minutes}${seconds}`;
 }
 
 /**
- * Resolves default settings.json path.
+ * Resolves the target settings.json path.
  * Supports AGY_SETTINGS_PATH environment variable override for testing.
  * @returns {string} Absolute path to settings.json.
  */
 function getSettingsPath() {
-  if (process.env.AGY_SETTINGS_PATH) {
-    return path.resolve(process.env.AGY_SETTINGS_PATH);
+  if (process.env.AGY_SETTINGS_PATH && process.env.AGY_SETTINGS_PATH.trim()) {
+    return path.resolve(process.env.AGY_SETTINGS_PATH.trim());
   }
   return path.join(os.homedir(), '.gemini', 'antigravity-cli', 'settings.json');
 }
 
 /**
- * The one way a write path can end now: it refuses. Every retired branch below
- * (create, merge, corrupt recovery) is a single line, so no branch can quietly
- * regrow a writer.
- * @param {string} [detail] - Optional extra sentence for the caller.
- * @returns {never} Always throws.
+ * Atomically writes content to a target file via temp file + rename.
+ * @param {string} filePath - Target file path.
+ * @param {string|Buffer} content - Content to write.
  */
-function refuseWrite(detail = '') {
-  throw new DeprecatedWriterError(detail);
+function writeAtomic(filePath, content) {
+  const dir = path.dirname(filePath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  const tmpPath = `${filePath}.tmp.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
+  fs.writeFileSync(tmpPath, content);
+  try {
+    fs.renameSync(tmpPath, filePath);
+  } catch (_err) {
+    try {
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+      fs.renameSync(tmpPath, filePath);
+    } catch (finalErr) {
+      if (fs.existsSync(tmpPath)) {
+        try { fs.unlinkSync(tmpPath); } catch (_) {}
+      }
+      throw finalErr;
+    }
+  }
 }
 
 /**
- * Parses CLI arguments into options object.
- * @param {string[]} args - Process arguments.
- * @returns {object} Parsed options.
+ * Checks whether a candidate path is an existing executable file.
+ * @param {string} candidate - Path to inspect.
+ * @param {string} platform - Node platform string.
+ * @returns {boolean} True when usable as a launcher.
+ */
+function isExecutableFile(candidate, platform) {
+  try {
+    if (!fs.statSync(candidate).isFile()) return false;
+    if (platform !== 'win32') {
+      fs.accessSync(candidate, fs.constants.X_OK);
+    }
+    return true;
+  } catch (_err) {
+    return false;
+  }
+}
+
+/**
+ * Resolves the agy-tokens launcher path using the shared discovery ladder:
+ * - Windows: ~/.gemini/antigravity-cli/bin/agy-tokens.{bat,cmd,exe} -> PATH -> fallback
+ * - POSIX:   ~/.local/bin/agy-tokens -> ~/.gemini/antigravity-cli/bin/agy-tokens -> PATH -> fallback
+ *
+ * @param {Object} [opts] - Discovery options.
+ * @param {string} [opts.platform] - Platform override (default: process.platform).
+ * @param {string} [opts.homeDir] - Home directory override.
+ * @param {string} [opts.pathEnv] - PATH string override.
+ * @param {string|null} [opts.fallback] - Fallback value when no absolute launcher is found (default: 'agy-tokens').
+ * @returns {string|null} Resolved launcher path or fallback.
+ */
+function resolveTokensLauncher(opts = {}) {
+  const platform = opts.platform || process.platform;
+  const homeDir = opts.homeDir || (
+    platform === 'win32'
+      ? (process.env.USERPROFILE || process.env.HOME || os.homedir())
+      : (process.env.HOME || os.homedir())
+  );
+  const pathEnv = opts.pathEnv !== undefined ? opts.pathEnv : (process.env.PATH || '');
+  const fallback = opts.fallback !== undefined ? opts.fallback : 'agy-tokens';
+
+  const isAbsForPlatform = (dir) => (
+    platform === 'win32' ? path.win32.isAbsolute(dir) : path.posix.isAbsolute(dir)
+  );
+
+  if (platform === 'win32') {
+    const fixedDir = path.join(homeDir, '.gemini', 'antigravity-cli', 'bin');
+    const winNames = ['agy-tokens.bat', 'agy-tokens.cmd', 'agy-tokens.exe'];
+    for (const name of winNames) {
+      const candidate = path.join(fixedDir, name);
+      if (isExecutableFile(candidate, platform)) {
+        return path.resolve(candidate);
+      }
+    }
+    const pathEntries = String(pathEnv)
+      .split(';')
+      .map((entry) => entry.trim().replace(/^"(.*)"$/, '$1'))
+      .filter((entry) => entry && isAbsForPlatform(entry));
+    for (const dir of pathEntries) {
+      for (const name of winNames) {
+        const candidate = path.join(dir, name);
+        if (isExecutableFile(candidate, platform)) {
+          return path.resolve(candidate);
+        }
+      }
+    }
+    return fallback;
+  }
+
+  const fixedCandidates = [
+    path.join(homeDir, '.local', 'bin', 'agy-tokens'),
+    path.join(homeDir, '.gemini', 'antigravity-cli', 'bin', 'agy-tokens')
+  ];
+  for (const candidate of fixedCandidates) {
+    if (isExecutableFile(candidate, platform)) {
+      return path.resolve(candidate);
+    }
+  }
+  const pathEntries = String(pathEnv)
+    .split(':')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry && isAbsForPlatform(entry));
+  for (const dir of pathEntries) {
+    const candidate = path.join(dir, 'agy-tokens');
+    if (isExecutableFile(candidate, platform)) {
+      return path.resolve(candidate);
+    }
+  }
+  return fallback;
+}
+
+/**
+ * Validates and quotes a command path when it contains whitespace or benign
+ * shell characters (such as spaces or parentheses). Rejects dangerous shell
+ * injection characters (`\r`, `\n`, `"`, `` ` ``, `$(`).
+ *
+ * @param {string} launcherPath - Launcher binary or path.
+ * @returns {string} Safely quoted command token.
+ */
+function quoteCommandPath(launcherPath) {
+  if (!launcherPath) return '';
+  if (/[\r\n"`]|\$\(/.test(launcherPath)) {
+    throw new Error(`Unsafe launcher path rejected (contains disallowed shell characters): ${JSON.stringify(launcherPath)}`);
+  }
+  if (/[\s&()^%;,=!'$]/.test(launcherPath)) {
+    return `"${launcherPath}"`;
+  }
+  return launcherPath;
+}
+
+/**
+ * Resolves the statusLine command string.
+ * Explicit custom commands override launcher discovery; default falls back to
+ * the discovered agy-tokens launcher + ` --hook --raw --write-dashboard`.
+ * @param {Object} [opts] - Resolution options.
+ * @returns {string} Full command string for statusLine.command.
+ */
+function resolveStatuslineCommand(opts = {}) {
+  if (opts.command && (opts.commandExplicit || opts.command !== DEFAULT_COMMAND)) {
+    return opts.command;
+  }
+  const launcher = resolveTokensLauncher(opts);
+  return `${quoteCommandPath(launcher)} --hook --raw --write-dashboard`;
+}
+
+/**
+ * Parses CLI arguments into an options object.
+ * @param {string[]} [args] - Process arguments.
+ * @returns {Object} Parsed options.
  */
 function parseArgs(args = process.argv.slice(2)) {
   const options = {
     command: DEFAULT_COMMAND,
+    commandExplicit: false,
     settingsPath: null,
     force: false,
     check: false
   };
 
-  for (let i = 0; i < args.length; i++) {
+  for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
     if (arg === '--command' && i + 1 < args.length) {
       options.command = args[++i];
+      options.commandExplicit = true;
     } else if (arg.startsWith('--command=')) {
       options.command = arg.slice('--command='.length);
+      options.commandExplicit = true;
     } else if (arg === '--settings' && i + 1 < args.length) {
       options.settingsPath = path.resolve(args[++i]);
     } else if (arg.startsWith('--settings=')) {
       options.settingsPath = path.resolve(arg.slice('--settings='.length));
     } else if (arg === '--check' || arg === '--dry-read') {
-      // The read-only mode: it prints the current state and writes nothing.
       options.check = true;
-    } else if (arg === '--force') {
+    } else if (arg === '--force' || arg === '-f') {
       options.force = true;
-    } else if (!arg.startsWith('-') && options.command === DEFAULT_COMMAND) {
+    } else if (!arg.startsWith('-') && !options.commandExplicit) {
       options.command = arg;
+      options.commandExplicit = true;
     }
   }
 
@@ -116,23 +239,19 @@ function parseArgs(args = process.argv.slice(2)) {
 }
 
 /**
- * Reads the current statusLine state without writing anything.
- *
- * This is the whole surviving read surface: a person asking "what is configured?"
- * uses it, and it never creates a directory, a backup, or a file.
- * @param {object} [opts] - Inspection options.
+ * Reads the current statusLine state without creating directories, backups, or files.
+ * @param {Object} [opts] - Inspection options.
  * @param {string} [opts.settingsPath] - Target settings.json path.
- * @returns {object} { status, settingsPath, command, matchesDefault, message }.
- *   status is one of: absent (no file), missing (no statusLine slot),
- *   configured, corrupt (not JSON / not an object), unreadable.
+ * @returns {Object} Inspection report.
  */
 function inspectStatusline(opts = {}) {
-  const targetSettingsPath = opts.settingsPath || getSettingsPath();
+  const targetSettingsPath = opts.settingsPath ? path.resolve(opts.settingsPath) : getSettingsPath();
+  const resolvedDefault = resolveStatuslineCommand(opts);
   const report = (status, command, message) => ({
     status,
     settingsPath: targetSettingsPath,
     command,
-    matchesDefault: command === DEFAULT_COMMAND,
+    matchesDefault: command === DEFAULT_COMMAND || command === resolvedDefault,
     message
   });
 
@@ -163,40 +282,114 @@ function inspectStatusline(opts = {}) {
   const command = settings.statusLine && typeof settings.statusLine === 'object'
     ? settings.statusLine.command
     : null;
-  const suffix = command === DEFAULT_COMMAND
-    ? ' (the Node-era bare command: agy-pro replaces it with the absolute wrapper)'
-    : '';
   return report(
     'configured',
     typeof command === 'string' ? command : null,
-    `[INFO] statusLine is configured in ${targetSettingsPath}: ${command === undefined ? '(no command slot)' : command}${suffix}`
+    `[INFO] statusLine is configured in ${targetSettingsPath}: ${command === undefined ? '(no command slot)' : command}`
   );
 }
 
 /**
- * The retired writer. It used to create, merge and repair settings.json; every
- * one of those branches now ends in the same typed refusal.
+ * Compares existing statusLine slot against the desired configuration.
+ * @param {*} current - Existing statusLine value.
+ * @param {Object} desired - Desired statusLine object.
+ * @returns {boolean} True when equivalent.
+ */
+function statusLineMatches(current, desired) {
+  return Boolean(
+    current &&
+    typeof current === 'object' &&
+    !Array.isArray(current) &&
+    current.type === desired.type &&
+    current.command === desired.command &&
+    current.enabled === desired.enabled &&
+    current.stack_with_default === desired.stack_with_default
+  );
+}
+
+/**
+ * Atomically creates or merges the statusLine slot into settings.json.
+ * Preserves unmanaged top-level keys, creates .bak.<ts> before modifying valid
+ * files, and moves/backs up corrupt JSON to .corrupt.<ts> before recovering.
  *
- * It is kept exported on purpose: a caller that still invokes it gets an error it
- * can branch on (err.deprecated, err.exitCode) instead of a silent no-op that
- * reads as success.
- * @param {object} [opts] - Retired options (command, settingsPath, force).
- * @returns {never} Always throws a DeprecatedWriterError.
+ * @param {Object} [opts] - Configuration options.
+ * @returns {Object} Result summary { action, settingsPath, statusLine, command, backupPath }.
  */
 function configureStatusline(opts = {}) {
-  const detail = opts.settingsPath
-    ? `nothing was written to ${opts.settingsPath}`
-    : 'nothing was written to ~/.gemini/antigravity-cli/settings.json';
-  return refuseWrite(detail);
+  const targetSettingsPath = opts.settingsPath ? path.resolve(opts.settingsPath) : getSettingsPath();
+  const ts = opts.timestamp || getTimestamp();
+  const desiredCommand = resolveStatuslineCommand(opts);
+  const desiredStatusLine = {
+    type: 'command',
+    command: desiredCommand,
+    enabled: true,
+    stack_with_default: true
+  };
+
+  if (!fs.existsSync(targetSettingsPath)) {
+    const payload = `${JSON.stringify({ statusLine: desiredStatusLine }, null, 2)}\n`;
+    writeAtomic(targetSettingsPath, payload);
+    return {
+      action: 'created',
+      settingsPath: targetSettingsPath,
+      statusLine: desiredStatusLine,
+      command: desiredCommand,
+      backupPath: null
+    };
+  }
+
+  const rawContent = fs.readFileSync(targetSettingsPath, 'utf8');
+  let settings = null;
+  let isCorrupt = false;
+  try {
+    settings = JSON.parse(rawContent);
+    if (!settings || typeof settings !== 'object' || Array.isArray(settings)) {
+      isCorrupt = true;
+    }
+  } catch (_parseErr) {
+    isCorrupt = true;
+  }
+
+  if (isCorrupt) {
+    const corruptBackupPath = `${targetSettingsPath}.corrupt.${ts}`;
+    fs.copyFileSync(targetSettingsPath, corruptBackupPath);
+    const payload = `${JSON.stringify({ statusLine: desiredStatusLine }, null, 2)}\n`;
+    writeAtomic(targetSettingsPath, payload);
+    return {
+      action: 'recovered',
+      settingsPath: targetSettingsPath,
+      statusLine: desiredStatusLine,
+      command: desiredCommand,
+      backupPath: corruptBackupPath,
+      corruptBackupPath
+    };
+  }
+
+  if (statusLineMatches(settings.statusLine, desiredStatusLine) && !opts.force) {
+    return {
+      action: 'identical',
+      settingsPath: targetSettingsPath,
+      statusLine: settings.statusLine,
+      command: settings.statusLine.command,
+      backupPath: null
+    };
+  }
+
+  const backupPath = `${targetSettingsPath}.bak.${ts}`;
+  fs.copyFileSync(targetSettingsPath, backupPath);
+  const updated = Object.assign({}, settings, { statusLine: desiredStatusLine });
+  writeAtomic(targetSettingsPath, `${JSON.stringify(updated, null, 2)}\n`);
+  return {
+    action: 'updated',
+    settingsPath: targetSettingsPath,
+    statusLine: desiredStatusLine,
+    command: desiredCommand,
+    backupPath
+  };
 }
 
 /**
  * CLI execution entrypoint.
- *
- * `--check` / `--dry-read` prints the current state and exits 0. Any other
- * invocation is a retired write: the refusal goes to stderr and the exit code is
- * DEPRECATED_EXIT_CODE, so an old script that still calls this step fails loudly
- * instead of pretending the statusLine was configured.
  */
 function main() {
   const options = parseArgs(process.argv.slice(2));
@@ -210,9 +403,24 @@ function main() {
       process.exit(1);
     }
   }
-  console.error(DEPRECATION_MESSAGE);
-  console.error('[deprecated] nothing was written. Use --check (or --dry-read) to print the current state.');
-  process.exit(DEPRECATED_EXIT_CODE);
+
+  try {
+    const result = configureStatusline(options);
+    if (result.action === 'identical') {
+      console.log(`[INFO] statusLine already up to date in ${result.settingsPath}: ${result.command}`);
+    } else if (result.action === 'recovered') {
+      console.log(`[WARN] Corrupt settings.json backed up to ${result.backupPath}`);
+      console.log(`[SUCCESS] Recovered settings.json with statusLine: ${result.command}`);
+    } else if (result.action === 'created') {
+      console.log(`[SUCCESS] Created ${result.settingsPath} with statusLine: ${result.command}`);
+    } else {
+      console.log(`[SUCCESS] Updated statusLine in ${result.settingsPath} (backup: ${result.backupPath}): ${result.command}`);
+    }
+    process.exit(0);
+  } catch (err) {
+    console.error(`[ERROR] Failed to configure statusLine: ${err.message}`);
+    process.exit(1);
+  }
 }
 
 if (require.main === module) {
@@ -222,10 +430,12 @@ if (require.main === module) {
 module.exports = {
   configureStatusline,
   inspectStatusline,
+  resolveStatuslineCommand,
+  resolveTokensLauncher,
+  quoteCommandPath,
   getSettingsPath,
   parseArgs,
   DEFAULT_COMMAND,
-  DEPRECATED_EXIT_CODE,
-  DEPRECATION_MESSAGE,
-  DeprecatedWriterError
+  writeAtomic,
+  getTimestamp
 };

@@ -9,7 +9,7 @@ description: >
 ## 1. Operational Invariants & Adversarial Stance
 - **Adversarial Verifier Mindset**: Evaluate the codebase strictly from the perspective of an adversarial auditor. The question is never whether the code compiles or "works", but whether it strictly and completely satisfies the original design specifications.
 - **Reference Document Precedence**: Target specification resides at `docs/spec/ARCHITECTURE_CORE.md` (fallback to `docs/ARCHITECTURE_CORE.md`). If neither exists, halt and prompt the user to establish a specification baseline via `/goal` or `/init`.
-- **Zero Monolithic Execution**: For large changes or complex multi-module systems, leverage `agy pro fanout` or parallel subagents to interrogate orthogonal modules independently.
+- **Zero Monolithic Execution**: For large changes or complex multi-module systems, leverage native `/swarm` or parallel `invoke_subagent` instances to interrogate orthogonal modules independently.
 - **Read-Only Invariant**: Audit is strictly read-only. Never modify application code directly. All defects are recorded for triage and routed to `/heal`.
 
 ## 2. Phase 1: Specification Ingestion & Checklist Extraction

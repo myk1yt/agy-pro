@@ -6126,7 +6126,8 @@ agy      1234 user    5u  IPv4 0xbaadf00d      0t0  TCP 127.0.0.1:54457 (LISTEN)
   });
 
   // --- Suite 25: Cross-Platform Installer Scripts Unit Tests ---
-  await describe('25. Cross-Platform Installer Scripts Unit Tests (install.bat & install.sh & configure-statusline.js)', async () => {
+  await describe('25. Cross-Platform Installer Scripts Unit Tests (install.bat & install.sh & Option 1)', async () => {
+    const { spawnSync } = require('child_process');
     const rootDir = path.resolve(__dirname, '..');
     const batPath = path.join(rootDir, 'scripts', 'install.bat');
     const shPath = path.join(rootDir, 'scripts', 'install.sh');
@@ -6135,15 +6136,17 @@ agy      1234 user    5u  IPv4 0xbaadf00d      0t0  TCP 127.0.0.1:54457 (LISTEN)
     const {
       configureStatusline,
       inspectStatusline,
+      resolveStatuslineCommand,
+      resolveTokensLauncher,
+      quoteCommandPath,
       getSettingsPath,
       parseArgs,
       DEFAULT_COMMAND,
-      DEPRECATED_EXIT_CODE,
-      DEPRECATION_MESSAGE,
-      DeprecatedWriterError
+      writeAtomic,
+      getTimestamp
     } = statuslineModule;
 
-    await test('scripts/install.bat should exist with CRLF line endings, shims, and the agy pro integrations door', () => {
+    await test('scripts/install.bat should exist with CRLF line endings, 5 Option-1 shims, and direct Node deployment', () => {
       assert(fs.existsSync(batPath), 'scripts/install.bat must exist');
       const rawBat = fs.readFileSync(batPath, 'utf8');
 
@@ -6158,109 +6161,50 @@ agy      1234 user    5u  IPv4 0xbaadf00d      0t0  TCP 127.0.0.1:54457 (LISTEN)
       // Canonical ROOT_DIR
       assert(rawBat.includes('for %%I in ("%SCRIPT_DIR%..") do set "ROOT_DIR=%%~fI"'), 'install.bat must canonicalize ROOT_DIR');
 
-      // Fallback launchers for all 4 binaries
-      assert(rawBat.includes('agy-tools.bat'), 'install.bat must generate agy-tools.bat shim');
-      assert(rawBat.includes('antigravity-tools.bat'), 'install.bat must generate antigravity-tools.bat shim');
-      assert(rawBat.includes('agy-tokens.bat'), 'install.bat must generate agy-tokens.bat shim');
-      assert(rawBat.includes('agy-dashboard.bat'), 'install.bat must generate agy-dashboard.bat shim');
-      assert(rawBat.includes('mkdir'), 'install.bat must create fallback bin directory if missing');
+      // Self-healing launchers for all 5 Option-1 shims (zero agy.exe shadowing)
+      for (const shimName of ['agy-tools.bat', 'antigravity-tools.bat', 'agy-tokens.bat', 'agy-dashboard.bat', 'agy-pro.bat']) {
+        assert(rawBat.includes(shimName), `install.bat must generate ${shimName} shim`);
+      }
+      assert(rawBat.includes('mkdir'), 'install.bat must create launcher directory if missing');
 
       // Self-healing launchers: generation delegated, root marker refreshed, no frozen path
       assert(rawBat.includes('make-launchers.js'), 'install.bat must delegate shim generation to scripts/lib/make-launchers.js');
       assert(rawBat.includes('marker --root'), 'install.bat must refresh the agy-tools root marker');
       assert(!rawBat.includes('echo node "%ROOT_DIR%'), 'install.bat must not bake ROOT_DIR into a generated shim body');
 
-      // The Go engine owns the deployment: ONE gated call replaces the two retired
-      // Node writers (T5 §10.2 final form, T8 §13.2 verb spellings).
-      assert(!rawBat.includes('configure-statusline.js'), 'install.bat must not invoke the retired configure-statusline.js writer');
-      assert(!rawBat.includes('configure-customizations.js'), 'install.bat must not invoke configure-customizations.js; the Go engine deploys rules/plugins/skills/hooks');
-      assert(rawBat.includes('agy pro integrations apply tools --yes'), 'install.bat must deploy through the Go integrations door');
-      // FIX-6C (security MED-1, CWE-426): the door is invoked through an
-      // absolute-path-preferring variable, never as a bare `agy` PATH lookup.
-      assert(rawBat.includes('call "%AGY_DOOR%" pro integrations apply tools --yes'), 'install.bat must `call` the Go door through AGY_DOOR so a .bat/.cmd agy shim returns control (cmd control-transfer rule)');
-      assert(!rawBat.includes('call agy pro integrations apply tools --yes'), 'install.bat must never invoke the Go door as a bare `agy`: a PATH-earlier binary would run attacker code with --yes (CWE-426, FIX-6C MED-1)');
-      assert(rawBat.includes('set "AGY_DOOR=%USERPROFILE%\\.agy-pro\\bin\\agy.exe"'), 'install.bat must prefer the agy-pro shim at its fixed absolute path (%USERPROFILE%\\.agy-pro\\bin\\agy.exe, the path agy-pro/scripts/install.ps1 deploys to)');
-      assert(rawBat.includes('if exist "%AGY_DOOR%" goto agy_door_ready'), 'install.bat must test the absolute shim before any PATH lookup');
-      assert(rawBat.includes(':agy_door_ready'), 'install.bat must have one shared door label reached by both the shim branch and the PATH fallback');
-      assert(rawBat.includes('where agy >nul 2>nul'), 'install.bat must keep the where agy PATH fallback for machines without the agy-pro shim');
-      assert(rawBat.includes('set "AGY_DOOR=agy"'), 'install.bat PATH fallback must set AGY_DOOR=agy so the single call site still runs');
-      assert(rawBat.includes(':agy_no_engine'), 'install.bat must carry the no-engine branch that prints the manual command');
-      assert(rawBat.includes('After agy is installed, run this exact command once:'), 'the no-engine branch must name the command the user has to run');
-      const batApplyRefs = rawBat.split('pro integrations apply tools --yes').length - 1;
-      assert(batApplyRefs >= 2, 'install.bat must both run the Go door and print it as the manual step');
+      // Option 1 Node scripts own customizations + statusLine directly; retired Go door is gone
+      assert(rawBat.includes('configure-customizations.js'), 'install.bat must invoke scripts/lib/configure-customizations.js');
+      assert(rawBat.includes('configure-statusline.js'), 'install.bat must invoke scripts/lib/configure-statusline.js');
+      assert(!rawBat.includes('agy pro integrations apply tools --yes'), 'install.bat must not invoke retired Go integrations door');
+      assert(!rawBat.includes('.agy-pro\\bin\\agy.exe'), 'install.bat must not reference legacy Go agy.exe shim');
+      assert(rawBat.includes('agy-pro setup'), 'install.bat trailer must mention agy-pro setup');
 
-      // F-W1-06: delayed expansion would mangle '!' in every path it touches
-      assert(rawBat.includes('setlocal disabledelayedexpansion'), 'install.bat must disable delayed expansion (F-W1-06)');
-      assert(!rawBat.includes('setlocal enabledelayedexpansion'), 'install.bat must not enable delayed expansion (F-W1-06)');
+      // Delayed expansion disabled so '!' survives
+      assert(rawBat.includes('setlocal disabledelayedexpansion'), 'install.bat must disable delayed expansion');
+      assert(!rawBat.includes('setlocal enabledelayedexpansion'), 'install.bat must not enable delayed expansion');
 
-      // F-W1-07: marker failure is fatal, and the Go door's exit code is checked
-      assert(!rawBat.includes('|| true'), 'install.bat must not swallow failures with `|| true` (F-W1-07)');
-      assert(!rawBat.includes('[WARN] Could not refresh the agy-tools root marker'), 'install.bat must not degrade a marker failure to a WARN (F-W1-07)');
-      assert(rawBat.includes('[ERROR] Could not write the agy-tools root marker.'), 'install.bat must fail loudly when the marker cannot be written (F-W1-07)');
-      const batGuardIdx = rawBat.indexOf('where agy >nul 2>nul');
-      // FIX-6C: the door reference is the AGY_DOOR call site, not a bare `agy`
-      // chain (the only remaining bare spelling is the manual print line).
-      const batApplyIdx = rawBat.indexOf('call "%AGY_DOOR%" pro integrations apply tools --yes');
-      const batNoEngineIdx = rawBat.indexOf(':agy_no_engine');
-      assert(batGuardIdx > 0 && batApplyIdx > batGuardIdx, 'install.bat must resolve agy before invoking the Go door');
-      assert(batNoEngineIdx > batApplyIdx, 'the no-engine branch must follow the guarded invocation');
-      const batDoorBlock = rawBat.slice(batApplyIdx, batNoEngineIdx);
-      assert(batDoorBlock.includes('if errorlevel 1'), 'install.bat must check the exit code of the Go door (F-W1-07)');
-      assert(batDoorBlock.includes('exit /b 1'), 'install.bat must abort the install when the Go door fails (F-W1-07)');
-      assert(rawBat.includes('[ERROR] agy pro integrations apply tools failed'), 'install.bat must fail loudly at the Go door (F-W1-07)');
+      // Marker, customizations, and statusLine failures are fatal (no || true)
+      assert(!rawBat.includes('|| true'), 'install.bat must not swallow failures with `|| true`');
+      assert(rawBat.includes('[ERROR] Could not write the agy-tools root marker.'), 'install.bat must fail loudly on marker error');
+      assert(rawBat.includes('[ERROR] Failed to deploy Antigravity customizations.'), 'install.bat must fail loudly on customizations error');
+      assert(rawBat.includes('[ERROR] Failed to configure statusLine in settings.json.'), 'install.bat must fail loudly on statusLine error');
+      assert(rawBat.includes('must rescan your profile on every run'), 'marker error must explain rescan cost');
 
-      // FIX-6C MED-1 (CWE-426): preference ORDER is the control. The fixed
-      // absolute shim is tested first, the PATH lookup is the fallback only, and
-      // the one call site sits after both so neither branch can skip the gate.
-      const batShimIdx = rawBat.indexOf('set "AGY_DOOR=%USERPROFILE%\\.agy-pro\\bin\\agy.exe"');
-      const batShimTestIdx = rawBat.indexOf('if exist "%AGY_DOOR%" goto agy_door_ready');
-      const batDoorCallIdx = rawBat.indexOf('call "%AGY_DOOR%" pro integrations apply tools --yes');
-      assert(batShimIdx > 0 && batShimTestIdx > batShimIdx, 'install.bat must set AGY_DOOR to the absolute shim and then test it');
-      assert(batShimTestIdx < batGuardIdx, 'install.bat must test the absolute shim BEFORE the where agy PATH lookup (trusted path preference, FIX-6C MED-1)');
-      assert(batDoorCallIdx > batGuardIdx, 'install.bat must reach the single door call after both the shim test and the PATH fallback');
-
-      // F-S9C-01: the fallback mkdir's errorlevel test must live INSIDE the
-      // `if not exist` branch. On a re-run the directory already exists, so the
-      // one-line form (`if not exist X mkdir X` then `if errorlevel 1`) reads the
-      // stale ERRORLEVEL that the failed `call npm link` left behind and false-fails
-      // with "[ERROR] Could not create the launcher directory" on a healthy install.
-      const batFallbackIdx = rawBat.indexOf(':agy_npm_fallback');
-      const batLauncherGenIdx = rawBat.indexOf('node "%LAUNCHER_GEN%" bat');
-      assert(batFallbackIdx > 0 && batLauncherGenIdx > batFallbackIdx, 'install.bat must keep the :agy_npm_fallback branch before the launcher generation');
-      const batFallbackBlock = rawBat.slice(batFallbackIdx, batLauncherGenIdx);
+      // mkdir errorlevel check lives inside `if not exist` block
+      const createIdx = rawBat.indexOf(':agy_create_launchers');
+      const launcherGenIdx = rawBat.indexOf('node "%LAUNCHER_GEN%" bat');
+      assert(createIdx > 0 && launcherGenIdx > createIdx);
+      const createBlock = rawBat.slice(createIdx, launcherGenIdx);
+      assert(!/if not exist "%USER_BIN%"\s+mkdir/.test(rawBat), 'install.bat must not run mkdir on the same line as if not exist');
       assert(
-        !/if not exist "%USER_BIN%"\s+mkdir/.test(rawBat),
-        'install.bat must not run mkdir on the same line as the `if not exist` test: the next `if errorlevel 1` would then inherit the stale ERRORLEVEL from the failed npm link (F-S9C-01)'
-      );
-      assert(
-        /if not exist "%USER_BIN%" \(\r?\n\s+mkdir "%USER_BIN%"\r?\n\s+if errorlevel 1 \(/.test(batFallbackBlock),
-        'install.bat must test the mkdir exit code INSIDE the `if not exist "%USER_BIN%" (` block, so a skipped mkdir cannot abort a re-run (F-S9C-01)'
+        /if not exist "%USER_BIN%" \(\r?\n\s+mkdir "%USER_BIN%"\r?\n\s+if errorlevel 1 \(/.test(createBlock),
+        'install.bat must test mkdir errorlevel inside the if not exist block'
       );
 
-      // F-S9C-04: the exit-code contract. `where agy` leaves ERRORLEVEL 1 on the
-      // no-engine branch, so the trailer states success explicitly; the Go-door
-      // failure keeps its explicit 1.
-      assert(
-        /endlocal\r?\nexit \/b 0$/.test(rawBat.trimEnd()),
-        'install.bat must end with an explicit `exit /b 0`: a `call`-context parent would otherwise inherit the sticky ERRORLEVEL 1 from the `where agy` guard (F-S9C-04)'
-      );
-      assert(!batDoorBlock.includes('exit /b 0'), 'the Go-door failure must keep exiting 1, never 0 (F-W1-07 / F-S9C-04)');
-      const batNoEngineBlock = rawBat.slice(batNoEngineIdx, rawBat.indexOf(':agy_integrations_done'));
-      assert(batNoEngineBlock.includes('[WARN] The agy CLI is not in your PATH'), 'the no-engine branch must stay a WARN, not an error');
-      assert(!/exit \/b 1/.test(batNoEngineBlock), 'an absent agy CLI is a warning, not a failure: the no-engine branch must not exit 1 (F-S9C-04)');
-
-      // F-S9C-06: the marker is repairable, so the message must not deny that the
-      // launchers can run without one (they rescan and rewrite it).
-      assert(!rawBat.includes('cannot run without it'), 'install.bat must not claim the launchers cannot run without the marker: they rescan and repair it (F-S9C-06)');
-      assert(rawBat.includes('must rescan your profile on every run'), 'the marker failure must state the real cost (a rescan on every run), matching scripts/install.sh (F-S9C-06)');
-
-      // The retired snippet and its false claim must stay gone.
-      assert(!rawBat.includes('%STATUSLINE_CMD%'), 'install.bat must not carry the retired statusline command variable');
-      assert(!rawBat.includes('"type": "command"'), 'install.bat must not reprint a settings snippet it no longer writes');
-      assert(!rawBat.includes('statusLine is now automatically configured'), 'install.bat must not claim the statusLine was configured');
+      assert(/endlocal\r?\nexit \/b 0$/.test(rawBat.trimEnd()), 'install.bat must end with explicit exit /b 0');
     });
 
-    await test('scripts/install.sh should exist with LF line endings, POSIX redirects, self-healing wrappers, and the agy pro integrations door', () => {
+    await test('scripts/install.sh should exist with LF line endings, 5 self-healing wrappers, and direct Node deployment', () => {
       assert(fs.existsSync(shPath), 'scripts/install.sh must exist');
       const rawSh = fs.readFileSync(shPath, 'utf8');
 
@@ -6272,88 +6216,52 @@ agy      1234 user    5u  IPv4 0xbaadf00d      0t0  TCP 127.0.0.1:54457 (LISTEN)
       assert(rawSh.includes('process.versions.node'), 'install.sh must check Node.js version >= 16');
       assert(rawSh.includes('command -v npm'), 'install.sh must check npm binary');
 
-      // Non-failing chmod
+      // Non-failing chmod and POSIX redirects
       assert(rawSh.includes('chmod +x') && rawSh.includes('|| true'), 'install.sh must use non-failing chmod');
-
-      // POSIX redirects
       assert(rawSh.includes('>/dev/null 2>&1'), 'install.sh must use POSIX redirects');
 
-      // Self-healing wrappers instead of install-time absolute symlinks
+      // Self-healing wrappers for all 5 Option-1 binaries
       assert(!rawSh.includes('ln -sf'), 'install.sh must not create install-time absolute symlinks');
-      assert(rawSh.includes('write_wrapper "$USER_BIN/agy-tools" "agy-tools.js"'), 'install.sh must write the agy-tools wrapper');
-      assert(rawSh.includes('write_wrapper "$USER_BIN/antigravity-tools" "agy-tools.js"'), 'install.sh must write the antigravity-tools wrapper');
-      assert(rawSh.includes('write_wrapper "$USER_BIN/agy-tokens" "agy-tokens.js"'), 'install.sh must write the agy-tokens wrapper');
-      assert(rawSh.includes('write_wrapper "$USER_BIN/agy-dashboard" "agy-dashboard.js"'), 'install.sh must write the agy-dashboard wrapper');
+      assert(rawSh.includes('write_wrapper "$USER_BIN/agy-tools" "agy-tools.js"'), 'install.sh must write agy-tools wrapper');
+      assert(rawSh.includes('write_wrapper "$USER_BIN/antigravity-tools" "agy-tools.js"'), 'install.sh must write antigravity-tools wrapper');
+      assert(rawSh.includes('write_wrapper "$USER_BIN/agy-tokens" "agy-tokens.js"'), 'install.sh must write agy-tokens wrapper');
+      assert(rawSh.includes('write_wrapper "$USER_BIN/agy-dashboard" "agy-dashboard.js"'), 'install.sh must write agy-dashboard wrapper');
+      assert(rawSh.includes('write_wrapper "$USER_BIN/agy-pro" "agy-pro.js"'), 'install.sh must write agy-pro wrapper');
+      assert(
+        rawSh.includes('AGY_TOOLS_ENTRY_SCRIPTS="agy-tools.js agy-tokens.js agy-dashboard.js agy-pro.js"'),
+        'install.sh identity check must cover all 4 entry scripts including agy-pro.js'
+      );
       assert(rawSh.includes('agy-tools-root'), 'install.sh wrappers must resolve the root through the marker');
       assert(rawSh.includes('re-run the installer'), 'install.sh wrappers must fail loudly with the reinstall hint');
-      assert(!rawSh.includes('exec node "$ROOT_DIR/bin/'), 'install.sh wrappers must not bake ROOT_DIR into the wrapper body');
+      assert(!rawSh.includes('exec node "$ROOT_DIR/bin/'), 'install.sh wrappers must not bake ROOT_DIR into wrapper body');
 
-      // The Go engine owns the deployment: ONE gated call replaces the two retired
-      // Node writers (T5 §10.2 final form, T8 §13.2 verb spellings).
-      assert(!rawSh.includes('configure-statusline.js'), 'install.sh must not invoke the retired configure-statusline.js writer');
-      assert(!rawSh.includes('configure-customizations.js'), 'install.sh must not invoke configure-customizations.js; the Go engine deploys rules/plugins/skills/hooks');
-      assert(rawSh.includes('agy pro integrations apply tools --yes'), 'install.sh must deploy through the Go integrations door');
-      // FIX-6C (security MED-1, CWE-426): same trusted-path preference as the .bat
-      // twin: the fixed absolute agy-pro shim first, the PATH lookup only as fallback.
-      assert(rawSh.includes('command -v agy'), 'install.sh must keep the command -v agy PATH fallback for machines without the agy-pro shim');
-      assert(rawSh.includes('for _agy_shim in "$HOME/.agy-pro/bin/agy" "$HOME/.agy-pro/bin/agy.exe"'), 'install.sh must prefer the agy-pro shim at its absolute path ($HOME/.agy-pro/bin/agy, the ~/.agy-pro/bin directory agy-pro deploys its shim into; the .exe twin is the Windows shim name Git Bash sees)');
-      assert(rawSh.includes('if ! "$AGY_DOOR" pro integrations apply tools --yes; then'), 'install.sh must test the exit code of the Go door invoked through AGY_DOOR (F-W1-07)');
-      assert(!rawSh.includes('if ! agy pro integrations apply tools --yes'), 'install.sh must never invoke the Go door as a bare `agy`: a PATH-earlier binary would run attacker code with --yes (CWE-426, FIX-6C MED-1)');
-      assert(rawSh.includes('[ERROR] agy pro integrations apply tools failed'), 'install.sh must fail loudly at the Go door (F-W1-07)');
-      // Preference ORDER is the control: the absolute shim probe comes first, the
-      // PATH fallback second, and one call site follows both.
-      const shShimIdx = rawSh.indexOf('"$HOME/.agy-pro/bin/agy" "$HOME/.agy-pro/bin/agy.exe"');
-      const shPathFallbackIdx = rawSh.indexOf('command -v agy');
-      const shDoorCallIdx = rawSh.indexOf('if ! "$AGY_DOOR" pro integrations apply tools --yes; then');
-      assert(shShimIdx > 0 && shPathFallbackIdx > shShimIdx, 'install.sh must probe the absolute agy-pro shim BEFORE the command -v agy PATH lookup (trusted path preference, FIX-6C MED-1)');
-      assert(shDoorCallIdx > shPathFallbackIdx, 'install.sh must reach the single door call after both the shim probe and the PATH fallback');
-      const shApplyRefs = rawSh.split('pro integrations apply tools --yes').length - 1;
-      assert(shApplyRefs >= 2, 'install.sh must both run the Go door and print it as the manual step');
-      assert(rawSh.includes('After agy is installed, run this exact command once:'), 'the no-engine branch must name the command the user has to run');
+      // Option 1 Node scripts own customizations + statusLine directly; retired Go door is gone
+      assert(rawSh.includes('configure-customizations.js'), 'install.sh must invoke scripts/lib/configure-customizations.js');
+      assert(rawSh.includes('configure-statusline.js'), 'install.sh must invoke scripts/lib/configure-statusline.js');
+      assert(!rawSh.includes('agy pro integrations apply tools --yes'), 'install.sh must not invoke retired Go integrations door');
+      assert(!rawSh.includes('.agy-pro/bin/agy'), 'install.sh must not reference legacy Go agy shim');
+      assert(rawSh.includes('agy-pro setup'), 'install.sh trailer must mention agy-pro setup');
 
-      // F-S9C-04 parity: the no-engine branch is a warning on both installers, so
-      // neither may exit non-zero there (the .bat twin ends with `exit /b 0`).
-      const shNoEngineIdx = rawSh.indexOf('The agy CLI is not in your PATH');
-      const shTrailerIdx = rawSh.indexOf('echo "Try running:"');
-      assert(shNoEngineIdx > 0 && shTrailerIdx > shNoEngineIdx, 'install.sh must keep the no-engine branch before the trailer');
-      const shNoEngineBlock = rawSh.slice(shNoEngineIdx, shTrailerIdx);
-      assert(!/exit 1/.test(shNoEngineBlock), 'an absent agy CLI is a warning, not a failure: the install.sh no-engine branch must not exit 1 (F-S9C-04 parity)');
+      // Security & portability invariants
+      assert(!rawSh.includes('agy-tools-scan.$$'), 'install.sh must not use predictable $$ temp path');
+      assert(rawSh.includes('mktemp'), 'install.sh wrappers must use mktemp');
+      assert(!rawSh.includes('-maxdepth'), 'install.sh must not rely on GNU-only find -maxdepth');
+      assert(rawSh.includes('agy_tools_identity_ok'), 'install.sh wrappers must run identity check');
+      assert(rawSh.includes("name==='agy-tools'"), 'install.sh identity check must compare package.json name');
+      assert(rawSh.includes('candidate agy-tools roots found'), 'install.sh must fail loudly on ambiguous candidates');
+      assert(rawSh.includes('root marker left untouched'), 'install.sh must not rewrite marker on ambiguity');
 
-      // The retired snippet and its false claim must stay gone.
-      assert(!rawSh.includes('$STATUSLINE_CMD'), 'install.sh must not carry the retired statusline command variable');
-      assert(!rawSh.includes('"type": "command"'), 'install.sh must not reprint a settings snippet it no longer writes');
-      assert(!rawSh.includes('statusLine is now automatically configured'), 'install.sh must not claim the statusLine was configured');
-
-      // F-W1-03: unpredictable, private scan temp (no /tmp/agy-tools-scan.$$)
-      assert(!rawSh.includes('agy-tools-scan.$$'), 'install.sh must not use a predictable $$ temp path (F-W1-03)');
-      assert(rawSh.includes('mktemp'), 'install.sh wrappers must use mktemp for temp files (F-W1-03)');
-
-      // F-W1-13: no GNU-only find flag anywhere
-      assert(!rawSh.includes('-maxdepth'), 'install.sh must not rely on GNU-only find -maxdepth (F-W1-13)');
-
-      // F-W1-02: identity match before adoption, no guessing on ambiguity
-      assert(rawSh.includes('agy_tools_identity_ok'), 'install.sh wrappers must run an identity check before adopting (F-W1-02)');
-      assert(rawSh.includes("name==='agy-tools'"), 'install.sh identity check must compare the package.json name (F-W1-02)');
-      assert(rawSh.includes('candidate agy-tools roots found'), 'install.sh must fail loudly on ambiguous candidates (F-W1-02)');
-      assert(rawSh.includes('root marker left untouched'), 'install.sh must not rewrite the marker on ambiguity (F-W1-02)');
-      assert(rawSh.includes('agy-tools.js agy-tokens.js agy-dashboard.js'), 'install.sh identity check must cover every wired entry script (F-W1-09)');
-
-      // F-W1-05: atomic marker write, and the marker comes before the wrappers
+      // Atomic marker write before wrappers
       const shMarkerFn = rawSh.indexOf('write_root_marker()');
       const shNpmLink = rawSh.indexOf('npm link >/dev/null');
       const shWriteWrapper = rawSh.indexOf('write_wrapper "$USER_BIN/agy-tools"');
-      assert(shMarkerFn > 0 && shNpmLink > shMarkerFn, 'install.sh must define write_root_marker before the install flow');
-      assert(shWriteWrapper > 0, 'install.sh must write the agy-tools wrapper');
-      const shFallback = rawSh.indexOf('Installing self-healing wrappers');
-      assert(
-        rawSh.indexOf('write_root_marker "$ROOT_DIR"', shFallback) < shWriteWrapper,
-        'install.sh must write the marker BEFORE the wrappers (F-W1-07)'
-      );
-      assert(rawSh.includes('mv -f "$_marker_tmp" "$ROOT_MARKER"'), 'install.sh marker write must be atomic (F-W1-05)');
-      assert(!rawSh.includes('printf \'%s\\n\' "$1" > "$ROOT_MARKER"'), 'install.sh must not truncate the marker in place (F-W1-05)');
+      assert(shMarkerFn > 0 && shNpmLink > shMarkerFn);
+      assert(shWriteWrapper > 0);
+      assert(rawSh.indexOf('write_root_marker "$ROOT_DIR"', shNpmLink) < shWriteWrapper, 'install.sh must write marker BEFORE wrappers');
+      assert(rawSh.includes('mv -f "$_marker_tmp" "$ROOT_MARKER"'), 'install.sh marker write must be atomic');
     });
 
-    await test('scripts/lib/make-launchers.js should generate 4 path-free shims, the resolver, and the root marker', () => {
+    await test('scripts/lib/make-launchers.js should generate 5 path-free shims, the resolver, and the root marker', () => {
       const genPath = path.join(rootDir, 'scripts', 'lib', 'make-launchers.js');
       assert(fs.existsSync(genPath), 'scripts/lib/make-launchers.js must exist');
       const { writeLaunchers, renderShim, isRepoRoot, renderRootResolver, RESOLVER_FILE, SCAN_MAX_DEPTH } = require(genPath);
@@ -6364,38 +6272,36 @@ agy      1234 user    5u  IPv4 0xbaadf00d      0t0  TCP 127.0.0.1:54457 (LISTEN)
       try {
         assert(isRepoRoot(rootDir), 'the repository root must be recognized by the locator check');
         const result = writeLaunchers({ binDir, root: rootDir, markerPath, home: tmpHome, profile: tmpHome });
-        assert.strictEqual(result.written.length, 4, 'must write 4 launchers');
+        assert.strictEqual(result.written.length, 5, 'must write 5 launchers including agy-pro.bat');
         assert.strictEqual(result.marker, markerPath, 'writeLaunchers must report the marker path');
         assert(fs.existsSync(result.resolver), 'writeLaunchers must write the companion resolver');
-        assert.strictEqual(path.basename(result.resolver), RESOLVER_FILE, 'the resolver keeps its documented file name');
-        assert.strictEqual(fs.readFileSync(markerPath, 'utf8').trim(), rootDir, 'marker must record the repository root');
-        for (const name of ['agy-tools.bat', 'antigravity-tools.bat', 'agy-tokens.bat', 'agy-dashboard.bat']) {
+        assert.strictEqual(path.basename(result.resolver), RESOLVER_FILE);
+        assert.strictEqual(fs.readFileSync(markerPath, 'utf8').trim(), rootDir, 'marker must record repository root');
+        for (const name of ['agy-tools.bat', 'antigravity-tools.bat', 'agy-tokens.bat', 'agy-dashboard.bat', 'agy-pro.bat']) {
           const body = fs.readFileSync(path.join(binDir, name), 'utf8');
           assert(body.includes('\r\n'), `${name} must use CRLF line endings`);
           assert(body.includes('%USERPROFILE%'), `${name} must resolve paths relative to %USERPROFILE% when home IS the profile`);
-          assert(!body.includes(rootDir), `${name} must not contain the install-time absolute path`);
-          // F-W1-01: the old body ran an unbounded `dir /s /b` scan on the
-          // statusline hot path and followed junctions; it must be gone.
-          assert(!body.includes('dir /s /b'), `${name} must not self-heal with an unbounded dir /s scan (F-W1-01)`);
-          assert(body.includes('disabledelayedexpansion'), `${name} must disable delayed expansion so '!' survives (F-W1-06)`);
-          assert(!body.includes('enabledelayedexpansion\r\n') && !body.includes('setlocal enabledelayedexpansion'), `${name} must not enable delayed expansion (F-W1-06)`);
-          assert(body.includes(RESOLVER_FILE), `${name} must delegate the rescan to the companion resolver (F-W1-01)`);
-          assert(body.includes(`depth-${SCAN_MAX_DEPTH}`), `${name} header must state the real depth bound (F-W1-01)`);
-          assert(body.includes('--home'), `${name} must pass the scan root to the resolver`);
-          assert(body.includes('scripts\\install.bat'), `${name} must name the reinstall fix`);
+          assert(!body.includes(rootDir), `${name} must not contain install-time absolute path`);
+          assert(!body.includes('dir /s /b'), `${name} must not self-heal with unbounded dir /s scan`);
+          assert(body.includes('disabledelayedexpansion'), `${name} must disable delayed expansion`);
+          assert(!body.includes('setlocal enabledelayedexpansion'), `${name} must not enable delayed expansion`);
+          assert(body.includes(RESOLVER_FILE), `${name} must delegate rescan to companion resolver`);
+          assert(body.includes(`depth-${SCAN_MAX_DEPTH}`), `${name} header must state real depth bound`);
+          assert(body.includes('--home'), `${name} must pass scan root to resolver`);
+          assert(body.includes('scripts\\install.bat'), `${name} must name reinstall fix`);
         }
         const resolverSrc = renderRootResolver();
-        assert(resolverSrc.includes(`DEFAULT_DEPTH = ${SCAN_MAX_DEPTH}`), 'the resolver must carry the same depth bound as the sh twin (F-W1-01)');
-        assert(resolverSrc.includes('isSymbolicLink'), 'the resolver must refuse to enter reparse points (F-W1-01)');
-        assert(resolverSrc.includes("pkg.name !== PKG_NAME"), 'the resolver must require the product package name (F-W1-02)');
-        assert(resolverSrc.includes('EXIT_AMBIGUOUS'), 'the resolver must fail loudly on ambiguous candidates (F-W1-02)');
-        assert(!renderShim({ script: 'agy-tokens.js', home: tmpHome, profile: tmpHome }).includes(tmpHome), 'rendered shim must not embed the install home path when home is the profile');
+        assert(resolverSrc.includes(`DEFAULT_DEPTH = ${SCAN_MAX_DEPTH}`));
+        assert(resolverSrc.includes('isSymbolicLink'));
+        assert(resolverSrc.includes('pkg.name !== PKG_NAME'));
+        assert(resolverSrc.includes('EXIT_AMBIGUOUS'));
+        assert(!renderShim({ script: 'agy-pro.js', home: tmpHome, profile: tmpHome }).includes(tmpHome));
       } finally {
         fs.rmSync(tmpHome, { recursive: true, force: true });
       }
     });
 
-    await test('make-launchers isRepoRoot adopts only THIS product root and validates every wired entry script (F-W1-02, F-W1-09)', () => {
+    await test('make-launchers isRepoRoot adopts only THIS product root and validates all 4 entry scripts', () => {
       const { isRepoRoot, ENTRY_SCRIPTS, PACKAGE_NAME } = require(path.join(rootDir, 'scripts', 'lib', 'make-launchers.js'));
       const sandbox = path.join(os.tmpdir(), `agy-test-identity-${Date.now()}`);
       const plant = (dir, name, scripts) => {
@@ -6404,55 +6310,56 @@ agy      1234 user    5u  IPv4 0xbaadf00d      0t0  TCP 127.0.0.1:54457 (LISTEN)
         fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name }), 'utf8');
       };
       try {
-        assert.deepStrictEqual(ENTRY_SCRIPTS, ['agy-tools.js', 'agy-tokens.js', 'agy-dashboard.js'], 'every distinct wired script is validated');
+        assert.deepStrictEqual(
+          ENTRY_SCRIPTS,
+          ['agy-tools.js', 'agy-tokens.js', 'agy-dashboard.js', 'agy-pro.js'],
+          'every distinct wired script including agy-pro.js is validated'
+        );
 
         const full = path.join(sandbox, 'full');
         plant(full, PACKAGE_NAME, ENTRY_SCRIPTS);
-        assert(isRepoRoot(full), 'a full product root must pass');
+        assert(isRepoRoot(full), 'full product root must pass');
 
         const decoy = path.join(sandbox, 'decoy');
         plant(decoy, 'some-other-tool', ENTRY_SCRIPTS);
-        assert(!isRepoRoot(decoy), 'the right layout with a foreign package.json name must be rejected (F-W1-02)');
+        assert(!isRepoRoot(decoy), 'foreign package.json name must be rejected');
 
-        const missingDashboard = path.join(sandbox, 'missing-dashboard');
-        plant(missingDashboard, PACKAGE_NAME, ['agy-tools.js', 'agy-tokens.js']);
-        assert(!isRepoRoot(missingDashboard), 'a root missing bin/agy-dashboard.js must be rejected (F-W1-09)');
+        const missingPro = path.join(sandbox, 'missing-pro');
+        plant(missingPro, PACKAGE_NAME, ['agy-tools.js', 'agy-tokens.js', 'agy-dashboard.js']);
+        assert(!isRepoRoot(missingPro), 'root missing bin/agy-pro.js must be rejected');
 
         const brokenPkg = path.join(sandbox, 'broken-pkg');
         plant(brokenPkg, PACKAGE_NAME, ENTRY_SCRIPTS);
         fs.writeFileSync(path.join(brokenPkg, 'package.json'), '{ not json', 'utf8');
-        assert(!isRepoRoot(brokenPkg), 'an unparsable package.json must be rejected');
+        assert(!isRepoRoot(brokenPkg), 'unparsable package.json must be rejected');
 
-        assert(!isRepoRoot('\\\\server\\share\\agy-tools'), 'a UNC path must never be adopted (F-W1-02)');
-        assert(!isRepoRoot(path.join(sandbox, 'does-not-exist')), 'a missing directory must be rejected');
+        assert(!isRepoRoot('\\\\server\\share\\agy-tools'), 'UNC path must never be adopted');
+        assert(!isRepoRoot(path.join(sandbox, 'does-not-exist')), 'missing directory must be rejected');
       } finally {
         fs.rmSync(sandbox, { recursive: true, force: true });
       }
     });
 
-    await test('relativizeToHome emits %USERPROFILE% only when home really is the profile (F-W1-08)', () => {
+    await test('relativizeToHome emits %USERPROFILE% only when home really is the profile', () => {
       const { relativizeToHome } = require(path.join(rootDir, 'scripts', 'lib', 'make-launchers.js'));
       const profile = 'C:\\Users\\example';
       const marker = 'C:\\Users\\example\\.gemini\\antigravity-cli\\agy-root.txt';
       assert.strictEqual(
         relativizeToHome(marker, profile, profile),
-        '%USERPROFILE%\\.gemini\\antigravity-cli\\agy-root.txt',
-        'the profile form is emitted when home IS USERPROFILE'
+        '%USERPROFILE%\\.gemini\\antigravity-cli\\agy-root.txt'
       );
       assert.strictEqual(
         relativizeToHome(marker, 'C:\\Other\\Home', profile),
-        'C:\\Users\\example\\.gemini\\antigravity-cli\\agy-root.txt',
-        'the absolute form is emitted when home is NOT USERPROFILE (F-W1-08)'
+        'C:\\Users\\example\\.gemini\\antigravity-cli\\agy-root.txt'
       );
       assert.strictEqual(
         relativizeToHome(marker, profile, undefined),
-        'C:\\Users\\example\\.gemini\\antigravity-cli\\agy-root.txt',
-        'without a USERPROFILE value the absolute form is emitted (F-W1-08)'
+        'C:\\Users\\example\\.gemini\\antigravity-cli\\agy-root.txt'
       );
-      assert.strictEqual(relativizeToHome(profile, profile, profile), '%USERPROFILE%', 'the home itself collapses to %USERPROFILE%');
+      assert.strictEqual(relativizeToHome(profile, profile, profile), '%USERPROFILE%');
     });
 
-    await test('writeLaunchers writes the marker before it writes any launcher (F-W1-05, F-W1-07)', () => {
+    await test('writeLaunchers writes the marker before it writes any launcher', () => {
       const { writeLaunchers } = require(path.join(rootDir, 'scripts', 'lib', 'make-launchers.js'));
       const sandbox = path.join(os.tmpdir(), `agy-test-marker-first-${Date.now()}`);
       const binDir = path.join(sandbox, 'bin');
@@ -6463,200 +6370,214 @@ agy      1234 user    5u  IPv4 0xbaadf00d      0t0  TCP 127.0.0.1:54457 (LISTEN)
       try {
         assert.throws(
           () => writeLaunchers({ binDir, root: rootDir, markerPath, home: sandbox, profile: sandbox }),
-          /ENOTDIR|EEXIST|ENOENT|not a directory/i,
-          'a marker that cannot be written must abort the run'
+          /ENOTDIR|EEXIST|ENOENT|not a directory/i
         );
-        assert(!fs.existsSync(binDir), 'no launcher may exist when the marker write failed (F-W1-07: marker first)');
+        assert(!fs.existsSync(binDir), 'no launcher may exist when marker write failed');
       } finally {
         fs.rmSync(sandbox, { recursive: true, force: true });
       }
     });
 
-    await test('scripts/lib/configure-statusline.js refuses the retired write instead of creating settings.json (REQ-403 superseded by D5)', () => {
-      const testDir = path.join(os.tmpdir(), `agy-test-statusline-new-${Date.now()}`);
+    await test('configure-statusline.js --check is read-only and inspectStatusline reports absent/missing/configured/corrupt', () => {
+      const testDir = path.join(os.tmpdir(), `agy-test-statusline-check-${Date.now()}`);
       const testSettingsPath = path.join(testDir, 'settings.json');
-
       try {
-        // The retired branch used to create the directory and a template file.
-        assert.throws(
-          () => configureStatusline({ settingsPath: testSettingsPath }),
-          (err) => err instanceof DeprecatedWriterError
-            && err.deprecated === true
-            && err.exitCode === DEPRECATED_EXIT_CODE,
-          'the retired create path must throw the typed refusal'
-        );
-        assert(!fs.existsSync(testDir), 'the refusal must not even create the settings directory');
         assert.strictEqual(inspectStatusline({ settingsPath: testSettingsPath }).status, 'absent');
-      } finally {
-        fs.rmSync(testDir, { recursive: true, force: true });
-      }
-    });
-
-    await test('scripts/lib/configure-statusline.js leaves an existing settings.json byte-for-byte untouched (REQ-401 superseded by D5)', () => {
-      const testDir = path.join(os.tmpdir(), `agy-test-statusline-merge-${Date.now()}`);
-      fs.mkdirSync(testDir, { recursive: true });
-      const testSettingsPath = path.join(testDir, 'settings.json');
-
-      const initialSettings = {
-        colorScheme: 'dark',
-        telemetry: false,
-        trustedWorkspaces: ['/test/project']
-      };
-      const originalBytes = JSON.stringify(initialSettings, null, 2);
-      fs.writeFileSync(testSettingsPath, originalBytes, 'utf8');
-
-      try {
-        assert.throws(
-          () => configureStatusline({ settingsPath: testSettingsPath }),
-          (err) => err instanceof DeprecatedWriterError && err.exitCode === DEPRECATED_EXIT_CODE,
-          'the retired merge path must throw the typed refusal'
-        );
-        assert.strictEqual(fs.readFileSync(testSettingsPath, 'utf8'), originalBytes, 'settings.json must not change');
-        const leftovers = fs.readdirSync(testDir).filter((name) => name !== 'settings.json');
-        assert.deepStrictEqual(leftovers, [], 'the refusal must not create a backup or a temp file');
-
-        // The read-only view still reports what is there.
-        const inspected = inspectStatusline({ settingsPath: testSettingsPath });
-        assert.strictEqual(inspected.status, 'missing');
-        assert.strictEqual(inspected.command, null);
-        assert(inspected.message.includes('has no statusLine slot'), 'inspect must say the slot is missing');
-      } finally {
-        fs.rmSync(testDir, { recursive: true, force: true });
-      }
-    });
-
-    await test('scripts/lib/configure-statusline.js keeps an existing statusLine configuration untouched (REQ-404 superseded by D5)', () => {
-      const testDir = path.join(os.tmpdir(), `agy-test-statusline-idempotent-${Date.now()}`);
-      fs.mkdirSync(testDir, { recursive: true });
-      const testSettingsPath = path.join(testDir, 'settings.json');
-
-      const initialSettings = {
-        colorScheme: 'light',
-        statusLine: {
-          type: 'command',
-          command: 'my-custom-statusline-cmd',
-          enabled: false
-        }
-      };
-      const originalBytes = JSON.stringify(initialSettings, null, 2);
-      fs.writeFileSync(testSettingsPath, originalBytes, 'utf8');
-
-      try {
-        assert.throws(
-          () => configureStatusline({ settingsPath: testSettingsPath }),
-          (err) => err instanceof DeprecatedWriterError && err.exitCode === DEPRECATED_EXIT_CODE,
-          'an existing statusLine must be refused, not silently skipped'
-        );
-        assert.strictEqual(fs.readFileSync(testSettingsPath, 'utf8'), originalBytes, 'settings.json must not change');
-
-        const inspected = inspectStatusline({ settingsPath: testSettingsPath });
-        assert.strictEqual(inspected.status, 'configured');
-        assert.strictEqual(inspected.command, 'my-custom-statusline-cmd', 'the read-only view must report the live command');
-        assert.strictEqual(inspected.matchesDefault, false);
-      } finally {
-        fs.rmSync(testDir, { recursive: true, force: true });
-      }
-    });
-
-    await test('scripts/lib/configure-statusline.js leaves a corrupt settings.json untouched instead of recovering it (REQ-403 superseded by D5)', () => {
-      const testDir = path.join(os.tmpdir(), `agy-test-statusline-corrupt-${Date.now()}`);
-      fs.mkdirSync(testDir, { recursive: true });
-      const testSettingsPath = path.join(testDir, 'settings.json');
-
-      const corruptContent = '{ "colorScheme": "dark", INVALID_JSON... ';
-      fs.writeFileSync(testSettingsPath, corruptContent, 'utf8');
-
-      try {
-        assert.throws(
-          () => configureStatusline({ settingsPath: testSettingsPath }),
-          (err) => err instanceof DeprecatedWriterError && err.exitCode === DEPRECATED_EXIT_CODE,
-          'the retired corrupt-recovery path must throw the typed refusal'
-        );
-        assert.strictEqual(fs.readFileSync(testSettingsPath, 'utf8'), corruptContent, 'the corrupt bytes must survive');
-        const leftovers = fs.readdirSync(testDir).filter((name) => name !== 'settings.json');
-        assert.deepStrictEqual(leftovers, [], 'no settings.corrupt.*.json may be written any more');
-        assert.strictEqual(inspectStatusline({ settingsPath: testSettingsPath }).status, 'corrupt');
-      } finally {
-        fs.rmSync(testDir, { recursive: true, force: true });
-      }
-    });
-
-    await test('scripts/lib/configure-statusline.js CLI exits with the deprecation contract and names the replacing verb', () => {
-      const testDir = path.join(os.tmpdir(), `agy-test-statusline-cli-${Date.now()}`);
-      fs.mkdirSync(testDir, { recursive: true });
-      const testSettingsPath = path.join(testDir, 'settings.json');
-      const { spawnSync } = require('child_process');
-
-      try {
-        const retired = spawnSync(process.execPath, [configScriptPath, '--settings', testSettingsPath], {
+        const checkAbsent = spawnSync(process.execPath, [configScriptPath, '--check', '--settings', testSettingsPath], {
           encoding: 'utf8',
           env: Object.assign({}, process.env, { AGY_SETTINGS_PATH: '' })
         });
-        assert.strictEqual(retired.status, DEPRECATED_EXIT_CODE, `the retired write must exit ${DEPRECATED_EXIT_CODE}`);
-        assert(
-          retired.stderr.includes(DEPRECATION_MESSAGE),
-          'the refusal must print the deprecation sentence verbatim: ' + retired.stderr
-        );
-        assert(
-          retired.stderr.includes('agy pro integrations apply statusline --yes'),
-          'the refusal must name the replacing verb in a spelling the shipped CLI accepts: ' + retired.stderr
-        );
-        assert(
-          !retired.stderr.includes('--feature'),
-          'the refusal must not name the retired --feature flag: the door takes one operand (F-S9C-03)'
-        );
-        assert(!fs.existsSync(testSettingsPath), 'the CLI must not write settings.json');
+        assert.strictEqual(checkAbsent.status, 0);
+        assert(checkAbsent.stdout.includes('does not exist'));
+        assert(!fs.existsSync(testDir), '--check must not create directories or files');
 
-        // --check is the surviving mode: read-only, exit 0.
-        const checked = spawnSync(process.execPath, [configScriptPath, '--check', '--settings', testSettingsPath], {
-          encoding: 'utf8'
-        });
-        assert.strictEqual(checked.status, 0, '--check must exit 0: ' + checked.stderr);
-        assert(checked.stdout.includes('does not exist'), '--check must report the absent file: ' + checked.stdout);
-        assert(!fs.existsSync(testSettingsPath), '--check must not write settings.json');
+        fs.mkdirSync(testDir, { recursive: true });
+        fs.writeFileSync(testSettingsPath, JSON.stringify({ colorScheme: 'dark' }, null, 2), 'utf8');
+        assert.strictEqual(inspectStatusline({ settingsPath: testSettingsPath }).status, 'missing');
+
+        fs.writeFileSync(testSettingsPath, '{ not-json', 'utf8');
+        assert.strictEqual(inspectStatusline({ settingsPath: testSettingsPath }).status, 'corrupt');
+
+        fs.writeFileSync(
+          testSettingsPath,
+          JSON.stringify({ statusLine: { type: 'command', command: DEFAULT_COMMAND, enabled: true, stack_with_default: true } }),
+          'utf8'
+        );
+        const cfgInspect = inspectStatusline({ settingsPath: testSettingsPath });
+        assert.strictEqual(cfgInspect.status, 'configured');
+        assert.strictEqual(cfgInspect.command, DEFAULT_COMMAND);
       } finally {
         fs.rmSync(testDir, { recursive: true, force: true });
       }
     });
 
-    await test('scripts/lib/configure-statusline.js keeps the historical constants, arg parsing and read-only export surface (REQ-405 superseded by D5)', () => {
-      // The installer's statusline command string stays what it was; T9 reuses it
-      // when it rewires the step to the Go verb.
-      assert.strictEqual(DEFAULT_COMMAND, 'agy-tokens --hook --raw --write-dashboard');
-      assert.strictEqual(typeof getSettingsPath, 'function');
+    await test('configure-statusline.js creates settings.json atomically with launcher resolution and merges preserving unmanaged keys', () => {
+      const testDir = path.join(os.tmpdir(), `agy-test-statusline-write-${Date.now()}`);
+      const fakeHome = path.join(testDir, 'home with space');
+      const testSettingsPath = path.join(testDir, 'nested', 'settings.json');
+      try {
+        // Plant an executable launcher in fakeHome to test launcher discovery + quoting
+        let launcherFile;
+        if (process.platform === 'win32') {
+          launcherFile = path.join(fakeHome, '.gemini', 'antigravity-cli', 'bin', 'agy-tokens.bat');
+          fs.mkdirSync(path.dirname(launcherFile), { recursive: true });
+          fs.writeFileSync(launcherFile, '@echo off\r\n', 'utf8');
+        } else {
+          launcherFile = path.join(fakeHome, '.local', 'bin', 'agy-tokens');
+          fs.mkdirSync(path.dirname(launcherFile), { recursive: true });
+          fs.writeFileSync(launcherFile, '#!/bin/sh\n', { mode: 0o755 });
+        }
 
-      const parsed1 = parseArgs(['--command', 'node "/custom/path/agy-tokens.js" --hook']);
-      assert.strictEqual(parsed1.command, 'node "/custom/path/agy-tokens.js" --hook');
-      assert.strictEqual(parsed1.check, false);
+        const resolvedLauncher = resolveTokensLauncher({ homeDir: fakeHome, pathEnv: '' });
+        assert.strictEqual(resolvedLauncher, path.resolve(launcherFile));
+        const expectedCmd = `${quoteCommandPath(resolvedLauncher)} --hook --raw --write-dashboard`;
+        assert(expectedCmd.startsWith('"'), 'launcher path with spaces must be quoted');
 
-      const parsed2 = parseArgs(['--command=custom-cmd', '--settings=/tmp/test.json', '--force']);
-      assert.strictEqual(parsed2.command, 'custom-cmd');
-      assert.strictEqual(parsed2.settingsPath, path.resolve('/tmp/test.json'));
-      assert.strictEqual(parsed2.force, true);
+        // 1. Create when absent
+        const created = configureStatusline({
+          settingsPath: testSettingsPath,
+          homeDir: fakeHome,
+          pathEnv: '',
+          timestamp: '20260101-000001'
+        });
+        assert.strictEqual(created.action, 'created');
+        assert.strictEqual(created.backupPath, null);
+        assert.strictEqual(created.command, expectedCmd);
+        const parsed1 = JSON.parse(fs.readFileSync(testSettingsPath, 'utf8'));
+        assert.strictEqual(parsed1.statusLine.type, 'command');
+        assert.strictEqual(parsed1.statusLine.command, expectedCmd);
+        assert.strictEqual(parsed1.statusLine.enabled, true);
+        assert.strictEqual(parsed1.statusLine.stack_with_default, true);
 
-      const parsed3 = parseArgs(['custom-positional-cmd']);
-      assert.strictEqual(parsed3.command, 'custom-positional-cmd');
+        // 2. Idempotent re-run
+        const ident = configureStatusline({
+          settingsPath: testSettingsPath,
+          homeDir: fakeHome,
+          pathEnv: '',
+          timestamp: '20260101-000002'
+        });
+        assert.strictEqual(ident.action, 'identical');
+        assert.strictEqual(ident.backupPath, null);
 
-      assert.strictEqual(parseArgs(['--check']).check, true);
-      assert.strictEqual(parseArgs(['--dry-read']).check, true);
+        // 3. Merge existing unmanaged keys + create .bak.<ts>
+        fs.writeFileSync(
+          testSettingsPath,
+          JSON.stringify({ colorScheme: 'dark', telemetry: false, trustedWorkspaces: ['/repo'] }, null, 2),
+          'utf8'
+        );
+        const updated = configureStatusline({
+          settingsPath: testSettingsPath,
+          homeDir: fakeHome,
+          pathEnv: '',
+          timestamp: '20260101-000003'
+        });
+        assert.strictEqual(updated.action, 'updated');
+        assert.strictEqual(updated.backupPath, `${testSettingsPath}.bak.20260101-000003`);
+        assert(fs.existsSync(updated.backupPath), 'must create .bak.<ts> backup before updating');
+        const parsed3 = JSON.parse(fs.readFileSync(testSettingsPath, 'utf8'));
+        assert.strictEqual(parsed3.colorScheme, 'dark');
+        assert.strictEqual(parsed3.telemetry, false);
+        assert.deepStrictEqual(parsed3.trustedWorkspaces, ['/repo']);
+        assert.strictEqual(parsed3.statusLine.command, expectedCmd);
+      } finally {
+        fs.rmSync(testDir, { recursive: true, force: true });
+      }
+    });
 
-      // The export surface is the contract: the write primitives are gone.
-      assert.deepStrictEqual(
-        Object.keys(statuslineModule).sort(),
-        [
-          'DEFAULT_COMMAND',
-          'DEPRECATED_EXIT_CODE',
-          'DEPRECATION_MESSAGE',
-          'DeprecatedWriterError',
-          'configureStatusline',
-          'getSettingsPath',
-          'inspectStatusline',
-          'parseArgs'
-        ],
-        'the module must export the refusal contract and no write helper'
-      );
-      assert(!('writeAtomic' in statuslineModule), 'the atomic writer must not be exported any more');
-      assert(!('getTimestamp' in statuslineModule), 'the backup timestamp helper must not be exported any more');
+    await test('configure-statusline.js recovers corrupt JSON to .corrupt.<ts> and preserves CLI + export contract', () => {
+      const testDir = path.join(os.tmpdir(), `agy-test-statusline-corrupt-${Date.now()}`);
+      fs.mkdirSync(testDir, { recursive: true });
+      const testSettingsPath = path.join(testDir, 'settings.json');
+      const corruptBytes = '{ "colorScheme": "dark", BROKEN_JSON ';
+
+      try {
+        fs.writeFileSync(testSettingsPath, corruptBytes, 'utf8');
+        const recovered = configureStatusline({
+          settingsPath: testSettingsPath,
+          homeDir: path.join(testDir, 'empty-home'),
+          pathEnv: '',
+          timestamp: '20260101-120000'
+        });
+        assert.strictEqual(recovered.action, 'recovered');
+        assert.strictEqual(recovered.corruptBackupPath, `${testSettingsPath}.corrupt.20260101-120000`);
+        assert.strictEqual(fs.readFileSync(recovered.corruptBackupPath, 'utf8'), corruptBytes);
+        const clean = JSON.parse(fs.readFileSync(testSettingsPath, 'utf8'));
+        assert.strictEqual(clean.statusLine.command, DEFAULT_COMMAND);
+
+        // CLI direct write works and exits 0
+        const cliSettings = path.join(testDir, 'cli-settings.json');
+        const cliRun = spawnSync(
+          process.execPath,
+          [configScriptPath, '--settings', cliSettings, '--command', 'custom-status-cmd'],
+          { encoding: 'utf8', env: Object.assign({}, process.env, { AGY_SETTINGS_PATH: '' }) }
+        );
+        assert.strictEqual(cliRun.status, 0, cliRun.stderr);
+        assert(fs.existsSync(cliSettings));
+        assert.strictEqual(JSON.parse(fs.readFileSync(cliSettings, 'utf8')).statusLine.command, 'custom-status-cmd');
+
+        // CWE-426 / CWE-78 hardening: ignore relative PATH entries ('.') and reject unsafe quoteCommandPath chars
+        const prevCwd = process.cwd();
+        const relDir = path.join(testDir, 'rel-cwd');
+        fs.mkdirSync(relDir, { recursive: true });
+        fs.writeFileSync(path.join(relDir, 'agy-tokens.bat'), '@echo off\r\n', 'utf8');
+        fs.writeFileSync(path.join(relDir, 'agy-tokens'), '#!/bin/sh\n', { mode: 0o755 });
+        try {
+          process.chdir(relDir);
+          const emptyHome = path.join(testDir, 'empty-home');
+          assert.strictEqual(resolveTokensLauncher({ homeDir: emptyHome, pathEnv: '.', platform: 'win32' }), 'agy-tokens');
+          assert.strictEqual(resolveTokensLauncher({ homeDir: emptyHome, pathEnv: '.', platform: 'linux' }), 'agy-tokens');
+        } finally {
+          process.chdir(prevCwd);
+        }
+        assert.strictEqual(
+          quoteCommandPath('C:\\Program Files (x86)\\agy-tokens.bat'),
+          '"C:\\Program Files (x86)\\agy-tokens.bat"'
+        );
+        for (const badCharPath of [
+          'C:\\bad\rpath\\agy-tokens.bat',
+          'C:\\bad\npath\\agy-tokens.bat',
+          '/tmp/"quoted"/agy-tokens',
+          '/tmp/`cmd`/agy-tokens',
+          '/tmp/$(sub)/agy-tokens'
+        ]) {
+          assert.throws(() => quoteCommandPath(badCharPath), /Unsafe launcher path rejected/);
+        }
+
+        // Constants, parseArgs, and exported helpers
+        assert.strictEqual(DEFAULT_COMMAND, 'agy-tokens --hook --raw --write-dashboard');
+        assert.strictEqual(typeof getSettingsPath, 'function');
+        assert.strictEqual(typeof resolveStatuslineCommand, 'function');
+        assert.strictEqual(typeof writeAtomic, 'function');
+        assert.strictEqual(typeof getTimestamp, 'function');
+
+        const parsed1 = parseArgs(['--command', 'node "/custom/path/agy-tokens.js" --hook']);
+        assert.strictEqual(parsed1.command, 'node "/custom/path/agy-tokens.js" --hook');
+        assert.strictEqual(parsed1.check, false);
+        const parsed2 = parseArgs(['--command=custom-cmd', '--settings=/tmp/test.json', '--force']);
+        assert.strictEqual(parsed2.command, 'custom-cmd');
+        assert.strictEqual(parsed2.settingsPath, path.resolve('/tmp/test.json'));
+        assert.strictEqual(parsed2.force, true);
+        assert.strictEqual(parseArgs(['--check']).check, true);
+        assert.strictEqual(parseArgs(['--dry-read']).check, true);
+
+        assert.deepStrictEqual(
+          Object.keys(statuslineModule).sort(),
+          [
+            'DEFAULT_COMMAND',
+            'configureStatusline',
+            'getSettingsPath',
+            'getTimestamp',
+            'inspectStatusline',
+            'parseArgs',
+            'quoteCommandPath',
+            'resolveStatuslineCommand',
+            'resolveTokensLauncher',
+            'writeAtomic'
+          ]
+        );
+      } finally {
+        fs.rmSync(testDir, { recursive: true, force: true });
+      }
     });
 
     await test('scripts/lib/configure-rules.js should deploy rules and handle idempotency, backups, and CLI args', () => {
@@ -6673,26 +6594,22 @@ agy      1234 user    5u  IPv4 0xbaadf00d      0t0  TCP 127.0.0.1:54457 (LISTEN)
         fs.writeFileSync(path.join(tmpSrc, 'RULE1.md'), '# Rule 1 Initial', 'utf8');
         fs.writeFileSync(path.join(tmpSrc, 'RULE2.md'), '# Rule 2 Initial', 'utf8');
 
-        // 1. Initial deployment
         const res1 = configureRules({ sourceDir: tmpSrc, targetDir: tmpTgt });
         assert.strictEqual(res1.length, 2);
         assert.strictEqual(res1[0].action, 'created');
         assert.strictEqual(res1[1].action, 'created');
         assert.strictEqual(fs.readFileSync(path.join(tmpTgt, 'RULE1.md'), 'utf8'), '# Rule 1 Initial');
 
-        // 2. Idempotent deployment (no changes)
         const res2 = configureRules({ sourceDir: tmpSrc, targetDir: tmpTgt });
         assert.strictEqual(res2[0].action, 'identical');
         assert.strictEqual(res2[1].action, 'identical');
 
-        // 3. Updated source should create backup and update target
         fs.writeFileSync(path.join(tmpSrc, 'RULE1.md'), '# Rule 1 Updated', 'utf8');
         const res3 = configureRules({ sourceDir: tmpSrc, targetDir: tmpTgt });
         assert.strictEqual(res3[0].action, 'updated');
         assert(res3[0].backupPath && fs.existsSync(res3[0].backupPath));
         assert.strictEqual(fs.readFileSync(path.join(tmpTgt, 'RULE1.md'), 'utf8'), '# Rule 1 Updated');
 
-        // 4. CLI arg parsing
         const parsed = parseRulesArgs(['--force', '--source', '/tmp/src', '--target', '/tmp/tgt']);
         assert.strictEqual(parsed.force, true);
         assert.strictEqual(parsed.sourceDir, path.resolve('/tmp/src'));
@@ -6703,49 +6620,108 @@ agy      1234 user    5u  IPv4 0xbaadf00d      0t0  TCP 127.0.0.1:54457 (LISTEN)
       }
     });
 
-    await test('scripts/lib/configure-customizations.js should deploy all customizations across categories', () => {
+    await test('scripts/lib/configure-customizations.js deploys agents/references/hooks/skills/plugins, pins hooks.json, and enforces DEFAULT_EXCLUDES', () => {
       const configCustPath = path.join(__dirname, '..', 'scripts', 'lib', 'configure-customizations.js');
       assert(fs.existsSync(configCustPath), 'scripts/lib/configure-customizations.js must exist');
-      const { deployAllCustomizations, parseArgs: parseCustArgs } = require(configCustPath);
+      const {
+        CATEGORIES,
+        DEFAULT_EXCLUDES,
+        deployAllCustomizations,
+        pinHooksJsonContent,
+        parseArgs: parseCustArgs
+      } = require(configCustPath);
+
+      assert(CATEGORIES.includes('agents') && CATEGORIES.includes('references') && CATEGORIES.includes('workflows'));
+      assert(DEFAULT_EXCLUDES.plugins.has('agypro_swarm') && DEFAULT_EXCLUDES.plugins.has('agypro_settings'));
+      assert(DEFAULT_EXCLUDES.skills.has('mode'));
+      assert(DEFAULT_EXCLUDES.agents.has('agypro-search'));
 
       const tmpRepo = path.join(os.tmpdir(), `agy-test-cust-repo-${Date.now()}`);
       const tmpConfig = path.join(os.tmpdir(), `agy-test-cust-tgt-${Date.now()}`);
       fs.mkdirSync(path.join(tmpRepo, 'rules'), { recursive: true });
       fs.mkdirSync(path.join(tmpRepo, 'plugins', 'my_plugin'), { recursive: true });
+      fs.mkdirSync(path.join(tmpRepo, 'plugins', 'agypro_swarm'), { recursive: true });
+      fs.mkdirSync(path.join(tmpRepo, 'plugins', 'agypro_settings'), { recursive: true });
       fs.mkdirSync(path.join(tmpRepo, 'skills', 'my_skill'), { recursive: true });
+      fs.mkdirSync(path.join(tmpRepo, 'skills', 'mode'), { recursive: true });
+      fs.mkdirSync(path.join(tmpRepo, 'agents', 'architect'), { recursive: true });
+      fs.mkdirSync(path.join(tmpRepo, 'agents', 'agypro-search'), { recursive: true });
+      fs.mkdirSync(path.join(tmpRepo, 'references'), { recursive: true });
       fs.mkdirSync(path.join(tmpRepo, 'hooks'), { recursive: true });
 
       try {
         fs.writeFileSync(path.join(tmpRepo, 'rules', 'AGENTS.md'), '# Agents Rule', 'utf8');
         fs.writeFileSync(path.join(tmpRepo, 'plugins', 'my_plugin', 'plugin.json'), '{"name":"test"}', 'utf8');
+        fs.writeFileSync(path.join(tmpRepo, 'plugins', 'agypro_swarm', 'plugin.json'), '{"name":"legacy"}', 'utf8');
+        fs.writeFileSync(path.join(tmpRepo, 'plugins', 'agypro_settings', 'plugin.json'), '{"name":"legacy"}', 'utf8');
         fs.writeFileSync(path.join(tmpRepo, 'skills', 'my_skill', 'SKILL.md'), '# My Skill', 'utf8');
-        fs.writeFileSync(path.join(tmpRepo, 'hooks', 'hooks.json'), '{"hooks":{}}', 'utf8');
+        fs.writeFileSync(path.join(tmpRepo, 'skills', 'mode', 'SKILL.md'), '# Legacy Mode', 'utf8');
+        fs.writeFileSync(path.join(tmpRepo, 'agents', 'architect', 'AGENT.md'), '# Architect', 'utf8');
+        fs.writeFileSync(path.join(tmpRepo, 'agents', 'agypro-search', 'AGENT.md'), '# Legacy Search', 'utf8');
+        fs.writeFileSync(path.join(tmpRepo, 'references', 'visual-qa-rubric.md'), '# Rubric', 'utf8');
+        fs.writeFileSync(
+          path.join(tmpRepo, 'hooks', 'hooks.json'),
+          JSON.stringify({ hooks: { PostInvocation: { command: 'agy-tokens --hook' } } }),
+          'utf8'
+        );
 
-        // 1. Initial full deployment
-        const sum1 = deployAllCustomizations({ repoRoot: tmpRepo, configDir: tmpConfig });
-        assert.strictEqual(sum1.created, 4);
+        const fakeLauncher = path.resolve(tmpRepo, 'bin dir', 'agy-tokens.bat');
+
+        // 1. Initial deployment: 6 non-excluded files; workflows/ absent -> safe no-op
+        const sum1 = deployAllCustomizations({
+          repoRoot: tmpRepo,
+          configDir: tmpConfig,
+          tokensLauncher: fakeLauncher
+        });
+        assert.strictEqual(sum1.created, 6);
         assert.strictEqual(sum1.updated, 0);
         assert.strictEqual(sum1.identical, 0);
+        assert.deepStrictEqual(sum1.details.workflows, [], 'absent workflows/ must be a safe no-op');
 
-        // Verify files deployed to respective destinations
         assert(fs.existsSync(path.join(tmpConfig, 'rules', 'AGENTS.md')));
         assert(fs.existsSync(path.join(tmpConfig, 'plugins', 'my_plugin', 'plugin.json')));
         assert(fs.existsSync(path.join(tmpConfig, 'skills', 'my_skill', 'SKILL.md')));
-        assert(fs.existsSync(path.join(tmpConfig, 'hooks', 'hooks.json')));
+        assert(fs.existsSync(path.join(tmpConfig, 'agents', 'architect', 'AGENT.md')));
+        assert(fs.existsSync(path.join(tmpConfig, 'references', 'visual-qa-rubric.md')));
+
+        // Excludes must NOT be deployed
+        assert(!fs.existsSync(path.join(tmpConfig, 'plugins', 'agypro_swarm')));
+        assert(!fs.existsSync(path.join(tmpConfig, 'plugins', 'agypro_settings')));
+        assert(!fs.existsSync(path.join(tmpConfig, 'skills', 'mode')));
+        assert(!fs.existsSync(path.join(tmpConfig, 'agents', 'agypro-search')));
+
+        // hooks.json must pin the resolved launcher path
+        const pinnedHooks = JSON.parse(fs.readFileSync(path.join(tmpConfig, 'hooks', 'hooks.json'), 'utf8'));
+        assert.strictEqual(pinnedHooks.hooks.PostInvocation.command, `"${fakeLauncher}" --hook`);
+
+        // pinHooksJsonContent leaves buffer unchanged when launcher is null/relative
+        const rawBuf = Buffer.from('{"hooks":{"PostInvocation":{"command":"agy-tokens --hook"}}}');
+        assert(pinHooksJsonContent(rawBuf, null).equals(rawBuf));
+        assert(pinHooksJsonContent(rawBuf, 'relative/agy-tokens').equals(rawBuf));
 
         // 2. Idempotent deployment
-        const sum2 = deployAllCustomizations({ repoRoot: tmpRepo, configDir: tmpConfig });
+        const sum2 = deployAllCustomizations({
+          repoRoot: tmpRepo,
+          configDir: tmpConfig,
+          tokensLauncher: fakeLauncher
+        });
         assert.strictEqual(sum2.created, 0);
         assert.strictEqual(sum2.updated, 0);
-        assert.strictEqual(sum2.identical, 4);
+        assert.strictEqual(sum2.identical, 6);
 
-        // 3. Updated source deployment
+        // 3. Updated source deployment + optional workflows/ when present
+        fs.mkdirSync(path.join(tmpRepo, 'workflows'), { recursive: true });
+        fs.writeFileSync(path.join(tmpRepo, 'workflows', 'sample.md'), '# Workflow', 'utf8');
         fs.writeFileSync(path.join(tmpRepo, 'rules', 'AGENTS.md'), '# Agents Rule V2', 'utf8');
-        const sum3 = deployAllCustomizations({ repoRoot: tmpRepo, configDir: tmpConfig });
-        assert.strictEqual(sum3.created, 0);
+        const sum3 = deployAllCustomizations({
+          repoRoot: tmpRepo,
+          configDir: tmpConfig,
+          tokensLauncher: fakeLauncher
+        });
+        assert.strictEqual(sum3.created, 1);
         assert.strictEqual(sum3.updated, 1);
-        assert.strictEqual(sum3.identical, 3);
-        assert.strictEqual(fs.readFileSync(path.join(tmpConfig, 'rules', 'AGENTS.md'), 'utf8'), '# Agents Rule V2');
+        assert.strictEqual(sum3.identical, 5);
+        assert.strictEqual(fs.readFileSync(path.join(tmpConfig, 'workflows', 'sample.md'), 'utf8'), '# Workflow');
 
         // 4. CLI arg parsing
         const parsed = parseCustArgs(['--force', '--source', '/tmp/repo', '--target', '/tmp/cfg']);
@@ -6755,6 +6731,207 @@ agy      1234 user    5u  IPv4 0xbaadf00d      0t0  TCP 127.0.0.1:54457 (LISTEN)
       } finally {
         fs.rmSync(tmpRepo, { recursive: true, force: true });
         fs.rmSync(tmpConfig, { recursive: true, force: true });
+      }
+    });
+
+    await test('scripts/lib/uninstall.js supports --dry-run, non-TTY refusal, --yes --keep-state, and full cleanup in sandbox', async () => {
+      const uninstallPath = path.join(rootDir, 'scripts', 'lib', 'uninstall.js');
+      assert(fs.existsSync(uninstallPath), 'scripts/lib/uninstall.js must exist');
+      const {
+        parseArgs: parseUninstArgs,
+        resolveCmdExePath,
+        resolveNpmPath,
+        resolvePowerShellPath,
+        stripGatewayRcBlock,
+        runUninstall
+      } = require(uninstallPath);
+
+      assert.strictEqual(parseUninstArgs(['--dry-run', '-KeepState']).dryRun, true);
+      assert.strictEqual(parseUninstArgs(['--dry-run', '-KeepState']).keepState, true);
+      assert.strictEqual(parseUninstArgs(['-Force']).yes, true);
+
+      const stripped = stripGatewayRcBlock('export FOO=1\n# >>> agy-pro gateway >>>\n. ~/.agy-pro/gateway.env\n# <<< agy-pro gateway <<<\nexport BAR=2\n');
+      assert.strictEqual(stripped.changed, true);
+      assert(!stripped.content.includes('agy-pro gateway'));
+      assert(stripped.content.includes('export FOO=1') && stripped.content.includes('export BAR=2'));
+
+      const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-test-uninstall-'));
+      try {
+        const homeDir = path.join(sandbox, 'home');
+        const binDir = path.join(homeDir, '.local', 'bin');
+        const shareDir = path.join(homeDir, '.local', 'share');
+        const agyProHome = path.join(homeDir, '.agy-pro');
+        const settingsPath = path.join(homeDir, '.gemini', 'antigravity-cli', 'settings.json');
+        const rcPath = path.join(homeDir, '.bashrc');
+        fs.mkdirSync(binDir, { recursive: true });
+        fs.mkdirSync(shareDir, { recursive: true });
+        fs.mkdirSync(agyProHome, { recursive: true });
+        fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+
+        const launcherFile = path.join(binDir, 'agy-pro');
+        const markerFile = path.join(shareDir, 'agy-tools-root');
+        const gwJson = path.join(agyProHome, 'gateway.json');
+        const gwEnv = path.join(agyProHome, 'gateway.env');
+        fs.writeFileSync(launcherFile, '#!/bin/sh\n', 'utf8');
+        fs.writeFileSync(markerFile, '/tmp/repo\n', 'utf8');
+        fs.writeFileSync(gwJson, '{"version":2}\n', 'utf8');
+        fs.writeFileSync(gwEnv, 'export AGY_LLM_GATEWAY_URL=http://localhost\n', 'utf8');
+        fs.writeFileSync(
+          settingsPath,
+          JSON.stringify({ colorScheme: 'dark', statusLine: { type: 'command', command: 'agy-tokens --hook' } }, null, 2),
+          'utf8'
+        );
+        fs.writeFileSync(rcPath, 'export PATH="$PATH"\n# >>> agy-pro gateway >>>\n. "$HOME/.agy-pro/gateway.env"\n# <<< agy-pro gateway <<<\n', 'utf8');
+
+        const logs = [];
+        const errs = [];
+
+        // 1. Non-interactive without --yes must refuse with exitCode 2
+        const refused = await runUninstall({
+          sandbox: true,
+          platform: 'linux',
+          homeDir,
+          agyProHome,
+          settingsPath,
+          isInteractive: false,
+          yes: false,
+          dryRun: false,
+          log: (m) => logs.push(m),
+          errLog: (m) => errs.push(m)
+        });
+        assert.strictEqual(refused.exitCode, 2);
+        assert.strictEqual(refused.cancelled, true);
+        assert(fs.existsSync(launcherFile), 'non-TTY refusal must not delete files');
+
+        // 2. --dry-run must preview without modifying disk
+        const dry = await runUninstall({
+          sandbox: true,
+          platform: 'linux',
+          homeDir,
+          agyProHome,
+          settingsPath,
+          dryRun: true,
+          log: (m) => logs.push(m),
+          errLog: (m) => errs.push(m)
+        });
+        assert.strictEqual(dry.exitCode, 0);
+        assert(fs.existsSync(launcherFile) && fs.existsSync(gwJson));
+        assert(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).statusLine);
+
+        // 3. --yes --keep-state removes launchers, statusLine, rc block, and keeps gateway.*
+        const keep = await runUninstall({
+          sandbox: true,
+          platform: 'linux',
+          homeDir,
+          agyProHome,
+          settingsPath,
+          yes: true,
+          keepState: true,
+          timestamp: '20260101-100000',
+          log: (m) => logs.push(m),
+          errLog: (m) => errs.push(m)
+        });
+        assert.strictEqual(keep.exitCode, 0);
+        assert(!fs.existsSync(launcherFile), 'launcher must be removed');
+        assert(!fs.existsSync(markerFile), 'marker must be removed');
+        assert(fs.existsSync(gwJson) && fs.existsSync(gwEnv), '--keep-state must preserve gateway.* files');
+        const afterSettings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+        assert.strictEqual(afterSettings.statusLine, undefined, 'statusLine must be removed');
+        assert.strictEqual(afterSettings.colorScheme, 'dark', 'unmanaged keys must remain');
+        assert(fs.existsSync(`${settingsPath}.bak.20260101-100000`), 'statusLine removal must write backup');
+        assert(!fs.readFileSync(rcPath, 'utf8').includes('agy-pro gateway'), 'rc block must be stripped');
+
+        // 4. --yes without --keep-state removes gateway.* files as well
+        const full = await runUninstall({
+          sandbox: true,
+          platform: 'linux',
+          homeDir,
+          agyProHome,
+          settingsPath,
+          yes: true,
+          keepState: false,
+          log: (m) => logs.push(m),
+          errLog: (m) => errs.push(m)
+        });
+        assert.strictEqual(full.exitCode, 0);
+        assert(!fs.existsSync(gwJson) && !fs.existsSync(gwEnv), 'full cleanup must remove gateway.* files');
+
+        // 5. win32 path via npmRunner / psRunner mocks asserting absolute powershell.exe & npm.cmd + relative PATH ignored
+        assert(path.isAbsolute(resolvePowerShellPath()), 'resolvePowerShellPath must be absolute');
+        assert(resolvePowerShellPath().toLowerCase().endsWith(path.join('system32', 'windowspowershell', 'v1.0', 'powershell.exe')));
+        assert(path.isAbsolute(resolveCmdExePath()), 'resolveCmdExePath must be absolute');
+
+        const winSandbox = path.join(sandbox, 'win32-home');
+        const winBin = path.join(winSandbox, '.gemini', 'antigravity-cli', 'bin');
+        const winMarker = path.join(winSandbox, '.gemini', 'antigravity-cli', 'agy-root.txt');
+        const winAgyPro = path.join(winSandbox, '.agy-pro');
+        const winLegacyExe = path.join(winAgyPro, 'bin', 'agy.exe');
+        const winSettings = path.join(winSandbox, '.gemini', 'antigravity-cli', 'settings.json');
+        const fakeNodeDir = path.join(sandbox, 'fake-node');
+        fs.mkdirSync(winBin, { recursive: true });
+        fs.mkdirSync(path.dirname(winLegacyExe), { recursive: true });
+        fs.mkdirSync(fakeNodeDir, { recursive: true });
+        fs.writeFileSync(path.join(winBin, 'agy-pro.bat'), '@echo off\r\n', 'utf8');
+        fs.writeFileSync(winMarker, 'D:\\repo\n', 'utf8');
+        fs.writeFileSync(winLegacyExe, 'MZ-stub', 'utf8');
+        fs.writeFileSync(path.join(winAgyPro, 'gateway.json'), '{"version":2}\n', 'utf8');
+        fs.writeFileSync(winSettings, JSON.stringify({ statusLine: { enabled: true } }), 'utf8');
+        fs.writeFileSync(path.join(fakeNodeDir, 'node.exe'), 'node', 'utf8');
+        fs.writeFileSync(path.join(fakeNodeDir, 'npm.cmd'), '@echo off\r\n', 'utf8');
+
+        // Relative PATH '.' must be ignored by resolveNpmPath (CWE-426)
+        assert.strictEqual(
+          resolveNpmPath({ platform: 'win32', execPath: path.join(winSandbox, 'no-npm', 'node.exe'), pathEnv: '.' }),
+          null
+        );
+
+        const npmCalls = [];
+        const psCalls = [];
+        const prevSkipNpm = process.env.AGY_UNINSTALL_SKIP_NPM;
+        delete process.env.AGY_UNINSTALL_SKIP_NPM;
+        let winRes;
+        try {
+          winRes = await runUninstall({
+            sandbox: true,
+            platform: 'win32',
+            homeDir: winSandbox,
+            agyProHome: winAgyPro,
+            settingsPath: winSettings,
+            execPath: path.join(fakeNodeDir, 'node.exe'),
+            pathEnv: '',
+            yes: true,
+            keepState: false,
+            silent: true,
+            npmRunner: (exe, args) => {
+              npmCalls.push({ exe, args });
+              return { status: 0 };
+            },
+            psRunner: (exe, args, opts) => {
+              psCalls.push({ exe, args, opts });
+              return { status: 0 };
+            },
+            log: (m) => logs.push(m),
+            errLog: (m) => errs.push(m)
+          });
+        } finally {
+          if (prevSkipNpm !== undefined) process.env.AGY_UNINSTALL_SKIP_NPM = prevSkipNpm;
+        }
+        assert.strictEqual(winRes.exitCode, 0);
+        assert.strictEqual(npmCalls.length, 1);
+        assert(path.isAbsolute(npmCalls[0].exe) && npmCalls[0].exe.toLowerCase().endsWith('npm.cmd'));
+        assert.deepStrictEqual(npmCalls[0].args, ['unlink', '-g', 'agy-tools']);
+        assert.strictEqual(psCalls.length, 2, 'win32 uninstall must invoke powershell.exe for HKCU cleanup and legacy Go uninstall.ps1');
+        for (const call of psCalls) {
+          assert(path.isAbsolute(call.exe));
+          assert(call.exe.toLowerCase().endsWith(path.join('system32', 'windowspowershell', 'v1.0', 'powershell.exe')));
+        }
+        assert(psCalls[0].args.includes('-Command') && psCalls[0].opts.env.__AGY_CLEAR_ENV_VARS);
+        assert(psCalls[1].args.some((a) => String(a).endsWith('uninstall.ps1')));
+        assert(!fs.existsSync(path.join(winBin, 'agy-pro.bat')));
+        assert(!fs.existsSync(winMarker));
+        assert(!fs.existsSync(path.join(winAgyPro, 'gateway.json')));
+      } finally {
+        fs.rmSync(sandbox, { recursive: true, force: true });
       }
     });
   });
@@ -6767,7 +6944,7 @@ agy      1234 user    5u  IPv4 0xbaadf00d      0t0  TCP 127.0.0.1:54457 (LISTEN)
     const installShPath = path.join(rootDir, 'scripts', 'install.sh');
 
     // A repo root that would pass a naive "layout looks right" check.
-    const plantRepo = (dir, pkgName = 'agy-tools', scripts = ['agy-tools.js', 'agy-tokens.js', 'agy-dashboard.js']) => {
+    const plantRepo = (dir, pkgName = 'agy-tools', scripts = ['agy-tools.js', 'agy-tokens.js', 'agy-dashboard.js', 'agy-pro.js']) => {
       fs.mkdirSync(path.join(dir, 'bin'), { recursive: true });
       for (const script of scripts) {
         fs.writeFileSync(
@@ -6793,8 +6970,8 @@ agy      1234 user    5u  IPv4 0xbaadf00d      0t0  TCP 127.0.0.1:54457 (LISTEN)
         generate(installedRoot) {
           return launchers.writeLaunchers({ binDir, root: installedRoot, home, markerPath, profile: home });
         },
-        run(args = []) {
-          const command = `"${path.join(binDir, 'agy-tokens.bat')}" ${args.join(' ')}`.trim();
+        run(args = [], shimName = 'agy-tokens.bat') {
+          const command = `"${path.join(binDir, shimName)}" ${args.join(' ')}`.trim();
           return spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `"${command}"`], {
             encoding: 'utf8',
             windowsVerbatimArguments: true,
@@ -6863,6 +7040,13 @@ agy      1234 user    5u  IPv4 0xbaadf00d      0t0  TCP 127.0.0.1:54457 (LISTEN)
         assert(res.stdout.includes('STUB agy-tokens.js --hook,--raw'), `stub must run with the forwarded args, got: ${JSON.stringify(res.stdout)}`);
         assert.strictEqual(readMarker(h.markerPath), before, 'a valid marker must not be rewritten');
         assert(!res.stderr.includes('rescanning'), 'a valid marker must not trigger a rescan');
+
+        // Verify agy-pro.bat shim generated alongside agy-tokens.bat also resolves and dispatches agy-pro.js.
+        assert(fs.existsSync(path.join(h.binDir, 'agy-pro.bat')), 'writeLaunchers must generate agy-pro.bat');
+        const proRes = h.run(['gateway', 'status'], 'agy-pro.bat');
+        assert.strictEqual(proRes.status, 0, `expected agy-pro.bat exit 0, got ${proRes.status}: ${proRes.stderr}`);
+        assert(proRes.stdout.includes('STUB agy-pro.js gateway,status'), `agy-pro.bat must run bin/agy-pro.js, got: ${JSON.stringify(proRes.stdout)}`);
+        assert(extractWrapper('agy-pro.js').includes('agy-pro.js'), 'install.sh wrapper template must support agy-pro.js');
       } finally {
         fs.rmSync(sandbox, { recursive: true, force: true });
       }
@@ -8326,6 +8510,725 @@ agy      1234 user    5u  IPv4 0xbaadf00d      0t0  TCP 127.0.0.1:54457 (LISTEN)
         assert(Number(match[1]) >= 302, `expected a full suite, got ${match[1]} tests`);
       });
     }
+  });
+
+  // --- Suite 34: Simplified agy-pro Gateway CLI ---
+  await describe('34. Simplified agy-pro Gateway CLI (src/pro/* & bin/agy-pro.js)', async () => {
+    const http = require('http');
+    const { spawnSync } = require('child_process');
+    const { PassThrough, Readable } = require('stream');
+    const rootDir = path.resolve(__dirname, '..');
+    const presets = require(path.join(rootDir, 'src', 'pro', 'presets.js'));
+    const validator = require(path.join(rootDir, 'src', 'pro', 'validator.js'));
+    const httpClient = require(path.join(rootDir, 'src', 'pro', 'http-client.js'));
+    const envStore = require(path.join(rootDir, 'src', 'pro', 'env-store.js'));
+    const wizard = require(path.join(rootDir, 'src', 'pro', 'wizard.js'));
+    const proCli = require(path.join(rootDir, 'src', 'pro', 'cli.js'));
+    const binProPath = path.join(rootDir, 'bin', 'agy-pro.js');
+
+    const withSavedEnv = async (keys, fn) => {
+      const snapshot = {};
+      for (const k of keys) {
+        snapshot[k] = Object.prototype.hasOwnProperty.call(process.env, k) ? process.env[k] : undefined;
+      }
+      try {
+        return await fn();
+      } finally {
+        for (const k of keys) {
+          if (snapshot[k] === undefined) {
+            delete process.env[k];
+          } else {
+            process.env[k] = snapshot[k];
+          }
+        }
+      }
+    };
+
+    const ENV_GUARD_KEYS = [
+      ...envStore.GATEWAY_ENV_KEYS,
+      'AGY_PRO_HOME',
+      'AGY_PRO_ENV_FILE',
+      'AGY_PRO_RC_FILE',
+      'AGY_PRO_API_KEY_INPUT',
+      'AGY_SETTINGS_PATH',
+      'AGY_CONFIG_DIR',
+      'AGY_ADMIN_SETTINGS_PATH',
+      'DEEPSEEK_API_KEY',
+      'GEMINI_API_KEY',
+      'OPENAI_API_KEY',
+      'CUSTOM_GW_KEY',
+      'REMOTE_GW_API_KEY'
+    ];
+
+    const makeOut = () => {
+      const chunks = [];
+      return {
+        write(s) {
+          chunks.push(String(s));
+          return true;
+        },
+        text() {
+          return chunks.join('');
+        }
+      };
+    };
+
+    await test('presets.js exposes 8 known providers, extras, aliases, presets, and defaultEnvForProvider', () => {
+      assert.strictEqual(presets.KNOWN_PROVIDERS.length, 8);
+      assert.deepStrictEqual(
+        presets.KNOWN_PROVIDERS.map((p) => p.name),
+        ['deepseek', 'openrouter', 'groq', 'openai', 'bigmodel', 'google', 'together', 'mistral']
+      );
+      const withCustom = presets.knownProviders({ includeCustom: true });
+      assert.strictEqual(withCustom.length, 10);
+      assert(withCustom.some((p) => p.name === 'local-gateway'));
+      assert(withCustom.some((p) => p.name === 'custom'));
+
+      assert.strictEqual(presets.canonicalProviderName('glm'), 'bigmodel');
+      assert.strictEqual(presets.canonicalProviderName('zhipu'), 'bigmodel');
+      assert.strictEqual(presets.canonicalProviderName('aistudio'), 'google');
+      assert.strictEqual(presets.lookupProviderHint('gemini').wireProtocol, 'genai');
+      assert(presets.getModelPresets('deepseek').some((m) => m.id === 'deepseek-chat'));
+      assert(presets.getModelPresets('gemini').some((m) => m.id.startsWith('gemini-')));
+      assert.strictEqual(presets.defaultEnvForProvider('deepseek'), 'DEEPSEEK_API_KEY');
+      assert.strictEqual(presets.defaultEnvForProvider('local-gateway'), '');
+      assert.strictEqual(presets.defaultEnvForProvider('acme-gw'), 'AGY_PRO_GATEWAY_ACME_GW_API_KEY');
+    });
+
+    await test('validator.js validates URLs, loopback, comma-separated models, env names, and secret masking', () => {
+      assert.strictEqual(validator.validateGatewayURL('https://api.deepseek.com/v1').valid, true);
+      assert.strictEqual(validator.validateGatewayURL('http://api.deepseek.com/v1').valid, false);
+      const localV4 = validator.validateGatewayURL('http://127.0.0.1:8045/v1');
+      assert.strictEqual(localV4.valid, true);
+      assert.strictEqual(localV4.isLoopback, true);
+      assert.strictEqual(validator.isLoopbackURL('http://localhost:11434/v1'), true);
+      assert.strictEqual(validator.isLoopbackURL('http://[::1]:8080/v1'), true);
+      assert.strictEqual(validator.isLoopbackURL('http://[::ffff:7f00:1]:11434/v1'), true);
+      assert.strictEqual(validator.isLoopbackURL('https://api.openai.com/v1'), false);
+      assert.strictEqual(validator.validateGatewayURL('https://user:sk-secret123@api.example.com/v1').valid, false);
+
+      assert.strictEqual(validator.validateWireProtocol('genai').valid, true);
+      assert.strictEqual(validator.validateWireProtocol('openai').valid, true);
+      assert.strictEqual(validator.validateWireProtocol('anthropic').valid, false);
+      assert.strictEqual(validator.validateProfileName('corp_gw_1').valid, true);
+      assert.strictEqual(validator.validateProfileName('local-ollama').valid, true);
+      assert.strictEqual(validator.validateProfileName('work_gateway-1').valid, true);
+      assert.strictEqual(validator.validateProfileName('sk-1234567890abcdef').valid, false);
+
+      assert.strictEqual(validator.looksLikeAPIKey('sk-1234567890abcdef'), true);
+      assert.strictEqual(validator.looksLikeAPIKey('DEEPSEEK_API_KEY'), false);
+      assert.strictEqual(validator.validateEnvName('DEEPSEEK_API_KEY').valid, true);
+      assert.strictEqual(validator.validateEnvName('sk-1234567890abcdef').valid, false);
+
+      assert.deepStrictEqual(
+        validator.parseGatewayModels(' deepseek-chat , deepseek-reasoner, deepseek-chat '),
+        ['deepseek-chat', 'deepseek-reasoner']
+      );
+      assert.strictEqual(validator.formatGatewayModels(['m1', 'm2', 'm1']), 'm1,m2');
+      assert.throws(() => validator.parseGatewayModels('["m1"]'), /not JSON/);
+      assert.throws(() => validator.parseGatewayModels('{"models":["m1"]}'), /not JSON/);
+
+      assert.strictEqual(validator.maskSecret('short'), '****');
+      assert.strictEqual(validator.maskSecret('sk-1234567890abcdef'), 'sk-12****');
+      assert.strictEqual(
+        validator.maskBaseURL('https://gw.example.com/v1?api_key=sk-1234567890'),
+        'https://gw.example.com/v1?api_key=sk-12****'
+      );
+      const maskedHdrs = validator.maskHeaders('Authorization: Bearer secret-999999, X-Org: acme-secret');
+      assert(maskedHdrs.includes('Authorization: Beare****'));
+      assert(maskedHdrs.includes('X-Org: acme-****'));
+      assert(!maskedHdrs.includes('secret-999999'));
+      assert.strictEqual(
+        validator.redactSecrets('Authorization: Bearer super-secret-token-value', 'super-secret-token-value'),
+        'Authorization: Bearer [REDACTED]'
+      );
+      assert(validator.OPENAI_TOOL_WARNING.includes('openai'));
+      assert(validator.XOR_MODELS_WARNING.includes('XOR'));
+    });
+
+    await test('http-client.js fetches OpenAI & GenAI models and probes endpoints with optional auth', async () => {
+      const seenAuth = [];
+      const server = http.createServer((req, res) => {
+        seenAuth.push({
+          url: req.url,
+          auth: req.headers.authorization || '',
+          goog: req.headers['x-goog-api-key'] || ''
+        });
+        let body = '';
+        req.on('data', (c) => { body += c; });
+        req.on('end', () => {
+          if (req.url === '/v1/models') {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ data: [{ id: 'gpt-4o-mini', context_window: 128000 }] }));
+            return;
+          }
+          if (req.url === '/v1beta/models') {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ models: [{ name: 'models/gemini-2.5-pro', inputTokenLimit: 1000000 }] }));
+            return;
+          }
+          if (req.url === '/v1/chat/completions') {
+            if (req.headers.authorization === 'Bearer bad-secret-token-999') {
+              res.writeHead(401, { 'Content-Type': 'application/json' });
+              res.end('invalid key bad-secret-token-999');
+              return;
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true, echoModel: JSON.parse(body).model }));
+            return;
+          }
+          if (req.url.startsWith('/v1beta/models/') && req.url.endsWith(':generateContent')) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ candidates: [] }));
+            return;
+          }
+          res.writeHead(404);
+          res.end('not found');
+        });
+      });
+
+      await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+      try {
+        const port = server.address().port;
+        const openaiModels = await httpClient.fetchRemoteModels(`http://127.0.0.1:${port}/v1`, 'sk-live-secret-123456', {
+          wireProtocol: 'openai'
+        });
+        assert.deepStrictEqual(openaiModels, [{ id: 'gpt-4o-mini', contextLength: 128000, maxOutputTokens: 0 }]);
+
+        const anonModels = await httpClient.fetchRemoteModels(`http://127.0.0.1:${port}/v1`, '', {
+          wireProtocol: 'openai'
+        });
+        assert.strictEqual(anonModels.length, 1);
+        assert.strictEqual(seenAuth[0].auth, 'Bearer sk-live-secret-123456');
+        assert.strictEqual(seenAuth[1].auth, '');
+
+        const genaiModels = await httpClient.fetchRemoteModels(`http://127.0.0.1:${port}/v1beta`, 'AIzaSyFakeKey12345', {
+          wireProtocol: 'genai'
+        });
+        assert.deepStrictEqual(genaiModels, [{ id: 'gemini-2.5-pro', contextLength: 1000000, maxOutputTokens: 0 }]);
+        assert.strictEqual(seenAuth[2].auth, 'Bearer AIzaSyFakeKey12345');
+
+        let googleHeaders = null;
+        await httpClient.fetchRemoteModels('https://generativelanguage.googleapis.com/v1beta', 'AIzaSyFakeKey12345', {
+          wireProtocol: 'genai',
+          transport: async (params) => {
+            googleHeaders = params.headers;
+            return {
+              statusCode: 200,
+              statusMessage: 'OK',
+              headers: {},
+              body: JSON.stringify({ models: [{ name: 'models/gemini-2.5-flash', inputTokenLimit: 1000000 }] })
+            };
+          }
+        });
+        assert.strictEqual(googleHeaders['x-goog-api-key'], 'AIzaSyFakeKey12345');
+
+        const okProbe = await httpClient.probeEndpoint({
+          url: `http://127.0.0.1:${port}/v1`,
+          apiKey: '',
+          wireProtocol: 'openai',
+          model: 'gpt-4o-mini'
+        });
+        assert.strictEqual(okProbe.ok, true);
+        assert.strictEqual(okProbe.status, 200);
+
+        const genaiProbe = await httpClient.probeEndpoint({
+          url: `http://127.0.0.1:${port}/v1beta`,
+          apiKey: 'AIzaSyFakeKey12345',
+          wireProtocol: 'genai',
+          model: 'gemini-2.5-pro'
+        });
+        assert.strictEqual(genaiProbe.ok, true);
+
+        const failProbe = await httpClient.probeEndpoint({
+          url: `http://127.0.0.1:${port}/v1`,
+          apiKey: 'bad-secret-token-999',
+          wireProtocol: 'openai',
+          model: 'gpt-4o-mini'
+        });
+        assert.strictEqual(failProbe.ok, false);
+        assert.strictEqual(failProbe.status, 401);
+        assert(!failProbe.error.includes('bad-secret-token-999'), 'probe error must redact API key');
+        assert(failProbe.error.includes('[REDACTED]'));
+      } finally {
+        await new Promise((resolve) => server.close(resolve));
+      }
+    });
+
+    await test('env-store.js manages v2 multi-profile config, v1 migration, win32Runner zero-argv secrets, linux 0o600 + rc cleanup, and admin override', async () => {
+      await withSavedEnv(ENV_GUARD_KEYS, async () => {
+        const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-pro-envstore-'));
+        try {
+          const homeDir = path.join(sandbox, 'agy-pro');
+          const configPath = path.join(homeDir, 'gateway.json');
+          const envFile = path.join(sandbox, 'gateway.env');
+          const rcFile = path.join(sandbox, '.bashrc');
+          const adminPath = path.join(sandbox, 'admin_settings.json');
+          process.env.AGY_PRO_HOME = homeDir;
+          fs.writeFileSync(rcFile, '# user rc\nexport PATH="$PATH:/usr/local/bin"\n', 'utf8');
+
+          // v1 auto-migration -> v2
+          const v2Migrated = envStore.normalizeGatewayConfig({
+            version: 1,
+            provider: 'deepseek',
+            url: 'https://api.deepseek.com/v1',
+            wireProtocol: 'openai',
+            apiKeyEnv: 'DEEPSEEK_API_KEY',
+            models: ['deepseek-chat'],
+            active: true
+          });
+          assert.strictEqual(v2Migrated.version, 2);
+          assert.strictEqual(v2Migrated.activeProfile, 'deepseek');
+          assert.deepStrictEqual(v2Migrated.profiles.deepseek.models, ['deepseek-chat']);
+
+          // Refuses raw API key saved in apiKeyEnv
+          assert.throws(() => {
+            envStore.saveGatewayConfig({
+              version: 2,
+              activeProfile: 'bad',
+              profiles: {
+                bad: {
+                  provider: 'deepseek',
+                  url: 'https://api.deepseek.com/v1',
+                  wireProtocol: 'openai',
+                  apiKeyEnv: 'sk-1234567890abcdef',
+                  models: ['deepseek-chat']
+                }
+              }
+            }, { homeDir });
+          }, /API key|secret|NAME/i);
+
+          // Valid v2 save + win32Runner spy confirming zero secrets in argv
+          process.env.DEEPSEEK_API_KEY = 'sk-deepseek-super-secret-value';
+          envStore.saveGatewayConfig({
+            version: 2,
+            activeProfile: 'deepseek',
+            profiles: {
+              deepseek: {
+                provider: 'deepseek',
+                url: 'https://api.deepseek.com/v1',
+                wireProtocol: 'openai',
+                apiKeyEnv: 'DEEPSEEK_API_KEY',
+                models: ['deepseek-chat', 'deepseek-reasoner']
+              },
+              local: {
+                provider: 'local-gateway',
+                url: 'http://127.0.0.1:8045/v1',
+                wireProtocol: 'genai',
+                apiKeyEnv: '',
+                models: ['gemini-2.5-pro']
+              }
+            }
+          }, { homeDir });
+
+          if (process.platform !== 'win32') {
+            const mode = fs.statSync(configPath).mode & 0o777;
+            assert.strictEqual(mode, 0o600);
+          }
+
+          const spyCalls = [];
+          const winRunner = (kvMap, spec) => {
+            spyCalls.push({ kvMap: { ...kvMap }, spec });
+          };
+          const winOpts = { homeDir, configPath, envFile, platform: 'win32', win32Runner: winRunner, adminSettingsPath: adminPath };
+          const psExe = envStore.resolvePowershellExe();
+          assert(path.isAbsolute(psExe), 'resolvePowershellExe must return absolute SystemRoot path (CWE-426)');
+          assert(psExe.toLowerCase().endsWith(path.join('system32', 'windowspowershell', 'v1.0', 'powershell.exe')));
+
+          // BOM recovery in readPersistedEnvMap / resolveProfileAPIKey
+          const bomEnvFile = path.join(sandbox, 'bom-win32-env.json');
+          fs.writeFileSync(bomEnvFile, JSON.stringify({ '\ufeffDEEPSEEK_API_KEY': 'sk-bom-recovered-12345' }), 'utf8');
+          delete process.env.DEEPSEEK_API_KEY;
+          const bomRead = envStore.readPersistedEnvMap(['DEEPSEEK_API_KEY'], { platform: 'win32', envFile: bomEnvFile });
+          assert.deepStrictEqual(bomRead.bomVariants, ['\ufeffDEEPSEEK_API_KEY']);
+          assert.strictEqual(
+            envStore.resolveProfileAPIKey({ apiKeyEnv: 'DEEPSEEK_API_KEY' }, { platform: 'win32', envFile: bomEnvFile }),
+            'sk-bom-recovered-12345'
+          );
+          process.env.DEEPSEEK_API_KEY = 'sk-deepseek-super-secret-value';
+
+          const actWin = envStore.activateGateway('deepseek', winOpts);
+          assert.strictEqual(actWin.profileName, 'deepseek');
+          assert.strictEqual(spyCalls.length, 1);
+          assert.deepStrictEqual(spyCalls[0].spec.args, ['-NoProfile', '-NonInteractive', '-Command', '-']);
+          assert(!spyCalls[0].spec.args.join(' ').includes('sk-deepseek-super-secret-value'));
+          assert.strictEqual(
+            JSON.parse(spyCalls[0].spec.env.__AGY_ENV_MAP_JSON).AGY_LLM_GATEWAY_API_KEY,
+            'sk-deepseek-super-secret-value'
+          );
+
+          const statusXor = envStore.getGatewayStatus(winOpts);
+          assert.strictEqual(statusXor.mode, 'GATEWAY_XOR');
+          assert.deepStrictEqual(statusXor.models, ['deepseek-chat', 'deepseek-reasoner']);
+
+          // Switch to local loopback without key on mocked linux platform & verify gateway.env + rc block
+          const posixEnvPath = path.join(homeDir, 'gateway.env');
+          const linuxOpts = { homeDir, configPath, envPath: posixEnvPath, envFile, rcFiles: [rcFile], platform: 'linux', adminSettingsPath: adminPath };
+          envStore.activateGateway('local', linuxOpts);
+          assert(fs.existsSync(posixEnvPath), 'linux activateGateway must write gateway.env');
+          const posixEnvText = fs.readFileSync(posixEnvPath, 'utf8');
+          assert(posixEnvText.includes('http://127.0.0.1:8045/v1'), 'gateway.env must contain active URL');
+          if (process.platform !== 'win32') {
+            assert.strictEqual(fs.statSync(posixEnvPath).mode & 0o777, 0o600);
+          }
+          const rcText = fs.readFileSync(rcFile, 'utf8');
+          assert(rcText.includes(envStore.RC_BLOCK_START));
+          assert(rcText.includes('gateway.env'), 'rc block must source gateway.env');
+
+          // Admin override precedence detection
+          fs.writeFileSync(adminPath, JSON.stringify({ gateway: { url: 'https://corp.example.com/v1' } }), 'utf8');
+          const adminDetected = envStore.detectAdminGatewaySettings(linuxOpts);
+          assert.strictEqual(adminDetected.configured, true);
+          assert.strictEqual(envStore.getGatewayStatus(linuxOpts).mode, 'ADMIN_OVERRIDE');
+
+          // Deactivate with keepState: true preserves config; keepState: false removes state + rc block
+          envStore.deactivateGateway({ ...linuxOpts, keepState: true });
+          assert(fs.existsSync(configPath));
+          envStore.deactivateGateway({ ...linuxOpts, keepState: false });
+          assert(!fs.existsSync(configPath));
+          assert(!fs.existsSync(posixEnvPath));
+          assert(!fs.readFileSync(rcFile, 'utf8').includes(envStore.RC_BLOCK_START));
+        } finally {
+          fs.rmSync(sandbox, { recursive: true, force: true });
+        }
+      });
+    });
+
+    await test('cli.js & bin/agy-pro.js enforce security guards, run setup --yes loopback, gateway/models/env/doctor', async () => {
+      await withSavedEnv(ENV_GUARD_KEYS, async () => {
+        const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-pro-cli-'));
+        const server = http.createServer((req, res) => {
+          if (req.url === '/v1/models') {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ data: [{ id: 'qwen2.5-coder:32b', context_window: 32768 }] }));
+            return;
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end('{}');
+        });
+        await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+
+        try {
+          const port = server.address().port;
+          const homeDir = path.join(sandbox, 'agy-pro');
+          const envFile = path.join(sandbox, 'gateway.env');
+          const rcFile = path.join(sandbox, '.bashrc');
+          const settingsPath = path.join(sandbox, 'settings.json');
+          const configDir = path.join(sandbox, 'config');
+          const adminPath = path.join(sandbox, 'admin_settings.json');
+          fs.writeFileSync(rcFile, '# sandbox rc\n', 'utf8');
+          fs.writeFileSync(settingsPath, JSON.stringify({ statusLine: { enabled: true, command: 'agy-tokens.bat --hook' } }), 'utf8');
+          fs.mkdirSync(path.join(configDir, 'hooks'), { recursive: true });
+          fs.writeFileSync(path.join(configDir, 'hooks', 'hooks.json'), JSON.stringify({ hooks: { PostInvocation: [] } }), 'utf8');
+
+          process.env.AGY_PRO_HOME = homeDir;
+          process.env.AGY_PRO_ENV_FILE = envFile;
+          process.env.AGY_PRO_RC_FILE = rcFile;
+          process.env.AGY_SETTINGS_PATH = settingsPath;
+          process.env.AGY_CONFIG_DIR = configDir;
+          process.env.AGY_ADMIN_SETTINGS_PATH = adminPath;
+
+          // 1. bin/agy-pro.js --help and --version via real Node subprocess
+          const helpProc = spawnSync(process.execPath, [binProPath, '--help'], { encoding: 'utf8' });
+          assert.strictEqual(helpProc.status, 0);
+          assert(helpProc.stdout.includes('gateway on [<profile>]'), 'help must document gateway commands');
+
+          const verProc = spawnSync(process.execPath, [binProPath, '--version'], { encoding: 'utf8' });
+          assert.strictEqual(verProc.status, 0);
+          assert(verProc.stdout.includes('agy-pro v'));
+
+          const envOptions = {
+            homeDir,
+            envFile,
+            rcFiles: [rcFile],
+            platform: 'win32',
+            win32Runner: () => {},
+            adminSettingsPath: adminPath
+          };
+
+          // 2. --api-key argv refusal (exit 2, routes to errOutput only, never echoes secret)
+          const keyOut = makeOut();
+          const keyErr = makeOut();
+          const keyCode = await proCli.runCli(['setup', '--api-key', 'sk-never-leak-this-secret'], {
+            output: keyOut,
+            errOutput: keyErr,
+            isTTY: false,
+            envOptions
+          });
+          assert.strictEqual(keyCode, 2);
+          assert.strictEqual(keyOut.text(), '', 'error message must go to errOutput, not stdout');
+          assert(keyErr.text().includes('Refusing --api-key'));
+          assert(!keyErr.text().includes('sk-never-leak-this-secret'));
+
+          // 3. Non-TTY setup without --yes refusal (exit 2, routes to errOutput only)
+          const nonTtyOut = makeOut();
+          const nonTtyErr = makeOut();
+          const nonTtyCode = await proCli.runCli(['setup'], {
+            input: new PassThrough(),
+            output: nonTtyOut,
+            errOutput: nonTtyErr,
+            isTTY: false,
+            envOptions
+          });
+          assert.strictEqual(nonTtyCode, 2);
+          assert.strictEqual(nonTtyOut.text(), '', 'non-TTY setup error must go to errOutput, not stdout');
+          assert(nonTtyErr.text().includes('Non-interactive'));
+
+          // 4. setup --yes loopback URL without API key using hyphenated profile + headers masking
+          const setupOut = makeOut();
+          const setupErr = makeOut();
+          const setupCode = await proCli.runCli(
+            [
+              'setup',
+              '--yes',
+              '--provider',
+              'local-gateway',
+              '--url',
+              `http://127.0.0.1:${port}/v1`,
+              '--models',
+              'qwen2.5-coder:32b',
+              '--wire',
+              'openai',
+              '--profile',
+              'local-ollama',
+              '--headers',
+              'X-Org-Secret: sk-hdr-secret-987654'
+            ],
+            { output: setupOut, errOutput: setupErr, isTTY: false, envOptions }
+          );
+          assert.strictEqual(setupCode, 0, `setup --yes failed: ${setupOut.text()} ${setupErr.text()}`);
+          assert(setupOut.text().includes('XOR') || setupOut.text().includes('Enterprise Gateway Models'));
+          assert(setupOut.text().includes('openai'));
+
+          // 5. gateway status --json (headers masked), gateway off + gateway on local-ollama, models --json/--remote
+          const stOut = makeOut();
+          assert.strictEqual(await proCli.runCli(['gateway', 'status', '--json'], { output: stOut, envOptions }), 0);
+          const stJson = JSON.parse(stOut.text());
+          assert.strictEqual(stJson.mode, 'GATEWAY_XOR');
+          assert.strictEqual(stJson.activeProfile, 'local-ollama');
+          assert.deepStrictEqual(stJson.models, ['qwen2.5-coder:32b']);
+          assert(!stJson.headers.includes('sk-hdr-secret-987654'), 'gateway status --json must mask header secrets');
+          assert(stJson.headers.includes('sk-hd****') && stJson.maskedHeaders.includes('sk-hd****'));
+
+          const modOut = makeOut();
+          assert.strictEqual(await proCli.runCli(['models', '--json'], { output: modOut, envOptions }), 0);
+          assert.deepStrictEqual(JSON.parse(modOut.text()).models, ['qwen2.5-coder:32b']);
+
+          const remOut = makeOut();
+          assert.strictEqual(await proCli.runCli(['models', '--remote', '--json'], { output: remOut, envOptions }), 0);
+          assert.strictEqual(JSON.parse(remOut.text()).models[0].id, 'qwen2.5-coder:32b');
+
+          // 6. env masking (API key + headers) vs --reveal, cmd newline/% sanitization, pwsh curly quotes, gateway off/on
+          process.env.AGY_LLM_GATEWAY_API_KEY = 'sk-test-secret-123456';
+          process.env.AGY_LLM_GATEWAY_HEADERS = 'X-Org-Secret: sk-hdr-secret-987654';
+          const maskedEnvOut = makeOut();
+          assert.strictEqual(await proCli.runCli(['env', '--shell', 'sh'], { output: maskedEnvOut, envOptions }), 0);
+          assert(maskedEnvOut.text().includes('sk-te****'));
+          assert(maskedEnvOut.text().includes('sk-hd****'));
+          assert(!maskedEnvOut.text().includes('sk-test-secret-123456'));
+          assert(!maskedEnvOut.text().includes('sk-hdr-secret-987654'));
+
+          const revealEnvOut = makeOut();
+          assert.strictEqual(
+            await proCli.runCli(['env', '--shell', 'pwsh', '--reveal'], { output: revealEnvOut, envOptions }),
+            0
+          );
+          assert(revealEnvOut.text().includes('sk-test-secret-123456'));
+          assert(revealEnvOut.text().includes('sk-hdr-secret-987654'));
+
+          // cmd newline/% sanitization + pwsh curly-quote escaping
+          process.env.AGY_LLM_GATEWAY_HEADERS = 'X-Note: it\u2019s 100%\nline2';
+          const cmdSanOut = makeOut();
+          assert.strictEqual(await proCli.runCli(['env', '--shell', 'cmd', '--reveal'], { output: cmdSanOut, envOptions }), 0);
+          assert(cmdSanOut.text().includes('100%% line2'), `cmd export must sanitize newline and %, got: ${cmdSanOut.text()}`);
+          assert(!cmdSanOut.text().includes('100%\nline2'));
+          const pwshCurlyOut = makeOut();
+          assert.strictEqual(await proCli.runCli(['env', '--shell', 'pwsh', '--reveal'], { output: pwshCurlyOut, envOptions }), 0);
+          assert(pwshCurlyOut.text().includes('it\u2019\u2019s'), 'pwsh export must escape curly quotes');
+
+          const offOut = makeOut();
+          assert.strictEqual(await proCli.runCli(['gateway', 'off'], { output: offOut, envOptions }), 0);
+          const stOffOut = makeOut();
+          assert.strictEqual(await proCli.runCli(['gateway', 'status', '--json'], { output: stOffOut, envOptions }), 0);
+          assert.strictEqual(JSON.parse(stOffOut.text()).mode, 'NATIVE');
+          const onHyphenOut = makeOut();
+          assert.strictEqual(await proCli.runCli(['gateway', 'on', 'local-ollama'], { output: onHyphenOut, envOptions }), 0);
+          const stBackOn = makeOut();
+          assert.strictEqual(await proCli.runCli(['gateway', 'status', '--json'], { output: stBackOn, envOptions }), 0);
+          assert.strictEqual(JSON.parse(stBackOn.text()).mode, 'GATEWAY_XOR');
+          assert.strictEqual(JSON.parse(stBackOn.text()).activeProfile, 'local-ollama');
+
+          // 7. doctor --json pass and shadow detection fail
+          const docPassOut = makeOut();
+          const docPassCode = await proCli.runCli(['doctor', '--json'], {
+            output: docPassOut,
+            envOptions,
+            findAgyBinaries: () => [path.join(sandbox, 'native', 'agy.exe')]
+          });
+          assert.strictEqual(docPassCode, 0, `doctor --json failed: ${docPassOut.text()}`);
+          assert.strictEqual(JSON.parse(docPassOut.text()).ok, true);
+
+          const shadowBin = path.join(os.homedir(), '.agy-pro', 'bin', 'agy.exe');
+          const docFailOut = makeOut();
+          const docFailCode = await proCli.runCli(['doctor', '--json'], {
+            output: docFailOut,
+            envOptions,
+            findAgyBinaries: () => [shadowBin]
+          });
+          assert.strictEqual(docFailCode, 1);
+          const docFailJson = JSON.parse(docFailOut.text());
+          assert.strictEqual(docFailJson.ok, false);
+          assert.strictEqual(docFailJson.checks.find((c) => c.id === 'agy_path').status, 'fail');
+
+          // 8. Corrupt gateway.json returns exit 1 on `agy-pro env --profile ...` and writes to errOutput
+          fs.writeFileSync(path.join(homeDir, 'gateway.json'), '{ BROKEN_JSON', 'utf8');
+          const corruptEnvOut = makeOut();
+          const corruptEnvErr = makeOut();
+          const corruptEnvCode = await proCli.runCli(['env', '--profile', 'local-ollama'], {
+            output: corruptEnvOut,
+            errOutput: corruptEnvErr,
+            envOptions
+          });
+          assert.strictEqual(corruptEnvCode, 1);
+          assert.strictEqual(corruptEnvOut.text(), '', 'corrupt gateway.json error must write to errOutput only');
+          assert(corruptEnvErr.text().includes('Failed to parse'));
+        } finally {
+          await new Promise((resolve) => server.close(resolve));
+          fs.rmSync(sandbox, { recursive: true, force: true });
+        }
+      });
+    });
+
+    await test('wizard.js supports --api-key-stdin + --probe and interactive loopback -> remote HTTPS transition', async () => {
+      await withSavedEnv(ENV_GUARD_KEYS, async () => {
+        const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-pro-wizard-'));
+        try {
+          const homeDir = path.join(sandbox, 'agy-pro');
+          const configPath = path.join(homeDir, 'gateway.json');
+          const envFile = path.join(sandbox, 'win32-env.json');
+          const adminPath = path.join(sandbox, 'admin_settings.json');
+          process.env.AGY_PRO_HOME = homeDir;
+          process.env.AGY_PRO_ENV_FILE = envFile;
+
+          const winEnv = {};
+          const envOptions = {
+            homeDir,
+            configPath,
+            envFile,
+            platform: 'win32',
+            win32Runner: (kvMap) => {
+              for (const [k, v] of Object.entries(kvMap)) {
+                if (v === null || v === undefined || v === '') delete winEnv[k];
+                else winEnv[k] = String(v);
+              }
+            },
+            adminSettingsPath: adminPath
+          };
+
+          // 1. Non-interactive --api-key-stdin + --probe
+          const probeLog = [];
+          const mockTransport = async (req) => {
+            const authHeader = (req.headers && (req.headers.Authorization || req.headers.authorization)) || '';
+            probeLog.push({ url: req.url, method: req.method, auth: authHeader });
+            if (req.url.startsWith('http://127.0.0.1:')) {
+              return { statusCode: 503, statusMessage: 'Unavailable', headers: {}, body: 'local down' };
+            }
+            if (req.url.endsWith('/models')) {
+              return { statusCode: 200, statusMessage: 'OK', headers: {}, body: JSON.stringify({ data: [] }) };
+            }
+            return { statusCode: 200, statusMessage: 'OK', headers: {}, body: JSON.stringify({ ok: true }) };
+          };
+
+          const stdinOut = makeOut();
+          const stdinErr = makeOut();
+          const stdinRes = await wizard.runSetup(
+            [
+              '--yes',
+              '--provider',
+              'custom',
+              '--profile',
+              'remote-ci',
+              '--url',
+              'https://gateway.example.com/v1',
+              '--models',
+              'model-a',
+              '--api-key-env',
+              'CUSTOM_GW_KEY',
+              '--api-key-stdin',
+              '--probe'
+            ],
+            {
+              input: Readable.from(['sk-stdin-secret-12345\n']),
+              output: stdinOut,
+              errOutput: stdinErr,
+              isTTY: false,
+              envOptions,
+              transport: mockTransport
+            }
+          );
+          assert.strictEqual(stdinRes.exitCode, 0, `wizard --api-key-stdin --probe failed: ${stdinErr.text()} ${stdinOut.text()}`);
+          assert(stdinOut.text().includes('Probe succeeded'));
+          assert.strictEqual(winEnv.AGY_LLM_GATEWAY_API_KEY, 'sk-stdin-secret-12345');
+          assert.strictEqual(probeLog[0].auth, 'Bearer sk-stdin-secret-12345');
+
+          // 2. Interactive 7-step wizard: loopback -> probe failure -> Edit Base URL/Key -> remote HTTPS -> succeed
+          // Clear saved profiles first so interactive wizard starts at Step 1 rather than existing-profiles menu
+          fs.unlinkSync(configPath);
+          delete process.env.CUSTOM_GW_KEY;
+          delete process.env.AGY_LLM_GATEWAY_API_KEY;
+
+          const answers = [
+            'local-gateway',                  // Step 1: provider
+            'hybrid-gw',                      // Step 1: profile name
+            'http://127.0.0.1:19999/v1',      // Step 2: loopback URL
+            '1',                              // Step 3: openai
+            '',                               // Step 4: skip API key on loopback
+            '',                               // Step 4: CA cert (skip)
+            '',                               // Step 4: extra headers (skip)
+            'qwen2.5-coder:32b',              // Step 5: model selection
+            'Y',                              // Step 6: probe loopback -> fails (503)
+            '3',                              // Step 6: 3) Edit Base URL / API Key
+            'https://remote.example.com/v1',  // Step 6: switch to remote HTTPS
+            'REMOTE_GW_API_KEY',              // Step 6: API key env name required for remote URL
+            'sk-remote-transition-999',       // Step 6: API key value
+            'Y',                              // Step 6: retry probe on remote HTTPS -> succeeds (200)
+            'Y'                               // Step 7: Save profile and activate gateway
+          ];
+          const wizInput = new PassThrough();
+          const wizChunks = [];
+          const wizOut = {
+            write(s) {
+              const text = String(s);
+              wizChunks.push(text);
+              if (text.endsWith(': ') && answers.length > 0) {
+                const next = answers.shift();
+                setImmediate(() => wizInput.write(next + '\n'));
+              }
+              return true;
+            }
+          };
+          const wizErr = makeOut();
+          const wizRes = await wizard.runSetup([], {
+            input: wizInput,
+            output: wizOut,
+            errOutput: wizErr,
+            isTTY: true,
+            envOptions,
+            transport: mockTransport
+          });
+          assert.strictEqual(wizRes.exitCode, 0, `interactive wizard failed: ${wizErr.text()}\n${wizChunks.join('')}`);
+          assert.strictEqual(answers.length, 0, `unconsumed wizard answers: ${answers.join(', ')}`);
+          const savedCfg = envStore.loadGatewayConfig(envOptions);
+          assert.strictEqual(savedCfg.activeProfile, 'hybrid-gw');
+          assert.strictEqual(savedCfg.profiles['hybrid-gw'].url, 'https://remote.example.com/v1');
+          assert.strictEqual(savedCfg.profiles['hybrid-gw'].apiKeyEnv, 'REMOTE_GW_API_KEY');
+          assert.strictEqual(winEnv.AGY_LLM_GATEWAY_URL, 'https://remote.example.com/v1');
+          assert.strictEqual(winEnv.AGY_LLM_GATEWAY_API_KEY, 'sk-remote-transition-999');
+        } finally {
+          fs.rmSync(sandbox, { recursive: true, force: true });
+        }
+      });
+    });
   });
 
   // --- Summary & Exit Code ---

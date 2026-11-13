@@ -247,6 +247,9 @@ function Show-TroubleshootingGuide {
 
 try {
     Write-Header "agy-pro One-Click Automated Setup Wizard"
+    Write-Host "[DEPRECATED] Legacy Go 'agy.exe' PATH-shadowing installation is deprecated." -ForegroundColor Yellow
+    Write-Host "[DEPRECATED] Native antigravity-cli (/swarm, subagents, Auto mode, hooks, plugins) and simplified Node 'agy-pro' supersede this installer." -ForegroundColor Yellow
+    Write-Host "[DEPRECATED] Please run the root 'install.cmd' or 'scripts\install.bat' installer instead." -ForegroundColor Yellow
     Write-Notice "Configuring Antigravity Go Shim & Multi-Model Swarm Environment..."
 
     # 1. Resolve paths

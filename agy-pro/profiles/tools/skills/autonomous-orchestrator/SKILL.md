@@ -89,6 +89,9 @@ Used when verifying existing work, checking test health, auditing sessions, or i
 - **On-Demand Skills**: When specialized domain procedures are required, author task runbooks in `skills/<name>/SKILL.md` (or `.agents/skills/<name>/SKILL.md` / `~/.gemini/skills/<name>/SKILL.md` via synchronization scripts) before invocation.
 
 ### Stage 3: Parallel Domain Investigation & Draft Strategy
+- **Reconnaissance vs. Deep Analysis Routing**:
+  - *Fact Reconnaissance & Online Research / Code Scanning*: When the task is broad fact-finding, web documentation scraping, or searching multiple directories for symbol occurrences (non-analytic), Master decomposes the target into 3–8 orthogonal boundaries and batch-dispatches a swarm in a single turn via `invoke_subagent` setting `Model: "flash_lite"` for lightning resolution.
+  - *Deep Causal / Architectural Investigation*: High-complexity architecture, trade-offs, or causal debugging routes to `deep-investigator` / `research` (Track A/B) with deep reasoning (`"flash"` or `"pro"`).
 - **Mandatory Concurrent Swarm Spawning**: Master MUST dispatch a concurrent batch of $\ge 2$ specialized subagents simultaneously via a single `invoke_subagent` array call (e.g., `deep-investigator` + Domain Researcher). Spawning only 1 subagent sequentially on complex tasks is **STRICTLY FORBIDDEN**.
 - **Deep Investigator Dual-Track Execution**:
   - *Track A: Web Quorum & Publisher Independence*: Synthesizes facts across $\ge 3$ independent authoritative publishers (official specifications, primary repository docs, vendor release notes). Explicitly screens out SEO spam, speculative blog posts, and hallucinated APIs.

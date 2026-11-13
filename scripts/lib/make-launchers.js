@@ -52,7 +52,8 @@ const SHIM_ENTRIES = [
   { name: 'agy-tools.bat', script: 'agy-tools.js' },
   { name: 'antigravity-tools.bat', script: 'agy-tools.js' },
   { name: 'agy-tokens.bat', script: 'agy-tokens.js' },
-  { name: 'agy-dashboard.bat', script: 'agy-dashboard.js' }
+  { name: 'agy-dashboard.bat', script: 'agy-dashboard.js' },
+  { name: 'agy-pro.bat', script: 'agy-pro.js' }
 ];
 
 /** Every distinct bin script the shim table wires (the identity check covers all of them). */
